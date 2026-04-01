@@ -84,6 +84,7 @@ Web console 解决三类问题：
 
 当前实现的左栏不是纯文本列表，而是品牌区 + 导航区 + session rail 三段式结构；新用户进入页面后可以先看导航，再逐步进入 session 详情。
 当 session 数量增多时，左栏还应支持纯客户端 search + status filter，让用户先缩小集合，再切换具体 session。
+为了保持 drill-down 速度，session rail / queue 过滤条还应提供一键状态 chips；若当前选中的 session 被 filter 暂时隐藏，UI 应提示用户并提供直接恢复可见的入口。
 
 Sessions 列表项必须展示：
 

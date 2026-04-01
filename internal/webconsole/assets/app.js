@@ -197,6 +197,16 @@ function uniqueStatuses(items, pick) {
   return Array.from(new Set((items || []).map((item) => String(pick(item) || '').trim()).filter(Boolean))).sort();
 }
 
+function statusCounts(items, pick) {
+  const counts = {};
+  for (const item of items || []) {
+    const key = String(pick(item) || '').trim();
+    if (!key) continue;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
 function filteredSessions() {
   return (state.sessions || []).filter((item) => matchesStatus(item.status, state.sessionFilterStatus)
     && matchesQuery([
@@ -260,6 +270,10 @@ function renderFilterToolbar({
   statusOptions,
   clearTarget,
   summary,
+  chipTarget = '',
+  chipCounts = {},
+  allCount = 0,
+  activeStatusLabel = 'All statuses',
 }) {
   const hasActiveFilters = normalizedQuery(searchValue) || (statusValue && statusValue !== 'all');
   return `
@@ -277,6 +291,20 @@ function renderFilterToolbar({
           </select>
         </label>
       </div>
+      ${statusOptions.length
+        ? `
+          <div class="filter-chip-row">
+            <button class="filter-chip ${statusValue === 'all' ? 'is-active' : ''}" type="button" data-filter-chip-target="${escapeHtml(chipTarget)}" data-filter-chip-value="all">
+              ${escapeHtml(activeStatusLabel)} · ${escapeHtml(String(allCount))}
+            </button>
+            ${statusOptions.map((status) => `
+              <button class="filter-chip ${statusValue === status ? 'is-active' : ''}" type="button" data-filter-chip-target="${escapeHtml(chipTarget)}" data-filter-chip-value="${escapeHtml(status)}">
+                ${escapeHtml(status)} · ${escapeHtml(String(chipCounts[status] || 0))}
+              </button>
+            `).join('')}
+          </div>
+        `
+        : ''}
       <div class="filter-toolbar-foot">
         <span class="helper-text">${escapeHtml(summary)}</span>
         ${hasActiveFilters ? `<button class="mini-button" type="button" data-clear-filter="${escapeHtml(clearTarget)}">Clear filters</button>` : ''}
@@ -305,6 +333,11 @@ function renderTimelineToolbar(detail) {
             <option value="event"${state.timelineFilterKind === 'event' ? ' selected' : ''}>Events</option>
           </select>
         </label>
+      </div>
+      <div class="filter-chip-row">
+        <button class="filter-chip ${state.timelineFilterKind === 'all' ? 'is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="all">All · ${escapeHtml(String(items.length))}</button>
+        <button class="filter-chip ${state.timelineFilterKind === 'message' ? 'is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="message">Messages · ${escapeHtml(String(messageCount))}</button>
+        <button class="filter-chip ${state.timelineFilterKind === 'event' ? 'is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="event">Events · ${escapeHtml(String(eventCount))}</button>
       </div>
       <div class="filter-toolbar-foot">
         <span class="helper-text">${escapeHtml(`${filtered.length} visible of ${items.length} timeline entries · ${messageCount} messages · ${eventCount} events`)}</span>
@@ -796,6 +829,7 @@ function renderFailureItem(item) {
 function renderQueueView() {
   const visibleJobs = filteredQueueJobs();
   const statusOptions = uniqueStatuses(state.queueJobs, (job) => job.status);
+  const counts = statusCounts(state.queueJobs, (job) => job.status);
   elements.queueView.innerHTML = `
     <div class="stats-grid">
       ${renderStatCard('Queued', state.overview?.queue_counters?.queued || 0, 'Jobs waiting for a worker')}
@@ -867,6 +901,10 @@ function renderQueueView() {
         statusValue: state.queueFilterStatus,
         statusOptions,
         clearTarget: 'queue',
+        chipTarget: 'queue-status',
+        chipCounts: counts,
+        allCount: state.queueJobs.length,
+        activeStatusLabel: 'All jobs',
         summary: `${visibleJobs.length} visible of ${state.queueJobs.length} queue jobs`,
       })}
       <div class="table-list">
@@ -1315,7 +1353,13 @@ function renderEmpty(message) {
 function renderSidebar() {
   const visibleSessions = filteredSessions();
   const statusOptions = uniqueStatuses(state.sessions, (item) => item.status);
+  const counts = statusCounts(state.sessions, (item) => item.status);
   const hasActiveSessionFilters = normalizedQuery(state.sessionFilterQuery) || (state.sessionFilterStatus && state.sessionFilterStatus !== 'all');
+  const selectedSessionHidden = Boolean(
+    state.selectedSessionId
+      && !visibleSessions.some((item) => item.id === state.selectedSessionId)
+      && (state.sessions || []).some((item) => item.id === state.selectedSessionId),
+  );
   elements.sessionCountBadge.textContent = hasActiveSessionFilters
     ? `${visibleSessions.length}/${state.sessions.length}`
     : String(state.sessions.length);
@@ -1328,8 +1372,18 @@ function renderSidebar() {
       statusValue: state.sessionFilterStatus,
       statusOptions,
       clearTarget: 'sessions',
+      chipTarget: 'session-status',
+      chipCounts: counts,
+      allCount: state.sessions.length,
+      activeStatusLabel: 'All sessions',
       summary: `${visibleSessions.length} visible of ${state.sessions.length} sessions`,
     })}
+    ${selectedSessionHidden ? `
+      <div class="hidden-selection-note">
+        <span class="helper-text">The selected session is currently hidden by the sidebar filters.</span>
+        <button class="mini-button" type="button" data-reveal-selected-session="true">Reveal selected</button>
+      </div>
+    ` : ''}
     ${visibleSessions.length
       ? visibleSessions.map((item) => `
         <button class="session-list-item ${state.selectedSessionId === item.id ? 'is-active' : ''}" type="button" data-session-id="${escapeHtml(item.id)}">
@@ -1712,6 +1766,35 @@ function clearFilters(target) {
 }
 
 document.addEventListener('click', (event) => {
+  const revealSelectedButton = event.target.closest('[data-reveal-selected-session]');
+  if (revealSelectedButton) {
+    state.sessionFilterQuery = '';
+    state.sessionFilterStatus = 'all';
+    renderSidebar();
+    return;
+  }
+
+  const filterChip = event.target.closest('[data-filter-chip-target]');
+  if (filterChip) {
+    const target = filterChip.dataset.filterChipTarget;
+    const value = filterChip.dataset.filterChipValue || 'all';
+    switch (target) {
+      case 'session-status':
+        state.sessionFilterStatus = value;
+        renderSidebar();
+        return;
+      case 'queue-status':
+        state.queueFilterStatus = value;
+        renderQueueView();
+        return;
+      case 'timeline-kind':
+        state.timelineFilterKind = value;
+        renderSessionView();
+        return;
+      default:
+    }
+  }
+
   const clearFilterButton = event.target.closest('[data-clear-filter]');
   if (clearFilterButton) {
     clearFilters(clearFilterButton.dataset.clearFilter);
