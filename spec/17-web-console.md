@@ -105,6 +105,7 @@ Sessions 列表项必须展示：
 - worker pool 状态
 - 最近活动 feed
 - 最近失败 session / job
+- KPI 卡片应允许直接 drill down 到对应的 session / queue 过滤视图，而不是只提供静态数字
 
 ### 4.4 Session 工作区
 

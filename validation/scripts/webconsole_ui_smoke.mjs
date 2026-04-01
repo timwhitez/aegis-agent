@@ -281,6 +281,20 @@ async function main() {
     results.interactions.started_session = true;
     results.session_id = await browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.dataset.sessionId || ''`);
 
+    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
+      5000,
+      'overview view visible'
+    );
+    await browserClient.evaluate(`document.querySelector('[data-drilldown-target="session-status"][data-drilldown-value="awaiting_input"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`document.getElementById('session-filter-status')?.value === 'awaiting_input' && !document.getElementById('session-view')?.classList.contains('is-hidden') && Boolean(document.querySelector('#continue-form'))`),
+      5000,
+      'overview session drilldown'
+    );
+    results.interactions.overview_session_drilldown = true;
+
     await setField('#continue-message', 'Now call finish with message: ui smoke continue ok');
     await browserClient.evaluate(`document.getElementById('continue-form').requestSubmit(); true`);
     await waitFor(
@@ -298,7 +312,7 @@ async function main() {
 
     await setField('#session-filter-query', 'ui-smoke-reviewer');
     await waitFor(
-      () => browserClient.evaluate(`document.querySelectorAll('.session-list-item').length === 1 && Boolean(document.querySelector('[data-reveal-selected-session]'))`),
+      () => browserClient.evaluate(`document.querySelectorAll('.session-list-item').length >= 1 && Boolean(document.querySelector('[data-reveal-selected-session]')) && Boolean(document.querySelector('.session-list-item.is-active')) && document.getElementById('session-filter-query')?.value === 'ui-smoke-reviewer'`),
       5000,
       'session sidebar filter state'
     );
@@ -356,6 +370,11 @@ async function main() {
     );
     results.interactions.queue_job_visible = true;
 
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]'))`),
+      timeoutMs,
+      'queue completed chip available'
+    );
     await browserClient.evaluate(`document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]')?.click(); true`);
     await waitFor(
       () => browserClient.evaluate(`document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]')?.classList.contains('is-active') && document.getElementById('queue-filter-status')?.value === 'completed'`),

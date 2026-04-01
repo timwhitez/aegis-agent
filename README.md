@@ -10,6 +10,7 @@
 当前 session detail 还会把 execution / recovery / output / provider options 四类摘要直接放在顶部，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
 当前前端还加入了纯客户端的 session rail、queue jobs、timeline 检索和状态筛选；当 run 目录里会话、队列任务和事件数量上来时，可以先在浏览器里收窄集合，再进入具体 session 处理。
 在此基础上，session rail 和 queue 视图现在还有一键状态 chips；如果当前选中的 session 被 sidebar filter 隐藏，页面也会给出直接恢复可见的提示，而不是让 selection 静默“消失”。
+overview 里的 KPI 卡片现在也能直接 drill down 到对应的 session / queue 过滤视图，不再只是只读数字墙。
 
 ## 当前定位
 

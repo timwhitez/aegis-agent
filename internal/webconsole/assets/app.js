@@ -207,7 +207,7 @@ function statusCounts(items, pick) {
   return counts;
 }
 
-function filteredSessions() {
+function matchingSessions() {
   return (state.sessions || []).filter((item) => matchesStatus(item.status, state.sessionFilterStatus)
     && matchesQuery([
       item.id,
@@ -221,6 +221,14 @@ function filteredSessions() {
       item.parent_session_id,
       item.queue_job_id,
     ], state.sessionFilterQuery));
+}
+
+function filteredSessions() {
+  const matches = matchingSessions();
+  if (!state.selectedSessionId) return matches;
+  if (matches.some((item) => item.id === state.selectedSessionId)) return matches;
+  const selected = (state.sessions || []).find((item) => item.id === state.selectedSessionId);
+  return selected ? [selected, ...matches] : matches;
 }
 
 function filteredQueueJobs() {
@@ -669,10 +677,10 @@ function renderOverview() {
     </div>
 
     <div class="stats-grid">
-      ${renderStatCard('Running Sessions', running, 'Sessions currently executing in the runtime')}
-      ${renderStatCard('Awaiting Input', awaiting, 'Sessions paused at a durable handoff boundary')}
-      ${renderStatCard('Queued Jobs', queued, 'Background jobs waiting for worker capacity')}
-      ${renderStatCard('Running Jobs', processing, 'Queue jobs actively being consumed')}
+      ${renderStatCard('Running Sessions', running, 'Sessions currently executing in the runtime', { target: 'session-status', value: 'running' })}
+      ${renderStatCard('Awaiting Input', awaiting, 'Sessions paused at a durable handoff boundary', { target: 'session-status', value: 'awaiting_input' })}
+      ${renderStatCard('Queued Jobs', queued, 'Background jobs waiting for worker capacity', { target: 'queue-status', value: 'queued' })}
+      ${renderStatCard('Running Jobs', processing, 'Queue jobs actively being consumed', { target: 'queue-status', value: 'running' })}
     </div>
 
     <div class="split-grid">
@@ -737,12 +745,16 @@ function renderOverview() {
   `;
 }
 
-function renderStatCard(label, value, subvalue) {
+function renderStatCard(label, value, subvalue, action = null) {
+  const actionAttrs = action
+    ? ` data-drilldown-target="${escapeHtml(action.target)}" data-drilldown-value="${escapeHtml(action.value)}"`
+    : '';
   return `
-    <section class="stat-card">
+    <section class="stat-card ${action ? 'stat-card-actionable' : ''}"${actionAttrs}>
       <div class="stat-label">${escapeHtml(label)}</div>
       <div class="stat-value">${escapeHtml(String(value))}</div>
       <div class="stat-subvalue">${escapeHtml(subvalue)}</div>
+      ${action ? `<div class="stat-link">Open filtered view</div>` : ''}
     </section>
   `;
 }
@@ -832,10 +844,10 @@ function renderQueueView() {
   const counts = statusCounts(state.queueJobs, (job) => job.status);
   elements.queueView.innerHTML = `
     <div class="stats-grid">
-      ${renderStatCard('Queued', state.overview?.queue_counters?.queued || 0, 'Jobs waiting for a worker')}
-      ${renderStatCard('Running', state.overview?.queue_counters?.running || 0, 'Jobs in the worker pipeline')}
-      ${renderStatCard('Completed', state.overview?.queue_counters?.completed || 0, 'Jobs finished successfully')}
-      ${renderStatCard('Failed', state.overview?.queue_counters?.failed || 0, 'Jobs that need inspection or rerun')}
+      ${renderStatCard('Queued', state.overview?.queue_counters?.queued || 0, 'Jobs waiting for a worker', { target: 'queue-status', value: 'queued' })}
+      ${renderStatCard('Running', state.overview?.queue_counters?.running || 0, 'Jobs in the worker pipeline', { target: 'queue-status', value: 'running' })}
+      ${renderStatCard('Completed', state.overview?.queue_counters?.completed || 0, 'Jobs finished successfully', { target: 'queue-status', value: 'completed' })}
+      ${renderStatCard('Failed', state.overview?.queue_counters?.failed || 0, 'Jobs that need inspection or rerun', { target: 'queue-status', value: 'failed' })}
     </div>
 
     <div class="hero-grid">
@@ -1351,17 +1363,18 @@ function renderEmpty(message) {
 }
 
 function renderSidebar() {
+  const strictMatches = matchingSessions();
   const visibleSessions = filteredSessions();
   const statusOptions = uniqueStatuses(state.sessions, (item) => item.status);
   const counts = statusCounts(state.sessions, (item) => item.status);
   const hasActiveSessionFilters = normalizedQuery(state.sessionFilterQuery) || (state.sessionFilterStatus && state.sessionFilterStatus !== 'all');
   const selectedSessionHidden = Boolean(
     state.selectedSessionId
-      && !visibleSessions.some((item) => item.id === state.selectedSessionId)
+      && !strictMatches.some((item) => item.id === state.selectedSessionId)
       && (state.sessions || []).some((item) => item.id === state.selectedSessionId),
   );
   elements.sessionCountBadge.textContent = hasActiveSessionFilters
-    ? `${visibleSessions.length}/${state.sessions.length}`
+    ? `${strictMatches.length}/${state.sessions.length}`
     : String(state.sessions.length);
   elements.sessionList.innerHTML = `
     ${renderFilterToolbar({
@@ -1376,11 +1389,11 @@ function renderSidebar() {
       chipCounts: counts,
       allCount: state.sessions.length,
       activeStatusLabel: 'All sessions',
-      summary: `${visibleSessions.length} visible of ${state.sessions.length} sessions`,
+      summary: `${strictMatches.length} matching of ${state.sessions.length} sessions`,
     })}
     ${selectedSessionHidden ? `
       <div class="hidden-selection-note">
-        <span class="helper-text">The selected session is currently hidden by the sidebar filters.</span>
+        <span class="helper-text">The selected session stays pinned even though the current filters exclude it.</span>
         <button class="mini-button" type="button" data-reveal-selected-session="true">Reveal selected</button>
       </div>
     ` : ''}
@@ -1765,7 +1778,40 @@ function clearFilters(target) {
   }
 }
 
+async function applySessionStatusDrilldown(status) {
+  state.sessionFilterQuery = '';
+  state.sessionFilterStatus = status || 'all';
+  const matches = matchingSessions();
+  if (matches.length) {
+    setSession(matches[0].id);
+    await refreshSelectedSession();
+    return;
+  }
+  state.currentView = 'overview';
+  render();
+}
+
+function applyQueueStatusDrilldown(status) {
+  state.queueFilterQuery = '';
+  state.queueFilterStatus = status || 'all';
+  setView('queue');
+}
+
 document.addEventListener('click', (event) => {
+  const drilldownCard = event.target.closest('[data-drilldown-target]');
+  if (drilldownCard) {
+    const target = drilldownCard.dataset.drilldownTarget;
+    const value = drilldownCard.dataset.drilldownValue || 'all';
+    if (target === 'session-status') {
+      applySessionStatusDrilldown(value);
+      return;
+    }
+    if (target === 'queue-status') {
+      applyQueueStatusDrilldown(value);
+      return;
+    }
+  }
+
   const revealSelectedButton = event.target.closest('[data-reveal-selected-session]');
   if (revealSelectedButton) {
     state.sessionFilterQuery = '';
