@@ -167,7 +167,8 @@ a {
 .brand-copy,
 .section-header-copy,
 .session-header-copy,
-.topbar-copy {
+.topbar-copy,
+.filter-field {
   display: grid;
   gap: 8px;
 }
@@ -654,6 +655,51 @@ a {
   gap: 6px;
 }
 
+.filter-toolbar {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(248, 250, 252, 0.7);
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(180px, 0.9fr);
+  gap: 12px;
+}
+
+.filter-grid-timeline {
+  grid-template-columns: minmax(0, 1.9fr) minmax(180px, 0.8fr);
+}
+
+.filter-field span {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.filter-input,
+.filter-select {
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text);
+}
+
+.filter-toolbar-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .meta-item {
   border: 1px solid var(--line);
 }
@@ -873,6 +919,8 @@ a {
 .field input:focus-visible,
 .field select:focus-visible,
 .field textarea:focus-visible,
+.filter-input:focus-visible,
+.filter-select:focus-visible,
 .button:focus-visible,
 .mini-button:focus-visible,
 .nav-button:focus-visible,
@@ -1038,6 +1086,8 @@ a {
   .stats-grid,
   .overview-grid,
   .meta-grid,
+  .filter-grid,
+  .filter-grid-timeline,
   .spotlight-grid,
   .context-grid,
   .actions {
@@ -1066,7 +1116,8 @@ a {
   .timeline-header,
   .worker-header,
   .session-header-top,
-  .sidebar-title-row {
+  .sidebar-title-row,
+  .filter-toolbar-foot {
     flex-direction: column;
     align-items: flex-start;
   }

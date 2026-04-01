@@ -11,6 +11,12 @@ const state = {
   providers: [],
   refreshing: false,
   toastCounter: 0,
+  sessionFilterQuery: '',
+  sessionFilterStatus: 'all',
+  queueFilterQuery: '',
+  queueFilterStatus: 'all',
+  timelineFilterKind: 'all',
+  timelineFilterQuery: '',
 };
 
 const elements = {
@@ -167,6 +173,146 @@ function renderJsonDetails(summary, payload) {
       <summary>${escapeHtml(summary)}</summary>
       <pre class="details-code">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
     </details>
+  `;
+}
+
+function normalizedQuery(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function matchesQuery(parts, query) {
+  const needle = normalizedQuery(query);
+  if (!needle) return true;
+  return parts
+    .map((part) => String(part ?? '').toLowerCase())
+    .join(' ')
+    .includes(needle);
+}
+
+function matchesStatus(value, filterValue) {
+  return !filterValue || filterValue === 'all' || String(value || '') === filterValue;
+}
+
+function uniqueStatuses(items, pick) {
+  return Array.from(new Set((items || []).map((item) => String(pick(item) || '').trim()).filter(Boolean))).sort();
+}
+
+function filteredSessions() {
+  return (state.sessions || []).filter((item) => matchesStatus(item.status, state.sessionFilterStatus)
+    && matchesQuery([
+      item.id,
+      item.status,
+      item.provider,
+      item.model,
+      item.phase,
+      item.workdir,
+      item.agent_name,
+      item.agent_role,
+      item.parent_session_id,
+      item.queue_job_id,
+    ], state.sessionFilterQuery));
+}
+
+function filteredQueueJobs() {
+  return (state.queueJobs || []).filter((job) => matchesStatus(job.status, state.queueFilterStatus)
+    && matchesQuery([
+      job.id,
+      job.status,
+      job.prompt,
+      job.final_text,
+      job.last_error,
+      job.agent_name,
+      job.agent_role,
+      job.provider,
+      job.model,
+      job.session_id,
+      job.parent_session_id,
+      job.requested_workdir,
+      job.effective_workdir,
+      ...(job.visible_paths || []),
+    ], state.queueFilterQuery));
+}
+
+function filteredTimeline(detail) {
+  const items = detail?.timeline || [];
+  return items.filter((item) => {
+    const kindMatches = state.timelineFilterKind === 'all' || item.kind === state.timelineFilterKind;
+    const queryMatches = matchesQuery([
+      item.kind,
+      item.role,
+      item.event_type,
+      item.phase,
+      item.message_id,
+      item.event_id,
+      item.text,
+      JSON.stringify(item.data || {}),
+    ], state.timelineFilterQuery);
+    return kindMatches && queryMatches;
+  });
+}
+
+function renderFilterToolbar({
+  searchId,
+  searchValue,
+  searchPlaceholder,
+  statusId,
+  statusValue,
+  statusOptions,
+  clearTarget,
+  summary,
+}) {
+  const hasActiveFilters = normalizedQuery(searchValue) || (statusValue && statusValue !== 'all');
+  return `
+    <div class="filter-toolbar">
+      <div class="filter-grid">
+        <label class="filter-field" for="${escapeHtml(searchId)}">
+          <span>Search</span>
+          <input id="${escapeHtml(searchId)}" class="filter-input" type="search" value="${escapeHtml(searchValue)}" placeholder="${escapeHtml(searchPlaceholder)}" />
+        </label>
+        <label class="filter-field" for="${escapeHtml(statusId)}">
+          <span>Status</span>
+          <select id="${escapeHtml(statusId)}" class="filter-select">
+            <option value="all">All statuses</option>
+            ${statusOptions.map((status) => `<option value="${escapeHtml(status)}"${statusValue === status ? ' selected' : ''}>${escapeHtml(status)}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div class="filter-toolbar-foot">
+        <span class="helper-text">${escapeHtml(summary)}</span>
+        ${hasActiveFilters ? `<button class="mini-button" type="button" data-clear-filter="${escapeHtml(clearTarget)}">Clear filters</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderTimelineToolbar(detail) {
+  const items = detail?.timeline || [];
+  const filtered = filteredTimeline(detail);
+  const messageCount = items.filter((item) => item.kind === 'message').length;
+  const eventCount = items.filter((item) => item.kind === 'event').length;
+  return `
+    <div class="filter-toolbar">
+      <div class="filter-grid filter-grid-timeline">
+        <label class="filter-field" for="timeline-filter-query">
+          <span>Search</span>
+          <input id="timeline-filter-query" class="filter-input" type="search" value="${escapeHtml(state.timelineFilterQuery)}" placeholder="Search text, ids, phases, or metadata." />
+        </label>
+        <label class="filter-field" for="timeline-filter-kind">
+          <span>Kind</span>
+          <select id="timeline-filter-kind" class="filter-select">
+            <option value="all"${state.timelineFilterKind === 'all' ? ' selected' : ''}>All entries</option>
+            <option value="message"${state.timelineFilterKind === 'message' ? ' selected' : ''}>Messages</option>
+            <option value="event"${state.timelineFilterKind === 'event' ? ' selected' : ''}>Events</option>
+          </select>
+        </label>
+      </div>
+      <div class="filter-toolbar-foot">
+        <span class="helper-text">${escapeHtml(`${filtered.length} visible of ${items.length} timeline entries · ${messageCount} messages · ${eventCount} events`)}</span>
+        ${(normalizedQuery(state.timelineFilterQuery) || state.timelineFilterKind !== 'all')
+          ? '<button class="mini-button" type="button" data-clear-filter="timeline">Clear filters</button>'
+          : ''}
+      </div>
+    </div>
   `;
 }
 
@@ -648,6 +794,8 @@ function renderFailureItem(item) {
 }
 
 function renderQueueView() {
+  const visibleJobs = filteredQueueJobs();
+  const statusOptions = uniqueStatuses(state.queueJobs, (job) => job.status);
   elements.queueView.innerHTML = `
     <div class="stats-grid">
       ${renderStatCard('Queued', state.overview?.queue_counters?.queued || 0, 'Jobs waiting for a worker')}
@@ -709,10 +857,20 @@ function renderQueueView() {
           <h2>Queue Jobs</h2>
           <p>Background jobs are durable file-backed records. Worker concurrency changes throughput, not the job contract.</p>
         </div>
-        <span class="${statusClass('queued')}">${escapeHtml(String(state.queueJobs.length))} visible</span>
+        <span class="${statusClass('queued')}">${escapeHtml(String(visibleJobs.length))} visible</span>
       </div>
+      ${renderFilterToolbar({
+        searchId: 'queue-filter-query',
+        searchValue: state.queueFilterQuery,
+        searchPlaceholder: 'Search ids, prompts, roles, errors, or workdirs.',
+        statusId: 'queue-filter-status',
+        statusValue: state.queueFilterStatus,
+        statusOptions,
+        clearTarget: 'queue',
+        summary: `${visibleJobs.length} visible of ${state.queueJobs.length} queue jobs`,
+      })}
       <div class="table-list">
-        ${state.queueJobs.length ? state.queueJobs.map(renderJobItem).join('') : renderEmpty('No queue jobs yet.')}
+        ${visibleJobs.length ? visibleJobs.map(renderJobItem).join('') : renderEmpty('No queue jobs match the current filters.')}
       </div>
     </section>
 
@@ -828,6 +986,7 @@ function renderSessionView() {
   let body = '';
 
   if (sessionTab === 'timeline') {
+    const visibleTimeline = filteredTimeline(detail);
     body = `
       <section class="section-card">
         <div class="section-header">
@@ -836,10 +995,11 @@ function renderSessionView() {
             <p>Messages and runtime events stay in one stream so you can see the agent output and control-plane behavior together.</p>
           </div>
         </div>
+        ${renderTimelineToolbar(detail)}
         <div class="timeline-list">
-          ${(detail.timeline || []).length
-            ? (detail.timeline || []).map(renderTimelineItem).join('')
-            : renderEmpty('No timeline entries yet.')}
+          ${visibleTimeline.length
+            ? visibleTimeline.map(renderTimelineItem).join('')
+            : renderEmpty('No timeline entries match the current filters.')}
         </div>
       </section>
     `;
@@ -1153,9 +1313,25 @@ function renderEmpty(message) {
 }
 
 function renderSidebar() {
-  elements.sessionCountBadge.textContent = String(state.sessions.length);
-  elements.sessionList.innerHTML = state.sessions.length
-    ? state.sessions.map((item) => `
+  const visibleSessions = filteredSessions();
+  const statusOptions = uniqueStatuses(state.sessions, (item) => item.status);
+  const hasActiveSessionFilters = normalizedQuery(state.sessionFilterQuery) || (state.sessionFilterStatus && state.sessionFilterStatus !== 'all');
+  elements.sessionCountBadge.textContent = hasActiveSessionFilters
+    ? `${visibleSessions.length}/${state.sessions.length}`
+    : String(state.sessions.length);
+  elements.sessionList.innerHTML = `
+    ${renderFilterToolbar({
+      searchId: 'session-filter-query',
+      searchValue: state.sessionFilterQuery,
+      searchPlaceholder: 'Search ids, roles, providers, or workdirs.',
+      statusId: 'session-filter-status',
+      statusValue: state.sessionFilterStatus,
+      statusOptions,
+      clearTarget: 'sessions',
+      summary: `${visibleSessions.length} visible of ${state.sessions.length} sessions`,
+    })}
+    ${visibleSessions.length
+      ? visibleSessions.map((item) => `
         <button class="session-list-item ${state.selectedSessionId === item.id ? 'is-active' : ''}" type="button" data-session-id="${escapeHtml(item.id)}">
           <div class="card-row">
             <span class="session-id">${escapeHtml(shortId(item.id))}</span>
@@ -1166,7 +1342,8 @@ function renderSidebar() {
           <div class="session-meta" title="${escapeHtml(item.workdir || '')}">${escapeHtml(compactPath(item.workdir || ''))}</div>
         </button>
       `).join('')
-    : renderEmpty('No sessions yet.');
+      : renderEmpty(state.sessions.length ? 'No sessions match the current filters.' : 'No sessions yet.')}
+  `;
 
   document.querySelectorAll('[data-view-button]').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.viewButton === state.currentView);
@@ -1513,7 +1690,34 @@ function render() {
   elements.sessionView.classList.toggle('is-hidden', state.currentView !== 'session');
 }
 
+function clearFilters(target) {
+  switch (target) {
+    case 'sessions':
+      state.sessionFilterQuery = '';
+      state.sessionFilterStatus = 'all';
+      renderSidebar();
+      return;
+    case 'queue':
+      state.queueFilterQuery = '';
+      state.queueFilterStatus = 'all';
+      renderQueueView();
+      return;
+    case 'timeline':
+      state.timelineFilterQuery = '';
+      state.timelineFilterKind = 'all';
+      renderSessionView();
+      return;
+    default:
+  }
+}
+
 document.addEventListener('click', (event) => {
+  const clearFilterButton = event.target.closest('[data-clear-filter]');
+  if (clearFilterButton) {
+    clearFilters(clearFilterButton.dataset.clearFilter);
+    return;
+  }
+
   const openSessionButton = event.target.closest('[data-open-session-id]');
   if (openSessionButton) {
     setSession(openSessionButton.dataset.openSessionId);
@@ -1539,6 +1743,42 @@ document.addEventListener('click', (event) => {
     state.sessionTab = tabButton.dataset.sessionTab;
     renderSessionView();
     renderActions();
+  }
+});
+
+document.addEventListener('input', (event) => {
+  switch (event.target.id) {
+    case 'session-filter-query':
+      state.sessionFilterQuery = event.target.value;
+      renderSidebar();
+      break;
+    case 'queue-filter-query':
+      state.queueFilterQuery = event.target.value;
+      renderQueueView();
+      break;
+    case 'timeline-filter-query':
+      state.timelineFilterQuery = event.target.value;
+      renderSessionView();
+      break;
+    default:
+  }
+});
+
+document.addEventListener('change', (event) => {
+  switch (event.target.id) {
+    case 'session-filter-status':
+      state.sessionFilterStatus = event.target.value;
+      renderSidebar();
+      break;
+    case 'queue-filter-status':
+      state.queueFilterStatus = event.target.value;
+      renderQueueView();
+      break;
+    case 'timeline-filter-kind':
+      state.timelineFilterKind = event.target.value;
+      renderSessionView();
+      break;
+    default:
   }
 });
 

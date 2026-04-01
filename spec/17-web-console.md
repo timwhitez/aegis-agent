@@ -83,6 +83,7 @@ Web console 解决三类问题：
 - Queue
 
 当前实现的左栏不是纯文本列表，而是品牌区 + 导航区 + session rail 三段式结构；新用户进入页面后可以先看导航，再逐步进入 session 详情。
+当 session 数量增多时，左栏还应支持纯客户端 search + status filter，让用户先缩小集合，再切换具体 session。
 
 Sessions 列表项必须展示：
 
@@ -135,6 +136,7 @@ Sessions 列表项必须展示：
 - session.failed / session.awaiting_input / session.paused / session.completed
 
 目标是让用户在一个时间轴里同时理解对话和系统行为，而不是分散到两个页面来回跳。
+当前实现额外支持 timeline search + kind filter（all/message/event），便于在长会话里快速锁定 message 或 runtime event。
 
 #### Tasks
 
@@ -185,6 +187,7 @@ Sessions 列表项必须展示：
 
 当前实现里，右侧动作区会始终保留 `Start Session` 入口，并在此基础上叠加 `Session Actions`、`Queue Job`、`Worker Pool` 三张上下文卡片。
 当前 `Session Actions` 卡片还会额外显示当前 session 的 phase、pending steer、agent identity 和 workdir 摘要，避免用户在操作前还要切回中间详情区确认上下文。
+Queue 主视图同样应支持纯客户端 search + status filter，优先服务本地控制台的高密度浏览，而不是先要求 operator 增加新的后端查询 API。
 
 ## 5. 视觉系统
 
@@ -214,6 +217,7 @@ Sessions 列表项必须展示：
 - 时间线卡片：消息与事件混合流
 - 数据表格：queue jobs、children
 - 摘要卡：session health / recovery / provider options / current focus
+- 过滤工具栏：session rail / queue jobs / timeline 的 search + filter
 - 右侧 action panel：统一提交交互
 - 左侧 session rail：支持快速扫视 status / provider / role / 最近更新时间
 - mini action chips：从 queue/children/notification 等卡片直接跳到相关 session

@@ -8,6 +8,7 @@
 当前内嵌前端已经重构为更完整的轻量控制台壳层：左侧导航与 session rail、中央工作区、右侧 action rail 同时存在，视觉上采用浅色 data-dense dashboard，而不是把实验面继续维持成裸信息页。
 当前 Web 控制台的 start / queue 表单都支持显式 `agent_name` / `agent_role`，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的 role-aware 运行。
 当前 session detail 还会把 execution / recovery / output / provider options 四类摘要直接放在顶部，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
+当前前端还加入了纯客户端的 session rail、queue jobs、timeline 检索和状态筛选；当 run 目录里会话、队列任务和事件数量上来时，可以先在浏览器里收窄集合，再进入具体 session 处理。
 
 ## 当前定位
 
@@ -55,6 +56,7 @@ export GEMINI_API_KEY=...
 - 右侧：Start / Session Actions / Queue Job / Worker Pool 四个上下文动作卡
 
 其中 session detail 会额外显示执行摘要卡、provider 选项摘要和可展开的 metadata；queue / children / queue-links 卡片则支持直接打开相关 session，方便在 parent、child 和 background job 之间跳转。
+左侧 session rail、Queue Jobs、Timeline 都支持 search + status/kind filter，不需要等后端分页或额外 API 才能先把当前视图压缩到可操作范围。
 
 ## 核心命令
 
