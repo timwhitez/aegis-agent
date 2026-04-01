@@ -5,6 +5,7 @@
 它的主目标不是做一个复杂的终端 UI，而是把最小但完整的 agent loop、provider adapter、tools、skills、hooks、session 持久化、任务系统、运行中补充输入与恢复语义组织成一个干净的 CLI 基座。它既可以做 coding agent，也可以做审计、文档、运维、整理型 agent。真正决定“它做什么”的，是 `skills/`、工作目录里的 `AGENTS.md`、以及用户给它的 prompt。
 
 在保持 CLI-first 的前提下，仓库现在也允许显式 `experimental web` 控制台：它提供本地单页前端，用于 session / task / queue / children / timeline 观测，以及 `start` / `steer` / `continue` / background queue 的低门槛交互，但不会替代默认 core CLI 叙事。
+当前内嵌前端已经重构为更完整的轻量控制台壳层：左侧导航与 session rail、中央工作区、右侧 action rail 同时存在，视觉上采用浅色 data-dense dashboard，而不是把实验面继续维持成裸信息页。
 当前 Web 控制台的 start / queue 表单都支持显式 `agent_name` / `agent_role`，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的 role-aware 运行。
 
 ## 当前定位
@@ -45,6 +46,12 @@ export GEMINI_API_KEY=...
 ```sh
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
 ```
+
+浏览器里会看到：
+
+- 左侧：固定的 Overview / Queue 导航和 session 列表
+- 中央：overview、queue、session detail 三类主工作区
+- 右侧：Start / Session Actions / Queue Job / Worker Pool 四个上下文动作卡
 
 ## 核心命令
 

@@ -64,6 +64,16 @@ function shortId(value) {
   return value.length > 18 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
 }
 
+function truncateText(value, limit = 140) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  return text.length > limit ? `${text.slice(0, limit - 1)}...` : text;
+}
+
+function sessionRoleLabel(item) {
+  return item.agent_name || item.agent_role || item.mode || 'session';
+}
+
 function statusClass(status) {
   return `status-badge status-${String(status || 'unknown').replaceAll(':', '_')}`;
 }
@@ -88,10 +98,10 @@ function renderChrome() {
     ? `${shortId(state.selectedSessionId)}${state.sessionDetail?.state?.status ? ` · ${state.sessionDetail.state.status}` : ''}`
     : 'None';
   elements.topbarMeta.innerHTML = [
-    { label: 'Session Root', value: state.meta?.session_root || 'Loading...' },
-    { label: 'Workers', value: workerSummary },
+    { label: 'Workspace Root', value: state.meta?.session_root || 'Loading...' },
+    { label: 'Worker Pool', value: workerSummary },
     { label: 'Default Provider', value: state.meta?.default_provider || 'Loading...' },
-    { label: 'Selected Session', value: selectedSummary },
+    { label: 'Active Context', value: selectedSummary },
   ].map((item) => `
       <div class="topbar-meta-item">
         <span class="topbar-meta-label">${escapeHtml(item.label)}</span>
@@ -295,8 +305,9 @@ function renderOverview() {
       <section class="section-card">
         <div class="section-header">
           <div class="section-header-copy">
-            <h2>Control Logic</h2>
-            <p>Use <span class="mono">steer</span> when the session is still running and you want to refine direction. Use <span class="mono">continue</span> when the session is waiting, paused, or failed and needs a new turn.</p>
+            <p class="eyebrow">Overview</p>
+            <h2>Operational control without leaving the durable session model.</h2>
+            <p>Use <span class="mono">steer</span> while a session is still running, and switch to <span class="mono">continue</span> once the state is paused, failed, or awaiting input.</p>
           </div>
           <span class="${statusClass('running')}">CLI-first runtime</span>
         </div>
@@ -315,15 +326,16 @@ function renderOverview() {
           </div>
           <div class="detail-pair">
             <strong>Parallel Queue Execution</strong>
-            <span>Submit multiple background jobs and scale worker count without changing the CLI core path.</span>
+            <span>Submit background jobs, scale workers, and keep the queue durable instead of inventing browser-only state.</span>
           </div>
         </div>
       </section>
       <section class="section-card">
         <div class="section-header">
           <div class="section-header-copy">
-            <h2>Quick Start</h2>
-            <p>The control panel on the right always keeps the Start Session form visible so new users do not have to search for the entry point.</p>
+            <p class="eyebrow">Control Map</p>
+            <h2>Start on the right rail, inspect in the center, keep the CLI contract intact.</h2>
+            <p>The browser shell stays subordinate to the same local files, runtime handles, and queue workers that back the CLI.</p>
           </div>
         </div>
         <div class="timeline-list">
@@ -357,6 +369,37 @@ function renderOverview() {
       ${renderStatCard('Awaiting Input', awaiting, 'Sessions paused at a durable handoff boundary')}
       ${renderStatCard('Queued Jobs', queued, 'Background jobs waiting for worker capacity')}
       ${renderStatCard('Running Jobs', processing, 'Queue jobs actively being consumed')}
+    </div>
+
+    <div class="split-grid">
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Recent Sessions</h2>
+            <p>Latest session summaries across the local root. Choose one in the left rail to open the full detail view.</p>
+          </div>
+          <span class="badge">${escapeHtml(String((overview.recent_sessions || []).length))}</span>
+        </div>
+        <div class="table-list">
+          ${(overview.recent_sessions || []).length
+            ? (overview.recent_sessions || []).slice(0, 6).map(renderSessionSnapshot).join('')
+            : renderEmpty('No sessions have been created yet.')}
+        </div>
+      </section>
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Recent Queue Jobs</h2>
+            <p>Fresh background executions with role, provider, and completion clues surfaced together.</p>
+          </div>
+          <span class="badge">${escapeHtml(String((overview.recent_jobs || []).length))}</span>
+        </div>
+        <div class="table-list">
+          ${(overview.recent_jobs || []).length
+            ? (overview.recent_jobs || []).slice(0, 6).map(renderOverviewJob).join('')
+            : renderEmpty('No queue jobs have been submitted yet.')}
+        </div>
+      </section>
     </div>
 
     <div class="split-grid">
@@ -400,6 +443,46 @@ function renderStatCard(label, value, subvalue) {
   `;
 }
 
+function renderSessionSnapshot(item) {
+  return `
+    <article class="table-item">
+      <div class="table-headline">
+        <div>
+          <div class="mono">${escapeHtml(shortId(item.id))}</div>
+          <div class="table-meta">${escapeHtml(item.provider)} · ${escapeHtml(item.model)}</div>
+        </div>
+        <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
+      </div>
+      <div class="detail-pairs">
+        <div class="detail-pair">
+          <strong>Role / Agent</strong>
+          <span>${escapeHtml(sessionRoleLabel(item))}</span>
+        </div>
+        <div class="detail-pair">
+          <strong>Phase</strong>
+          <span>${escapeHtml(item.phase || 'N/A')}</span>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderOverviewJob(job) {
+  return `
+    <article class="table-item">
+      <div class="table-headline">
+        <div>
+          <div class="mono">${escapeHtml(shortId(job.id))}</div>
+          <div class="table-meta">${escapeHtml(job.agent_name || 'default-agent')} · ${escapeHtml(job.agent_role || 'unspecified-role')}</div>
+        </div>
+        <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
+      </div>
+      <div class="feed-text">${escapeHtml(truncateText(job.final_text || job.prompt || 'No summary', 160))}</div>
+      <div class="table-meta">${escapeHtml(job.provider || 'default')} · ${escapeHtml(job.model || 'default')} · ${escapeHtml(formatDate(job.updated_at))}</div>
+    </article>
+  `;
+}
+
 function renderFeedItem(item) {
   return `
     <article class="feed-item">
@@ -408,7 +491,7 @@ function renderFeedItem(item) {
         <span class="muted">${escapeHtml(formatDate(item.time))}</span>
       </div>
       <div class="feed-text mono">${escapeHtml(item.text || item.event_type || 'event')}</div>
-      <div class="table-meta">${escapeHtml(JSON.stringify(item.data || {}, null, 2))}</div>
+      <div class="table-meta">${escapeHtml(truncateText(JSON.stringify(item.data || {}, null, 2), 240) || 'No extra metadata')}</div>
     </article>
   `;
 }
@@ -579,6 +662,7 @@ function renderSessionView() {
         ${renderMetaItem('Requested Workdir', meta.requested_workdir || meta.workdir || 'N/A')}
         ${renderMetaItem('Created', formatDate(meta.created_at))}
         ${renderMetaItem('Updated', formatDate(detail.state.updated_at))}
+        ${renderMetaItem('Agent Name', meta.agent_name || 'none')}
         ${detail.state.pause_reason ? renderMetaItem('Pause Reason', detail.state.pause_reason) : ''}
         ${detail.state.last_error ? renderMetaItem('Last Error', detail.state.last_error) : ''}
         ${renderMetaItem('Parent Session', meta.parent_session_id || 'none')}
@@ -785,7 +869,12 @@ function renderQueueLinksTab(detail) {
 }
 
 function renderEmpty(message) {
-  return `<div class="empty-state">${escapeHtml(message)}</div>`;
+  return `
+    <div class="empty-state">
+      <strong>Nothing visible yet</strong>
+      <span>${escapeHtml(message)}</span>
+    </div>
+  `;
 }
 
 function renderSidebar() {
@@ -797,8 +886,8 @@ function renderSidebar() {
             <span class="session-id">${escapeHtml(shortId(item.id))}</span>
             <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
           </div>
-          <div class="session-meta">${escapeHtml(item.provider)} · ${escapeHtml(item.model)} · ${escapeHtml(item.agent_role || item.mode || 'session')}</div>
-          <div class="session-meta">${escapeHtml(formatDate(item.updated_at))}</div>
+          <div class="session-meta">${escapeHtml(item.provider)} · ${escapeHtml(item.model)} · ${escapeHtml(sessionRoleLabel(item))}</div>
+          <div class="session-meta">${escapeHtml(item.phase || 'no-phase')} · ${escapeHtml(formatDate(item.updated_at))}</div>
         </button>
       `).join('')
     : renderEmpty('No sessions yet.');

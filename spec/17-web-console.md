@@ -54,6 +54,7 @@ Web console 解决三类问题：
 - 状态优先于文案
 - 事实优先于动画
 - 控制入口必须贴近当前对象，避免用户搞不清命令作用域
+- 当前实现额外吸收了“窄左栏应用壳 + 中央主工作区 + 独立右侧控制轨”的控制台布局语言，用更低的认知成本把 session 浏览、详情阅读和动作提交拆开
 
 ## 4. 信息架构
 
@@ -71,6 +72,7 @@ Web console 解决三类问题：
 - 当前选中 session 的短标识与状态（若存在）
 
 顶部栏属于全局状态条，不依赖用户先进入总览页才能看到这些信息。
+当前实现中，顶部栏采用轻量 dashboard header：左侧是说明性 copy，中间是 4 个事实卡片，右侧是 `New Session` / `Refresh` 主操作。
 
 ### 4.2 左侧主导航
 
@@ -79,6 +81,8 @@ Web console 解决三类问题：
 - 总览
 - Sessions
 - Queue
+
+当前实现的左栏不是纯文本列表，而是品牌区 + 导航区 + session rail 三段式结构；新用户进入页面后可以先看导航，再逐步进入 session 详情。
 
 Sessions 列表项必须展示：
 
@@ -172,6 +176,8 @@ Sessions 列表项必须展示：
 - 显示 queue submit 表单
 - 显示 worker pool 并发调节控件
 
+当前实现里，右侧动作区会始终保留 `Start Session` 入口，并在此基础上叠加 `Session Actions`、`Queue Job`、`Worker Pool` 三张上下文卡片。
+
 ## 5. 视觉系统
 
 ### 5.1 风格方向
@@ -179,6 +185,7 @@ Sessions 列表项必须展示：
 - 风格：简洁、现代、偏 operations dashboard
 - 目标气质：工程化、可追踪、低噪声
 - 不使用花哨拟物或泛 AI landing page 视觉
+- 当前外观采用浅底、柔和边框、低对比玻璃卡片与明确层级阴影，接近现代本地控制台而不是深色监控墙或营销页
 
 ### 5.2 设计系统
 
@@ -186,10 +193,11 @@ Sessions 列表项必须展示：
 
 - pattern：data-dense dashboard
 - typography：`Fira Sans` + `Fira Code`
-- accent：绿色用于正向完成与运行健康度
-- neutral：深灰蓝用于状态框架与信息层级
+- primary accent：蓝色用于主操作、导航聚焦和运行态
+- semantic success：绿色用于完成与健康状态
+- neutral：浅灰蓝用于背景、边框和信息层级
 
-为避免纯黑压迫感，页面使用“浅背景 + 深卡片 + 绿色强调”的中性工业风，而不是全黑监控墙。
+为避免纯黑压迫感，页面使用“浅背景 + 白色/浅灰卡片 + 蓝色主强调 + 语义状态色”的本地控制台风格，而不是全黑监控墙。
 
 ### 5.3 组件要求
 
@@ -198,6 +206,7 @@ Sessions 列表项必须展示：
 - 时间线卡片：消息与事件混合流
 - 数据表格：queue jobs、children
 - 右侧 action panel：统一提交交互
+- 左侧 session rail：支持快速扫视 status / provider / role / 最近更新时间
 
 ### 5.4 可访问性
 
