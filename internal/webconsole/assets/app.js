@@ -78,6 +78,95 @@ function statusClass(status) {
   return `status-badge status-${String(status || 'unknown').replaceAll(':', '_')}`;
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value ?? '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function compactPath(value, tailSegments = 4) {
+  const text = String(value ?? '').trim();
+  if (!text) return 'N/A';
+  const normalized = text.replaceAll('\\', '/');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= tailSegments) return normalized;
+  const prefix = normalized.startsWith('/') ? '/' : '';
+  return `${prefix}.../${parts.slice(-tailSegments).join('/')}`;
+}
+
+function normalizeTokenValues(values) {
+  return (values || [])
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+}
+
+function renderTokenRow(values, extraClass = '') {
+  const items = normalizeTokenValues(values);
+  if (!items.length) return '';
+  return `
+    <div class="token-row ${escapeHtml(extraClass)}">
+      ${items.map((item) => `<span class="token-pill">${escapeHtml(item)}</span>`).join('')}
+    </div>
+  `;
+}
+
+function summarizeDataFields(data, limit = 4) {
+  if (!data || typeof data !== 'object') return [];
+  const summary = [];
+  for (const [key, value] of Object.entries(data)) {
+    if (value === null || value === undefined || value === '') continue;
+    let text = '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      text = String(value);
+    } else if (Array.isArray(value)) {
+      text = `${value.length} item${value.length === 1 ? '' : 's'}`;
+    } else {
+      continue;
+    }
+    summary.push(`${key}: ${truncateText(text, 48)}`);
+    if (summary.length >= limit) break;
+  }
+  return summary;
+}
+
+function summarizeProviderOptions(options) {
+  if (!options || typeof options !== 'object') return [];
+  const chips = [];
+  if (options.reasoning_effort) chips.push(`reasoning=${options.reasoning_effort}`);
+  if (options.text_verbosity) chips.push(`verbosity=${options.text_verbosity}`);
+  if (options.max_output_tokens) chips.push(`max_tokens=${options.max_output_tokens}`);
+  if (options.thinking_budget) chips.push(`thinking=${options.thinking_budget}`);
+  if (options.retry_policy?.max_attempts) chips.push(`retry=${options.retry_policy.max_attempts} attempts`);
+  if (options.store !== undefined && options.store !== null) chips.push(`store=${String(Boolean(options.store))}`);
+  return chips;
+}
+
+function renderMiniActions(actions) {
+  const items = (actions || []).filter((item) => item && item.sessionId && item.label);
+  if (!items.length) return '';
+  return `
+    <div class="mini-actions">
+      ${items.map((item) => `
+        <button class="mini-button" type="button" data-open-session-id="${escapeHtml(item.sessionId)}">
+          ${escapeHtml(item.label)}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderJsonDetails(summary, payload) {
+  if (!payload || typeof payload !== 'object' || Object.keys(payload).length === 0) return '';
+  return `
+    <details class="details-block">
+      <summary>${escapeHtml(summary)}</summary>
+      <pre class="details-code">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+    </details>
+  `;
+}
+
 function showToast(message, type = 'info') {
   const id = `toast-${++state.toastCounter}`;
   const node = document.createElement('div');
@@ -95,7 +184,11 @@ function showToast(message, type = 'info') {
 function renderChrome() {
   const workerSummary = `${String(state.workers?.desired_count ?? 0)} desired / ${String(state.workers?.active_count ?? 0)} active`;
   const selectedSummary = state.selectedSessionId
-    ? `${shortId(state.selectedSessionId)}${state.sessionDetail?.state?.status ? ` · ${state.sessionDetail.state.status}` : ''}`
+    ? [
+      shortId(state.selectedSessionId),
+      state.sessionDetail?.state?.status || '',
+      state.sessionDetail ? sessionRoleLabel(state.sessionDetail.metadata || {}) : '',
+    ].filter(Boolean).join(' · ')
     : 'None';
   elements.topbarMeta.innerHTML = [
     { label: 'Workspace Root', value: state.meta?.session_root || 'Loading...' },
@@ -329,6 +422,7 @@ function renderOverview() {
             <span>Submit background jobs, scale workers, and keep the queue durable instead of inventing browser-only state.</span>
           </div>
         </div>
+        ${renderTokenRow((state.meta?.capabilities || []).map((capability) => capability.replaceAll('_', ' ')), 'capability-row')}
       </section>
       <section class="section-card">
         <div class="section-header">
@@ -360,6 +454,34 @@ function renderOverview() {
             </div>
             <div class="timeline-text">Push child work or unattended jobs into the background queue and scale workers when throughput matters.</div>
           </div>
+        </div>
+        <div class="context-panel">
+          <div class="context-panel-head">
+            <strong>Current Focus</strong>
+            <span class="muted">${state.sessionDetail ? 'Selection-aware shell' : 'Choose a session to inspect details'}</span>
+          </div>
+          ${state.sessionDetail ? `
+            <div class="context-grid">
+              <div class="context-stat">
+                <span class="context-label">Session</span>
+                <span class="mono">${escapeHtml(shortId(state.sessionDetail.metadata?.id || state.selectedSessionId))}</span>
+              </div>
+              <div class="context-stat">
+                <span class="context-label">Status</span>
+                <span>${escapeHtml(state.sessionDetail.state?.status || 'unknown')}</span>
+              </div>
+              <div class="context-stat">
+                <span class="context-label">Phase</span>
+                <span>${escapeHtml(state.sessionDetail.state?.phase || 'no-phase')}</span>
+              </div>
+              <div class="context-stat">
+                <span class="context-label">Workdir</span>
+                <span title="${escapeHtml(state.sessionDetail.metadata?.workdir || '')}">${escapeHtml(compactPath(state.sessionDetail.metadata?.workdir || ''))}</span>
+              </div>
+            </div>
+          ` : `
+            <div class="timeline-text">The left rail remains the fastest way to jump between durable sessions while keeping the same runtime contract underneath.</div>
+          `}
         </div>
       </section>
     </div>
@@ -445,7 +567,7 @@ function renderStatCard(label, value, subvalue) {
 
 function renderSessionSnapshot(item) {
   return `
-    <article class="table-item">
+    <button class="table-item table-item-actionable" type="button" data-open-session-id="${escapeHtml(item.id)}">
       <div class="table-headline">
         <div>
           <div class="mono">${escapeHtml(shortId(item.id))}</div>
@@ -463,7 +585,11 @@ function renderSessionSnapshot(item) {
           <span>${escapeHtml(item.phase || 'N/A')}</span>
         </div>
       </div>
-    </article>
+      <div class="table-footer">
+        <span class="table-meta" title="${escapeHtml(item.workdir || '')}">${escapeHtml(compactPath(item.workdir || ''))}</span>
+        <span class="table-link">Open session</span>
+      </div>
+    </button>
   `;
 }
 
@@ -479,6 +605,10 @@ function renderOverviewJob(job) {
       </div>
       <div class="feed-text">${escapeHtml(truncateText(job.final_text || job.prompt || 'No summary', 160))}</div>
       <div class="table-meta">${escapeHtml(job.provider || 'default')} · ${escapeHtml(job.model || 'default')} · ${escapeHtml(formatDate(job.updated_at))}</div>
+      ${renderMiniActions([
+        { sessionId: job.session_id, label: 'Open child session' },
+        { sessionId: job.parent_session_id, label: 'Open parent' },
+      ])}
     </article>
   `;
 }
@@ -491,12 +621,16 @@ function renderFeedItem(item) {
         <span class="muted">${escapeHtml(formatDate(item.time))}</span>
       </div>
       <div class="feed-text mono">${escapeHtml(item.text || item.event_type || 'event')}</div>
+      ${renderTokenRow(summarizeDataFields(item.data), 'metadata-row')}
       <div class="table-meta">${escapeHtml(truncateText(JSON.stringify(item.data || {}, null, 2), 240) || 'No extra metadata')}</div>
     </article>
   `;
 }
 
 function renderFailureItem(item) {
+  const openActions = item.kind === 'session'
+    ? [{ sessionId: item.id, label: 'Open failed session' }]
+    : [];
   return `
     <article class="failure-item">
       <div class="feed-header">
@@ -505,6 +639,7 @@ function renderFailureItem(item) {
       </div>
       <div class="mono">${escapeHtml(item.id)}</div>
       <div class="feed-text">${escapeHtml(item.message || 'No error summary')}</div>
+      ${renderMiniActions(openActions)}
     </article>
   `;
 }
@@ -516,6 +651,53 @@ function renderQueueView() {
       ${renderStatCard('Running', state.overview?.queue_counters?.running || 0, 'Jobs in the worker pipeline')}
       ${renderStatCard('Completed', state.overview?.queue_counters?.completed || 0, 'Jobs finished successfully')}
       ${renderStatCard('Failed', state.overview?.queue_counters?.failed || 0, 'Jobs that need inspection or rerun')}
+    </div>
+
+    <div class="hero-grid">
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <p class="eyebrow">Queue Overview</p>
+            <h2>Background jobs stay durable, role-aware, and cross-linked to their child sessions.</h2>
+            <p>Use the right rail to submit unattended work, then inspect queue state, worker capacity, and child-session outcomes from one place.</p>
+          </div>
+          <span class="${statusClass('queued')}">${escapeHtml(String(state.queueJobs.length))} jobs</span>
+        </div>
+        <div class="context-grid">
+          <div class="context-stat">
+            <span class="context-label">Desired Workers</span>
+            <span>${escapeHtml(String(state.workers?.desired_count ?? 0))}</span>
+          </div>
+          <div class="context-stat">
+            <span class="context-label">Active Workers</span>
+            <span>${escapeHtml(String(state.workers?.active_count ?? 0))}</span>
+          </div>
+          <div class="context-stat">
+            <span class="context-label">Poll Interval</span>
+            <span>${escapeHtml(String(state.workers?.poll_interval_ms ?? 0))} ms</span>
+          </div>
+          <div class="context-stat">
+            <span class="context-label">Recent Child Sessions</span>
+            <span>${escapeHtml(String((state.queueJobs || []).filter((job) => job.session_id).length))}</span>
+          </div>
+        </div>
+      </section>
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <p class="eyebrow">Job Contract</p>
+            <h2>Worker count affects throughput only.</h2>
+            <p>The queue remains file-backed: prompt, parent linkage, requested workdir, role hints, and final outcome all stay durable.</p>
+          </div>
+        </div>
+        ${renderTokenRow([
+          'queue submit',
+          'parent linkage',
+          'child session',
+          'worker pool',
+          'durable notification',
+        ], 'capability-row')}
+      </section>
     </div>
 
     <section class="section-card">
@@ -548,12 +730,15 @@ function renderQueueView() {
 }
 
 function renderJobItem(job) {
+  const summary = firstNonEmpty(job.final_text, job.last_error, job.prompt, 'No summary');
+  const workdir = firstNonEmpty(job.effective_workdir, job.requested_workdir, '');
+  const pathTokens = (job.visible_paths || []).slice(0, 4).map((path) => compactPath(path, 3));
   return `
     <article class="table-item">
       <div class="table-headline">
         <div>
-          <div class="mono">${escapeHtml(job.id)}</div>
-          <div class="table-meta">${escapeHtml(job.agent_name || 'default-agent')} · ${escapeHtml(job.agent_role || 'unspecified-role')}</div>
+          <div class="mono">${escapeHtml(shortId(job.id))}</div>
+          <div class="table-meta">${escapeHtml(job.agent_name || 'default-agent')} · ${escapeHtml(job.agent_role || 'unspecified-role')} · ${escapeHtml(job.mode || 'exec')}</div>
         </div>
         <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
       </div>
@@ -575,7 +760,13 @@ function renderJobItem(job) {
           <span>${escapeHtml(formatDate(job.updated_at))}</span>
         </div>
       </div>
-      ${job.last_error ? `<div class="feed-text">${escapeHtml(job.last_error)}</div>` : ''}
+      <div class="feed-text">${escapeHtml(truncateText(summary, 240))}</div>
+      ${workdir ? `<div class="table-meta" title="${escapeHtml(workdir)}">workdir: ${escapeHtml(compactPath(workdir))}</div>` : ''}
+      ${renderTokenRow(pathTokens, 'metadata-row')}
+      ${renderMiniActions([
+        { sessionId: job.session_id, label: 'Open child session' },
+        { sessionId: job.parent_session_id, label: 'Open parent session' },
+      ])}
     </article>
   `;
 }
@@ -609,6 +800,17 @@ function renderWorkerItem(worker) {
   `;
 }
 
+function renderSpotlightCard(eyebrow, title, copy, tokens = []) {
+  return `
+    <article class="spotlight-card">
+      <span class="spotlight-eyebrow">${escapeHtml(eyebrow)}</span>
+      <strong class="spotlight-title">${escapeHtml(title)}</strong>
+      <p class="spotlight-copy">${escapeHtml(copy)}</p>
+      ${renderTokenRow(tokens)}
+    </article>
+  `;
+}
+
 function renderSessionView() {
   const detail = state.sessionDetail;
   if (!detail) {
@@ -617,6 +819,8 @@ function renderSessionView() {
   }
 
   const meta = detail.metadata;
+  const runtimeOptions = summarizeProviderOptions(meta.provider_options);
+  const lastExcerpt = firstNonEmpty(detail.state.last_assistant_excerpt, detail.state.last_error, detail.state.incomplete_reason, 'No recent assistant excerpt captured yet.');
   const sessionTab = state.sessionTab;
   let body = '';
 
@@ -657,15 +861,52 @@ function renderSessionView() {
           ${detail.active_handle ? `<span class="${statusClass('running')}">owned by web console</span>` : ''}
         </div>
       </div>
+      <div class="spotlight-grid">
+        ${renderSpotlightCard(
+          'Execution',
+          `Turn ${detail.state.turn || 0} · ${detail.state.phase || 'no-phase'}`,
+          firstNonEmpty(detail.state.current_task, 'No current task recorded yet.'),
+          [
+            meta.mode || 'run',
+            meta.completion_policy || 'interactive',
+            detail.active_handle ? 'owned by web console' : 'durable session only',
+          ],
+        )}
+        ${renderSpotlightCard(
+          'Recovery',
+          `${detail.state.status || 'unknown'} · pending steer ${detail.state.pending_steer_count || 0}`,
+          firstNonEmpty(detail.state.pause_reason, detail.state.incomplete_reason, detail.state.last_error, 'No recovery warnings are currently recorded.'),
+          [
+            meta.agent_role || 'no-role',
+            meta.agent_name || 'anonymous-agent',
+            meta.queue_job_id ? `queue=${shortId(meta.queue_job_id)}` : '',
+          ],
+        )}
+        ${renderSpotlightCard(
+          'Output',
+          'Last assistant excerpt',
+          truncateText(lastExcerpt, 200) || 'No assistant output yet.',
+          (detail.state.loaded_skills || []).slice(0, 4).map((skill) => `skill:${skill}`),
+        )}
+        ${renderSpotlightCard(
+          'Provider Options',
+          `${meta.provider || 'default'} · ${meta.model || 'default'}`,
+          firstNonEmpty(meta.requested_workdir, meta.workdir, 'No workdir recorded.'),
+          runtimeOptions.length ? runtimeOptions : [meta.isolation?.mode || 'isolation=off'],
+        )}
+      </div>
       <div class="meta-grid">
         ${renderMetaItem('Workdir', meta.workdir)}
         ${renderMetaItem('Requested Workdir', meta.requested_workdir || meta.workdir || 'N/A')}
         ${renderMetaItem('Created', formatDate(meta.created_at))}
         ${renderMetaItem('Updated', formatDate(detail.state.updated_at))}
         ${renderMetaItem('Agent Name', meta.agent_name || 'none')}
+        ${renderMetaItem('Completion Policy', meta.completion_policy || 'interactive')}
+        ${renderMetaItem('Turn', String(detail.state.turn || 0))}
         ${detail.state.pause_reason ? renderMetaItem('Pause Reason', detail.state.pause_reason) : ''}
         ${detail.state.last_error ? renderMetaItem('Last Error', detail.state.last_error) : ''}
         ${renderMetaItem('Parent Session', meta.parent_session_id || 'none')}
+        ${renderMetaItem('Root Session', meta.root_session_id || meta.id)}
         ${renderMetaItem('Queue Job', meta.queue_job_id || 'none')}
         ${renderMetaItem('Agent Role', meta.agent_role || 'none')}
         ${renderMetaItem('Isolation', meta.isolation?.mode || 'off')}
@@ -695,6 +936,10 @@ function renderTabButton(value, label) {
 }
 
 function renderTimelineItem(item) {
+  const summaryTokens = [
+    item.phase ? `phase:${item.phase}` : '',
+    ...summarizeDataFields(item.data),
+  ];
   return `
     <article class="timeline-item">
       <div class="timeline-header">
@@ -704,9 +949,9 @@ function renderTimelineItem(item) {
         </div>
         <span class="muted">${escapeHtml(formatDate(item.time))}</span>
       </div>
-      ${item.phase ? `<div class="table-meta">phase: ${escapeHtml(item.phase)}</div>` : ''}
       <div class="timeline-text">${escapeHtml(item.text || JSON.stringify(item.data || {}, null, 2))}</div>
-      ${item.data ? `<div class="table-meta">${escapeHtml(JSON.stringify(item.data, null, 2))}</div>` : ''}
+      ${renderTokenRow(summaryTokens, 'metadata-row')}
+      ${renderJsonDetails('View raw metadata', item.data)}
     </article>
   `;
 }
@@ -737,6 +982,7 @@ function renderTasksTab(board) {
                     <div>${escapeHtml(item.content)}</div>
                     <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
                   </div>
+                  ${renderTokenRow([item.priority || 'normal'])}
                   <div class="table-meta">${escapeHtml(item.priority || 'normal')} · ${escapeHtml(formatDate(item.updated_at))}</div>
                 </article>
               `).join('')
@@ -761,10 +1007,17 @@ function renderTasksTab(board) {
                 </div>
                 <div class="timeline-list">
                   ${groups[group].map((task) => `
-                    <div class="detail-pair">
+                    <article class="detail-pair">
                       <strong>${escapeHtml(task.id)} · ${escapeHtml(task.subject)}</strong>
                       <span>${escapeHtml(task.description || 'No description')}</span>
-                    </div>
+                      ${renderTokenRow([
+                        task.priority || 'normal',
+                        task.owner ? `owner:${task.owner}` : '',
+                        task.blocked_by?.length ? `blocked_by:${task.blocked_by.length}` : '',
+                        task.blocks?.length ? `blocks:${task.blocks.length}` : '',
+                        ...(task.labels || []).map((label) => `label:${label}`),
+                      ])}
+                    </article>
                   `).join('')}
                 </div>
               </article>
@@ -790,11 +1043,17 @@ function renderChildrenTab(children) {
             ? children.sessions.map((item) => `
                 <article class="table-item">
                   <div class="table-headline">
-                    <div class="mono">${escapeHtml(item.id)}</div>
+                    <div class="mono">${escapeHtml(shortId(item.id))}</div>
                     <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
                   </div>
                   <div class="table-meta">${escapeHtml(item.agent_role || 'no-role')} · ${escapeHtml(item.provider)} · ${escapeHtml(item.model)}</div>
-                  <div class="feed-text">${escapeHtml(item.workdir || 'no-workdir')}</div>
+                  <div class="feed-text" title="${escapeHtml(item.workdir || '')}">${escapeHtml(compactPath(item.workdir || 'no-workdir'))}</div>
+                  ${renderTokenRow([
+                    item.phase || 'no-phase',
+                    item.depth ? `depth:${item.depth}` : '',
+                    item.queue_job_id ? `queue:${shortId(item.queue_job_id)}` : '',
+                  ])}
+                  ${renderMiniActions([{ sessionId: item.id, label: 'Open child session' }])}
                 </article>
               `).join('')
             : renderEmpty('No child sessions for this parent session.')}
@@ -832,11 +1091,20 @@ function renderQueueLinksTab(detail) {
             ? detail.background_notifications.map((item) => `
                 <article class="notification-item">
                   <div class="table-headline">
-                    <div class="mono">${escapeHtml(item.queue_job_id || item.id)}</div>
+                    <div class="mono">${escapeHtml(shortId(item.queue_job_id || item.id))}</div>
                     <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
                   </div>
                   <div class="timeline-text">${escapeHtml(item.final_text || item.last_error || 'No summary')}</div>
                   <div class="table-meta">${escapeHtml(item.agent_role || 'no-role')} · ${escapeHtml(formatDate(item.created_at))}</div>
+                  ${renderTokenRow([
+                    item.agent_name || '',
+                    item.delivery_status ? `delivery:${item.delivery_status}` : '',
+                    item.session_status ? `session:${item.session_status}` : '',
+                  ])}
+                  ${renderTokenRow((item.visible_paths || []).slice(0, 4).map((path) => compactPath(path, 3)), 'metadata-row')}
+                  ${renderMiniActions([
+                    { sessionId: item.session_id, label: 'Open child session' },
+                  ])}
                 </article>
               `).join('')
             : renderEmpty('No background notifications have been written yet.')}
@@ -854,11 +1122,15 @@ function renderQueueLinksTab(detail) {
             ? detail.steer_requests.map((item) => `
                 <article class="notification-item">
                   <div class="table-headline">
-                    <div class="mono">${escapeHtml(item.id)}</div>
+                    <div class="mono">${escapeHtml(shortId(item.id))}</div>
                     <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
                   </div>
                   <div class="timeline-text">${escapeHtml(item.text || '')}</div>
-                  <div class="table-meta">${escapeHtml(item.source || 'unknown')} · interrupt=${escapeHtml(String(Boolean(item.interrupt)))}</div>
+                  ${renderTokenRow([
+                    item.source || 'unknown',
+                    `interrupt=${String(Boolean(item.interrupt))}`,
+                    formatDate(item.created_at),
+                  ])}
                 </article>
               `).join('')
             : renderEmpty('No steer requests have been queued for this session.')}
@@ -888,6 +1160,7 @@ function renderSidebar() {
           </div>
           <div class="session-meta">${escapeHtml(item.provider)} · ${escapeHtml(item.model)} · ${escapeHtml(sessionRoleLabel(item))}</div>
           <div class="session-meta">${escapeHtml(item.phase || 'no-phase')} · ${escapeHtml(formatDate(item.updated_at))}</div>
+          <div class="session-meta" title="${escapeHtml(item.workdir || '')}">${escapeHtml(compactPath(item.workdir || ''))}</div>
         </button>
       `).join('')
     : renderEmpty('No sessions yet.');
@@ -928,6 +1201,30 @@ function sessionActionTemplate() {
         : canContinue
           ? 'Use continue to resume from the durable session state.'
           : 'This session is not currently controllable from the browser.'}</p>
+    </div>
+    <div class="context-panel">
+      <div class="context-panel-head">
+        <strong>${escapeHtml(shortId(state.sessionDetail.metadata?.id || state.selectedSessionId))}</strong>
+        <span class="${statusClass(status)}">${escapeHtml(status)}</span>
+      </div>
+      <div class="context-grid">
+        <div class="context-stat">
+          <span class="context-label">Phase</span>
+          <span>${escapeHtml(state.sessionDetail.state?.phase || 'no-phase')}</span>
+        </div>
+        <div class="context-stat">
+          <span class="context-label">Pending Steer</span>
+          <span>${escapeHtml(String(state.sessionDetail.state?.pending_steer_count || 0))}</span>
+        </div>
+        <div class="context-stat">
+          <span class="context-label">Agent</span>
+          <span>${escapeHtml(sessionRoleLabel(state.sessionDetail.metadata || {}))}</span>
+        </div>
+        <div class="context-stat">
+          <span class="context-label">Workdir</span>
+          <span title="${escapeHtml(state.sessionDetail.metadata?.workdir || '')}">${escapeHtml(compactPath(state.sessionDetail.metadata?.workdir || ''))}</span>
+        </div>
+      </div>
     </div>
     ${canSteer ? `
       <form id="steer-form" class="form-grid">
@@ -1214,6 +1511,13 @@ function render() {
 }
 
 document.addEventListener('click', (event) => {
+  const openSessionButton = event.target.closest('[data-open-session-id]');
+  if (openSessionButton) {
+    setSession(openSessionButton.dataset.openSessionId);
+    refreshSelectedSession();
+    return;
+  }
+
   const sessionButton = event.target.closest('[data-session-id]');
   if (sessionButton) {
     setSession(sessionButton.dataset.sessionId);
@@ -1237,6 +1541,7 @@ document.addEventListener('click', (event) => {
 
 elements.refreshButton.addEventListener('click', () => refreshAll());
 elements.openStartButton.addEventListener('click', () => {
+  setView('overview');
   window.scrollTo({ top: 0, behavior: 'smooth' });
   document.getElementById('start-prompt')?.focus();
 });

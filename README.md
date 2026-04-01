@@ -7,6 +7,7 @@
 在保持 CLI-first 的前提下，仓库现在也允许显式 `experimental web` 控制台：它提供本地单页前端，用于 session / task / queue / children / timeline 观测，以及 `start` / `steer` / `continue` / background queue 的低门槛交互，但不会替代默认 core CLI 叙事。
 当前内嵌前端已经重构为更完整的轻量控制台壳层：左侧导航与 session rail、中央工作区、右侧 action rail 同时存在，视觉上采用浅色 data-dense dashboard，而不是把实验面继续维持成裸信息页。
 当前 Web 控制台的 start / queue 表单都支持显式 `agent_name` / `agent_role`，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的 role-aware 运行。
+当前 session detail 还会把 execution / recovery / output / provider options 四类摘要直接放在顶部，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
 
 ## 当前定位
 
@@ -52,6 +53,8 @@ export GEMINI_API_KEY=...
 - 左侧：固定的 Overview / Queue 导航和 session 列表
 - 中央：overview、queue、session detail 三类主工作区
 - 右侧：Start / Session Actions / Queue Job / Worker Pool 四个上下文动作卡
+
+其中 session detail 会额外显示执行摘要卡、provider 选项摘要和可展开的 metadata；queue / children / queue-links 卡片则支持直接打开相关 session，方便在 parent、child 和 background job 之间跳转。
 
 ## 核心命令
 

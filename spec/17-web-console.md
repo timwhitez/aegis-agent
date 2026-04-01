@@ -91,6 +91,7 @@ Sessions 列表项必须展示：
 - provider / model
 - 最近更新时间
 - agent role / agent name（若存在）
+- workdir 摘要，方便在多工作目录场景里快速分辨 session 上下文
 
 ### 4.3 总览页
 
@@ -114,6 +115,9 @@ Sessions 列表项必须展示：
   - workdir
   - created / updated
   - isolation / parent / root / queue job 关联
+- 顶部摘要带
+  - execution / recovery / output / provider options 四类摘要卡
+  - 用于快速暴露当前 turn、pending steer、loaded skills、last assistant excerpt、provider option / retry 线索
 - 主标签页
   - Timeline
   - Tasks
@@ -148,6 +152,7 @@ Sessions 列表项必须展示：
 - child queue jobs
 - agent role
 - final text / last error 摘要
+- 能从 child session / child queue job 卡片直接跳转到相关 session
 
 #### Queue Links
 
@@ -155,6 +160,8 @@ Sessions 列表项必须展示：
 
 - 当前 session 关联的 queue job
 - background notification 回流状态
+- steer 请求与 notification 卡片里的关键 metadata
+- 能从 background notification 直接打开对应 child session
 
 ### 4.5 右侧动作区
 
@@ -177,6 +184,7 @@ Sessions 列表项必须展示：
 - 显示 worker pool 并发调节控件
 
 当前实现里，右侧动作区会始终保留 `Start Session` 入口，并在此基础上叠加 `Session Actions`、`Queue Job`、`Worker Pool` 三张上下文卡片。
+当前 `Session Actions` 卡片还会额外显示当前 session 的 phase、pending steer、agent identity 和 workdir 摘要，避免用户在操作前还要切回中间详情区确认上下文。
 
 ## 5. 视觉系统
 
@@ -205,8 +213,10 @@ Sessions 列表项必须展示：
 - KPI 卡片：概览计数
 - 时间线卡片：消息与事件混合流
 - 数据表格：queue jobs、children
+- 摘要卡：session health / recovery / provider options / current focus
 - 右侧 action panel：统一提交交互
 - 左侧 session rail：支持快速扫视 status / provider / role / 最近更新时间
+- mini action chips：从 queue/children/notification 等卡片直接跳到相关 session
 
 ### 5.4 可访问性
 
