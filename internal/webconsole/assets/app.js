@@ -71,7 +71,10 @@ function truncateText(value, limit = 140) {
 }
 
 function sessionRoleLabel(item) {
-  return item.agent_name || item.agent_role || item.mode || 'session';
+  const name = String(item?.agent_name || '').trim();
+  const role = String(item?.agent_role || '').trim();
+  if (name && role) return `${name} · ${role}`;
+  return name || role || item.mode || 'session';
 }
 
 function statusClass(status) {
