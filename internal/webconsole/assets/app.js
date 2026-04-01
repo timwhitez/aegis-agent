@@ -5,8 +5,10 @@ const state = {
   sessionDetail: null,
   workers: null,
   queueJobs: [],
+  queueJobDetail: null,
   currentView: 'overview',
   selectedSessionId: '',
+  selectedQueueJobId: '',
   sessionTab: 'timeline',
   providers: [],
   refreshing: false,
@@ -153,12 +155,17 @@ function summarizeProviderOptions(options) {
 }
 
 function renderMiniActions(actions) {
-  const items = (actions || []).filter((item) => item && item.sessionId && item.label);
+  const items = (actions || []).filter((item) => item && (item.sessionId || item.queueJobId) && item.label);
   if (!items.length) return '';
   return `
     <div class="mini-actions">
       ${items.map((item) => `
-        <button class="mini-button" type="button" data-open-session-id="${escapeHtml(item.sessionId)}">
+        <button
+          class="mini-button"
+          type="button"
+          ${item.sessionId ? `data-open-session-id="${escapeHtml(item.sessionId)}"` : ''}
+          ${item.queueJobId ? `data-open-queue-job-id="${escapeHtml(item.queueJobId)}"` : ''}
+        >
           ${escapeHtml(item.label)}
         </button>
       `).join('')}
@@ -433,6 +440,12 @@ function setSession(sessionId) {
   render();
 }
 
+function setQueueJob(jobId) {
+  state.selectedQueueJobId = jobId;
+  state.currentView = 'queue';
+  render();
+}
+
 async function refreshAll() {
   if (state.refreshing) return;
   state.refreshing = true;
@@ -453,11 +466,27 @@ async function refreshAll() {
     state.queueJobs = Array.isArray(queueJobs) ? queueJobs : [];
     state.providers = meta.providers || [];
 
+    if (!state.queueJobs.length) {
+      state.selectedQueueJobId = '';
+      state.queueJobDetail = null;
+    } else if (!state.selectedQueueJobId || !state.queueJobs.some((job) => job.id === state.selectedQueueJobId)) {
+      state.selectedQueueJobId = state.queueJobs[0].id;
+    }
+
     if (state.selectedSessionId) {
       try {
         state.sessionDetail = await fetchJSON(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}?limit=48`);
       } catch (error) {
         state.sessionDetail = null;
+        showToast(error.message, 'error');
+      }
+    }
+
+    if (state.selectedQueueJobId) {
+      try {
+        state.queueJobDetail = await fetchJSON(`/api/queue/jobs/${encodeURIComponent(state.selectedQueueJobId)}`);
+      } catch (error) {
+        state.queueJobDetail = null;
         showToast(error.message, 'error');
       }
     }
@@ -475,6 +504,16 @@ async function refreshSelectedSession() {
   if (!state.selectedSessionId) return;
   try {
     state.sessionDetail = await fetchJSON(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}?limit=48`);
+    render();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function refreshSelectedQueueJob() {
+  if (!state.selectedQueueJobId) return;
+  try {
+    state.queueJobDetail = await fetchJSON(`/api/queue/jobs/${encodeURIComponent(state.selectedQueueJobId)}`);
     render();
   } catch (error) {
     showToast(error.message, 'error');
@@ -789,7 +828,7 @@ function renderSessionSnapshot(item) {
 
 function renderOverviewJob(job) {
   return `
-    <article class="table-item">
+    <article class="table-item table-item-actionable ${state.selectedQueueJobId === job.id ? 'is-selected' : ''}" data-open-queue-job-id="${escapeHtml(job.id)}">
       <div class="table-headline">
         <div>
           <div class="mono">${escapeHtml(shortId(job.id))}</div>
@@ -799,6 +838,9 @@ function renderOverviewJob(job) {
       </div>
       <div class="feed-text">${escapeHtml(truncateText(job.final_text || job.prompt || 'No summary', 160))}</div>
       <div class="table-meta">${escapeHtml(job.provider || 'default')} · ${escapeHtml(job.model || 'default')} · ${escapeHtml(formatDate(job.updated_at))}</div>
+      <div class="table-footer">
+        <span class="table-link">Open queue detail</span>
+      </div>
       ${renderMiniActions([
         { sessionId: job.session_id, label: 'Open child session' },
         { sessionId: job.parent_session_id, label: 'Open parent' },
@@ -817,6 +859,7 @@ function renderFeedItem(item) {
       <div class="feed-text mono">${escapeHtml(item.text || item.event_type || 'event')}</div>
       ${renderTokenRow(summarizeDataFields(item.data), 'metadata-row')}
       <div class="table-meta">${escapeHtml(truncateText(JSON.stringify(item.data || {}, null, 2), 240) || 'No extra metadata')}</div>
+      ${item.kind === 'queue_job' ? renderMiniActions([{ queueJobId: item.text, label: 'Open queue detail' }]) : ''}
     </article>
   `;
 }
@@ -824,7 +867,9 @@ function renderFeedItem(item) {
 function renderFailureItem(item) {
   const openActions = item.kind === 'session'
     ? [{ sessionId: item.id, label: 'Open failed session' }]
-    : [];
+    : item.kind === 'queue_job'
+      ? [{ queueJobId: item.id, label: 'Open failed job' }]
+      : [];
   return `
     <article class="failure-item">
       <div class="feed-header">
@@ -919,8 +964,11 @@ function renderQueueView() {
         activeStatusLabel: 'All jobs',
         summary: `${visibleJobs.length} visible of ${state.queueJobs.length} queue jobs`,
       })}
-      <div class="table-list">
-        ${visibleJobs.length ? visibleJobs.map(renderJobItem).join('') : renderEmpty('No queue jobs match the current filters.')}
+      <div class="queue-workspace">
+        <div class="table-list">
+          ${visibleJobs.length ? visibleJobs.map(renderJobItem).join('') : renderEmpty('No queue jobs match the current filters.')}
+        </div>
+        ${renderQueueJobDetail()}
       </div>
     </section>
 
@@ -945,7 +993,7 @@ function renderJobItem(job) {
   const workdir = firstNonEmpty(job.effective_workdir, job.requested_workdir, '');
   const pathTokens = (job.visible_paths || []).slice(0, 4).map((path) => compactPath(path, 3));
   return `
-    <article class="table-item">
+    <article class="table-item table-item-actionable ${state.selectedQueueJobId === job.id ? 'is-selected' : ''}" data-open-queue-job-id="${escapeHtml(job.id)}">
       <div class="table-headline">
         <div>
           <div class="mono">${escapeHtml(shortId(job.id))}</div>
@@ -974,11 +1022,93 @@ function renderJobItem(job) {
       <div class="feed-text">${escapeHtml(truncateText(summary, 240))}</div>
       ${workdir ? `<div class="table-meta" title="${escapeHtml(workdir)}">workdir: ${escapeHtml(compactPath(workdir))}</div>` : ''}
       ${renderTokenRow(pathTokens, 'metadata-row')}
+      <div class="table-footer">
+        <span class="table-link">Open queue detail</span>
+      </div>
       ${renderMiniActions([
         { sessionId: job.session_id, label: 'Open child session' },
         { sessionId: job.parent_session_id, label: 'Open parent session' },
       ])}
     </article>
+  `;
+}
+
+function renderQueueJobDetail() {
+  const job = state.queueJobDetail;
+  if (!job) {
+    return `
+      <aside id="queue-job-detail" class="section-card queue-detail-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Queue Detail</h2>
+            <p>Select a queue job to inspect the full durable payload, workdir, and session linkage.</p>
+          </div>
+        </div>
+        ${renderEmpty('No queue job selected.')}
+      </aside>
+    `;
+  }
+
+  return `
+    <aside id="queue-job-detail" class="section-card queue-detail-card">
+      <div class="section-header">
+        <div class="section-header-copy">
+          <p class="eyebrow">Selected Queue Job</p>
+          <h2>${escapeHtml(shortId(job.id))}</h2>
+          <p>${escapeHtml(job.agent_name || 'default-agent')} · ${escapeHtml(job.agent_role || 'unspecified-role')} · ${escapeHtml(job.mode || 'exec')}</p>
+        </div>
+        <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
+      </div>
+      <div class="spotlight-grid">
+        ${renderSpotlightCard(
+          'Execution',
+          `${job.provider || 'default'} · ${job.model || 'default'}`,
+          firstNonEmpty(job.final_text, job.last_error, 'No final output recorded yet.'),
+          [
+            job.session_status || '',
+            job.background ? 'background=true' : 'background=false',
+            job.isolation_mode || 'isolation=auto',
+          ],
+        )}
+        ${renderSpotlightCard(
+          'Routing',
+          firstNonEmpty(job.session_id, 'No child session yet'),
+          firstNonEmpty(job.parent_session_id, 'No parent session linked'),
+          [
+            job.root_session_id ? `root=${shortId(job.root_session_id)}` : '',
+            job.session_id ? `session=${shortId(job.session_id)}` : '',
+          ],
+        )}
+      </div>
+      <div class="meta-grid">
+        ${renderMetaItem('Created', formatDate(job.created_at))}
+        ${renderMetaItem('Updated', formatDate(job.updated_at))}
+        ${renderMetaItem('Parent Session', job.parent_session_id || 'none')}
+        ${renderMetaItem('Root Session', job.root_session_id || 'none')}
+        ${renderMetaItem('Child Session', job.session_id || 'none')}
+        ${renderMetaItem('Session Status', job.session_status || 'pending')}
+        ${renderMetaItem('Requested Workdir', job.requested_workdir || 'none')}
+        ${renderMetaItem('Effective Workdir', job.effective_workdir || 'none')}
+      </div>
+      <div class="detail-pairs">
+        <div class="detail-pair">
+          <strong>Prompt</strong>
+          <span>${escapeHtml(job.prompt || 'No prompt')}</span>
+        </div>
+        ${job.system_override ? `
+          <div class="detail-pair">
+            <strong>System Override</strong>
+            <span>${escapeHtml(job.system_override)}</span>
+          </div>
+        ` : ''}
+      </div>
+      ${renderTokenRow((job.visible_paths || []).map((path) => compactPath(path, 3)), 'metadata-row')}
+      ${renderMiniActions([
+        { sessionId: job.session_id, label: 'Open child session' },
+        { sessionId: job.parent_session_id, label: 'Open parent session' },
+      ])}
+      ${renderJsonDetails('View raw queue payload', job)}
+    </aside>
   `;
 }
 
@@ -1794,6 +1924,11 @@ async function applySessionStatusDrilldown(status) {
 function applyQueueStatusDrilldown(status) {
   state.queueFilterQuery = '';
   state.queueFilterStatus = status || 'all';
+  const matches = filteredQueueJobs();
+  if (matches.length && !matches.some((job) => job.id === state.selectedQueueJobId)) {
+    state.selectedQueueJobId = matches[0].id;
+    refreshSelectedQueueJob();
+  }
   setView('queue');
 }
 
@@ -1851,6 +1986,13 @@ document.addEventListener('click', (event) => {
   if (openSessionButton) {
     setSession(openSessionButton.dataset.openSessionId);
     refreshSelectedSession();
+    return;
+  }
+
+  const openQueueJobButton = event.target.closest('[data-open-queue-job-id]');
+  if (openQueueJobButton) {
+    setQueueJob(openQueueJobButton.dataset.openQueueJobId);
+    refreshSelectedQueueJob();
     return;
   }
 

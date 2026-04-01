@@ -383,6 +383,14 @@ async function main() {
     );
     results.interactions.queue_filter_chip = true;
 
+    await browserClient.evaluate(`document.querySelector('#queue-view [data-open-queue-job-id]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.getElementById('queue-job-detail')) && document.getElementById('queue-job-detail')?.textContent?.includes('Selected Queue Job') && document.getElementById('queue-job-detail')?.textContent?.includes('ui smoke queue ok')`),
+      timeoutMs,
+      'queue job detail open'
+    );
+    results.interactions.queue_job_detail = true;
+
     await browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.click(); true`);
     await browserClient.evaluate(`document.querySelector('[data-session-tab="timeline"]')?.click(); true`);
     const timelineCounts = await browserClient.evaluate(`(() => {
@@ -449,6 +457,7 @@ async function main() {
       has_session_header: await browserClient.evaluate(`Boolean(document.querySelector('.session-header'))`),
       has_session_filter: await browserClient.evaluate(`Boolean(document.getElementById('session-filter-query'))`),
       has_queue_filter: await browserClient.evaluate(`Boolean(document.getElementById('queue-filter-query'))`),
+      has_queue_job_detail: await browserClient.evaluate(`Boolean(document.getElementById('queue-job-detail'))`),
     };
 
     const dom = await browserClient.evaluate('document.documentElement.outerHTML');

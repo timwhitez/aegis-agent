@@ -167,6 +167,11 @@ Sessions 列表项必须展示：
 - steer 请求与 notification 卡片里的关键 metadata
 - 能从 background notification 直接打开对应 child session
 
+#### Queue 主视图补充
+
+- queue 视图不应只停留在过滤后的列表；当前实现还应提供 selected queue job 的 detail 面板
+- 该 detail 面板至少暴露 prompt、session linkage、requested/effective workdir、provider/model、visible paths 与 raw durable payload
+
 ### 4.5 右侧动作区
 
 动作区跟随当前选择对象变化。
