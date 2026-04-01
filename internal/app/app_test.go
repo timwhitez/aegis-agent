@@ -1,0 +1,952 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/hooks"
+	"go-cli-agent/internal/provider"
+	"go-cli-agent/internal/runtime"
+	"go-cli-agent/internal/session"
+)
+
+type fakeRunner struct {
+	bus            *events.Bus
+	startResult    runtime.RunResult
+	continueResult runtime.RunResult
+	steerResult    runtime.SteerResult
+	steerErr       error
+	probeResult    runtime.ProbeResult
+	delegateResult runtime.DelegateResult
+	probeErr       error
+	delegateErr    error
+	startErr       error
+	listResult     []session.SessionSummary
+	taskBoard      session.TaskBoard
+	store          *session.Store
+	queueJob       session.QueueJob
+	queueJobs      []session.QueueJob
+	processJob     session.QueueJob
+	processOK      bool
+	processErr     error
+	startCalls     []runtime.StartRequest
+	continueCalls  []runtime.ContinueRequest
+	steerCalls     []runtime.SteerRequest
+	probeCalls     []runtime.ProbeRequest
+	delegateCalls  []runtime.DelegateRequest
+	interruptIDs   []string
+}
+
+func newFakeRunner() *fakeRunner {
+	return &fakeRunner{bus: events.NewBus()}
+}
+
+func (f *fakeRunner) Start(ctx context.Context, req runtime.StartRequest) (runtime.RunResult, error) {
+	f.startCalls = append(f.startCalls, req)
+	f.bus.Publish(events.New("s1", "session.started", "prepare", map[string]any{}))
+	f.bus.Publish(events.New("s1", "assistant.message", "assistant_output", map[string]any{"text": "hello"}))
+	select {
+	case <-ctx.Done():
+	default:
+	}
+	return f.startResult, f.startErr
+}
+
+func (f *fakeRunner) Continue(_ context.Context, req runtime.ContinueRequest) (runtime.RunResult, error) {
+	f.continueCalls = append(f.continueCalls, req)
+	return f.continueResult, nil
+}
+
+func (f *fakeRunner) Steer(_ context.Context, req runtime.SteerRequest) (runtime.SteerResult, error) {
+	f.steerCalls = append(f.steerCalls, req)
+	return f.steerResult, f.steerErr
+}
+
+func (f *fakeRunner) Probe(_ context.Context, req runtime.ProbeRequest) (runtime.ProbeResult, error) {
+	f.probeCalls = append(f.probeCalls, req)
+	return f.probeResult, f.probeErr
+}
+
+func (f *fakeRunner) Interrupt(sessionID string) error {
+	f.interruptIDs = append(f.interruptIDs, sessionID)
+	return nil
+}
+
+func (f *fakeRunner) Tasks(string) (session.TaskBoard, error) {
+	return f.taskBoard, nil
+}
+
+func (f *fakeRunner) List(int) ([]session.SessionSummary, error) {
+	return f.listResult, nil
+}
+
+func (f *fakeRunner) Store() *session.Store {
+	return f.store
+}
+
+func (f *fakeRunner) Delegate(_ context.Context, req runtime.DelegateRequest) (runtime.DelegateResult, error) {
+	f.delegateCalls = append(f.delegateCalls, req)
+	return f.delegateResult, f.delegateErr
+}
+
+func (f *fakeRunner) QueueSubmit(_ context.Context, _ runtime.QueueSubmitRequest) (session.QueueJob, error) {
+	return f.queueJob, nil
+}
+
+func (f *fakeRunner) QueueShow(string) (session.QueueJob, error) {
+	return f.queueJob, nil
+}
+
+func (f *fakeRunner) QueueList(int) ([]session.QueueJob, error) {
+	return f.queueJobs, nil
+}
+
+func (f *fakeRunner) ProcessNextJob(context.Context) (session.QueueJob, bool, error) {
+	return f.processJob, f.processOK, f.processErr
+}
+
+func (f *fakeRunner) Bus() *events.Bus {
+	return f.bus
+}
+
+func TestRunCommandReturnsExitErrorForIncompleteExec(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusFailed,
+		LastError: "incomplete_no_finish: task ended without explicit finish",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"exec", "--json", "do work"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "status 6") {
+		t.Fatalf("expected exit status 6, err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"exit_code":6`) {
+		t.Fatalf("expected json exit code in output, got %s", stdout.String())
+	}
+}
+
+func TestRunCommandAcceptsFlagsAfterPrompt(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusCompleted,
+		FinalText: "done",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "do work", "--json", "--timeout", "30"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	if got := fake.startCalls[0].Prompt; got != "do work" {
+		t.Fatalf("expected prompt without trailing flags, got %q", got)
+	}
+	if !strings.Contains(stdout.String(), `"status":"completed"`) {
+		t.Fatalf("expected json output, got %s", stdout.String())
+	}
+}
+
+func TestRunCommandLoadsConfigRelativeToInvokeDirectoryNotTaskWorkdir(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusCompleted,
+		FinalText: "done",
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	invokeDir := t.TempDir()
+	if err := os.Chdir(invokeDir); err != nil {
+		t.Fatalf("chdir invoke dir: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	var loaderCWD string
+	restore := runnerLoader
+	runnerLoader = func(_ string, cwd string) (coreRunner, *config.Config, error) {
+		loaderCWD = cwd
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	taskWorkdir := filepath.Join(t.TempDir(), "task")
+	if err := os.MkdirAll(taskWorkdir, 0o755); err != nil {
+		t.Fatalf("mkdir task workdir: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "--workdir", taskWorkdir, "--json", "ping"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if loaderCWD != invokeDir {
+		t.Fatalf("expected runnerLoader cwd %q, got %q", invokeDir, loaderCWD)
+	}
+	if len(fake.startCalls) != 1 || fake.startCalls[0].Workdir != taskWorkdir {
+		t.Fatalf("expected task workdir %q, got %#v", taskWorkdir, fake.startCalls)
+	}
+}
+
+func TestSessionsCommandRendersSummary(t *testing.T) {
+	fake := newFakeRunner()
+	fake.listResult = []session.SessionSummary{
+		{
+			ID:        "s1",
+			Status:    session.StatusAwaitingInput,
+			Provider:  "openai",
+			Model:     "gpt-5.4",
+			CreatedAt: "2026-03-18T23:59:00Z",
+			UpdatedAt: "2026-03-19T00:00:00Z",
+			Phase:     "turn_decide",
+		},
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"sessions"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "s1") || !strings.Contains(stdout.String(), "awaiting_input") || !strings.Contains(stdout.String(), "phase=turn_decide") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestTasksCommandRendersTaskBoard(t *testing.T) {
+	fake := newFakeRunner()
+	fake.taskBoard = session.TaskBoard{
+		Todo: []session.TodoItem{{Content: "Audit provider", Status: "in_progress"}},
+		Groups: map[string][]session.Task{
+			"ready": {
+				{ID: "task_0001", Subject: "Implement hook tests"},
+			},
+		},
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"tasks", "s1"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Audit provider") || !strings.Contains(stdout.String(), "Implement hook tests") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestTasksCommandAllRendersFlatTaskList(t *testing.T) {
+	fake := newFakeRunner()
+	fake.taskBoard = session.TaskBoard{
+		Tasks: []session.Task{
+			{ID: "task_0001", Subject: "Implement hook tests", Status: "ready"},
+			{ID: "task_0002", Subject: "Review docs", Status: "completed"},
+		},
+		Groups: map[string][]session.Task{
+			"ready": {
+				{ID: "task_0001", Subject: "Implement hook tests", Status: "ready"},
+			},
+			"completed": {
+				{ID: "task_0002", Subject: "Review docs", Status: "completed"},
+			},
+		},
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"tasks", "--all", "s1"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "ALL") || !strings.Contains(stdout.String(), "[completed] Review docs") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestProbeProviderCommandRendersJSONAndExitStatus(t *testing.T) {
+	fake := newFakeRunner()
+	fake.probeResult = runtime.ProbeResult{
+		Provider:      "openai-compatible",
+		Model:         "gpt-5.4",
+		BaseURL:       "http://example/v1",
+		WireAPI:       "responses",
+		StopReason:    "tool_use",
+		ToolCallNames: []string{"finish"},
+		FinishMessage: "provider probe ok",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"probe-provider", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"provider":"openai-compatible"`) || !strings.Contains(stdout.String(), `"finish_message":"provider probe ok"`) {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestProbeProviderCommandRendersJSONErrorAndExitStatus(t *testing.T) {
+	fake := newFakeRunner()
+	fake.probeErr = errors.New("provider unavailable")
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.DefaultProvider = "openai-compatible"
+		cfg.Providers["openai-compatible"] = config.Provider{
+			BaseURL: "http://example/v1",
+			Model:   "gpt-5.4",
+			WireAPI: "responses",
+		}
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"probe-provider", "--json"}, &stdout, &stderr)
+	var exitErr ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit code 1, got err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"provider":"openai-compatible"`) ||
+		!strings.Contains(stdout.String(), `"model":"gpt-5.4"`) ||
+		!strings.Contains(stdout.String(), `"base_url":"http://example/v1"`) ||
+		!strings.Contains(stdout.String(), `"wire_api":"responses"`) ||
+		!strings.Contains(stdout.String(), `"error":"provider unavailable"`) {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestSessionsCommandJSONUsesEmptyArray(t *testing.T) {
+	fake := newFakeRunner()
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"sessions", "--json"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := stdout.String(); got != "[]\n" {
+		t.Fatalf("expected empty array json, got %q", got)
+	}
+}
+
+func TestSteerCommandAcceptsFlagsAfterSessionID(t *testing.T) {
+	fake := newFakeRunner()
+	fake.steerResult = runtime.SteerResult{
+		SessionID: "s1",
+		Accepted:  true,
+		Behavior:  "queued",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"steer", "s1", "--message", "focus tests", "--interrupt", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.steerCalls) != 1 {
+		t.Fatalf("expected one steer call, got %d", len(fake.steerCalls))
+	}
+	if got := fake.steerCalls[0].Message; got != "focus tests" {
+		t.Fatalf("unexpected steer message: %q", got)
+	}
+	if !fake.steerCalls[0].Interrupt {
+		t.Fatal("expected interrupt=true")
+	}
+	if !strings.Contains(stdout.String(), `"session_id":"s1"`) {
+		t.Fatalf("expected snake_case json payload, got %s", stdout.String())
+	}
+}
+
+func TestSteerCommandRendersJSONErrorAndExitStatus(t *testing.T) {
+	fake := newFakeRunner()
+	fake.steerErr = runtime.SteerValidationError{
+		Code:        "steer_input_too_large",
+		MaxChars:    12000,
+		ActualChars: 12001,
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"steer", "s1", "--message", "focus tests", "--json"}, &stdout, &stderr)
+	var exitErr ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit code 1, got err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"session_id":"s1"`) ||
+		!strings.Contains(stdout.String(), `"accepted":false`) ||
+		!strings.Contains(stdout.String(), `"code":"steer_input_too_large"`) ||
+		!strings.Contains(stdout.String(), `"max_chars":12000`) ||
+		!strings.Contains(stdout.String(), `"actual_chars":12001`) {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestRunReturnsConfigExitCodeForConfigError(t *testing.T) {
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return nil, nil, runtime.WrapConfigError(errors.New("bad config"))
+	}
+	defer func() { runnerLoader = restore }()
+
+	err := Run(context.Background(), []string{"sessions"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected config error")
+	}
+	var classified ClassifiedError
+	if !errors.As(err, &classified) || classified.Code != 2 {
+		t.Fatalf("expected exit code 2, got %v", err)
+	}
+}
+
+func TestRunReturnsProviderExitCodeForProviderError(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startErr = runtime.WrapProviderError(&provider.HTTPError{
+		Provider:   "openai",
+		Class:      "auth_error",
+		Message:    "bad key",
+		StatusCode: 401,
+	})
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	err := Run(context.Background(), []string{"exec", "ping"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected provider error")
+	}
+	var classified ClassifiedError
+	if !errors.As(err, &classified) || classified.Code != 3 {
+		t.Fatalf("expected exit code 3, got %v", err)
+	}
+}
+
+func TestRunReturnsHookExitCodeForFailClosedHook(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startErr = &hooks.FailClosedError{
+		Point: "user.message",
+		Name:  "guard",
+		Err:   errors.New("blocked"),
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	err := Run(context.Background(), []string{"exec", "ping"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected hook error")
+	}
+	var classified ClassifiedError
+	if !errors.As(err, &classified) || classified.Code != 5 {
+		t.Fatalf("expected exit code 5, got %v", err)
+	}
+}
+
+func TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing(t *testing.T) {
+	fake := newFakeRunner()
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.DefaultProvider = "openai-compatible"
+		cfg.Providers["openai-compatible"] = config.Provider{
+			APIKeyEnv: "TEST_MISSING_KEY",
+			BaseURL:   "http://example/v1",
+			Model:     "gpt-5.4",
+			WireAPI:   "responses",
+		}
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+	_ = os.Unsetenv("TEST_MISSING_KEY")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"doctor", "--provider", "openai-compatible", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"name":"provider.probe"`) || !strings.Contains(stdout.String(), `"status":"skip"`) {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"name":"hooks.config"`) || !strings.Contains(stdout.String(), `"name":"hooks.commands"`) || !strings.Contains(stdout.String(), `"name":"session.root.strategy"`) || !strings.Contains(stdout.String(), `"name":"workspace.write"`) {
+		t.Fatalf("expected extended doctor checks, got %s", stdout.String())
+	}
+}
+
+func TestDoctorCommandJSONIncludesEffectiveOpenAICompatibleSettings(t *testing.T) {
+	fake := newFakeRunner()
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.DefaultProvider = "openai-compatible"
+		store := false
+		sendMetadata := false
+		cfg.Providers["openai-compatible"] = config.Provider{
+			APIKeyEnv:       "TEST_PRESENT_KEY",
+			BaseURL:         "http://example/v1",
+			Model:           "gpt-5.4",
+			TimeoutSec:      240,
+			WireAPI:         "responses",
+			Store:           &store,
+			SendMetadata:    &sendMetadata,
+			ReasoningEffort: "medium",
+			Retry: config.Retry{
+				MaxAttempts:    4,
+				BaseDelayMS:    1500,
+				Retry429:       true,
+				Retry5xx:       true,
+				RetryTransport: true,
+			},
+		}
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+	t.Setenv("TEST_PRESENT_KEY", "present")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"doctor", "--provider", "openai-compatible", "--json", "--skip-probe"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	var providerCheck *doctorCheck
+	for i := range report.Checks {
+		if report.Checks[i].Name == "provider.config" {
+			providerCheck = &report.Checks[i]
+			break
+		}
+	}
+	if providerCheck == nil {
+		t.Fatalf("provider.config check missing: %#v", report.Checks)
+	}
+	if got := providerCheck.Details["store"]; got != false {
+		t.Fatalf("expected store=false, got %#v", got)
+	}
+	if got := providerCheck.Details["store_source"]; got != "config" {
+		t.Fatalf("expected store_source=config, got %#v", got)
+	}
+	if got := providerCheck.Details["send_metadata"]; got != false {
+		t.Fatalf("expected send_metadata=false, got %#v", got)
+	}
+	if got := providerCheck.Details["send_metadata_source"]; got != "config" {
+		t.Fatalf("expected send_metadata_source=config, got %#v", got)
+	}
+	retryPolicy, ok := providerCheck.Details["retry_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected retry_policy object, got %#v", providerCheck.Details["retry_policy"])
+	}
+	if got := retryPolicy["max_attempts"]; got != float64(4) {
+		t.Fatalf("expected retry max_attempts=4, got %#v", got)
+	}
+	if got := retryPolicy["base_delay_ms"]; got != float64(1500) {
+		t.Fatalf("expected retry base_delay_ms=1500, got %#v", got)
+	}
+	if got := retryPolicy["retry_transport"]; got != true {
+		t.Fatalf("expected retry_transport=true, got %#v", got)
+	}
+}
+
+func TestCheckSessionDirModeWarnsOnPermissionDrift(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("chmod drift: %v", err)
+	}
+	restore := sessionDirModeProbe
+	sessionDirModeProbe = func(string, fs.FileMode) (sessionDirModeProbeResult, error) {
+		return sessionDirModeProbeResult{
+			ProbeMode:     0o700,
+			SupportsChmod: true,
+		}, nil
+	}
+	defer func() { sessionDirModeProbe = restore }()
+
+	check := checkSessionDirMode(dir, "0700")
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	if got := check.Details["reason"]; got != "permission_drift" {
+		t.Fatalf("expected permission_drift, got %#v", got)
+	}
+	if got := check.Details["posix_owner_only_supported"]; got != true {
+		t.Fatalf("expected posix_owner_only_supported=true, got %#v", got)
+	}
+}
+
+func TestCheckSessionDirModeWarnsWhenFilesystemDoesNotHonorPOSIXPermissions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("chmod drift: %v", err)
+	}
+	restore := sessionDirModeProbe
+	sessionDirModeProbe = func(string, fs.FileMode) (sessionDirModeProbeResult, error) {
+		return sessionDirModeProbeResult{
+			ProbeMode:     0o777,
+			SupportsChmod: false,
+			ChmodError:    "",
+		}, nil
+	}
+	defer func() { sessionDirModeProbe = restore }()
+
+	check := checkSessionDirMode(dir, "0700")
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	if got := check.Details["reason"]; got != "filesystem_does_not_honor_posix_permissions" {
+		t.Fatalf("expected filesystem warning, got %#v", got)
+	}
+	if got := check.Details["posix_owner_only_supported"]; got != false {
+		t.Fatalf("expected posix_owner_only_supported=false, got %#v", got)
+	}
+}
+
+func TestCheckSessionDirModeFailsForInvalidConfiguredMode(t *testing.T) {
+	check := checkSessionDirMode(t.TempDir(), "not-octal")
+	if check.Status != "fail" {
+		t.Fatalf("expected fail, got %#v", check)
+	}
+	if !strings.Contains(check.Details["error"].(string), "invalid file mode") {
+		t.Fatalf("expected invalid mode error, got %#v", check.Details["error"])
+	}
+}
+
+func TestCheckHookCommandsFailsForMissingFailClosedCommand(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.SessionComplete = []config.HookDefinition{
+		{
+			Name:       "notify",
+			Command:    []string{"missing-hook-binary"},
+			FailClosed: true,
+		},
+	}
+	restore := hookCommandLookPath
+	hookCommandLookPath = func(string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+	defer func() { hookCommandLookPath = restore }()
+
+	check := checkHookCommands(cfg, t.TempDir())
+	if check.Status != "fail" {
+		t.Fatalf("expected fail, got %#v", check)
+	}
+}
+
+func TestInitGeneratesConfigSkillAndHookAssets(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"init", "--force", "--provider", "openai-compatible"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run init: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "next: ./bin/go-cli-agent doctor") {
+		t.Fatalf("expected init guidance in stdout, got %s", stdout.String())
+	}
+	for _, relative := range []string{
+		".go-cli-agent/config.yaml",
+		".env.example",
+		"skills/example/SKILL.md",
+		"skills/example/tools/echo.yaml",
+		".go-cli-agent/hooks/session-complete.sh",
+	} {
+		if _, err := os.Stat(filepath.Join(tmp, relative)); err != nil {
+			t.Fatalf("expected generated file %s: %v", relative, err)
+		}
+	}
+}
+
+func TestCheckSessionRootStrategyWarnsAndRecommendsPOSIXFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configured := filepath.Join("/mnt/c/project", ".go-cli-agent", "sessions")
+	restore := sessionRootCandidateProbe
+	sessionRootCandidateProbe = func(path string, expected fs.FileMode) sessionRootProbeResult {
+		switch path {
+		case filepath.Clean(configured):
+			return sessionRootProbeResult{
+				Path:              filepath.Clean(path),
+				Writable:          true,
+				Mode:              0o777,
+				ExpectedMode:      expected,
+				SupportsOwnerOnly: false,
+				Reason:            "filesystem_does_not_honor_posix_permissions",
+			}
+		case filepath.Join(home, ".go-cli-agent", "sessions"):
+			return sessionRootProbeResult{
+				Path:              filepath.Clean(path),
+				Writable:          true,
+				Mode:              0o700,
+				ExpectedMode:      expected,
+				SupportsOwnerOnly: true,
+				Reason:            "ready",
+			}
+		default:
+			return sessionRootProbeResult{
+				Path:              filepath.Clean(path),
+				Writable:          true,
+				Mode:              0o700,
+				ExpectedMode:      expected,
+				SupportsOwnerOnly: true,
+				Reason:            "ready",
+			}
+		}
+	}
+	defer func() { sessionRootCandidateProbe = restore }()
+
+	cfg := config.Default()
+	cfg.Session.Dir = configured
+	check := checkSessionRootStrategy(cfg)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	if got := check.Details["recommended_dir"]; got != filepath.Join(home, ".go-cli-agent", "sessions") {
+		t.Fatalf("expected home fallback recommendation, got %#v", got)
+	}
+}
+
+func TestRunCommandPassesIsolationFlags(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	if err := Run(context.Background(), []string{"exec", "do work", "--isolation", "copy", "--isolation-root", "/tmp/worktrees"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	if fake.startCalls[0].IsolationMode != "copy" || fake.startCalls[0].IsolationRoot != "/tmp/worktrees" {
+		t.Fatalf("unexpected isolation request: %#v", fake.startCalls[0])
+	}
+}
+
+func TestDelegateCommandDispatchesStructuredRequest(t *testing.T) {
+	fake := newFakeRunner()
+	fake.delegateResult = runtime.DelegateResult{QueueJobID: "job_1", Status: session.QueueStatusQueued}
+	restore := experimentalRunnerLoader
+	experimentalRunnerLoader = func(string, string) (experimentalRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { experimentalRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"experimental", "delegate", "parent-1", "review this", "--agent", "reviewer", "--background", "--isolation", "auto"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if len(fake.delegateCalls) != 1 {
+		t.Fatalf("expected delegate call, got %d", len(fake.delegateCalls))
+	}
+	call := fake.delegateCalls[0]
+	if call.ParentSessionID != "parent-1" || call.Prompt != "review this" || call.AgentName != "reviewer" || !call.Background || call.IsolationMode != "auto" {
+		t.Fatalf("unexpected delegate request: %#v", call)
+	}
+	if !strings.Contains(stdout.String(), "queued child job job_1") {
+		t.Fatalf("expected queue output, got %s", stdout.String())
+	}
+}
+
+func TestChildrenCommandReadsChildSessionsAndJobs(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parent := session.SessionMetadata{SchemaVersion: 1, ID: "parent", CreatedAt: now, Workdir: t.TempDir(), RequestedWorkdir: t.TempDir(), Mode: session.ModeRun, Provider: "openai", Model: "gpt-5.4", CompletionPolicy: session.CompletionPolicyInteractive, RootSessionID: "parent"}
+	if err := store.Create(parent, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := session.SessionMetadata{SchemaVersion: 1, ID: "child", CreatedAt: now, Workdir: t.TempDir(), RequestedWorkdir: t.TempDir(), Mode: session.ModeExec, Provider: "openai", Model: "gpt-5.4", CompletionPolicy: session.CompletionPolicyAutonomous, ParentSessionID: "parent", RootSessionID: "parent", AgentName: "reviewer"}
+	if err := store.Create(child, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := store.EnqueueJob(session.QueueJob{ID: "job_1", Status: session.QueueStatusQueued, ParentSessionID: "parent", Prompt: "hi", Mode: session.ModeExec, AgentName: "batch"}); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"experimental", "children", "parent"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("children: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "child") || !strings.Contains(stdout.String(), "job_1") {
+		t.Fatalf("unexpected children output: %s", stdout.String())
+	}
+}
+
+func TestTUISnapshotRendersPanels(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: "s1", CreatedAt: now, Workdir: t.TempDir(), RequestedWorkdir: t.TempDir(), Mode: session.ModeRun, Provider: "openai", Model: "gpt-5.4", CompletionPolicy: session.CompletionPolicyInteractive, RootSessionID: "s1"}
+	if err := store.Create(meta, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.AppendMessage("s1", session.NewMessage("user", "hello world")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"experimental", "tui", "--once"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("tui once: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Sessions") || !strings.Contains(stdout.String(), "Recent Events") {
+		t.Fatalf("unexpected tui snapshot: %s", stdout.String())
+	}
+}
+
+func TestQueueWorkerCommandOnceJSONIdle(t *testing.T) {
+	fake := newFakeRunner()
+	restore := experimentalRunnerLoader
+	experimentalRunnerLoader = func(string, string) (experimentalRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { experimentalRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"experimental", "queue", "worker", "--once", "--json"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("queue worker: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"idle":true`) {
+		t.Fatalf("expected idle json, got %s", stdout.String())
+	}
+}
+
+func TestQueueWorkerCommandRejectsNonPositivePollMS(t *testing.T) {
+	err := Run(context.Background(), []string{"experimental", "queue", "worker", "--poll-ms", "0"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "poll-ms must be > 0") {
+		t.Fatalf("expected poll-ms validation error, got %v", err)
+	}
+}
+
+func TestQueueWorkerCommandOncePrintsFailedJobWithoutError(t *testing.T) {
+	fake := newFakeRunner()
+	fake.processJob = session.QueueJob{ID: "job_1", Status: session.QueueStatusFailed, LastError: "boom"}
+	fake.processOK = true
+	restore := experimentalRunnerLoader
+	experimentalRunnerLoader = func(string, string) (experimentalRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { experimentalRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"experimental", "queue", "worker", "--once", "--json"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("queue worker: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"status":"failed"`) || !strings.Contains(stdout.String(), `"last_error":"boom"`) {
+		t.Fatalf("unexpected failed job output: %s", stdout.String())
+	}
+}
+
+func TestUsageShowsCoreSurfaceOnlyByDefault(t *testing.T) {
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"unknown"}, &bytes.Buffer{}, &stderr)
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if strings.Contains(stderr.String(), "experimental") {
+		t.Fatalf("expected default usage to stay core-only, got %q", stderr.String())
+	}
+}
+
+func TestExperimentalCommandShowsUsageWhenExplicitlyInvoked(t *testing.T) {
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"experimental"}, &bytes.Buffer{}, &stderr)
+	if err == nil {
+		t.Fatal("expected experimental usage error")
+	}
+	if !strings.Contains(stderr.String(), "usage: go-cli-agent experimental <delegate|children|queue|tui|web> [...]") {
+		t.Fatalf("expected explicit experimental usage, got %q", stderr.String())
+	}
+}
+
+func TestLegacyExperimentalAliasReturnsMigrationError(t *testing.T) {
+	err := Run(context.Background(), []string{"delegate"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "go-cli-agent experimental delegate") {
+		t.Fatalf("expected migration error, got %v", err)
+	}
+}

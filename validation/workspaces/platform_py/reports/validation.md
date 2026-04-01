@@ -1,0 +1,2 @@
+- Validation method: manual review of `README.md` and `tests/test_report.py`.
+- Result: confirmed README/test mismatch; the reviewed test covers severity rollup only, not workspace safety.

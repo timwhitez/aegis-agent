@@ -1,0 +1,14 @@
+name: pretty_json_args
+description: Pretty-print the JSON arguments passed to this tool
+command: ["/usr/bin/env", "python3", "-m", "json.tool"]
+timeout_sec: 30
+input_schema:
+  type: object
+  properties:
+    payload:
+      type: object
+      description: Arbitrary JSON payload to pretty-print
+      additionalProperties: true
+  required:
+    - payload
+  additionalProperties: false

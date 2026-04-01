@@ -1,0 +1,1480 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/hooks"
+	"go-cli-agent/internal/provider"
+	"go-cli-agent/internal/session"
+	"go-cli-agent/internal/skills"
+	"go-cli-agent/internal/tools"
+)
+
+func TestEngineRunModeStopsAtAwaitingInput(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	}
+}
+
+func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			Text:               "done_candidate",
+			StopReason:         "done_candidate",
+			ProviderResponseID: "resp_test_1",
+			RawProvider: map[string]any{
+				"provider_stop_reason": "completed",
+				"status":               "completed",
+			},
+			Usage: provider.Usage{InputTokens: 12, OutputTokens: 4},
+		}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	if len(messages) == 0 || messages[len(messages)-1].Role != "assistant" {
+		t.Fatalf("expected assistant message, got %#v", messages)
+	}
+	if messages[len(messages)-1].Meta["provider_response_id"] != "resp_test_1" {
+		t.Fatalf("expected provider response id in assistant metadata, got %#v", messages[len(messages)-1].Meta)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !hasEventType(events, "turn.stopped") {
+		t.Fatalf("expected turn.stopped event, got %#v", events)
+	}
+}
+
+func writeEvidenceFile(t *testing.T, workdir, rel, content string) {
+	t.Helper()
+	path := filepath.Join(workdir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir evidence dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write evidence file: %v", err)
+	}
+}
+
+func TestEnginePassesSessionMetadataIntoProviderRequest(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	meta.RootSessionID = "root-1"
+	meta.ParentSessionID = "parent-1"
+	meta.AgentName = "reviewer"
+	meta.AgentRole = "evaluator"
+	meta.QueueJobID = "job-1"
+	meta.Depth = 2
+	meta.Isolation = &session.IsolationInfo{Mode: "copy"}
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if req.Metadata["session_id"] != meta.ID {
+			t.Fatalf("expected session metadata in provider request, got %#v", req.Metadata)
+		}
+		if req.Metadata["root_session_id"] != "root-1" || req.Metadata["parent_session_id"] != "parent-1" {
+			t.Fatalf("expected root/parent metadata, got %#v", req.Metadata)
+		}
+		if req.Metadata["agent_name"] != "reviewer" || req.Metadata["agent_role"] != "evaluator" || req.Metadata["queue_job_id"] != "job-1" {
+			t.Fatalf("expected agent/job metadata, got %#v", req.Metadata)
+		}
+		if req.Metadata["depth"] != 2 || req.Metadata["isolation_mode"] != "copy" {
+			t.Fatalf("expected depth/isolation metadata, got %#v", req.Metadata)
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+}
+
+func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	meta.Provider = "openai-compatible"
+	meta.RootSessionID = "root-1"
+	meta.ParentSessionID = "parent-1"
+	meta.AgentName = "reviewer"
+	meta.AgentRole = "evaluator"
+	store := false
+	includeThoughts := true
+	meta.ProviderOptions = session.ProviderOptions{
+		MaxOutputTokens: 256,
+		ReasoningEffort: "high",
+		TextVerbosity:   "low",
+		ThinkingBudget:  1024,
+		IncludeThoughts: &includeThoughts,
+		Store:           &store,
+		RetryPolicy: &session.ProviderRetryPolicy{
+			MaxAttempts:    3,
+			BaseDelayMS:    250,
+			Retry429:       true,
+			Retry5xx:       true,
+			RetryTransport: true,
+		},
+	}
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	evt, ok := findEventByType(events, "provider.request.prepared")
+	if !ok {
+		t.Fatalf("expected provider.request.prepared event, got %#v", events)
+	}
+	if evt.Data["provider"] != "openai-compatible" || evt.Data["model"] != meta.Model {
+		t.Fatalf("expected provider/model in prepared event, got %#v", evt.Data)
+	}
+	if evt.Data["metadata_enabled"] != true {
+		t.Fatalf("expected metadata_enabled=true, got %#v", evt.Data["metadata_enabled"])
+	}
+	keys, _ := evt.Data["metadata_keys"].([]any)
+	wantKeys := []string{"agent_name", "agent_role", "mode", "parent_session_id", "root_session_id", "session_id"}
+	if len(keys) != len(wantKeys) {
+		t.Fatalf("unexpected metadata keys: %#v", evt.Data["metadata_keys"])
+	}
+	for i, key := range wantKeys {
+		if keys[i] != key {
+			t.Fatalf("unexpected metadata key order: %#v", evt.Data["metadata_keys"])
+		}
+	}
+	if evt.Data["reasoning_effort"] != "high" || evt.Data["text_verbosity"] != "low" {
+		t.Fatalf("expected reasoning/text verbosity in prepared event, got %#v", evt.Data)
+	}
+	if evt.Data["max_output_tokens"] != float64(256) || evt.Data["thinking_budget"] != float64(1024) {
+		t.Fatalf("expected max_output_tokens/thinking_budget in prepared event, got %#v", evt.Data)
+	}
+	if evt.Data["include_thoughts"] != true || evt.Data["store"] != false {
+		t.Fatalf("expected include_thoughts/store in prepared event, got %#v", evt.Data)
+	}
+	retryPolicy, ok := evt.Data["retry_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected retry_policy object, got %#v", evt.Data["retry_policy"])
+	}
+	if retryPolicy["max_attempts"] != float64(3) || retryPolicy["base_delay_ms"] != float64(250) {
+		t.Fatalf("unexpected retry policy event payload: %#v", retryPolicy)
+	}
+}
+
+func TestEngineCanSuppressProviderMetadataFromConfig(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	sendMetadata := false
+	meta.ProviderOptions.SendMetadata = &sendMetadata
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if len(req.Metadata) != 0 {
+			t.Fatalf("expected metadata to be suppressed, got %#v", req.Metadata)
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+}
+
+func TestEngineBlocksEscapingFinalArtifactPathBeforeToolExecution(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	rootDir := t.TempDir()
+	workdir := filepath.Join(rootDir, "workspace")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	meta.Workdir = workdir
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit the repo and write reports/final-audit.md with findings and finish.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	outsidePath := filepath.Join(rootDir, "escape.md")
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:   "call_1",
+					Name: "write_file",
+					Arguments: json.RawMessage(`{
+						"path":"../escape.md",
+						"content":"# Findings\n\n## Finding 1\nSeverity: low\nConfidence: medium\nEvidence: internal/runtime/engine.go:1 (\"package runtime\")\nSnippet: package runtime\nWhy it matters: prove the guard blocks before execution.\n\n## Remaining Risks\n- none\n"
+					}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed status after blocked write without finish, got %s", result.Status)
+	}
+	if _, err := os.Stat(outsidePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected escaping file not to be written, got err=%v", err)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	evt, ok := findEventByType(events, "tool.blocked")
+	if !ok {
+		t.Fatalf("expected tool.blocked event, got %#v", events)
+	}
+	if evt.Data["reason"] != "artifact_path" {
+		t.Fatalf("expected artifact_path block reason, got %#v", evt.Data)
+	}
+}
+
+func TestEngineAllowsSingleResolutionTurnAfterHardLimitToolResult(t *testing.T) {
+	cfg := config.Default()
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	engine.cfg.Runtime.MaxTurnsHard = 1
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Write a proof file and finish.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_1",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"reports/proof.md","content":"intermediate"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{
+					{
+						ID:        "call_2",
+						Name:      "write_file",
+						Arguments: json.RawMessage(`{"path":"reports/proof.md","content":"final proof"}`),
+					},
+					{
+						ID:        "call_3",
+						Name:      "finish",
+						Arguments: json.RawMessage(`{"message":"done"}`),
+					},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.LastError)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", callCount)
+	}
+	data, err := os.ReadFile(filepath.Join(meta.Workdir, "reports", "proof.md"))
+	if err != nil {
+		t.Fatalf("read proof: %v", err)
+	}
+	if string(data) != "final proof" {
+		t.Fatalf("expected final proof content, got %q", string(data))
+	}
+}
+
+func TestEngineFailsAfterResolutionTurnNeedsAnotherProviderPass(t *testing.T) {
+	cfg := config.Default()
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	engine.cfg.Runtime.MaxTurnsHard = 1
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Keep working until done.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_1",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"reports/proof.md","content":"step one"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_2",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"reports/proof.md","content":"step two"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed, got %s", result.Status)
+	}
+	if result.LastError != "max_turns_hard_exceeded" {
+		t.Fatalf("expected max_turns_hard_exceeded, got %q", result.LastError)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", callCount)
+	}
+}
+
+func TestEngineExecModeRequiresFinish(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "first", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "second", StopReason: "done_candidate"}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed, got %s", result.Status)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.IncompleteReason != "incomplete_no_finish" {
+		t.Fatalf("expected incomplete_no_finish, got %q", loaded.IncompleteReason)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	found := false
+	for _, msg := range messages {
+		if msg.Role != "user" || !strings.Contains(msg.Text, "Harness reminder: if the task is complete") {
+			continue
+		}
+		source, _ := msg.Meta["source"].(string)
+		if source != "harness_reminder" {
+			t.Fatalf("expected harness reminder metadata, got %#v", msg.Meta)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("expected stored harness reminder message, got %#v", messages)
+	}
+}
+
+func TestEngineAppendsRetrievalTailHarnessReminderBeforeProviderCall(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Inspect README.md and AGENTS.md and summarize the runtime surface.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{
+		{Name: "glob"},
+		{Name: "grep_files"},
+		{Name: "grep"},
+		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join(meta.Workdir, "README.md")}},
+		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join(meta.Workdir, "README.md")}},
+		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join(meta.Workdir, "AGENTS.md")}},
+	})); err != nil {
+		t.Fatalf("append tool message: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		last := req.Messages[len(req.Messages)-1]
+		source, _ := last.Meta["source"].(string)
+		kind, _ := last.Meta["kind"].(string)
+		if last.Role != "user" || source != "harness_reminder" || kind != "retrieval_tail" {
+			t.Fatalf("expected retrieval-tail harness reminder, got %#v", last)
+		}
+		if !strings.Contains(last.Text, "Recent work already used 6 read-only tool calls") {
+			t.Fatalf("expected retrieval-tail text, got %q", last.Text)
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+}
+
+func TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final-audit.md with findings and finish.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{
+		{
+			Name:          "write_file",
+			DisplayOutput: "Wrote 128 bytes to reports/final-audit.md",
+			Metadata: map[string]any{
+				"path":                  filepath.Join(meta.Workdir, "reports", "final-audit.md"),
+				"review_artifact_valid": true,
+			},
+		},
+	})); err != nil {
+		t.Fatalf("append write_file tool result: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{
+		{
+			Name:          "todo_write",
+			DisplayOutput: "[{\"content\":\"Write final audit\",\"status\":\"completed\",\"priority\":\"high\",\"updated_at\":\"2026-03-20T00:00:00Z\"}]",
+		},
+	})); err != nil {
+		t.Fatalf("append todo_write tool result: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		last := req.Messages[len(req.Messages)-1]
+		source, _ := last.Meta["source"].(string)
+		kind, _ := last.Meta["kind"].(string)
+		if last.Role != "user" || source != "harness_reminder" || kind != "artifact_written" {
+			t.Fatalf("expected artifact-written harness reminder, got %#v", last)
+		}
+		if !strings.Contains(last.Text, "reports/final-audit.md") || !strings.Contains(last.Text, "Call finish now") {
+			t.Fatalf("expected artifact completion text, got %q", last.Text)
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+}
+
+func TestEngineAppendsAuditEvidenceHarnessReminderBeforeProviderCall(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	registryPath := filepath.Join(meta.Workdir, "internal", "tools", "registry.go")
+	if err := os.MkdirAll(filepath.Dir(registryPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	var builder strings.Builder
+	for i := 0; i < 130; i++ {
+		builder.WriteString("// filler\n")
+	}
+	builder.WriteString("func builtinDefinitions(cfg *config.Config, control ControlPlane) []Definition {\n")
+	builder.WriteString("\tif cfg != nil && cfg.Runtime.MultiAgent.Enabled {\n")
+	builder.WriteString("\t\treturn nil\n")
+	builder.WriteString("\t}\n")
+	builder.WriteString("\treturn nil\n")
+	builder.WriteString("}\n")
+	if err := os.WriteFile(registryPath, []byte(builder.String()), 0o644); err != nil {
+		t.Fatalf("write registry fixture: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{
+		{
+			Name: "read_file",
+			Metadata: map[string]any{
+				"path": registryPath,
+			},
+			DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
+		},
+	})); err != nil {
+		t.Fatalf("append read_file tool result: %v", err)
+	}
+	fake := provider.NewFake(
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "audit_evidence" {
+				t.Fatalf("expected audit-evidence harness reminder, got %#v", last)
+			}
+			if !strings.Contains(last.Text, "Reserved names") || !strings.Contains(last.Text, "registration or config gate") {
+				t.Fatalf("expected audit evidence reminder text, got %q", last.Text)
+			}
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_1",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"path":"internal/tools/registry.go","offset":120,"limit":80}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:   "call_2",
+					Name: "write_file",
+					Arguments: json.RawMessage(`{
+						"path":"reports/final-audit.md",
+						"content":"# audit\n\n## findings\n### Finding 1\nSeverity: medium\nConfidence: high\nEvidence: internal/tools/registry.go:132 (\"cfg.Runtime.MultiAgent.Enabled\")\nWhy it matters: default exposure must be behavior-backed\n\n## unresolved questions\n- None"
+					}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_3", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+}
+
+func TestEngineAppendsSteerCompletionReminderAndEscalatesAfterBlockedDetour(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	writeEvidenceFile(t, meta.Workdir, "internal/runtime/prompt.go", "package runtime\n\nfunc deliveryNote() string { return \"delivery did not happen immediately after the interrupt steer\" }\n")
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Inspect the repo and report findings.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("Stop reading now. Use current evidence, write reports/steer-audit.md immediately, and finish.", true)); err != nil {
+		t.Fatalf("append steer: %v", err)
+	}
+	fake := provider.NewFake(
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "steer_completion" {
+				t.Fatalf("expected steer completion reminder, got %#v", last)
+			}
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "todo_write", Arguments: json.RawMessage(`{"todos":[]}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "steer_completion_escalated" {
+				t.Fatalf("expected escalated steer completion reminder, got %#v", last)
+			}
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{
+					{
+						ID:        "call_2",
+						Name:      "write_file",
+						Arguments: json.RawMessage(`{"path":"reports/steer-audit.md","content":"# steer audit\n\n## findings\n1. Severity: medium\n   Confidence: high\n   Evidence: internal/runtime/prompt.go:3 (\"delivery did not happen immediately after the interrupt steer\")\n   Why it matters: delivery did not happen immediately after the interrupt steer.\n\n## unresolved questions\n- Should the runtime block narration-only turns after interrupt steer?"}`),
+					},
+					{
+						ID:        "call_3",
+						Name:      "finish",
+						Arguments: json.RawMessage(`{"message":"done"}`),
+					},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !hasEventType(events, "tool.blocked") {
+		t.Fatalf("expected blocked tool event, got %#v", events)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	foundEscalated := false
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		source, _ := msg.Meta["source"].(string)
+		kind, _ := msg.Meta["kind"].(string)
+		if source == "harness_reminder" && kind == "steer_completion_escalated" {
+			foundEscalated = true
+			break
+		}
+	}
+	if !foundEscalated {
+		t.Fatalf("expected escalated reminder in stored messages, got %#v", messages)
+	}
+}
+
+func TestEngineInterruptSteerAllowsCurrentEvidenceArtifactDeliveryDespiteAuditProofTarget(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	writeEvidenceFile(t, meta.Workdir, "internal/tools/registry.go", "package tools\n\nvar reservedNames = map[string]struct{}{ \"agent_spawn\": {} }\n\nfunc builtinDefinitions(cfg any) []string {\n\tif cfg != nil {\n\t\treturn []string{\"cfg.Runtime.MultiAgent.Enabled\"}\n\t}\n\treturn nil\n}\n")
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries and write reports/steer-audit.md.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{
+		{
+			Name: "read_file",
+			Metadata: map[string]any{
+				"path": filepath.Join(meta.Workdir, "internal", "tools", "registry.go"),
+			},
+			DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
+		},
+	})); err != nil {
+		t.Fatalf("append read_file tool result: %v", err)
+	}
+	firstTurnStarted := make(chan struct{})
+	go func() {
+		<-firstTurnStarted
+		time.Sleep(20 * time.Millisecond)
+		if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("Stop reading now. Use current evidence, write reports/steer-audit.md immediately, and finish.", true)); err != nil {
+			t.Errorf("append steer: %v", err)
+			return
+		}
+		engine.control.requestSteerInterrupt()
+	}()
+	fake := provider.NewFake(
+		func(ctx context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "audit_evidence" {
+				t.Fatalf("expected audit-evidence reminder before the interrupt steer, got %#v", last)
+			}
+			hasReadEvidence := false
+			for _, msg := range req.Messages {
+				if msg.Role != "tool" {
+					continue
+				}
+				for _, result := range msg.ToolResults {
+					if result.Name == "read_file" {
+						hasReadEvidence = true
+						break
+					}
+				}
+				if hasReadEvidence {
+					break
+				}
+			}
+			if !hasReadEvidence {
+				t.Fatalf("expected existing read_file evidence in provider request, got %#v", req.Messages)
+			}
+			close(firstTurnStarted)
+			<-ctx.Done()
+			return provider.TurnResult{}, ctx.Err()
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "steer_completion" {
+				t.Fatalf("expected steer completion reminder, got %#v", last)
+			}
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{
+					{
+						ID:   "call_2",
+						Name: "write_file",
+						Arguments: json.RawMessage(`{
+								"path":"reports/steer-audit.md",
+								"content":"# steer audit\n\n## findings\n### Finding 1\nSeverity: medium\nConfidence: low\nEvidence: internal/tools/registry.go:3 (\"reservedNames\")\nSnippet: reservedNames\nWhy it matters: declaration-level hints alone do not prove default exposure.\n\n## unresolved questions\n- The owning gate read was intentionally deferred after the interrupt steer and remains a risk."
+							}`),
+					},
+					{
+						ID:        "call_3",
+						Name:      "finish",
+						Arguments: json.RawMessage(`{"message":"done"}`),
+					},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+	reportPath := filepath.Join(meta.Workdir, "reports", "steer-audit.md")
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatalf("expected steer audit artifact to be written, got stat error: %v", err)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Type != "tool.blocked" {
+			continue
+		}
+		if reason, _ := evt.Data["reason"].(string); reason == "audit_proof" {
+			t.Fatalf("expected current-evidence interrupt steer to bypass audit_proof block, got %#v", evt)
+		}
+	}
+}
+
+func TestEngineAcceptsPendingSteerBeforeProviderCall(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		last := req.Messages[len(req.Messages)-1]
+		if last.Text != "focus on tests" {
+			t.Fatalf("expected steer message to be appended before provider call, got %#v", last)
+		}
+		return provider.TurnResult{Text: "ok", StopReason: "done_candidate"}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	if loadedState.PendingSteerCount != 0 {
+		t.Fatalf("expected pending steer count to drain to zero, got %d", loadedState.PendingSteerCount)
+	}
+}
+
+func TestEngineInterruptSteerCancelsProviderAndContinuesWithAcceptedMessage(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "initial")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	firstTurnStarted := make(chan struct{})
+	fake := provider.NewFake(
+		func(ctx context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			if got := req.Messages[len(req.Messages)-1].Text; got != "initial" {
+				t.Fatalf("expected initial prompt on first turn, got %q", got)
+			}
+			close(firstTurnStarted)
+			<-ctx.Done()
+			return provider.TurnResult{}, ctx.Err()
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != "user" || last.Text != "switch direction" {
+				t.Fatalf("expected accepted steer message after provider cancellation, got %#v", last)
+			}
+			return provider.TurnResult{Text: "done", StopReason: "done_candidate"}, nil
+		},
+	)
+	go func() {
+		<-firstTurnStarted
+		time.Sleep(20 * time.Millisecond)
+		if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("switch direction", true)); err != nil {
+			t.Errorf("append steer: %v", err)
+			return
+		}
+		engine.control.requestSteerInterrupt()
+	}()
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !hasEventType(events, "provider.cancelled") {
+		t.Fatalf("expected provider.cancelled event after provider cancellation, got %#v", events)
+	}
+	if !hasEventType(events, "session.steer.accepted") {
+		t.Fatalf("expected accepted steer event after provider cancellation, got %#v", events)
+	}
+}
+
+func TestEngineInterruptSteerDeferredFinishLeavesSessionAwaitingInput(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Initial docset task.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	firstTurnStarted := make(chan struct{})
+	fake := provider.NewFake(
+		func(ctx context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			if got := req.Messages[len(req.Messages)-1].Text; got != "Initial docset task." {
+				t.Fatalf("expected initial prompt on first turn, got %q", got)
+			}
+			close(firstTurnStarted)
+			<-ctx.Done()
+			return provider.TurnResult{}, ctx.Err()
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "steer_completion" {
+				t.Fatalf("expected steer completion reminder, got %#v", last)
+			}
+			if !strings.Contains(last.Text, "stop without finishing so a later continue can close the task") {
+				t.Fatalf("expected deferred-finish reminder text, got %q", last.Text)
+			}
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{
+					{
+						ID:        "call_2",
+						Name:      "write_file",
+						Arguments: json.RawMessage(`{"path":"reports/spec.md","content":"# Spec\n\nRollback scope refreshed.\n"}`),
+					},
+					{
+						ID:        "call_3",
+						Name:      "write_file",
+						Arguments: json.RawMessage(`{"path":"reports/plan.md","content":"# Plan\n\nPause for later continue.\n"}`),
+					},
+					{
+						ID:        "call_4",
+						Name:      "finish",
+						Arguments: json.RawMessage(`{"message":"done"}`),
+					},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			blockedFinish := false
+			for _, msg := range req.Messages {
+				if msg.Role != "tool" {
+					continue
+				}
+				for _, result := range msg.ToolResults {
+					if result.Name != "finish" {
+						continue
+					}
+					if !result.IsError {
+						t.Fatalf("expected finish to be blocked, got %#v", result)
+					}
+					if guard, _ := result.Metadata["guard"].(string); guard != "steer_deferred_finish" {
+						t.Fatalf("expected steer_deferred_finish guard, got %#v", result.Metadata)
+					}
+					blockedFinish = true
+				}
+			}
+			if !blockedFinish {
+				t.Fatalf("expected blocked finish tool result in provider request, got %#v", req.Messages)
+			}
+			return provider.TurnResult{Text: "Artifacts refreshed. Waiting for continue.", StopReason: "done_candidate"}, nil
+		},
+	)
+	go func() {
+		<-firstTurnStarted
+		time.Sleep(20 * time.Millisecond)
+		if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("Actually change direction for this large documentation task: prioritize safer rollback and migration guidance. Refresh reports/spec.md and reports/plan.md before more drafting, then stop without finishing so a later continue can close the task.", true)); err != nil {
+			t.Errorf("append steer: %v", err)
+			return
+		}
+		engine.control.requestSteerInterrupt()
+	}()
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	}
+	if _, err := os.Stat(filepath.Join(meta.Workdir, "reports", "spec.md")); err != nil {
+		t.Fatalf("expected refreshed spec artifact, got stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(meta.Workdir, "reports", "plan.md")); err != nil {
+		t.Fatalf("expected refreshed plan artifact, got stat error: %v", err)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !hasEventType(events, "provider.cancelled") {
+		t.Fatalf("expected provider.cancelled event after interrupt steer, got %#v", events)
+	}
+	foundBlockedFinish := false
+	for _, evt := range events {
+		if evt.Type != "tool.blocked" {
+			continue
+		}
+		if reason, _ := evt.Data["reason"].(string); reason == "steer_deferred_finish" {
+			foundBlockedFinish = true
+			break
+		}
+	}
+	if !foundBlockedFinish {
+		t.Fatalf("expected blocked finish event, got %#v", events)
+	}
+}
+
+func TestEngineAcceptsBackgroundResultsBeforeProviderCall(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "master task")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	notification := session.NewBackgroundNotification(session.QueueJob{
+		ID:               "job_1",
+		Status:           session.QueueStatusCompleted,
+		SessionID:        "child_1",
+		SessionStatus:    session.StatusCompleted,
+		AgentName:        "reviewer",
+		AgentRole:        "evaluator",
+		RequestedWorkdir: meta.Workdir,
+		EffectiveWorkdir: meta.Workdir,
+		VisiblePaths:     []string{"reports/queue-output.md"},
+		FinalText:        "child done",
+	})
+	if err := engine.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
+		t.Fatalf("append background notification: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role != "user" || !strings.Contains(last.Text, "<background-agent-results>") || !strings.Contains(last.Text, "child done") || !strings.Contains(last.Text, "visible_paths") || !strings.Contains(last.Text, "reports/queue-output.md") || !strings.Contains(last.Text, `"agent_role": "evaluator"`) {
+			t.Fatalf("expected background results message before provider call, got %#v", last)
+		}
+		return provider.TurnResult{Text: "ok", StopReason: "done_candidate"}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	}
+	notifications, err := engine.store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].DeliveryStatus != session.BackgroundNotificationAccepted {
+		t.Fatalf("expected accepted background notification, got %#v", notifications)
+	}
+}
+
+func TestEngineAcceptsSteerAfterProviderDoneCandidateBoundary(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "initial")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			if got := req.Messages[len(req.Messages)-1].Text; got != "initial" {
+				t.Fatalf("expected initial prompt on first turn, got %q", got)
+			}
+			if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
+				t.Fatalf("append steer: %v", err)
+			}
+			return provider.TurnResult{Text: "first turn", StopReason: "done_candidate"}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != "user" || last.Text != "focus on tests" {
+				t.Fatalf("expected accepted steer message on second turn, got %#v", last)
+			}
+			return provider.TurnResult{Text: "second turn", StopReason: "done_candidate"}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	}
+	requests, err := engine.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusAccepted {
+		t.Fatalf("expected accepted steer request, got %#v", requests)
+	}
+}
+
+func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	registry.Register(tools.Definition{
+		Name:        "slow",
+		Description: "slow",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			<-ctx.Done()
+			return session.ToolResult{}, ctx.Err()
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "slow")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		engine.control.requestPause()
+	}()
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusPaused {
+		t.Fatalf("expected paused, got %s", result.Status)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "tool" || len(last.ToolResults) == 0 || !last.ToolResults[0].IsError {
+		t.Fatalf("expected interrupted tool result, got %#v", last)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !hasEventType(events, "tool.before") || !hasEventType(events, "tool.interrupted") {
+		t.Fatalf("expected tool lifecycle events, got %#v", events)
+	}
+}
+
+func TestEngineTriggersSessionAndAssistantHooks(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.SessionStart = []config.HookDefinition{
+		{
+			Name:    "log-start",
+			Command: []string{"/bin/sh", "-c", "cat >> .hook-session-start.json"},
+		},
+	}
+	cfg.Hooks.SessionAwaiting = []config.HookDefinition{
+		{
+			Name:    "log-awaiting",
+			Command: []string{"/bin/sh", "-c", "cat >> .hook-session-awaiting.json"},
+		},
+	}
+	cfg.Hooks.AssistantMessage = []config.HookDefinition{
+		{
+			Name:   "assistant-prefix",
+			Inject: &config.HookInject{Field: "text", Prefix: "[hook] "},
+		},
+	}
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.FinalText != "[hook] done_candidate" {
+		t.Fatalf("expected hooked final text, got %q", result.FinalText)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	if got := messages[len(messages)-1].Text; got != "[hook] done_candidate" {
+		t.Fatalf("expected assistant hook to rewrite stored text, got %q", got)
+	}
+	for _, name := range []string{".hook-session-start.json", ".hook-session-awaiting.json"} {
+		path := filepath.Join(meta.Workdir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if len(data) == 0 {
+			t.Fatalf("expected hook payload in %s", path)
+		}
+	}
+}
+
+func TestEngineToolBeforeHookPayloadIncludesArguments(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.ToolBefore = []config.HookDefinition{
+		{
+			Name:    "log-tool-before",
+			Command: []string{"/bin/sh", "-c", "cat >> .hook-tool-before.json"},
+		},
+	}
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+	data, err := os.ReadFile(filepath.Join(meta.Workdir, ".hook-tool-before.json"))
+	if err != nil {
+		t.Fatalf("read hook payload: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
+	arguments, _ := payload["arguments"].(string)
+	if !strings.Contains(arguments, `"message": "done"`) {
+		t.Fatalf("expected hook payload to include tool arguments, got %q", arguments)
+	}
+}
+
+func TestEngineToolBeforeHookCanRewriteArguments(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.ToolBefore = []config.HookDefinition{
+		{
+			Name:   "rewrite-finish-message",
+			Match:  config.HookMatch{Tool: "finish"},
+			Inject: &config.HookInject{Field: "arguments", Set: "{\"message\":\"hooked\"}"},
+		},
+	}
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"original"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+	if result.FinalText != "hooked" {
+		t.Fatalf("expected rewritten finish message, got %q", result.FinalText)
+	}
+}
+
+func TestEngineMarksInterruptSteerDeferredWhenToolIgnoresCancel(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	release := make(chan struct{})
+	registry.Register(tools.Definition{
+		Name:        "slow",
+		Description: "slow",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(context.Context, tools.ExecContext, json.RawMessage) (session.ToolResult, error) {
+			<-release
+			return session.ToolResult{
+				Name:          "slow",
+				LLMOutput:     "slow done",
+				DisplayOutput: "slow done",
+			}, nil
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "slow")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != "user" || last.Text != "switch direction" {
+				t.Fatalf("expected accepted steer message on second turn, got %#v", last)
+			}
+			return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+		},
+	)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("switch direction", true)); err != nil {
+			t.Errorf("append steer: %v", err)
+			return
+		}
+		engine.control.requestSteerInterrupt()
+		time.Sleep(20 * time.Millisecond)
+		close(release)
+	}()
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !hasEventType(events, "session.steer.deferred") || !hasEventType(events, "session.steer.accepted") {
+		t.Fatalf("expected deferred and accepted steer events, got %#v", events)
+	}
+	requests, err := engine.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusAccepted {
+		t.Fatalf("expected accepted steer request, got %#v", requests)
+	}
+}
+
+func TestEngineEmitsContextLoadedEventWithDurableState(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	meta.RootSessionID = "root-role"
+	meta.ParentSessionID = "parent-role"
+	meta.AgentName = "reviewer"
+	meta.AgentRole = "evaluator"
+	if err := os.MkdirAll(filepath.Join(meta.Workdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(meta.Workdir, "reports", "spec.md"), []byte("# spec\n"), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	if err := engine.store.SaveTodo(meta.ID, []session.TodoItem{{
+		Content:   "Refresh rollout plan",
+		Status:    "in_progress",
+		Priority:  "high",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}}); err != nil {
+		t.Fatalf("save todo: %v", err)
+	}
+	if _, err := session.CreateTask(engine.store, meta.ID, session.TaskCreateInput{
+		Subject:  "Verify durable task graph",
+		Priority: "high",
+	}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish after loading context")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	evt, ok := findEventByType(events, "session.context.loaded")
+	if !ok {
+		t.Fatalf("expected session.context.loaded event, got %#v", events)
+	}
+	if evt.Data["todo_count"] != float64(1) || evt.Data["task_count"] != float64(1) || evt.Data["ready_task_count"] != float64(1) {
+		t.Fatalf("expected durable counts in context event, got %#v", evt.Data)
+	}
+	present, _ := evt.Data["project_memory_present"].([]any)
+	if len(present) != 1 || present[0] != filepath.Join("reports", "spec.md") {
+		t.Fatalf("expected project-memory present path, got %#v", evt.Data["project_memory_present"])
+	}
+	if evt.Data["agent_role"] != "evaluator" || evt.Data["agent_name"] != "reviewer" {
+		t.Fatalf("expected agent identity in context event, got %#v", evt.Data)
+	}
+	if evt.Data["root_session_id"] != "root-role" || evt.Data["parent_session_id"] != "parent-role" {
+		t.Fatalf("expected parent/root identity in context event, got %#v", evt.Data)
+	}
+}
+
+func newTestEngine(t *testing.T, mode string) (*Engine, session.SessionMetadata, session.State, *tools.Registry, *hooks.Manager, *skills.Catalog) {
+	return newTestEngineWithConfig(t, config.Default(), mode)
+}
+
+func newTestEngineWithConfig(t *testing.T, cfg *config.Config, mode string) (*Engine, session.SessionMetadata, session.State, *tools.Registry, *hooks.Manager, *skills.Catalog) {
+	t.Helper()
+	cfg.Session.Dir = t.TempDir()
+	cfg.Runtime.MaxTurnsHard = 4
+	store := session.NewStore(cfg.Session.Dir)
+	bus := events.NewBus()
+	control := &runControl{}
+	engine := NewEngine(cfg, store, bus, control)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             mode,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: completionPolicy(mode),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	catalog, err := skills.Scan(nil)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("catalog: %v", err)
+	}
+	registry, err := tools.NewRegistry(cfg, catalog, store, nil)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	hookManager := hooks.New(cfg.Hooks, meta.Workdir)
+	return engine, meta, state, registry, hookManager, catalog
+}
+
+func loadEvents(store *session.Store, sessionID string) ([]events.Event, error) {
+	var out []events.Event
+	path := filepath.Join(store.SessionDir(sessionID), "events.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range bytesSplitNonEmpty(data, '\n') {
+		var evt events.Event
+		if err := json.Unmarshal(line, &evt); err != nil {
+			return nil, err
+		}
+		out = append(out, evt)
+	}
+	return out, nil
+}
+
+func hasEventType(events []events.Event, eventType string) bool {
+	for _, evt := range events {
+		if evt.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func findEventByType(evts []events.Event, eventType string) (events.Event, bool) {
+	for _, evt := range evts {
+		if evt.Type == eventType {
+			return evt, true
+		}
+	}
+	return events.Event{}, false
+}
+
+func bytesSplitNonEmpty(data []byte, sep byte) [][]byte {
+	var out [][]byte
+	start := 0
+	for i, b := range data {
+		if b != sep {
+			continue
+		}
+		if i > start {
+			out = append(out, append([]byte(nil), data[start:i]...))
+		}
+		start = i + 1
+	}
+	if start < len(data) {
+		out = append(out, append([]byte(nil), data[start:]...))
+	}
+	return out
+}

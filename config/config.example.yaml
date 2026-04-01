@@ -1,0 +1,79 @@
+schema_version: 1
+
+default_provider: openai
+
+providers:
+  openai:
+    api_key_env: OPENAI_API_KEY
+    base_url: https://api.openai.com/v1
+    model: gpt-5.4
+    timeout_sec: 120
+    wire_api: responses
+    max_output_tokens: 8192
+    reasoning_effort: high
+    text_verbosity: low
+    store: false
+
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.anthropic.com
+    model: claude-sonnet-4-6
+    timeout_sec: 120
+    anthropic_version: 2023-06-01
+
+  google:
+    api_key_env: GEMINI_API_KEY
+    base_url: https://generativelanguage.googleapis.com
+    model: gemini-2.5-flash
+    timeout_sec: 120
+
+  openai-compatible:
+    api_key_env: OPENAI_API_KEY
+    base_url: http://localhost:3000/v1
+    model: gpt-5.4
+    timeout_sec: 120
+    wire_api: responses
+    store: false
+
+session:
+  dir: .go-cli-agent/sessions
+  dir_mode: "0700"
+
+skills:
+  dirs:
+    - ./skills
+
+runtime:
+  exec_finish_required: true
+  max_turns_soft: 24
+  max_turns_hard: 40
+  command_timeout_sec: 120
+  steer:
+    poll_interval_ms: 250
+    default_behavior: queue
+  shell_env_allowlist:
+    - PATH
+    - HOME
+    - LANG
+    - TERM
+  compact:
+    input_char_threshold: 160000
+    keep_recent_tool_results: 3
+
+  # 以下字段是扩展 phase 兼容配置，不是 core v1 默认主路径。
+  multi_agent:
+    enabled: false
+    max_depth: 4
+  isolation:
+    default_mode: off
+    root_dir: .go-cli-agent/_worktrees
+  queue:
+    poll_interval_ms: 1000
+    auto_worker: true
+
+output:
+  format: text
+  show_raw_events: false
+
+hooks:
+  default_timeout_sec: 15

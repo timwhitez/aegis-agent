@@ -1,0 +1,62 @@
+schema_version: 1
+
+default_provider: openai-compatible
+
+providers:
+  openai-compatible:
+    api_key_env: OPENAI_API_KEY
+    base_url: http://64.186.236.156:24634/v1
+    model: gpt-5.4
+    timeout_sec: 240
+    retry:
+      max_attempts: 2
+      base_delay_ms: 1000
+      retry_5xx: true
+      retry_transport: true
+    wire_api: responses
+    max_output_tokens: 3072
+    reasoning_effort: medium
+    text_verbosity: low
+    store: false
+    send_metadata: false
+
+session:
+  dir: /root/.go-cli-agent/validation-sessions
+  dir_mode: "0700"
+
+skills:
+  dirs:
+    - ./skills
+    - ./validation/skills
+
+runtime:
+  exec_finish_required: true
+  max_turns_soft: 48
+  max_turns_hard: 64
+  command_timeout_sec: 180
+  steer:
+    poll_interval_ms: 250
+    default_behavior: queue
+  shell_env_allowlist:
+    - PATH
+    - HOME
+    - LANG
+    - TERM
+  compact:
+    input_char_threshold: 12000
+    keep_recent_tool_results: 3
+  multi_agent:
+    max_depth: 4
+  isolation:
+    default_mode: off
+    root_dir: /root/.go-cli-agent/validation-worktrees
+  queue:
+    poll_interval_ms: 1000
+    auto_worker: true
+
+output:
+  format: text
+  show_raw_events: false
+
+hooks:
+  default_timeout_sec: 15

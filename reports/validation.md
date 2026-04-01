@@ -1,0 +1,6 @@
+# Validation
+- Validated finding: forced compaction is behaviorally gated in the owning runtime builder. In `internal/runtime/compaction.go`, the builder clones and micro-compacts the working slice, computes `size := estimateChars(cloned)`, and returns early with `if size <= threshold { return cloned, nil }`.
+- Validated finding: original history is preserved before the provider-facing context is rewritten. After the threshold gate trips, the same builder calls `c.store.WriteTranscript(sessionID, transcriptName, messages)`, passing the original `messages` slice rather than the rewritten output.
+- Validated finding: the compacted provider-facing context is rebuilt as a synthetic user message containing `[Conversation compacted]` plus the JSON summary, then `recent := recentMessagesForCompaction(cloned, 6)` is appended and returned.
+- Validated finding: the compaction summary is durably persisted through the owning store path. `internal/runtime/compaction.go` calls `c.store.WriteArtifact(...)`, and `internal/session/store.go` writes that payload under `SessionDir(sessionID)/artifacts/...`.
+- Risk/inference: this validation does not claim anything broader than the inspected runtime-owned compaction path.

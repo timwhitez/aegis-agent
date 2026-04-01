@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Go CLI Agent Console</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="topbar-copy">
+          <p class="eyebrow">Experimental Web Console</p>
+          <h1>Go CLI Agent Console</h1>
+          <p class="subtitle">
+            CLI-first control plane for sessions, queues, tasks, and background workers.
+          </p>
+        </div>
+        <div id="topbar-meta" class="topbar-meta" aria-live="polite"></div>
+        <div class="topbar-actions">
+          <button id="open-start-button" class="button button-primary" type="button">New Session</button>
+          <button id="manual-refresh-button" class="button button-secondary" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <div class="shell">
+        <aside class="sidebar">
+          <section class="sidebar-card">
+            <div class="sidebar-title-row">
+              <h2>Views</h2>
+            </div>
+            <div class="nav-list">
+              <button class="nav-button is-active" data-view-button="overview" type="button">Overview</button>
+              <button class="nav-button" data-view-button="queue" type="button">Queue</button>
+            </div>
+          </section>
+
+          <section class="sidebar-card">
+            <div class="sidebar-title-row">
+              <h2>Sessions</h2>
+              <span id="session-count-badge" class="badge">0</span>
+            </div>
+            <div id="session-list" class="session-list"></div>
+          </section>
+        </aside>
+
+        <main class="content">
+          <section id="overview-view" class="view-panel"></section>
+          <section id="queue-view" class="view-panel is-hidden"></section>
+          <section id="session-view" class="view-panel is-hidden"></section>
+        </main>
+
+        <aside class="actions">
+          <section id="start-card" class="action-card"></section>
+          <section id="session-action-card" class="action-card"></section>
+          <section id="queue-job-card" class="action-card"></section>
+          <section id="worker-card" class="action-card"></section>
+        </aside>
+      </div>
+    </div>
+
+    <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

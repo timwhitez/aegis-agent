@@ -1,0 +1,727 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/hooks"
+	"go-cli-agent/internal/isolation"
+	"go-cli-agent/internal/provider"
+	"go-cli-agent/internal/session"
+	"go-cli-agent/internal/skills"
+	"go-cli-agent/internal/tools"
+)
+
+type Runner struct {
+	cfg     *config.Config
+	store   *session.Store
+	bus     *events.Bus
+	control *runControl
+	engine  *Engine
+}
+
+const defaultSteerMaxMessageChars = 12000
+
+type SteerValidationError struct {
+	Code        string
+	MaxChars    int
+	ActualChars int
+}
+
+func (e SteerValidationError) Error() string {
+	return fmt.Sprintf("steer input exceeds the maximum length of %d characters", e.MaxChars)
+}
+
+func newSessionStore(cfg *config.Config) *session.Store {
+	dirMode, err := config.ParseFileMode(cfg.Session.DirMode, 0o700)
+	if err != nil {
+		dirMode = 0o700
+	}
+	return session.NewStoreWithDirMode(cfg.Session.Dir, dirMode)
+}
+
+func NewRunner(cfg *config.Config) *Runner {
+	store := newSessionStore(cfg)
+	bus := events.NewBus()
+	control := &runControl{}
+	return &Runner{
+		cfg:     cfg,
+		store:   store,
+		bus:     bus,
+		control: control,
+		engine:  NewEngine(cfg, store, bus, control),
+	}
+}
+
+func (r *Runner) Bus() *events.Bus { return r.bus }
+
+type StartRequest struct {
+	Prompt          string
+	Provider        string
+	Model           string
+	Workdir         string
+	Mode            string
+	SystemOverride  string
+	ParentSessionID string
+	AgentName       string
+	AgentRole       string
+	QueueJobID      string
+	IsolationMode   string
+	IsolationRoot   string
+}
+
+type ContinueRequest struct {
+	SessionID      string
+	Message        string
+	Provider       string
+	Model          string
+	SystemOverride string
+}
+
+type SteerRequest struct {
+	SessionID string
+	Message   string
+	Interrupt bool
+	Source    string
+}
+
+type SteerResult struct {
+	SessionID string `json:"session_id"`
+	Accepted  bool   `json:"accepted"`
+	Behavior  string `json:"behavior"`
+}
+
+type ProbeRequest struct {
+	Provider  string
+	Model     string
+	BaseURL   string
+	APIKeyEnv string
+	WireAPI   string
+	Prompt    string
+}
+
+type ProbeResult struct {
+	Provider      string         `json:"provider"`
+	Model         string         `json:"model"`
+	BaseURL       string         `json:"base_url"`
+	WireAPI       string         `json:"wire_api,omitempty"`
+	StopReason    string         `json:"stop_reason"`
+	Text          string         `json:"text,omitempty"`
+	ToolCallNames []string       `json:"tool_call_names,omitempty"`
+	FinishMessage string         `json:"finish_message,omitempty"`
+	Usage         provider.Usage `json:"usage,omitempty"`
+}
+
+func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error) {
+	workdir := req.Workdir
+	if workdir == "" {
+		var err error
+		workdir, err = os.Getwd()
+		if err != nil {
+			return RunResult{}, err
+		}
+	}
+	workdir, err := filepath.Abs(workdir)
+	if err != nil {
+		return RunResult{}, err
+	}
+	requestedWorkdir := workdir
+	providerName := req.Provider
+	if providerName == "" {
+		providerName = r.cfg.DefaultProvider
+	}
+	providerCfg, err := r.cfg.ProviderConfig(providerName)
+	if err != nil {
+		return RunResult{}, WrapConfigError(err)
+	}
+	model := req.Model
+	if model == "" {
+		model = providerCfg.Model
+	}
+	agentRole, err := normalizeAgentRole(req.AgentRole, req.AgentName)
+	if err != nil {
+		return RunResult{}, err
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = session.ModeRun
+	}
+	sessionID := session.NewSessionID()
+	rootSessionID := sessionID
+	depth := 0
+	if req.ParentSessionID != "" {
+		parentMeta, err := r.store.LoadMetadata(req.ParentSessionID)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if parentMeta.RootSessionID != "" {
+			rootSessionID = parentMeta.RootSessionID
+		} else {
+			rootSessionID = parentMeta.ID
+		}
+		depth = parentMeta.Depth + 1
+		if depth > r.cfg.Runtime.MultiAgent.MaxDepth {
+			return RunResult{}, fmt.Errorf("max agent depth exceeded: %d", r.cfg.Runtime.MultiAgent.MaxDepth)
+		}
+		if req.Workdir == "" {
+			if parentMeta.RequestedWorkdir != "" {
+				requestedWorkdir = parentMeta.RequestedWorkdir
+			} else {
+				requestedWorkdir = parentMeta.Workdir
+			}
+		}
+	}
+	effectiveWorkdir := requestedWorkdir
+	isolationMode := strings.TrimSpace(req.IsolationMode)
+	if isolationMode == "" {
+		isolationMode = r.cfg.Runtime.Isolation.DefaultMode
+	}
+	var isolationInfo *session.IsolationInfo
+	if isolationMode != "" && isolationMode != "off" {
+		rootDir := req.IsolationRoot
+		if strings.TrimSpace(rootDir) == "" {
+			rootDir = r.cfg.Runtime.Isolation.RootDir
+		}
+		prepared, err := isolation.Prepare(isolation.Request{
+			SessionID:     sessionID,
+			ParentWorkdir: requestedWorkdir,
+			RequestedMode: isolationMode,
+			RootDir:       rootDir,
+		})
+		if err != nil {
+			return RunResult{}, err
+		}
+		effectiveWorkdir = prepared.Workdir
+		isolationInfo = &session.IsolationInfo{
+			Mode:          prepared.Mode,
+			RequestedMode: prepared.RequestedMode,
+			ParentWorkdir: prepared.ParentWorkdir,
+			Workdir:       prepared.Workdir,
+			RootDir:       prepared.RootDir,
+			GitRepoRoot:   prepared.GitRepoRoot,
+		}
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          effectiveWorkdir,
+		RequestedWorkdir: requestedWorkdir,
+		Mode:             mode,
+		Provider:         providerName,
+		Model:            model,
+		CompletionPolicy: completionPolicy(mode),
+		ParentSessionID:  req.ParentSessionID,
+		RootSessionID:    rootSessionID,
+		AgentName:        req.AgentName,
+		AgentRole:        agentRole,
+		QueueJobID:       req.QueueJobID,
+		Depth:            depth,
+		Isolation:        isolationInfo,
+		ProviderOptions:  providerOptionsFromConfig(providerName, providerCfg),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := r.store.Create(meta, state); err != nil {
+		return RunResult{}, err
+	}
+	r.emit(meta.ID, "session.created", "prepare", map[string]any{
+		"provider": meta.Provider,
+		"model":    meta.Model,
+		"mode":     meta.Mode,
+		"workdir":  meta.Workdir,
+	})
+	if stringsTrim(req.Prompt) != "" {
+		if err := r.appendUserMessage(ctx, meta, "prepare", req.Prompt, nil); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+	}
+	return r.runExisting(ctx, meta, state, req.SystemOverride)
+}
+
+func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {
+	meta, err := r.store.LoadMetadata(req.SessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	state, err := r.store.LoadState(req.SessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	switch state.Status {
+	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
+	default:
+		return RunResult{}, errors.New("session is not resumable")
+	}
+	if req.Provider != "" {
+		meta.Provider = req.Provider
+		providerCfg, err := r.cfg.ProviderConfig(req.Provider)
+		if err != nil {
+			return RunResult{}, WrapConfigError(err)
+		}
+		if req.Model != "" {
+			providerCfg.Model = req.Model
+		}
+		meta.ProviderOptions = providerOptionsFromConfig(req.Provider, providerCfg)
+	}
+	if req.Model != "" {
+		meta.Model = req.Model
+	}
+	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
+		return RunResult{}, err
+	}
+	if stringsTrim(req.Message) != "" {
+		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, nil); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+	}
+	state.Status = session.StatusRunning
+	return r.runExisting(ctx, meta, state, req.SystemOverride)
+}
+
+func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string) (RunResult, error) {
+	catalog, err := skills.Scan(r.cfg.Skills.Dirs)
+	if err != nil {
+		return RunResult{}, err
+	}
+	registry, err := tools.NewRegistry(r.cfg, catalog, r.store, r)
+	if err != nil {
+		return RunResult{}, err
+	}
+	hookManager := hooks.New(r.cfg.Hooks, meta.Workdir)
+	adapter, err := r.adapterForSession(meta)
+	if err != nil {
+		return RunResult{}, err
+	}
+	releaseAutoWorker := r.startAutoQueueWorker()
+	defer releaseAutoWorker()
+	watcherCtx, cancelWatcher := context.WithCancel(ctx)
+	defer cancelWatcher()
+	go r.watchSteer(watcherCtx, meta.ID)
+	r.emit(meta.ID, "session.started", "prepare", map[string]any{
+		"provider": meta.Provider,
+		"model":    meta.Model,
+	})
+	return r.engine.Run(ctx, meta, state, systemOverride, adapter, catalog, registry, hookManager)
+}
+
+func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error) {
+	if stringsTrim(req.Message) == "" {
+		return SteerResult{}, errors.New("steer message is required")
+	}
+	actualChars := utf8.RuneCountInString(req.Message)
+	if actualChars > defaultSteerMaxMessageChars {
+		return SteerResult{}, SteerValidationError{
+			Code:        "steer_input_too_large",
+			MaxChars:    defaultSteerMaxMessageChars,
+			ActualChars: actualChars,
+		}
+	}
+	state, err := r.store.LoadState(req.SessionID)
+	if err != nil {
+		return SteerResult{}, err
+	}
+	if state.Status != session.StatusRunning {
+		return SteerResult{}, errors.New("session is not running; use continue instead")
+	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "cli"
+	}
+	request := session.NewSteerRequestWithSource(source, req.Message, req.Interrupt)
+	if err := r.store.AppendSteerRequest(req.SessionID, request); err != nil {
+		return SteerResult{}, err
+	}
+	state.PendingSteerCount++
+	if err := r.store.SaveState(req.SessionID, state); err != nil {
+		return SteerResult{}, err
+	}
+	r.emit(req.SessionID, "session.steer.requested", "control", map[string]any{
+		"id":        request.ID,
+		"interrupt": request.Interrupt,
+	})
+	r.emit(req.SessionID, "session.steer.queued", "control", map[string]any{
+		"id": request.ID,
+	})
+	return SteerResult{
+		SessionID: req.SessionID,
+		Accepted:  true,
+		Behavior:  "queued",
+	}, nil
+}
+
+func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
+	providerName := req.Provider
+	if providerName == "" {
+		providerName = r.cfg.DefaultProvider
+	}
+	providerCfg, err := r.providerConfig(providerName, req.BaseURL, req.APIKeyEnv, req.WireAPI, req.Model)
+	if err != nil {
+		return ProbeResult{}, WrapConfigError(err)
+	}
+	model := req.Model
+	if model == "" {
+		model = providerCfg.Model
+	}
+	adapter, err := r.adapterFromConfig(providerName, providerCfg)
+	if err != nil {
+		return ProbeResult{}, WrapConfigError(err)
+	}
+	prompt := req.Prompt
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "Return exactly one finish tool call with message: provider probe ok"
+	}
+	result, err := adapter.RunTurn(ctx, provider.TurnRequest{
+		SessionID:    "probe",
+		Model:        model,
+		SystemPrompt: "You are a provider probe. Follow the user instruction exactly.",
+		Messages: []session.Message{
+			session.NewMessage("user", prompt),
+		},
+		Tools: []provider.ToolSchema{
+			{
+				Name:        "finish",
+				Description: "Explicitly mark the current task as complete.",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"message": map[string]any{"type": "string"},
+					},
+					"required": []string{"message"},
+				},
+			},
+		},
+		Temperature:     providerCfg.Temperature,
+		TopP:            providerCfg.TopP,
+		MaxOutputTokens: providerCfg.MaxOutputTokens,
+		ReasoningEffort: strings.TrimSpace(providerCfg.ReasoningEffort),
+		TextVerbosity:   strings.TrimSpace(providerCfg.TextVerbosity),
+		ThinkingBudget:  providerCfg.ThinkingBudget,
+		IncludeThoughts: providerCfg.IncludeThoughts,
+		Store:           defaultStoreForProvider(providerName, providerCfg.Store),
+	}, func(string, map[string]any) {})
+	if err != nil {
+		return ProbeResult{}, WrapProviderError(err)
+	}
+
+	out := ProbeResult{
+		Provider:   providerName,
+		Model:      model,
+		BaseURL:    providerCfg.BaseURL,
+		WireAPI:    providerCfg.WireAPI,
+		StopReason: result.StopReason,
+		Text:       result.Text,
+		Usage:      result.Usage,
+	}
+	for _, call := range result.ToolCalls {
+		out.ToolCallNames = append(out.ToolCallNames, call.Name)
+		if call.Name == "finish" {
+			var payload struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(call.Arguments, &payload); err == nil {
+				out.FinishMessage = payload.Message
+			}
+		}
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "finish" {
+		return out, errors.New("probe failed: provider did not return exactly one finish tool call")
+	}
+	return out, nil
+}
+
+func (r *Runner) Interrupt(sessionID string) error {
+	return r.InterruptWithReason(sessionID, "keyboard_interrupt")
+}
+
+func (r *Runner) InterruptWithReason(sessionID, reason string) error {
+	state, err := r.store.LoadState(sessionID)
+	if err != nil {
+		return err
+	}
+	if state.Status != session.StatusRunning {
+		return errors.New("session is not running")
+	}
+	r.control.requestPauseWithReason(reason)
+	return nil
+}
+
+func (r *Runner) State(sessionID string) (session.State, error) {
+	return r.store.LoadState(sessionID)
+}
+
+func (r *Runner) Tasks(sessionID string) (session.TaskBoard, error) {
+	todo, err := r.store.LoadTodo(sessionID)
+	if err != nil {
+		return session.TaskBoard{}, err
+	}
+	tasks, err := r.store.ListTasks(sessionID)
+	if err != nil {
+		return session.TaskBoard{}, err
+	}
+	return session.BuildTaskBoard(todo, tasks), nil
+}
+
+func (r *Runner) List(limit int) ([]session.SessionSummary, error) {
+	return r.store.List(limit)
+}
+
+func (r *Runner) Store() *session.Store {
+	return r.store
+}
+
+func (r *Runner) watchSteer(ctx context.Context, sessionID string) {
+	interval := time.Duration(r.cfg.Runtime.Steer.PollIntervalMS) * time.Millisecond
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	seenInterrupts := map[string]struct{}{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			requests, err := r.store.PendingSteerRequests(sessionID)
+			if err != nil {
+				continue
+			}
+			for _, req := range requests {
+				if !req.Interrupt {
+					continue
+				}
+				if _, ok := seenInterrupts[req.ID]; ok {
+					continue
+				}
+				seenInterrupts[req.ID] = struct{}{}
+				if req.Interrupt {
+					r.control.requestSteerInterrupt()
+					r.emit(sessionID, "session.steer.interrupt_requested", "control", map[string]any{
+						"id": req.ID,
+					})
+				}
+			}
+		}
+	}
+}
+
+func (r *Runner) appendUserMessage(ctx context.Context, meta session.SessionMetadata, phase, text string, extraMeta map[string]any) error {
+	text, err := r.transformUserMessage(ctx, meta, phase, text)
+	if err != nil {
+		return err
+	}
+	if stringsTrim(text) == "" {
+		return nil
+	}
+	msg := session.NewMessage("user", text)
+	if len(extraMeta) > 0 {
+		msg.Meta = extraMeta
+	}
+	if err := r.store.AppendMessage(meta.ID, msg); err != nil {
+		return err
+	}
+	data := map[string]any{
+		"text": text,
+		"mode": meta.Mode,
+	}
+	for key, value := range extraMeta {
+		data[key] = value
+	}
+	r.emit(meta.ID, "user.message", phase, data)
+	return nil
+}
+
+func (r *Runner) transformUserMessage(ctx context.Context, meta session.SessionMetadata, phase, text string) (string, error) {
+	hookManager := hooks.New(r.cfg.Hooks, meta.Workdir)
+	hookManager.SetEmitter(func(eventType string, data map[string]any) {
+		r.emit(meta.ID, eventType, phase, data)
+	})
+	payload, err := hookManager.Trigger(ctx, "user.message", map[string]any{
+		"session_id": meta.ID,
+		"text":       text,
+		"mode":       meta.Mode,
+	})
+	if err != nil {
+		return "", err
+	}
+	if value, ok := payload["text"].(string); ok {
+		return value, nil
+	}
+	return text, nil
+}
+
+func (r *Runner) emit(sessionID, eventType, phase string, data map[string]any) {
+	evt := events.New(sessionID, eventType, phase, data)
+	_ = r.store.AppendEvent(sessionID, evt)
+	r.bus.Publish(evt)
+}
+
+func (r *Runner) failBeforeRun(sessionID string, state session.State, phase string, err error) (RunResult, error) {
+	state.Status = session.StatusFailed
+	state.Phase = phase
+	state.LastError = err.Error()
+	_ = r.store.SaveState(sessionID, state)
+	r.emit(sessionID, "session.failed", phase, map[string]any{"error": err.Error()})
+	return RunResult{
+		SessionID: sessionID,
+		Status:    state.Status,
+		LastError: state.LastError,
+	}, err
+}
+
+func (r *Runner) adapter(name string) (provider.Adapter, error) {
+	cfg, err := r.cfg.ProviderConfig(name)
+	if err != nil {
+		return nil, WrapConfigError(err)
+	}
+	return r.adapterFromConfig(name, cfg)
+}
+
+func (r *Runner) adapterForSession(meta session.SessionMetadata) (provider.Adapter, error) {
+	cfg, err := r.cfg.ProviderConfig(meta.Provider)
+	if err != nil {
+		return nil, WrapConfigError(err)
+	}
+	cfg = applySessionProviderOptions(cfg, meta.ProviderOptions)
+	return r.adapterFromConfig(meta.Provider, cfg)
+}
+
+func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, wireAPI, model string) (config.Provider, error) {
+	cfg, err := r.cfg.ProviderConfig(name)
+	if err != nil {
+		return config.Provider{}, WrapConfigError(err)
+	}
+	if baseURL != "" {
+		cfg.BaseURL = baseURL
+	}
+	if apiKeyEnv != "" {
+		cfg.APIKeyEnv = apiKeyEnv
+	}
+	if wireAPI != "" {
+		cfg.WireAPI = wireAPI
+	}
+	if model != "" {
+		cfg.Model = model
+	}
+	return cfg, nil
+}
+
+func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.Adapter, error) {
+	client := &http.Client{Timeout: time.Duration(providerTimeout(cfg.TimeoutSec)) * time.Second}
+	retryCfg := providerRetryConfig(cfg)
+	switch name {
+	case "openai":
+		if cfg.WireAPI != "" && cfg.WireAPI != "responses" {
+			return nil, WrapConfigError(errors.New("unsupported openai wire_api: " + cfg.WireAPI))
+		}
+		return provider.NewOpenAIWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), client, retryCfg), nil
+	case "anthropic":
+		return provider.NewAnthropicWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), cfg.AnthropicVersion, client, retryCfg), nil
+	case "google":
+		return provider.NewGoogleWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), client, retryCfg), nil
+	case "openai-compatible":
+		if cfg.WireAPI == "" || cfg.WireAPI == "responses" {
+			return provider.NewOpenAIWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), client, retryCfg), nil
+		}
+		return nil, WrapConfigError(errors.New("unsupported openai-compatible wire_api: " + cfg.WireAPI))
+	default:
+		return nil, WrapConfigError(errors.New("unsupported provider: " + name))
+	}
+}
+
+func completionPolicy(mode string) string {
+	if mode == session.ModeExec {
+		return session.CompletionPolicyAutonomous
+	}
+	return session.CompletionPolicyInteractive
+}
+
+func providerTimeout(timeoutSec int) int {
+	if timeoutSec <= 0 {
+		return 120
+	}
+	return timeoutSec
+}
+
+func providerRetryConfig(cfg config.Provider) provider.RetryConfig {
+	baseDelay := time.Second
+	if cfg.Retry.BaseDelayMS > 0 {
+		baseDelay = time.Duration(cfg.Retry.BaseDelayMS) * time.Millisecond
+	}
+	maxAttempts := cfg.Retry.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	return provider.RetryConfig{
+		MaxAttempts:    maxAttempts,
+		BaseDelay:      baseDelay,
+		Retry429:       cfg.Retry.Retry429,
+		Retry5xx:       cfg.Retry.Retry5xx,
+		RetryTransport: cfg.Retry.RetryTransport,
+	}
+}
+
+func providerRetryPolicy(cfg config.Provider) *session.ProviderRetryPolicy {
+	retryCfg := providerRetryConfig(cfg)
+	return &session.ProviderRetryPolicy{
+		MaxAttempts:    retryCfg.MaxAttempts,
+		BaseDelayMS:    int(retryCfg.BaseDelay / time.Millisecond),
+		Retry429:       cfg.Retry.Retry429,
+		Retry5xx:       cfg.Retry.Retry5xx,
+		RetryTransport: cfg.Retry.RetryTransport,
+	}
+}
+
+func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptions) config.Provider {
+	if opts.RetryPolicy != nil {
+		cfg.Retry = config.Retry{
+			MaxAttempts:    opts.RetryPolicy.MaxAttempts,
+			BaseDelayMS:    opts.RetryPolicy.BaseDelayMS,
+			Retry429:       opts.RetryPolicy.Retry429,
+			Retry5xx:       opts.RetryPolicy.Retry5xx,
+			RetryTransport: opts.RetryPolicy.RetryTransport,
+		}
+	}
+	return cfg
+}
+
+func stringsTrim(value string) string {
+	return strings.TrimSpace(value)
+}
+
+func providerOptionsFromConfig(name string, cfg config.Provider) session.ProviderOptions {
+	return session.ProviderOptions{
+		Temperature:     cfg.Temperature,
+		TopP:            cfg.TopP,
+		MaxOutputTokens: cfg.MaxOutputTokens,
+		ReasoningEffort: strings.TrimSpace(cfg.ReasoningEffort),
+		TextVerbosity:   strings.TrimSpace(cfg.TextVerbosity),
+		ThinkingBudget:  cfg.ThinkingBudget,
+		IncludeThoughts: cfg.IncludeThoughts,
+		Store:           defaultStoreForProvider(name, cfg.Store),
+		SendMetadata:    cfg.SendMetadata,
+		RetryPolicy:     providerRetryPolicy(cfg),
+	}
+}
+
+func defaultStoreForProvider(name string, configured *bool) *bool {
+	if configured != nil {
+		return configured
+	}
+	if name == "openai" || name == "openai-compatible" {
+		value := false
+		return &value
+	}
+	return nil
+}

@@ -1,0 +1,268 @@
+package hooks
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"go-cli-agent/internal/config"
+)
+
+type EmitFunc func(eventType string, data map[string]any)
+
+type FailClosedError struct {
+	Point string
+	Name  string
+	Err   error
+}
+
+func (e *FailClosedError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *FailClosedError) Unwrap() error {
+	return e.Err
+}
+
+type Manager struct {
+	workdir        string
+	defaultTimeout int
+	points         map[string][]config.HookDefinition
+	emit           EmitFunc
+}
+
+type hookExecution struct {
+	payload         map[string]any
+	modifiedFields  []string
+	skipped         []string
+	commandExitCode *int
+}
+
+func New(cfg config.HooksConfig, workdir string) *Manager {
+	return &Manager{
+		workdir:        workdir,
+		defaultTimeout: cfg.DefaultTimeoutSec,
+		points: map[string][]config.HookDefinition{
+			"session.start":          cfg.SessionStart,
+			"session.awaiting_input": cfg.SessionAwaiting,
+			"session.pause":          cfg.SessionPause,
+			"session.complete":       cfg.SessionComplete,
+			"session.fail":           cfg.SessionFail,
+			"user.message":           cfg.UserMessage,
+			"assistant.message":      cfg.AssistantMessage,
+			"tool.before":            cfg.ToolBefore,
+			"tool.after":             cfg.ToolAfter,
+		},
+		emit: func(string, map[string]any) {},
+	}
+}
+
+func (m *Manager) SetEmitter(fn EmitFunc) {
+	if fn != nil {
+		m.emit = fn
+	}
+}
+
+func (m *Manager) Trigger(ctx context.Context, point string, payload map[string]any) (map[string]any, error) {
+	next := cloneMap(payload)
+	for _, hook := range m.points[point] {
+		if !matches(hook.Match, next) {
+			continue
+		}
+		m.emit("hook.triggered", map[string]any{
+			"point": point,
+			"name":  hook.Name,
+		})
+		execution, err := m.runHook(ctx, hook, next)
+		if err != nil {
+			data := map[string]any{
+				"point":       point,
+				"name":        hook.Name,
+				"fail_closed": hook.FailClosed,
+				"error":       err.Error(),
+			}
+			if execution.commandExitCode != nil {
+				data["command_exit_code"] = *execution.commandExitCode
+			}
+			if len(execution.skipped) > 0 {
+				data["skipped"] = execution.skipped
+			}
+			m.emit("hook.failed", data)
+			if hook.FailClosed {
+				return next, &FailClosedError{
+					Point: point,
+					Name:  hook.Name,
+					Err:   err,
+				}
+			}
+			continue
+		}
+		next = execution.payload
+		data := map[string]any{
+			"point": point,
+			"name":  hook.Name,
+		}
+		if execution.commandExitCode != nil {
+			data["command_exit_code"] = *execution.commandExitCode
+		}
+		if len(execution.modifiedFields) > 0 {
+			data["modified_fields"] = execution.modifiedFields
+		}
+		if len(execution.skipped) > 0 {
+			data["skipped"] = execution.skipped
+		}
+		m.emit("hook.finished", data)
+	}
+	return next, nil
+}
+
+func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, payload map[string]any) (hookExecution, error) {
+	next := cloneMap(payload)
+	execution := hookExecution{payload: next}
+	if len(hook.Command) > 0 {
+		timeout := hook.TimeoutSec
+		if timeout <= 0 {
+			timeout = m.defaultTimeout
+		}
+		callCtx := ctx
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			callCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+			defer cancel()
+		}
+		stdin, err := json.Marshal(next)
+		if err != nil {
+			return execution, err
+		}
+		argv := substituteVars(hook.Command, next)
+		cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
+		cmd.Dir = m.workdir
+		cmd.Env = minimalEnv(next)
+		cmd.Stdin = bytes.NewReader(stdin)
+		output, err := cmd.CombinedOutput()
+		m.emit("hook.command", map[string]any{
+			"name":   hook.Name,
+			"output": string(output),
+		})
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode := exitErr.ExitCode()
+				execution.commandExitCode = &exitCode
+			}
+			return execution, err
+		}
+		exitCode := 0
+		execution.commandExitCode = &exitCode
+	}
+	if hook.Inject != nil {
+		field := hook.Inject.Field
+		rawValue, exists := next[field]
+		if !exists {
+			execution.skipped = append(execution.skipped, fmt.Sprintf("inject skipped: field %q missing", field))
+		} else if value, ok := rawValue.(string); !ok {
+			execution.skipped = append(execution.skipped, fmt.Sprintf("inject skipped: field %q is not a string", field))
+		} else {
+			updated := value
+			if hook.Inject.Set != "" {
+				updated = hook.Inject.Set
+			} else {
+				updated = hook.Inject.Prefix + value + hook.Inject.Suffix
+			}
+			if updated != value {
+				next[field] = updated
+				execution.modifiedFields = appendUniqueString(execution.modifiedFields, field)
+			}
+		}
+	}
+	if hook.Filter != nil {
+		field := hook.Filter.Field
+		rawValue, exists := next[field]
+		if !exists {
+			execution.skipped = append(execution.skipped, fmt.Sprintf("filter skipped: field %q missing", field))
+		} else if value, ok := rawValue.(string); !ok {
+			execution.skipped = append(execution.skipped, fmt.Sprintf("filter skipped: field %q is not a string", field))
+		} else {
+			if hook.Filter.RejectIfContains != "" && strings.Contains(value, hook.Filter.RejectIfContains) {
+				return execution, fmt.Errorf("hook rejected payload by field %s", field)
+			}
+			updated := value
+			for _, redact := range hook.Filter.Redact {
+				updated = strings.ReplaceAll(updated, redact, "***")
+			}
+			if updated != value {
+				next[field] = updated
+				execution.modifiedFields = appendUniqueString(execution.modifiedFields, field)
+			}
+		}
+	}
+	return execution, nil
+}
+
+func matches(match config.HookMatch, payload map[string]any) bool {
+	if match.Tool != "" {
+		if payload["tool_name"] != match.Tool {
+			return false
+		}
+	}
+	if match.Mode != "" {
+		if payload["mode"] != match.Mode {
+			return false
+		}
+	}
+	if match.Status != "" {
+		if payload["status"] != match.Status {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneMap(input map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func substituteVars(command []string, payload map[string]any) []string {
+	replacer := strings.NewReplacer(
+		"$SESSION_ID", fmt.Sprint(payload["session_id"]),
+		"$WORKDIR", fmt.Sprint(payload["workdir"]),
+		"$TOOL_NAME", fmt.Sprint(payload["tool_name"]),
+		"$STATUS", fmt.Sprint(payload["status"]),
+		"$FILE", fmt.Sprint(payload["file"]),
+	)
+	out := make([]string, 0, len(command))
+	for _, part := range command {
+		out = append(out, replacer.Replace(part))
+	}
+	return out
+}
+
+func minimalEnv(payload map[string]any) []string {
+	var out []string
+	for _, key := range []string{"PATH", "HOME", "LANG", "TERM"} {
+		if value, ok := os.LookupEnv(key); ok {
+			out = append(out, key+"="+value)
+		}
+	}
+	if sessionID, ok := payload["session_id"].(string); ok {
+		out = append(out, "SESSION_ID="+sessionID)
+	}
+	return out
+}
+
+func appendUniqueString(items []string, value string) []string {
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
+}

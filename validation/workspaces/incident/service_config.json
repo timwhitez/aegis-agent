@@ -1,0 +1,12 @@
+{
+  "serviceName": "lantern-api",
+  "httpClientTimeoutMs": 1000,
+  "retry": {
+    "maxAttempts": 1,
+    "backoffMs": 0
+  },
+  "queueConsumer": {
+    "batchSize": 20,
+    "visibilityTimeoutSec": 30
+  }
+}

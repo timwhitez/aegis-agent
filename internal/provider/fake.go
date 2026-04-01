@@ -1,0 +1,126 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+
+	"go-cli-agent/internal/session"
+)
+
+type FakeAdapter struct {
+	mu       sync.Mutex
+	name     string
+	sequence []func(context.Context, TurnRequest) (TurnResult, error)
+	index    int
+}
+
+func NewFake(sequence ...func(context.Context, TurnRequest) (TurnResult, error)) *FakeAdapter {
+	return &FakeAdapter{name: "fake", sequence: sequence}
+}
+
+func (f *FakeAdapter) Name() string { return f.name }
+
+func (f *FakeAdapter) RunTurn(ctx context.Context, req TurnRequest, _ EmitFunc) (TurnResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.index >= len(f.sequence) {
+		if len(f.sequence) == 0 {
+			return fakeDefaultTurn(ctx, req)
+		}
+		return TurnResult{}, nil
+	}
+	fn := f.sequence[f.index]
+	f.index++
+	return fn(ctx, req)
+}
+
+func fakeDefaultTurn(ctx context.Context, req TurnRequest) (TurnResult, error) {
+	select {
+	case <-ctx.Done():
+		return TurnResult{}, ctx.Err()
+	default:
+	}
+
+	if len(req.Messages) == 0 {
+		return TurnResult{Text: "Fake provider ready.", StopReason: "done_candidate"}, nil
+	}
+
+	last := req.Messages[len(req.Messages)-1]
+	switch last.Role {
+	case "tool":
+		if len(last.ToolResults) == 0 {
+			return TurnResult{Text: "Fake provider observed an empty tool result.", StopReason: "done_candidate"}, nil
+		}
+		result := last.ToolResults[0]
+		return TurnResult{
+			Text:       fmt.Sprintf("Fake provider observed tool %s: %s", result.Name, result.DisplayOutput),
+			StopReason: "done_candidate",
+		}, nil
+	case "user":
+		text := strings.TrimSpace(last.Text)
+		switch {
+		case strings.Contains(strings.ToLower(text), "call finish"),
+			strings.Contains(strings.ToLower(text), "finish tool"),
+			strings.Contains(strings.ToLower(text), "explicitly finish"):
+			return TurnResult{
+				ToolCalls: []ToolCall{{
+					ID:        "fake_finish_1",
+					Name:      "finish",
+					Arguments: json.RawMessage(`{"message":"Fake provider completed the task."}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		case strings.Contains(strings.ToLower(text), "use shell"),
+			strings.Contains(strings.ToLower(text), "run shell"),
+			strings.Contains(strings.ToLower(text), "pwd"):
+			return TurnResult{
+				ToolCalls: []ToolCall{{
+					ID:        "fake_shell_1",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"pwd"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		case strings.Contains(strings.ToLower(text), "load skill"):
+			return TurnResult{
+				ToolCalls: []ToolCall{{
+					ID:        "fake_skill_1",
+					Name:      "load_skill",
+					Arguments: json.RawMessage(`{"name":"example"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		default:
+			return TurnResult{
+				Text:       "Fake provider reply: " + text,
+				StopReason: "done_candidate",
+			}, nil
+		}
+	case "assistant":
+		if len(last.ToolCalls) > 0 {
+			return TurnResult{
+				Text:       "Fake provider is waiting for tool results.",
+				StopReason: "done_candidate",
+			}, nil
+		}
+	case "system":
+		return TurnResult{Text: "Fake provider received a system note.", StopReason: "done_candidate"}, nil
+	}
+
+	return TurnResult{
+		Text:       fmt.Sprintf("Fake provider saw role %s.", last.Role),
+		StopReason: "done_candidate",
+	}, nil
+}
+
+func lastUserMessage(messages []session.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Text
+		}
+	}
+	return ""
+}

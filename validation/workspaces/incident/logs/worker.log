@@ -1,0 +1,7 @@
+2026-03-18T08:59:55Z INFO boot service=lantern-worker concurrency=12
+2026-03-18T09:00:10Z INFO queue.poll batch=20 visibility_timeout_sec=30
+2026-03-18T09:00:42Z WARN queue.retry job=job-881 reason="metrics backend slow" duration_ms=1820
+2026-03-18T09:01:10Z WARN queue.retry job=job-882 reason="metrics backend slow" duration_ms=1914
+2026-03-18T09:01:40Z WARN queue.retry job=job-883 reason="metrics backend slow" duration_ms=2041
+2026-03-18T09:02:11Z ERROR queue.fail job=job-884 error="metrics backend timeout after 2000ms"
+2026-03-18T09:02:50Z WARN queue.retry job=job-885 reason="metrics backend slow" duration_ms=1888

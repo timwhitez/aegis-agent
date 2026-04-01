@@ -1,0 +1,1476 @@
+package tools
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"text/template"
+	"time"
+	"unicode/utf8"
+
+	"github.com/bmatcuk/doublestar/v4"
+
+	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/session"
+	"go-cli-agent/internal/skills"
+)
+
+type Definition struct {
+	Name        string
+	Description string
+	InputSchema map[string]any
+	Execute     func(context.Context, ExecContext, json.RawMessage) (session.ToolResult, error)
+}
+
+type ExecContext struct {
+	SessionID string
+	Workdir   string
+	Store     *session.Store
+	Config    *config.Config
+	Catalog   *skills.Catalog
+	Emit      func(string, map[string]any)
+}
+
+type AgentSpawnRequest struct {
+	ParentSessionID string
+	Prompt          string `json:"prompt"`
+	AgentName       string `json:"agent_name,omitempty"`
+	AgentRole       string `json:"agent_role,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Workdir         string `json:"workdir,omitempty"`
+	SystemOverride  string `json:"system,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	Background      bool   `json:"background,omitempty"`
+	IsolationMode   string `json:"isolation_mode,omitempty"`
+	IsolationRoot   string `json:"isolation_root,omitempty"`
+}
+
+type AgentSpawnResult struct {
+	SessionID    string   `json:"session_id,omitempty"`
+	QueueJobID   string   `json:"queue_job_id,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	FinalText    string   `json:"final_text,omitempty"`
+	LastError    string   `json:"last_error,omitempty"`
+	Workdir      string   `json:"workdir,omitempty"`
+	VisiblePaths []string `json:"visible_paths,omitempty"`
+	AgentRole    string   `json:"agent_role,omitempty"`
+}
+
+type AgentStatusRequest struct {
+	SessionID  string `json:"session_id,omitempty"`
+	QueueJobID string `json:"queue_job_id,omitempty"`
+}
+
+type AgentStatusResult struct {
+	SessionID     string `json:"session_id,omitempty"`
+	QueueJobID    string `json:"queue_job_id,omitempty"`
+	Status        string `json:"status,omitempty"`
+	SessionStatus string `json:"session_status,omitempty"`
+	FinalText     string `json:"final_text,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	Workdir       string `json:"workdir,omitempty"`
+	AgentName     string `json:"agent_name,omitempty"`
+	AgentRole     string `json:"agent_role,omitempty"`
+}
+
+type AgentListResult struct {
+	Sessions []session.SessionSummary `json:"sessions"`
+	Jobs     []session.QueueJob       `json:"jobs"`
+}
+
+const (
+	readFileDefaultLimit = 120
+	readFileMaxLimit     = 120
+)
+
+type ControlPlane interface {
+	SpawnAgent(context.Context, AgentSpawnRequest) (AgentSpawnResult, error)
+	AgentStatus(context.Context, AgentStatusRequest) (AgentStatusResult, error)
+	AgentList(context.Context, string) (AgentListResult, error)
+}
+
+type Registry struct {
+	defs    map[string]Definition
+	order   []string
+	control ControlPlane
+}
+
+var reservedNames = map[string]struct{}{
+	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
+	"finish": {}, "load_skill": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
+	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_status": {},
+	"agent_list": {},
+}
+
+func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane) (*Registry, error) {
+	registry := &Registry{defs: map[string]Definition{}, control: control}
+	for _, def := range builtinDefinitions(cfg, control) {
+		registry.Register(def)
+	}
+	if catalog != nil {
+		for _, tool := range catalog.CommandTools() {
+			if _, ok := reservedNames[tool.Name]; ok {
+				return nil, fmt.Errorf("skill tool name is reserved: %s", tool.Name)
+			}
+			def := commandToolDefinition(cfg, tool)
+			registry.Register(def)
+		}
+	}
+	return registry, nil
+}
+
+func (r *Registry) Register(def Definition) {
+	if _, exists := r.defs[def.Name]; !exists {
+		r.order = append(r.order, def.Name)
+	}
+	r.defs[def.Name] = def
+}
+
+func (r *Registry) Definitions() []Definition {
+	var out []Definition
+	for _, name := range r.order {
+		out = append(out, r.defs[name])
+	}
+	return out
+}
+
+func (r *Registry) Execute(ctx context.Context, name string, execCtx ExecContext, args json.RawMessage) (session.ToolResult, error) {
+	def, ok := r.defs[name]
+	if !ok {
+		return session.ToolResult{}, fmt.Errorf("unknown tool: %s", name)
+	}
+	return def.Execute(ctx, execCtx, args)
+}
+
+func builtinDefinitions(cfg *config.Config, control ControlPlane) []Definition {
+	defs := []Definition{
+		defShell(),
+		defReadFile(),
+		defWriteFile(),
+		defEditFile(),
+		defGlob(),
+		defGrepFiles(),
+		defGrep(),
+		defFinish(),
+		defLoadSkill(),
+		defTodoWrite(),
+		defTodoRead(),
+		defTaskCreate(),
+		defTaskUpdate(),
+		defTaskList(),
+		defTaskGet(),
+	}
+	if cfg != nil && cfg.Runtime.MultiAgent.Enabled {
+		defs = append(defs,
+			defAgentSpawn(control),
+			defAgentStatus(control),
+			defAgentList(control),
+		)
+	}
+	return defs
+}
+
+func todoItemSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"content": map[string]any{"type": "string"},
+			"status": map[string]any{
+				"type": "string",
+				"enum": []string{"pending", "in_progress", "completed", "cancelled"},
+			},
+			"priority": map[string]any{
+				"type": "string",
+				"enum": []string{"high", "medium", "low"},
+			},
+			"updated_at": map[string]any{"type": "string"},
+		},
+		"required":             []string{"content", "status"},
+		"additionalProperties": false,
+	}
+}
+
+func stringArraySchema() map[string]any {
+	return map[string]any{
+		"type":  "array",
+		"items": map[string]any{"type": "string"},
+	}
+}
+
+func defShell() Definition {
+	return Definition{
+		Name:        "shell",
+		Description: "Execute a shell command in the current working directory.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string"},
+				"timeout": map[string]any{"type": "integer"},
+			},
+			"required": []string{"command"},
+		},
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Command string `json:"command"`
+				Timeout int    `json:"timeout"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("shell", err), nil
+			}
+			if input.Command == "" {
+				return errorResult("shell", errors.New("command is required")), nil
+			}
+			timeout := execCtx.Config.Runtime.CommandTimeoutSec
+			if input.Timeout > 0 {
+				timeout = input.Timeout
+			}
+			callCtx := ctx
+			var cancel context.CancelFunc
+			if timeout > 0 {
+				callCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+				defer cancel()
+			}
+			command, shellArg := shellCommand()
+			cmd := exec.CommandContext(callCtx, command, shellArg, input.Command)
+			cmd.Dir = execCtx.Workdir
+			cmd.Env = filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist)
+			output, err := cmd.CombinedOutput()
+			exitCode := 0
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
+			text, rawLength, truncated := truncateOutput(string(output), 12000)
+			if text == "" {
+				text = "(no output)"
+			}
+			if err != nil {
+				interruptErr := ctx.Err()
+				if interruptErr == nil {
+					interruptErr = callCtx.Err()
+				}
+				if interruptErr != nil {
+					return session.ToolResult{
+						ToolCallID:    "",
+						Name:          "shell",
+						LLMOutput:     "[Tool execution was interrupted]",
+						DisplayOutput: "[Tool execution was interrupted]",
+						IsError:       true,
+						Metadata: map[string]any{
+							"command":    input.Command,
+							"exit_code":  exitCode,
+							"timeout":    timeout,
+							"raw_length": rawLength,
+							"truncated":  truncated,
+						},
+					}, interruptErr
+				}
+				return session.ToolResult{
+					Name:          "shell",
+					LLMOutput:     text,
+					DisplayOutput: text,
+					IsError:       true,
+					Metadata: map[string]any{
+						"command":    input.Command,
+						"exit_code":  exitCode,
+						"timeout":    timeout,
+						"raw_length": rawLength,
+						"truncated":  truncated,
+					},
+				}, nil
+			}
+			return session.ToolResult{
+				Name:          "shell",
+				LLMOutput:     text,
+				DisplayOutput: text,
+				Metadata: map[string]any{
+					"command":    input.Command,
+					"exit_code":  exitCode,
+					"timeout":    timeout,
+					"raw_length": rawLength,
+					"truncated":  truncated,
+				},
+			}, nil
+		},
+	}
+}
+
+func defReadFile() Definition {
+	return Definition{
+		Name:        "read_file",
+		Description: "Read a targeted slice of a text file from the current workspace. Prefer offset + limit over whole-file reads; each call is capped at 120 lines.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":   map[string]any{"type": "string"},
+				"offset": map[string]any{"type": "integer"},
+				"limit":  map[string]any{"type": "integer"},
+			},
+			"required": []string{"path"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Path   string `json:"path"`
+				Offset int    `json:"offset"`
+				Limit  int    `json:"limit"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("read_file", err), nil
+			}
+			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
+			if err != nil {
+				return errorResult("read_file", err), nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return errorResult("read_file", err), nil
+			}
+			lines := strings.Split(string(data), "\n")
+			offset := max(input.Offset, 1) - 1
+			if offset > len(lines) {
+				offset = len(lines)
+			}
+			limit := input.Limit
+			if limit <= 0 {
+				limit = readFileDefaultLimit
+			}
+			capped := false
+			if limit > readFileMaxLimit {
+				limit = readFileMaxLimit
+				capped = true
+			}
+			end := offset + limit
+			if end > len(lines) {
+				end = len(lines)
+			}
+			selected := strings.Join(lines[offset:end], "\n")
+			selected = annotateReadWindow(execCtx.Workdir, path, offset, end, len(lines), input.Limit, capped, selected)
+			return session.ToolResult{
+				Name:          "read_file",
+				LLMOutput:     selected,
+				DisplayOutput: selected,
+				Metadata: map[string]any{
+					"path":   path,
+					"offset": offset,
+					"end":    end,
+				},
+			}, nil
+		},
+	}
+}
+
+func defWriteFile() Definition {
+	return Definition{
+		Name:        "write_file",
+		Description: "Create or overwrite a file in the current workspace. Parent directories are created automatically.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+			},
+			"required": []string{"path", "content"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("write_file", err), nil
+			}
+			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
+			if err != nil {
+				return errorResult("write_file", err), nil
+			}
+			if err := writeAtomically(path, []byte(input.Content), 0o600); err != nil {
+				return errorResult("write_file", err), nil
+			}
+			message := fmt.Sprintf("Wrote %d bytes to %s", len(input.Content), relativeOrAbsolute(execCtx.Workdir, path))
+			return session.ToolResult{
+				Name:          "write_file",
+				LLMOutput:     message,
+				DisplayOutput: message,
+				Metadata: map[string]any{
+					"path": path,
+				},
+			}, nil
+		},
+	}
+}
+
+func defEditFile() Definition {
+	return Definition{
+		Name:        "edit_file",
+		Description: "Replace exact text in a file.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":     map[string]any{"type": "string"},
+				"old_text": map[string]any{"type": "string"},
+				"new_text": map[string]any{"type": "string"},
+			},
+			"required": []string{"path", "old_text", "new_text"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Path    string `json:"path"`
+				OldText string `json:"old_text"`
+				NewText string `json:"new_text"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("edit_file", err), nil
+			}
+			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
+			if err != nil {
+				return errorResult("edit_file", err), nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return errorResult("edit_file", err), nil
+			}
+			current := string(content)
+			if !strings.Contains(current, input.OldText) {
+				return errorResult("edit_file", errors.New("old_text not found")), nil
+			}
+			updated := strings.Replace(current, input.OldText, input.NewText, 1)
+			if err := writeAtomically(path, []byte(updated), 0o600); err != nil {
+				return errorResult("edit_file", err), nil
+			}
+			message := fmt.Sprintf("Edited %s", relativeOrAbsolute(execCtx.Workdir, path))
+			return session.ToolResult{
+				Name:          "edit_file",
+				LLMOutput:     message,
+				DisplayOutput: message,
+				Metadata: map[string]any{
+					"path": path,
+				},
+			}, nil
+		},
+	}
+}
+
+func defGlob() Definition {
+	return Definition{
+		Name:        "glob",
+		Description: "Return workspace-relative paths that match a glob pattern.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern": map[string]any{"type": "string"},
+			},
+			"required": []string{"pattern"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Pattern string `json:"pattern"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("glob", err), nil
+			}
+			var matches []string
+			if err := doublestar.GlobWalk(os.DirFS(execCtx.Workdir), input.Pattern, func(path string, d os.DirEntry) error {
+				if !d.IsDir() {
+					matches = append(matches, path)
+				}
+				return nil
+			}); err != nil {
+				return errorResult("glob", err), nil
+			}
+			output := strings.Join(matches, "\n")
+			if output == "" {
+				output = "(no matches)"
+			}
+			return session.ToolResult{Name: "glob", LLMOutput: output, DisplayOutput: output}, nil
+		},
+	}
+}
+
+func defGrep() Definition {
+	return Definition{
+		Name:        "grep",
+		Description: "Search recursively for a pattern in workspace text files while skipping common build and binary artifact paths.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern": map[string]any{"type": "string"},
+				"path":    map[string]any{"type": "string"},
+			},
+			"required": []string{"pattern"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Pattern string `json:"pattern"`
+				Path    string `json:"path"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("grep", err), nil
+			}
+			root := execCtx.Workdir
+			if input.Path != "" {
+				path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
+				if err != nil {
+					return errorResult("grep", err), nil
+				}
+				root = path
+			}
+			matcher, regexErr := regexp.Compile(input.Pattern)
+			useRegex := regexErr == nil
+			var lines []string
+			_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return nil
+				}
+				if info.IsDir() {
+					if path != root && shouldSkipGrepDir(path) {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if !info.Mode().IsRegular() {
+					return nil
+				}
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return nil
+				}
+				if shouldSkipGrepBinary(data) {
+					return nil
+				}
+				for lineNo, line := range strings.Split(string(data), "\n") {
+					matched := false
+					if useRegex {
+						matched = matcher.MatchString(line)
+					} else {
+						matched = strings.Contains(line, input.Pattern)
+					}
+					if matched {
+						lines = append(lines, fmt.Sprintf("%s:%d:%s", relativeOrAbsolute(execCtx.Workdir, path), lineNo+1, strings.TrimSpace(line)))
+						if len(lines) >= 200 {
+							return errors.New("limit reached")
+						}
+					}
+				}
+				return nil
+			})
+			output := strings.Join(lines, "\n")
+			if output == "" {
+				output = "(no matches)"
+			}
+			return session.ToolResult{Name: "grep", LLMOutput: output, DisplayOutput: output}, nil
+		},
+	}
+}
+
+func defGrepFiles() Definition {
+	return Definition{
+		Name:        "grep_files",
+		Description: "Find workspace text files whose contents match a pattern. Returns file paths only; use this to narrow candidates before read_file.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern": map[string]any{"type": "string"},
+				"path":    map[string]any{"type": "string"},
+				"include": map[string]any{"type": "string"},
+				"limit":   map[string]any{"type": "integer"},
+			},
+			"required": []string{"pattern"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Pattern string `json:"pattern"`
+				Path    string `json:"path"`
+				Include string `json:"include"`
+				Limit   int    `json:"limit"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("grep_files", err), nil
+			}
+			root, err := resolveGrepRoot(execCtx.Workdir, input.Path)
+			if err != nil {
+				return errorResult("grep_files", err), nil
+			}
+			matcher, useRegex := compileGrepMatcher(input.Pattern)
+			limit := input.Limit
+			if limit <= 0 {
+				limit = 100
+			}
+			var matches []string
+			err = walkTextSearchFiles(execCtx.Workdir, root, input.Include, func(path string, data string) error {
+				if !textMatchesPattern(data, matcher, useRegex, input.Pattern) {
+					return nil
+				}
+				matches = append(matches, relativeOrAbsolute(execCtx.Workdir, path))
+				if len(matches) >= limit {
+					return errGrepLimitReached
+				}
+				return nil
+			})
+			if err != nil && !errors.Is(err, errGrepLimitReached) {
+				return errorResult("grep_files", err), nil
+			}
+			output := strings.Join(matches, "\n")
+			if output == "" {
+				output = "(no matches)"
+			}
+			return session.ToolResult{Name: "grep_files", LLMOutput: output, DisplayOutput: output}, nil
+		},
+	}
+}
+
+var grepSkippedDirNames = map[string]struct{}{
+	".git":          {},
+	".go-cli-agent": {},
+	".next":         {},
+	".turbo":        {},
+	"bin":           {},
+	"build":         {},
+	"coverage":      {},
+	"dist":          {},
+	"node_modules":  {},
+	"out":           {},
+}
+
+var grepSkippedPathFragments = []string{
+	"/validation/runs/",
+	"/validation/sessions/",
+}
+
+var errGrepLimitReached = errors.New("grep limit reached")
+
+func shouldSkipGrepDir(path string) bool {
+	if _, ok := grepSkippedDirNames[filepath.Base(path)]; ok {
+		return true
+	}
+	normalized := "/" + filepath.ToSlash(path) + "/"
+	for _, fragment := range grepSkippedPathFragments {
+		if strings.Contains(normalized, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSkipGrepBinary(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return true
+	}
+	return !utf8.Valid(data)
+}
+
+func resolveGrepRoot(workdir, inputPath string) (string, error) {
+	root := workdir
+	if inputPath == "" {
+		return root, nil
+	}
+	path, err := ResolveWorkspacePath(workdir, inputPath)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func compileGrepMatcher(pattern string) (*regexp.Regexp, bool) {
+	matcher, err := regexp.Compile(pattern)
+	return matcher, err == nil
+}
+
+func textMatchesPattern(text string, matcher *regexp.Regexp, useRegex bool, pattern string) bool {
+	if useRegex {
+		return matcher.MatchString(text)
+	}
+	return strings.Contains(text, pattern)
+}
+
+func walkTextSearchFiles(workdir, root, include string, fn func(path string, data string) error) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			if path != root && shouldSkipGrepDir(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if include != "" && !pathMatchesInclude(workdir, path, include) {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		if shouldSkipGrepBinary(data) {
+			return nil
+		}
+		return fn(path, string(data))
+	})
+}
+
+func pathMatchesInclude(workdir, path, include string) bool {
+	relative := filepath.ToSlash(relativeOrAbsolute(workdir, path))
+	base := filepath.Base(relative)
+	matched, err := doublestar.Match(include, relative)
+	if err == nil && matched {
+		return true
+	}
+	matched, err = doublestar.Match(include, base)
+	return err == nil && matched
+}
+
+func annotateReadWindow(workdir, path string, offset, end, totalLines, requestedLimit int, capped bool, body string) string {
+	startLine := offset + 1
+	endLine := end
+	if endLine < startLine {
+		startLine = endLine
+	}
+	if endLine < 1 {
+		startLine = 0
+	}
+	header := fmt.Sprintf("[read_file path=%s lines=%d-%d of %d", relativeOrAbsolute(workdir, path), startLine, endLine, totalLines)
+	if capped {
+		header += fmt.Sprintf("; requested_limit=%d capped_to=%d", requestedLimit, readFileMaxLimit)
+	}
+	header += "]"
+	if body == "" {
+		return header
+	}
+	return header + "\n" + body
+}
+
+func defFinish() Definition {
+	return Definition{
+		Name:        "finish",
+		Description: "Explicitly mark the current task as complete as soon as the requested work is done.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"message": map[string]any{"type": "string"},
+			},
+			"required": []string{"message"},
+		},
+		Execute: func(_ context.Context, _ ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("finish", err), nil
+			}
+			return session.ToolResult{
+				Name:          "finish",
+				LLMOutput:     input.Message,
+				DisplayOutput: input.Message,
+				Final:         true,
+			}, nil
+		},
+	}
+}
+
+func defLoadSkill() Definition {
+	return Definition{
+		Name:        "load_skill",
+		Description: "Load the full contents of a local SKILL.md file by skill name. Do not use this for tool names.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required": []string{"name"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("load_skill", err), nil
+			}
+			if execCtx.Catalog == nil {
+				return errorResult("load_skill", errors.New("skill catalog not available")), nil
+			}
+			skill, err := execCtx.Catalog.Load(input.Name)
+			if err != nil {
+				return errorResult("load_skill", err), nil
+			}
+			body := fmt.Sprintf("<skill path=%q>\n%s\n</skill>", skill.Path, skill.Body)
+			return session.ToolResult{Name: "load_skill", LLMOutput: body, DisplayOutput: body}, nil
+		},
+	}
+}
+
+func defTodoWrite() Definition {
+	return Definition{
+		Name:        "todo_write",
+		Description: "Replace the session todo list.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"todos": map[string]any{
+					"type":  "array",
+					"items": todoItemSchema(),
+				},
+			},
+			"required": []string{"todos"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Todos []session.TodoItem `json:"todos"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("todo_write", err), nil
+			}
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			for i := range input.Todos {
+				if input.Todos[i].UpdatedAt == "" {
+					input.Todos[i].UpdatedAt = now
+				}
+			}
+			if err := execCtx.Store.SaveTodo(execCtx.SessionID, input.Todos); err != nil {
+				return errorResult("todo_write", err), nil
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("todo.updated", map[string]any{
+					"count": len(input.Todos),
+				})
+			}
+			data, _ := json.MarshalIndent(input.Todos, "", "  ")
+			return session.ToolResult{
+				Name:          "todo_write",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":  todoFilePath(execCtx),
+					"count": len(input.Todos),
+				},
+			}, nil
+		},
+	}
+}
+
+func defTodoRead() Definition {
+	return Definition{
+		Name:        "todo_read",
+		Description: "Read the session todo list.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			todo, err := execCtx.Store.LoadTodo(execCtx.SessionID)
+			if err != nil {
+				return errorResult("todo_read", err), nil
+			}
+			data, _ := json.MarshalIndent(todo, "", "  ")
+			return session.ToolResult{
+				Name:          "todo_read",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":  todoFilePath(execCtx),
+					"count": len(todo),
+				},
+			}, nil
+		},
+	}
+}
+
+func defTaskCreate() Definition {
+	return Definition{
+		Name:        "task_create",
+		Description: "Create a durable task graph node.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"subject":     map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"priority":    map[string]any{"type": "string"},
+				"blocked_by":  stringArraySchema(),
+				"labels":      stringArraySchema(),
+			},
+			"required": []string{"subject"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input session.TaskCreateInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("task_create", err), nil
+			}
+			task, err := session.CreateTask(execCtx.Store, execCtx.SessionID, input)
+			if err != nil {
+				return errorResult("task_create", err), nil
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("task.created", map[string]any{
+					"task_id": task.ID,
+					"status":  task.Status,
+				})
+			}
+			data, _ := json.MarshalIndent(task, "", "  ")
+			return session.ToolResult{
+				Name:          "task_create",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":        taskFilePath(execCtx, task.ID),
+					"task_id":     task.ID,
+					"session_dir": execCtx.Store.SessionDir(execCtx.SessionID),
+				},
+			}, nil
+		},
+	}
+}
+
+func defTaskUpdate() Definition {
+	return Definition{
+		Name:        "task_update",
+		Description: "Update a durable task graph node.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id":           map[string]any{"type": "string"},
+				"status":            map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed", "cancelled"}},
+				"subject":           map[string]any{"type": "string"},
+				"description":       map[string]any{"type": "string"},
+				"priority":          map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}},
+				"owner":             map[string]any{"type": "string"},
+				"add_blocked_by":    stringArraySchema(),
+				"remove_blocked_by": stringArraySchema(),
+				"add_blocks":        stringArraySchema(),
+				"remove_blocks":     stringArraySchema(),
+				"append_note":       map[string]any{"type": "string"},
+			},
+			"required": []string{"task_id"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input session.TaskUpdateInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("task_update", err), nil
+			}
+			task, err := session.UpdateTask(execCtx.Store, execCtx.SessionID, input)
+			if err != nil {
+				return errorResult("task_update", err), nil
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("task.updated", map[string]any{
+					"task_id": task.ID,
+					"status":  task.Status,
+				})
+			}
+			data, _ := json.MarshalIndent(task, "", "  ")
+			return session.ToolResult{
+				Name:          "task_update",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":        taskFilePath(execCtx, task.ID),
+					"task_id":     task.ID,
+					"session_dir": execCtx.Store.SessionDir(execCtx.SessionID),
+				},
+			}, nil
+		},
+	}
+}
+
+func defTaskList() Definition {
+	return Definition{
+		Name:        "task_list",
+		Description: "List the durable task graph with derived ready and blocked views.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			todo, err := execCtx.Store.LoadTodo(execCtx.SessionID)
+			if err != nil {
+				return errorResult("task_list", err), nil
+			}
+			tasks, err := execCtx.Store.ListTasks(execCtx.SessionID)
+			if err != nil {
+				return errorResult("task_list", err), nil
+			}
+			board := session.BuildTaskBoard(todo, tasks)
+			data, _ := json.MarshalIndent(board, "", "  ")
+			return session.ToolResult{
+				Name:          "task_list",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"tasks_dir":       taskDirPath(execCtx),
+					"session_dir":     execCtx.Store.SessionDir(execCtx.SessionID),
+					"todo_count":      len(todo),
+					"task_count":      len(tasks),
+					"ready_count":     board.Counters["ready"],
+					"blocked_count":   board.Counters["blocked"],
+					"completed_count": board.Counters["completed"],
+				},
+			}, nil
+		},
+	}
+}
+
+func defTaskGet() Definition {
+	return Definition{
+		Name:        "task_get",
+		Description: "Read a single durable task graph node by id.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id": map[string]any{"type": "string"},
+			},
+			"required": []string{"task_id"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				TaskID string `json:"task_id"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("task_get", err), nil
+			}
+			task, err := execCtx.Store.GetTask(execCtx.SessionID, input.TaskID)
+			if err != nil {
+				return errorResult("task_get", err), nil
+			}
+			data, _ := json.MarshalIndent(task, "", "  ")
+			return session.ToolResult{
+				Name:          "task_get",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":        taskFilePath(execCtx, task.ID),
+					"task_id":     task.ID,
+					"session_dir": execCtx.Store.SessionDir(execCtx.SessionID),
+				},
+			}, nil
+		},
+	}
+}
+
+func todoFilePath(execCtx ExecContext) string {
+	return filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "todo.json")
+}
+
+func taskDirPath(execCtx ExecContext) string {
+	return filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "tasks")
+}
+
+func taskFilePath(execCtx ExecContext, taskID string) string {
+	return filepath.Join(taskDirPath(execCtx), taskID+".json")
+}
+
+func defAgentSpawn(control ControlPlane) Definition {
+	return Definition{
+		Name:        "agent_spawn",
+		Description: "Spawn a child agent session from the current session.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"prompt":         map[string]any{"type": "string"},
+				"agent_name":     map[string]any{"type": "string"},
+				"agent_role":     map[string]any{"type": "string", "enum": []string{"planner", "generator", "evaluator"}},
+				"provider":       map[string]any{"type": "string"},
+				"model":          map[string]any{"type": "string"},
+				"workdir":        map[string]any{"type": "string"},
+				"system":         map[string]any{"type": "string"},
+				"mode":           map[string]any{"type": "string"},
+				"background":     map[string]any{"type": "boolean"},
+				"isolation_mode": map[string]any{"type": "string"},
+				"isolation_root": map[string]any{"type": "string"},
+			},
+			"required": []string{"prompt"},
+		},
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			if control == nil {
+				return errorResult("agent_spawn", errors.New("agent control plane is not available")), nil
+			}
+			var input AgentSpawnRequest
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("agent_spawn", err), nil
+			}
+			input.ParentSessionID = execCtx.SessionID
+			result, err := control.SpawnAgent(ctx, input)
+			if err != nil {
+				return errorResult("agent_spawn", err), nil
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return session.ToolResult{Name: "agent_spawn", LLMOutput: string(data), DisplayOutput: string(data)}, nil
+		},
+	}
+}
+
+func defAgentStatus(control ControlPlane) Definition {
+	return Definition{
+		Name:        "agent_status",
+		Description: "Inspect a child agent session or queue job.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_id":   map[string]any{"type": "string"},
+				"queue_job_id": map[string]any{"type": "string"},
+			},
+		},
+		Execute: func(ctx context.Context, _ ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			if control == nil {
+				return errorResult("agent_status", errors.New("agent control plane is not available")), nil
+			}
+			var input AgentStatusRequest
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("agent_status", err), nil
+			}
+			if strings.TrimSpace(input.SessionID) == "" && strings.TrimSpace(input.QueueJobID) == "" {
+				return errorResult("agent_status", errors.New("session_id or queue_job_id is required")), nil
+			}
+			result, err := control.AgentStatus(ctx, input)
+			if err != nil {
+				return errorResult("agent_status", err), nil
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return session.ToolResult{Name: "agent_status", LLMOutput: string(data), DisplayOutput: string(data)}, nil
+		},
+	}
+}
+
+func defAgentList(control ControlPlane) Definition {
+	return Definition{
+		Name:        "agent_list",
+		Description: "List child sessions and queued jobs for the current session.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		},
+		Execute: func(ctx context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			if control == nil {
+				return errorResult("agent_list", errors.New("agent control plane is not available")), nil
+			}
+			result, err := control.AgentList(ctx, execCtx.SessionID)
+			if err != nil {
+				return errorResult("agent_list", err), nil
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return session.ToolResult{Name: "agent_list", LLMOutput: string(data), DisplayOutput: string(data)}, nil
+		},
+	}
+}
+
+func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definition {
+	description := strings.TrimSpace(tool.Description)
+	if description == "" {
+		description = fmt.Sprintf("Skill command tool from skill %s.", tool.SkillName)
+	}
+	return Definition{
+		Name:        tool.Name,
+		Description: fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. %s", tool.SkillName, description),
+		InputSchema: tool.InputSchema,
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			args, err := decodeCommandToolArgs(raw)
+			if err != nil {
+				return errorResult(tool.Name, err), nil
+			}
+			if err := validateCommandToolInput(tool.InputSchema, args); err != nil {
+				return errorResult(tool.Name, err), nil
+			}
+			argv, err := renderCommand(tool.Command, args)
+			if err != nil {
+				return errorResult(tool.Name, err), nil
+			}
+			callCtx := ctx
+			var cancel context.CancelFunc
+			timeout := tool.TimeoutSec
+			if timeout <= 0 {
+				timeout = cfg.Runtime.CommandTimeoutSec
+			}
+			if timeout > 0 {
+				callCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+				defer cancel()
+			}
+			cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
+			cmd.Dir = execCtx.Workdir
+			cmd.Env = append(filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist), "GO_CLI_AGENT_ARGS_JSON="+string(raw))
+			cmd.Stdin = bytes.NewReader(raw)
+			output, err := cmd.CombinedOutput()
+			text, rawLength, truncated := truncateOutput(string(output), 12000)
+			if text == "" {
+				text = "(no output)"
+			}
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return session.ToolResult{
+						Name:          tool.Name,
+						LLMOutput:     "[Tool execution was interrupted]",
+						DisplayOutput: "[Tool execution was interrupted]",
+						IsError:       true,
+						Metadata: map[string]any{
+							"raw_length": rawLength,
+							"truncated":  truncated,
+						},
+					}, err
+				}
+				return session.ToolResult{
+					Name:          tool.Name,
+					LLMOutput:     text,
+					DisplayOutput: text,
+					IsError:       true,
+					Metadata: map[string]any{
+						"raw_length": rawLength,
+						"truncated":  truncated,
+					},
+				}, nil
+			}
+			return session.ToolResult{
+				Name:          tool.Name,
+				LLMOutput:     text,
+				DisplayOutput: text,
+				Metadata: map[string]any{
+					"raw_length": rawLength,
+					"truncated":  truncated,
+				},
+			}, nil
+		},
+	}
+}
+
+func decodeCommandToolArgs(raw json.RawMessage) (map[string]any, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return map[string]any{}, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if value == nil {
+		return map[string]any{}, nil
+	}
+	args, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("tool input must be a JSON object")
+	}
+	return args, nil
+}
+
+func validateCommandToolInput(schema map[string]any, args map[string]any) error {
+	if len(schema) == 0 {
+		return nil
+	}
+	return validateCommandToolValue(schema, args, "")
+}
+
+func validateCommandToolValue(schema map[string]any, value any, field string) error {
+	if len(schema) == 0 {
+		return nil
+	}
+	expectedType, _ := schema["type"].(string)
+	switch expectedType {
+	case "", "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			return commandToolTypeError(field, "object")
+		}
+		if properties, ok := schema["properties"].(map[string]any); ok {
+			if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
+				for key := range object {
+					if _, known := properties[key]; !known {
+						return fmt.Errorf("unexpected field %q", key)
+					}
+				}
+			}
+			for key, rawProperty := range properties {
+				propertySchema, ok := rawProperty.(map[string]any)
+				if !ok {
+					continue
+				}
+				current, exists := object[key]
+				if !exists {
+					continue
+				}
+				if err := validateCommandToolValue(propertySchema, current, key); err != nil {
+					return err
+				}
+			}
+		}
+		for _, key := range schemaRequiredFields(schema) {
+			current, exists := object[key]
+			if !exists || current == nil {
+				return fmt.Errorf("missing required field %q", key)
+			}
+		}
+		return nil
+	case "string":
+		if _, ok := value.(string); !ok {
+			return commandToolTypeError(field, "string")
+		}
+		return nil
+	case "integer":
+		if !isCommandToolInteger(value) {
+			return commandToolTypeError(field, "integer")
+		}
+		return nil
+	case "number":
+		if !isCommandToolNumber(value) {
+			return commandToolTypeError(field, "number")
+		}
+		return nil
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return commandToolTypeError(field, "boolean")
+		}
+		return nil
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return commandToolTypeError(field, "array")
+		}
+		itemSchema, _ := schema["items"].(map[string]any)
+		for _, item := range items {
+			if err := validateCommandToolValue(itemSchema, item, field); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func schemaRequiredFields(schema map[string]any) []string {
+	required, _ := schema["required"].([]any)
+	out := make([]string, 0, len(required))
+	for _, item := range required {
+		name, ok := item.(string)
+		if ok && strings.TrimSpace(name) != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func commandToolTypeError(field, expected string) error {
+	if strings.TrimSpace(field) == "" {
+		return fmt.Errorf("tool input must be a JSON %s", expected)
+	}
+	return fmt.Errorf("field %q must be a JSON %s", field, expected)
+}
+
+func isCommandToolInteger(value any) bool {
+	switch current := value.(type) {
+	case json.Number:
+		_, err := current.Int64()
+		return err == nil
+	case float64:
+		return current == float64(int64(current))
+	default:
+		return false
+	}
+}
+
+func isCommandToolNumber(value any) bool {
+	switch value.(type) {
+	case json.Number, float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func renderCommand(command []string, args map[string]any) ([]string, error) {
+	if len(command) == 0 {
+		return nil, errors.New("command must not be empty")
+	}
+	var out []string
+	for _, part := range command {
+		tmpl, err := template.New("arg").Option("missingkey=zero").Parse(part)
+		if err != nil {
+			return nil, err
+		}
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, args); err != nil {
+			return nil, err
+		}
+		value := strings.TrimSpace(buf.String())
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("command rendered to empty argv")
+	}
+	return out, nil
+}
+
+func filteredEnv(allowlist []string) []string {
+	allowed := map[string]struct{}{}
+	for _, item := range allowlist {
+		allowed[item] = struct{}{}
+	}
+	var out []string
+	for _, entry := range os.Environ() {
+		key := strings.SplitN(entry, "=", 2)[0]
+		if _, ok := allowed[key]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func shellCommand() (string, string) {
+	if strings.Contains(strings.ToLower(os.Getenv("COMSPEC")), "cmd.exe") {
+		return "cmd", "/C"
+	}
+	return "/bin/bash", "-lc"
+}
+
+func writeAtomically(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func truncateOutput(text string, limit int) (string, int, bool) {
+	rawLength := len(text)
+	if len(text) <= limit {
+		return text, rawLength, false
+	}
+	return text[:limit] + "\n...[truncated]", rawLength, true
+}
+
+func relativeOrAbsolute(base, path string) string {
+	if rel, err := filepath.Rel(base, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return path
+}
+
+func errorResult(tool string, err error) session.ToolResult {
+	return session.ToolResult{
+		Name:          tool,
+		LLMOutput:     "Error: " + err.Error(),
+		DisplayOutput: "Error: " + err.Error(),
+		IsError:       true,
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

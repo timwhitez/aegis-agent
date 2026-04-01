@@ -1,0 +1,1159 @@
+const state = {
+  meta: null,
+  overview: null,
+  sessions: [],
+  sessionDetail: null,
+  workers: null,
+  queueJobs: [],
+  currentView: 'overview',
+  selectedSessionId: '',
+  sessionTab: 'timeline',
+  providers: [],
+  refreshing: false,
+  toastCounter: 0,
+};
+
+const elements = {
+  topbarMeta: document.getElementById('topbar-meta'),
+  overviewView: document.getElementById('overview-view'),
+  queueView: document.getElementById('queue-view'),
+  sessionView: document.getElementById('session-view'),
+  sessionList: document.getElementById('session-list'),
+  sessionCountBadge: document.getElementById('session-count-badge'),
+  startCard: document.getElementById('start-card'),
+  sessionActionCard: document.getElementById('session-action-card'),
+  queueJobCard: document.getElementById('queue-job-card'),
+  workerCard: document.getElementById('worker-card'),
+  toastRoot: document.getElementById('toast-root'),
+  refreshButton: document.getElementById('manual-refresh-button'),
+  openStartButton: document.getElementById('open-start-button'),
+};
+
+const POLL_MS = 2000;
+
+async function fetchJSON(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `${response.status} ${response.statusText}`);
+  }
+  return payload;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function formatDate(value) {
+  if (!value) return 'N/A';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function shortId(value) {
+  if (!value) return 'N/A';
+  return value.length > 18 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
+}
+
+function statusClass(status) {
+  return `status-badge status-${String(status || 'unknown').replaceAll(':', '_')}`;
+}
+
+function showToast(message, type = 'info') {
+  const id = `toast-${++state.toastCounter}`;
+  const node = document.createElement('div');
+  node.className = `toast ${type === 'error' ? 'is-error' : ''}`;
+  node.id = id;
+  node.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  node.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+  node.textContent = message;
+  elements.toastRoot.appendChild(node);
+  window.setTimeout(() => {
+    document.getElementById(id)?.remove();
+  }, 3600);
+}
+
+function renderChrome() {
+  const workerSummary = `${String(state.workers?.desired_count ?? 0)} desired / ${String(state.workers?.active_count ?? 0)} active`;
+  const selectedSummary = state.selectedSessionId
+    ? `${shortId(state.selectedSessionId)}${state.sessionDetail?.state?.status ? ` · ${state.sessionDetail.state.status}` : ''}`
+    : 'None';
+  elements.topbarMeta.innerHTML = [
+    { label: 'Session Root', value: state.meta?.session_root || 'Loading...' },
+    { label: 'Workers', value: workerSummary },
+    { label: 'Default Provider', value: state.meta?.default_provider || 'Loading...' },
+    { label: 'Selected Session', value: selectedSummary },
+  ].map((item) => `
+      <div class="topbar-meta-item">
+        <span class="topbar-meta-label">${escapeHtml(item.label)}</span>
+        <span class="topbar-meta-value">${escapeHtml(item.value)}</span>
+      </div>
+    `).join('');
+  elements.refreshButton.disabled = state.refreshing;
+  elements.refreshButton.textContent = state.refreshing ? 'Refreshing...' : 'Refresh';
+}
+
+function setFormPending(form, pending, pendingLabel) {
+  if (!form) return;
+  form.dataset.pending = pending ? 'true' : 'false';
+  form.setAttribute('aria-busy', pending ? 'true' : 'false');
+  form.querySelectorAll('button, input, select, textarea').forEach((field) => {
+    field.disabled = pending;
+  });
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (!submitButton) return;
+  if (!submitButton.dataset.idleLabel) {
+    submitButton.dataset.idleLabel = submitButton.textContent || '';
+  }
+  submitButton.textContent = pending ? pendingLabel : submitButton.dataset.idleLabel;
+}
+
+function setButtonPending(button, pending, pendingLabel) {
+  if (!button) return;
+  if (!button.dataset.idleLabel) {
+    button.dataset.idleLabel = button.textContent || '';
+  }
+  button.disabled = pending;
+  button.textContent = pending ? pendingLabel : button.dataset.idleLabel;
+}
+
+function setView(view) {
+  state.currentView = view;
+  if (view !== 'session') {
+    state.sessionTab = 'timeline';
+  }
+  render();
+}
+
+function setSession(sessionId) {
+  state.selectedSessionId = sessionId;
+  state.currentView = 'session';
+  render();
+}
+
+async function refreshAll() {
+  if (state.refreshing) return;
+  state.refreshing = true;
+  renderChrome();
+  try {
+    const [meta, overview, sessions, workers, queueJobs] = await Promise.all([
+      fetchJSON('/api/meta'),
+      fetchJSON('/api/overview'),
+      fetchJSON('/api/sessions?limit=80'),
+      fetchJSON('/api/workers'),
+      fetchJSON('/api/queue/jobs?limit=80'),
+    ]);
+
+    state.meta = meta;
+    state.overview = overview;
+    state.sessions = Array.isArray(sessions) ? sessions : [];
+    state.workers = workers;
+    state.queueJobs = Array.isArray(queueJobs) ? queueJobs : [];
+    state.providers = meta.providers || [];
+
+    if (state.selectedSessionId) {
+      try {
+        state.sessionDetail = await fetchJSON(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}?limit=48`);
+      } catch (error) {
+        state.sessionDetail = null;
+        showToast(error.message, 'error');
+      }
+    }
+
+    render();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    state.refreshing = false;
+    renderChrome();
+  }
+}
+
+async function refreshSelectedSession() {
+  if (!state.selectedSessionId) return;
+  try {
+    state.sessionDetail = await fetchJSON(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}?limit=48`);
+    render();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+function providerOptions() {
+  return (state.providers || [])
+    .map((provider) => `<option value="${escapeHtml(provider.name)}">${escapeHtml(provider.name)} · ${escapeHtml(provider.model)}</option>`)
+    .join('');
+}
+
+function roleOptions(selected = '') {
+  return [
+    { value: '', label: 'No role hint' },
+    { value: 'planner', label: 'planner' },
+    { value: 'generator', label: 'generator' },
+    { value: 'evaluator', label: 'evaluator' },
+  ].map((item) => `
+      <option value="${escapeHtml(item.value)}"${selected === item.value ? ' selected' : ''}>${escapeHtml(item.label)}</option>
+    `).join('');
+}
+
+function startFormTemplate() {
+  return `
+    <div class="section-header-copy">
+      <h2>Start Session</h2>
+      <p>Create a new <span class="mono">run</span> or <span class="mono">exec</span> session without leaving the browser. Use this for the main task you want the agent to own.</p>
+    </div>
+    <form id="start-form" class="form-grid">
+      <div class="field">
+        <label for="start-prompt">Prompt</label>
+        <textarea id="start-prompt" name="prompt" placeholder="Audit the repo and fix the smallest safe issue first." required></textarea>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label for="start-provider">Provider</label>
+          <select id="start-provider" name="provider">
+            <option value="">Default provider</option>
+            ${providerOptions()}
+          </select>
+        </div>
+        <div class="field">
+          <label for="start-model">Model override</label>
+          <input id="start-model" name="model" placeholder="gpt-5.4" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label for="start-mode">Mode</label>
+          <select id="start-mode" name="mode">
+            <option value="run">run</option>
+            <option value="exec">exec</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="start-isolation">Isolation</label>
+          <select id="start-isolation" name="isolation_mode">
+            <option value="">Default</option>
+            <option value="off">off</option>
+            <option value="auto">auto</option>
+            <option value="copy">copy</option>
+            <option value="git">git</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label for="start-agent-role">Agent Role</label>
+          <select id="start-agent-role" name="agent_role">
+            ${roleOptions()}
+          </select>
+        </div>
+        <div class="field">
+          <label for="start-agent-name">Agent Name</label>
+          <input id="start-agent-name" name="agent_name" placeholder="reviewer" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="start-workdir">Workdir</label>
+        <input id="start-workdir" name="workdir" placeholder="Leave empty to use the current workspace." />
+      </div>
+      <div class="field">
+        <label for="start-system">System override</label>
+        <textarea id="start-system" name="system" placeholder="Optional system override for this session."></textarea>
+      </div>
+      <button class="button button-primary" type="submit">Start Session</button>
+    </form>
+  `;
+}
+
+function renderOverview() {
+  const overview = state.overview || {
+    session_counters: {},
+    queue_counters: {},
+    recent_sessions: [],
+    recent_jobs: [],
+    recent_failures: [],
+    feed: [],
+    workers: { desired_count: 0, active_count: 0 },
+  };
+  const sessionCounters = overview.session_counters || {};
+  const queueCounters = overview.queue_counters || {};
+  const running = sessionCounters.running || 0;
+  const awaiting = sessionCounters.awaiting_input || 0;
+  const queued = queueCounters.queued || 0;
+  const processing = queueCounters.running || 0;
+
+  elements.overviewView.innerHTML = `
+    <div class="hero-grid">
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Control Logic</h2>
+            <p>Use <span class="mono">steer</span> when the session is still running and you want to refine direction. Use <span class="mono">continue</span> when the session is waiting, paused, or failed and needs a new turn.</p>
+          </div>
+          <span class="${statusClass('running')}">CLI-first runtime</span>
+        </div>
+        <div class="detail-pairs">
+          <div class="detail-pair">
+            <strong>Session Root</strong>
+            <span class="mono">${escapeHtml(state.meta?.session_root || 'N/A')}</span>
+          </div>
+          <div class="detail-pair">
+            <strong>Default Provider</strong>
+            <span class="mono">${escapeHtml(state.meta?.default_provider || 'N/A')}</span>
+          </div>
+          <div class="detail-pair">
+            <strong>Queue Workers</strong>
+            <span>${escapeHtml(String(state.workers?.desired_count ?? 0))} desired / ${escapeHtml(String(state.workers?.active_count ?? 0))} active</span>
+          </div>
+          <div class="detail-pair">
+            <strong>Parallel Queue Execution</strong>
+            <span>Submit multiple background jobs and scale worker count without changing the CLI core path.</span>
+          </div>
+        </div>
+      </section>
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Quick Start</h2>
+            <p>The control panel on the right always keeps the Start Session form visible so new users do not have to search for the entry point.</p>
+          </div>
+        </div>
+        <div class="timeline-list">
+          <div class="timeline-item">
+            <div class="timeline-header">
+              <span class="${statusClass('running')}">1. Start</span>
+              <span class="muted">New work</span>
+            </div>
+            <div class="timeline-text">Launch a main session with the task prompt, provider choice, and optional isolation mode.</div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-header">
+              <span class="${statusClass('awaiting_input')}">2. Steer / Continue</span>
+              <span class="muted">Mid-run control</span>
+            </div>
+            <div class="timeline-text">Use steer for running sessions and continue for sessions that are waiting on you.</div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-header">
+              <span class="${statusClass('queued')}">3. Queue</span>
+              <span class="muted">Parallel backlog</span>
+            </div>
+            <div class="timeline-text">Push child work or unattended jobs into the background queue and scale workers when throughput matters.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="stats-grid">
+      ${renderStatCard('Running Sessions', running, 'Sessions currently executing in the runtime')}
+      ${renderStatCard('Awaiting Input', awaiting, 'Sessions paused at a durable handoff boundary')}
+      ${renderStatCard('Queued Jobs', queued, 'Background jobs waiting for worker capacity')}
+      ${renderStatCard('Running Jobs', processing, 'Queue jobs actively being consumed')}
+    </div>
+
+    <div class="split-grid">
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Recent Activity</h2>
+            <p>Mixed feed of session summaries and queue transitions to help you orient quickly.</p>
+          </div>
+        </div>
+        <div class="feed-list">
+          ${(overview.feed || []).length
+            ? (overview.feed || []).map(renderFeedItem).join('')
+            : renderEmpty('No recent activity yet.')}
+        </div>
+      </section>
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Recent Failures</h2>
+            <p>Failures stay visible so you can resume or inspect them instead of losing context.</p>
+          </div>
+        </div>
+        <div class="failure-list">
+          ${(overview.recent_failures || []).length
+            ? (overview.recent_failures || []).map(renderFailureItem).join('')
+            : renderEmpty('No recent failures.')}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderStatCard(label, value, subvalue) {
+  return `
+    <section class="stat-card">
+      <div class="stat-label">${escapeHtml(label)}</div>
+      <div class="stat-value">${escapeHtml(String(value))}</div>
+      <div class="stat-subvalue">${escapeHtml(subvalue)}</div>
+    </section>
+  `;
+}
+
+function renderFeedItem(item) {
+  return `
+    <article class="feed-item">
+      <div class="feed-header">
+        <span class="${statusClass(item.event_type || item.kind)}">${escapeHtml(item.kind)}</span>
+        <span class="muted">${escapeHtml(formatDate(item.time))}</span>
+      </div>
+      <div class="feed-text mono">${escapeHtml(item.text || item.event_type || 'event')}</div>
+      <div class="table-meta">${escapeHtml(JSON.stringify(item.data || {}, null, 2))}</div>
+    </article>
+  `;
+}
+
+function renderFailureItem(item) {
+  return `
+    <article class="failure-item">
+      <div class="feed-header">
+        <span class="${statusClass('failed')}">${escapeHtml(item.kind)}</span>
+        <span class="muted">${escapeHtml(formatDate(item.updated_at))}</span>
+      </div>
+      <div class="mono">${escapeHtml(item.id)}</div>
+      <div class="feed-text">${escapeHtml(item.message || 'No error summary')}</div>
+    </article>
+  `;
+}
+
+function renderQueueView() {
+  elements.queueView.innerHTML = `
+    <div class="stats-grid">
+      ${renderStatCard('Queued', state.overview?.queue_counters?.queued || 0, 'Jobs waiting for a worker')}
+      ${renderStatCard('Running', state.overview?.queue_counters?.running || 0, 'Jobs in the worker pipeline')}
+      ${renderStatCard('Completed', state.overview?.queue_counters?.completed || 0, 'Jobs finished successfully')}
+      ${renderStatCard('Failed', state.overview?.queue_counters?.failed || 0, 'Jobs that need inspection or rerun')}
+    </div>
+
+    <section class="section-card">
+      <div class="section-header">
+        <div class="section-header-copy">
+          <h2>Queue Jobs</h2>
+          <p>Background jobs are durable file-backed records. Worker concurrency changes throughput, not the job contract.</p>
+        </div>
+        <span class="${statusClass('queued')}">${escapeHtml(String(state.queueJobs.length))} visible</span>
+      </div>
+      <div class="table-list">
+        ${state.queueJobs.length ? state.queueJobs.map(renderJobItem).join('') : renderEmpty('No queue jobs yet.')}
+      </div>
+    </section>
+
+    <section class="section-card">
+      <div class="section-header">
+        <div class="section-header-copy">
+          <h2>Worker Pool</h2>
+          <p>Workers share the same queue root and rely on atomic claim semantics to avoid duplicate consumption.</p>
+        </div>
+      </div>
+      <div class="worker-list">
+        ${(state.workers?.workers || []).length
+          ? (state.workers.workers || []).map(renderWorkerItem).join('')
+          : renderEmpty('No active workers. Scale the pool from the action rail.')}
+      </div>
+    </section>
+  `;
+}
+
+function renderJobItem(job) {
+  return `
+    <article class="table-item">
+      <div class="table-headline">
+        <div>
+          <div class="mono">${escapeHtml(job.id)}</div>
+          <div class="table-meta">${escapeHtml(job.agent_name || 'default-agent')} · ${escapeHtml(job.agent_role || 'unspecified-role')}</div>
+        </div>
+        <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
+      </div>
+      <div class="detail-pairs">
+        <div class="detail-pair">
+          <strong>Prompt</strong>
+          <span>${escapeHtml(job.prompt || '')}</span>
+        </div>
+        <div class="detail-pair">
+          <strong>Session</strong>
+          <span class="mono">${escapeHtml(job.session_id || 'pending')}</span>
+        </div>
+        <div class="detail-pair">
+          <strong>Provider / Model</strong>
+          <span class="mono">${escapeHtml(job.provider || 'default')} · ${escapeHtml(job.model || 'default')}</span>
+        </div>
+        <div class="detail-pair">
+          <strong>Updated</strong>
+          <span>${escapeHtml(formatDate(job.updated_at))}</span>
+        </div>
+      </div>
+      ${job.last_error ? `<div class="feed-text">${escapeHtml(job.last_error)}</div>` : ''}
+    </article>
+  `;
+}
+
+function renderWorkerItem(worker) {
+  return `
+    <article class="worker-item">
+      <div class="worker-header">
+        <div class="mono">worker-${escapeHtml(String(worker.id))}</div>
+        <span class="${statusClass(worker.state)}">${escapeHtml(worker.state)}</span>
+      </div>
+      <div class="detail-pairs">
+        <div class="detail-pair">
+          <strong>Last Job</strong>
+          <span class="mono">${escapeHtml(worker.last_job_id || 'none')}</span>
+        </div>
+        <div class="detail-pair">
+          <strong>Last Status</strong>
+          <span>${escapeHtml(worker.last_job_status || 'none')}</span>
+        </div>
+        <div class="detail-pair">
+          <strong>Updated</strong>
+          <span>${escapeHtml(formatDate(worker.updated_at))}</span>
+        </div>
+        <div class="detail-pair">
+          <strong>Error</strong>
+          <span>${escapeHtml(worker.last_error || 'none')}</span>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderSessionView() {
+  const detail = state.sessionDetail;
+  if (!detail) {
+    elements.sessionView.innerHTML = renderEmpty('Choose a session from the left rail to inspect its full state.');
+    return;
+  }
+
+  const meta = detail.metadata;
+  const sessionTab = state.sessionTab;
+  let body = '';
+
+  if (sessionTab === 'timeline') {
+    body = `
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Timeline</h2>
+            <p>Messages and runtime events stay in one stream so you can see the agent output and control-plane behavior together.</p>
+          </div>
+        </div>
+        <div class="timeline-list">
+          ${(detail.timeline || []).length
+            ? (detail.timeline || []).map(renderTimelineItem).join('')
+            : renderEmpty('No timeline entries yet.')}
+        </div>
+      </section>
+    `;
+  } else if (sessionTab === 'tasks') {
+    body = renderTasksTab(detail.task_board || { todo: [], counters: {}, groups: {} });
+  } else if (sessionTab === 'children') {
+    body = renderChildrenTab(detail.children || { sessions: [], jobs: [] });
+  } else {
+    body = renderQueueLinksTab(detail);
+  }
+
+  elements.sessionView.innerHTML = `
+    <section class="session-header">
+      <div class="session-header-top">
+        <div class="session-header-copy">
+          <p class="eyebrow">Selected Session</p>
+          <h2>${escapeHtml(shortId(meta.id))}</h2>
+          <p>${escapeHtml(meta.provider)} · ${escapeHtml(meta.model)} · ${escapeHtml(meta.mode)}</p>
+        </div>
+        <div class="card-row">
+          <span class="${statusClass(detail.state.status)}">${escapeHtml(detail.state.status)}</span>
+          ${detail.active_handle ? `<span class="${statusClass('running')}">owned by web console</span>` : ''}
+        </div>
+      </div>
+      <div class="meta-grid">
+        ${renderMetaItem('Workdir', meta.workdir)}
+        ${renderMetaItem('Requested Workdir', meta.requested_workdir || meta.workdir || 'N/A')}
+        ${renderMetaItem('Created', formatDate(meta.created_at))}
+        ${renderMetaItem('Updated', formatDate(detail.state.updated_at))}
+        ${detail.state.pause_reason ? renderMetaItem('Pause Reason', detail.state.pause_reason) : ''}
+        ${detail.state.last_error ? renderMetaItem('Last Error', detail.state.last_error) : ''}
+        ${renderMetaItem('Parent Session', meta.parent_session_id || 'none')}
+        ${renderMetaItem('Queue Job', meta.queue_job_id || 'none')}
+        ${renderMetaItem('Agent Role', meta.agent_role || 'none')}
+        ${renderMetaItem('Isolation', meta.isolation?.mode || 'off')}
+      </div>
+      <div class="tabs">
+        ${renderTabButton('timeline', 'Timeline')}
+        ${renderTabButton('tasks', 'Tasks')}
+        ${renderTabButton('children', 'Children')}
+        ${renderTabButton('links', 'Queue Links')}
+      </div>
+    </section>
+    ${body}
+  `;
+}
+
+function renderMetaItem(label, value) {
+  return `
+    <div class="meta-item">
+      <span class="meta-item-label">${escapeHtml(label)}</span>
+      <span class="meta-item-value">${escapeHtml(value)}</span>
+    </div>
+  `;
+}
+
+function renderTabButton(value, label) {
+  return `<button class="tab-button ${state.sessionTab === value ? 'is-active' : ''}" type="button" data-session-tab="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+}
+
+function renderTimelineItem(item) {
+  return `
+    <article class="timeline-item">
+      <div class="timeline-header">
+        <div class="card-row">
+          <span class="${statusClass(item.role || item.event_type || item.kind)}">${escapeHtml(item.kind === 'message' ? item.role : item.event_type || item.kind)}</span>
+          <span class="mono">${escapeHtml(item.kind === 'message' ? (item.message_id || '') : (item.event_id || ''))}</span>
+        </div>
+        <span class="muted">${escapeHtml(formatDate(item.time))}</span>
+      </div>
+      ${item.phase ? `<div class="table-meta">phase: ${escapeHtml(item.phase)}</div>` : ''}
+      <div class="timeline-text">${escapeHtml(item.text || JSON.stringify(item.data || {}, null, 2))}</div>
+      ${item.data ? `<div class="table-meta">${escapeHtml(JSON.stringify(item.data, null, 2))}</div>` : ''}
+    </article>
+  `;
+}
+
+function renderTasksTab(board) {
+  const counters = board.counters || {};
+  const groups = board.groups || {};
+  return `
+    <div class="stats-grid">
+      ${renderStatCard('Todo Items', (board.todo || []).length, 'High-frequency execution rhythm')}
+      ${renderStatCard('Ready Tasks', counters.ready || 0, 'Pending work with no blockers')}
+      ${renderStatCard('Blocked Tasks', counters.blocked || 0, 'Tasks waiting on dependencies')}
+      ${renderStatCard('Completed Tasks', counters.completed || 0, 'Durable task graph progress')}
+    </div>
+    <div class="split-grid">
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Todo Rhythm</h2>
+            <p>Short-cycle execution plan inside the current session.</p>
+          </div>
+        </div>
+        <div class="table-list">
+          ${(board.todo || []).length
+            ? (board.todo || []).map((item) => `
+                <article class="table-item">
+                  <div class="table-headline">
+                    <div>${escapeHtml(item.content)}</div>
+                    <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
+                  </div>
+                  <div class="table-meta">${escapeHtml(item.priority || 'normal')} · ${escapeHtml(formatDate(item.updated_at))}</div>
+                </article>
+              `).join('')
+            : renderEmpty('No todo items for this session.')}
+        </div>
+      </section>
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Task Board</h2>
+            <p>Durable graph grouped by runtime state.</p>
+          </div>
+        </div>
+        <div class="table-list">
+          ${['ready', 'blocked', 'completed', 'cancelled']
+            .filter((group) => (groups[group] || []).length)
+            .map((group) => `
+              <article class="table-item">
+                <div class="table-headline">
+                  <strong>${escapeHtml(group)}</strong>
+                  <span class="badge">${escapeHtml(String(groups[group].length))}</span>
+                </div>
+                <div class="timeline-list">
+                  ${groups[group].map((task) => `
+                    <div class="detail-pair">
+                      <strong>${escapeHtml(task.id)} · ${escapeHtml(task.subject)}</strong>
+                      <span>${escapeHtml(task.description || 'No description')}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </article>
+            `).join('') || renderEmpty('No task graph items for this session.')}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderChildrenTab(children) {
+  return `
+    <div class="split-grid">
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Child Sessions</h2>
+            <p>Synchronous or background child execution linked to the current parent.</p>
+          </div>
+        </div>
+        <div class="table-list">
+          ${(children.sessions || []).length
+            ? children.sessions.map((item) => `
+                <article class="table-item">
+                  <div class="table-headline">
+                    <div class="mono">${escapeHtml(item.id)}</div>
+                    <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
+                  </div>
+                  <div class="table-meta">${escapeHtml(item.agent_role || 'no-role')} · ${escapeHtml(item.provider)} · ${escapeHtml(item.model)}</div>
+                  <div class="feed-text">${escapeHtml(item.workdir || 'no-workdir')}</div>
+                </article>
+              `).join('')
+            : renderEmpty('No child sessions for this parent session.')}
+        </div>
+      </section>
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Child Queue Jobs</h2>
+            <p>Background child jobs created under the current parent session.</p>
+          </div>
+        </div>
+        <div class="table-list">
+          ${(children.jobs || []).length
+            ? children.jobs.map(renderJobItem).join('')
+            : renderEmpty('No child queue jobs for this parent session.')}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderQueueLinksTab(detail) {
+  return `
+    <div class="split-grid">
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Background Notifications</h2>
+            <p>Notifications that flowed back into this session from background child work.</p>
+          </div>
+        </div>
+        <div class="notification-list">
+          ${(detail.background_notifications || []).length
+            ? detail.background_notifications.map((item) => `
+                <article class="notification-item">
+                  <div class="table-headline">
+                    <div class="mono">${escapeHtml(item.queue_job_id || item.id)}</div>
+                    <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
+                  </div>
+                  <div class="timeline-text">${escapeHtml(item.final_text || item.last_error || 'No summary')}</div>
+                  <div class="table-meta">${escapeHtml(item.agent_role || 'no-role')} · ${escapeHtml(formatDate(item.created_at))}</div>
+                </article>
+              `).join('')
+            : renderEmpty('No background notifications have been written yet.')}
+        </div>
+      </section>
+      <section class="section-card">
+        <div class="section-header">
+          <div class="section-header-copy">
+            <h2>Steer Requests</h2>
+            <p>Control queue written to <span class="mono">control/steer.jsonl</span>.</p>
+          </div>
+        </div>
+        <div class="notification-list">
+          ${(detail.steer_requests || []).length
+            ? detail.steer_requests.map((item) => `
+                <article class="notification-item">
+                  <div class="table-headline">
+                    <div class="mono">${escapeHtml(item.id)}</div>
+                    <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
+                  </div>
+                  <div class="timeline-text">${escapeHtml(item.text || '')}</div>
+                  <div class="table-meta">${escapeHtml(item.source || 'unknown')} · interrupt=${escapeHtml(String(Boolean(item.interrupt)))}</div>
+                </article>
+              `).join('')
+            : renderEmpty('No steer requests have been queued for this session.')}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderEmpty(message) {
+  return `<div class="empty-state">${escapeHtml(message)}</div>`;
+}
+
+function renderSidebar() {
+  elements.sessionCountBadge.textContent = String(state.sessions.length);
+  elements.sessionList.innerHTML = state.sessions.length
+    ? state.sessions.map((item) => `
+        <button class="session-list-item ${state.selectedSessionId === item.id ? 'is-active' : ''}" type="button" data-session-id="${escapeHtml(item.id)}">
+          <div class="card-row">
+            <span class="session-id">${escapeHtml(shortId(item.id))}</span>
+            <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
+          </div>
+          <div class="session-meta">${escapeHtml(item.provider)} · ${escapeHtml(item.model)} · ${escapeHtml(item.agent_role || item.mode || 'session')}</div>
+          <div class="session-meta">${escapeHtml(formatDate(item.updated_at))}</div>
+        </button>
+      `).join('')
+    : renderEmpty('No sessions yet.');
+
+  document.querySelectorAll('[data-view-button]').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.viewButton === state.currentView);
+  });
+}
+
+function renderActions() {
+  elements.startCard.innerHTML = startFormTemplate();
+  elements.queueJobCard.innerHTML = queueJobTemplate();
+  elements.workerCard.innerHTML = workerControlTemplate();
+  elements.sessionActionCard.innerHTML = sessionActionTemplate();
+  bindActionForms();
+}
+
+function sessionActionTemplate() {
+  if (!state.sessionDetail) {
+    return `
+      <div class="section-header-copy">
+        <h2>Session Actions</h2>
+        <p>Select a session to unlock steer, continue, and direct interrupt controls.</p>
+      </div>
+      ${renderEmpty('No session selected.')}
+    `;
+  }
+
+  const status = state.sessionDetail.state.status;
+  const canContinue = ['awaiting_input', 'paused', 'failed'].includes(status);
+  const canSteer = status === 'running';
+
+  return `
+    <div class="section-header-copy">
+      <h2>Session Actions</h2>
+      <p>${canSteer
+        ? 'Use steer to refine a running session without resetting the task.'
+        : canContinue
+          ? 'Use continue to resume from the durable session state.'
+          : 'This session is not currently controllable from the browser.'}</p>
+    </div>
+    ${canSteer ? `
+      <form id="steer-form" class="form-grid">
+        <div class="field">
+          <label for="steer-message">Steer Message</label>
+          <textarea id="steer-message" name="message" placeholder="Focus on failing tests first." required></textarea>
+        </div>
+        <label class="checkbox-inline">
+          <input type="checkbox" name="interrupt" />
+          <span>Request interrupt at the next safe point</span>
+        </label>
+        <button class="button button-primary" type="submit">Send Steer</button>
+      </form>
+      ${state.sessionDetail.active_handle ? `<button id="interrupt-button" class="button button-danger" type="button">Interrupt This Session</button>` : ''}
+    ` : ''}
+    ${canContinue ? `
+      <form id="continue-form" class="form-grid">
+        <div class="field">
+          <label for="continue-message">Continue Message</label>
+          <textarea id="continue-message" name="message" placeholder="Proceed with the next step." required></textarea>
+        </div>
+        <div class="form-row">
+          <div class="field">
+            <label for="continue-provider">Provider</label>
+            <select id="continue-provider" name="provider">
+              <option value="">Keep current provider</option>
+              ${providerOptions()}
+            </select>
+          </div>
+          <div class="field">
+            <label for="continue-model">Model override</label>
+            <input id="continue-model" name="model" placeholder="Leave empty to keep the current model." />
+          </div>
+        </div>
+        <button class="button button-primary" type="submit">Continue Session</button>
+      </form>
+    ` : ''}
+  `;
+}
+
+function queueJobTemplate() {
+  const selected = state.selectedSessionId || '';
+  return `
+    <div class="section-header-copy">
+      <h2>Queue Job</h2>
+      <p>Use the durable background queue for child work, unattended tasks, or parallel backlog execution.</p>
+    </div>
+    <form id="queue-form" class="form-grid">
+      <div class="field">
+        <label for="queue-prompt">Prompt</label>
+        <textarea id="queue-prompt" name="prompt" placeholder="Summarize the current task scope and call finish when done." required></textarea>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label for="queue-parent">Parent Session</label>
+          <input id="queue-parent" name="parent_session_id" value="${escapeHtml(selected)}" placeholder="Optional parent session id" />
+        </div>
+        <div class="field">
+          <label for="queue-role">Agent Role</label>
+          <select id="queue-role" name="agent_role">
+            ${roleOptions()}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label for="queue-provider">Provider</label>
+          <select id="queue-provider" name="provider">
+            <option value="">Default provider</option>
+            ${providerOptions()}
+          </select>
+        </div>
+        <div class="field">
+          <label for="queue-model">Model override</label>
+          <input id="queue-model" name="model" placeholder="Use the provider default if empty." />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label for="queue-agent-name">Agent Name</label>
+          <input id="queue-agent-name" name="agent_name" placeholder="reviewer" />
+        </div>
+        <div class="field">
+          <label for="queue-mode">Mode</label>
+          <select id="queue-mode" name="mode">
+            <option value="exec">exec</option>
+            <option value="run">run</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label for="queue-workdir">Workdir</label>
+          <input id="queue-workdir" name="workdir" placeholder="Optional isolated workdir root." />
+        </div>
+        <div class="field">
+          <label for="queue-isolation">Isolation</label>
+          <select id="queue-isolation" name="isolation_mode">
+            <option value="">auto</option>
+            <option value="off">off</option>
+            <option value="auto">auto</option>
+            <option value="copy">copy</option>
+            <option value="git">git</option>
+          </select>
+        </div>
+      </div>
+      <button class="button button-secondary" type="submit">Submit Queue Job</button>
+    </form>
+  `;
+}
+
+function workerControlTemplate() {
+  return `
+    <div class="section-header-copy">
+      <h2>Worker Pool</h2>
+      <p>Scale background workers when queue throughput matters. Worker count changes execution capacity, not the queue contract.</p>
+    </div>
+    <form id="worker-form" class="form-grid">
+      <div class="field">
+        <label for="worker-count">Desired Worker Count</label>
+        <input id="worker-count" type="number" min="0" name="desired_count" value="${escapeHtml(String(state.workers?.desired_count ?? 0))}" />
+      </div>
+      <button class="button button-secondary" type="submit">Apply Worker Count</button>
+    </form>
+    <div class="helper-text">Current snapshot: ${escapeHtml(String(state.workers?.active_count ?? 0))} active workers, poll interval ${escapeHtml(String(state.workers?.poll_interval_ms ?? 0))} ms.</div>
+  `;
+}
+
+function bindActionForms() {
+  document.getElementById('start-form')?.addEventListener('submit', onStartSubmit);
+  document.getElementById('steer-form')?.addEventListener('submit', onSteerSubmit);
+  document.getElementById('continue-form')?.addEventListener('submit', onContinueSubmit);
+  document.getElementById('queue-form')?.addEventListener('submit', onQueueSubmit);
+  document.getElementById('worker-form')?.addEventListener('submit', onWorkerSubmit);
+  document.getElementById('interrupt-button')?.addEventListener('click', onInterruptClick);
+}
+
+async function onStartSubmit(event) {
+  event.preventDefault();
+  if (event.currentTarget.dataset.pending === 'true') return;
+  const form = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(form.entries());
+  setFormPending(event.currentTarget, true, 'Starting...');
+  try {
+    const result = await fetchJSON('/api/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    showToast(`Started session ${shortId(result.session_id)}`);
+    state.selectedSessionId = result.session_id;
+    state.currentView = 'session';
+    await refreshAll();
+    await refreshSelectedSession();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setFormPending(event.currentTarget, false, 'Starting...');
+  }
+}
+
+async function onSteerSubmit(event) {
+  event.preventDefault();
+  if (!state.selectedSessionId) return;
+  if (event.currentTarget.dataset.pending === 'true') return;
+  const form = new FormData(event.currentTarget);
+  const payload = {
+    message: form.get('message'),
+    interrupt: form.get('interrupt') === 'on',
+  };
+  setFormPending(event.currentTarget, true, 'Sending...');
+  try {
+    await fetchJSON(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/steer`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    showToast('Steer request queued.');
+    event.currentTarget.reset();
+    await refreshSelectedSession();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setFormPending(event.currentTarget, false, 'Sending...');
+  }
+}
+
+async function onContinueSubmit(event) {
+  event.preventDefault();
+  if (!state.selectedSessionId) return;
+  if (event.currentTarget.dataset.pending === 'true') return;
+  const form = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(form.entries());
+  setFormPending(event.currentTarget, true, 'Continuing...');
+  try {
+    await fetchJSON(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/continue`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    showToast('Continue request accepted.');
+    await refreshAll();
+    await refreshSelectedSession();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setFormPending(event.currentTarget, false, 'Continuing...');
+  }
+}
+
+async function onQueueSubmit(event) {
+  event.preventDefault();
+  if (event.currentTarget.dataset.pending === 'true') return;
+  const form = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(form.entries());
+  setFormPending(event.currentTarget, true, 'Submitting...');
+  try {
+    await fetchJSON('/api/queue/jobs', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    showToast('Queue job submitted.');
+    event.currentTarget.reset();
+    if (state.selectedSessionId) {
+      const parent = document.getElementById('queue-parent');
+      if (parent) parent.value = state.selectedSessionId;
+    }
+    await refreshAll();
+    await refreshSelectedSession();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setFormPending(event.currentTarget, false, 'Submitting...');
+  }
+}
+
+async function onWorkerSubmit(event) {
+  event.preventDefault();
+  if (event.currentTarget.dataset.pending === 'true') return;
+  const form = new FormData(event.currentTarget);
+  const payload = { desired_count: Number(form.get('desired_count') || 0) };
+  setFormPending(event.currentTarget, true, 'Applying...');
+  try {
+    state.workers = await fetchJSON('/api/workers', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    showToast('Worker pool updated.');
+    render();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setFormPending(event.currentTarget, false, 'Applying...');
+  }
+}
+
+async function onInterruptClick() {
+  if (!state.selectedSessionId) return;
+  const button = document.getElementById('interrupt-button');
+  if (button?.disabled) return;
+  setButtonPending(button, true, 'Interrupting...');
+  try {
+    await fetchJSON(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/interrupt`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    showToast('Interrupt requested.');
+    await refreshSelectedSession();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setButtonPending(button, false, 'Interrupting...');
+  }
+}
+
+function render() {
+  renderChrome();
+  renderSidebar();
+  renderOverview();
+  renderQueueView();
+  renderSessionView();
+  renderActions();
+
+  elements.overviewView.classList.toggle('is-hidden', state.currentView !== 'overview');
+  elements.queueView.classList.toggle('is-hidden', state.currentView !== 'queue');
+  elements.sessionView.classList.toggle('is-hidden', state.currentView !== 'session');
+}
+
+document.addEventListener('click', (event) => {
+  const sessionButton = event.target.closest('[data-session-id]');
+  if (sessionButton) {
+    setSession(sessionButton.dataset.sessionId);
+    refreshSelectedSession();
+    return;
+  }
+
+  const viewButton = event.target.closest('[data-view-button]');
+  if (viewButton) {
+    setView(viewButton.dataset.viewButton);
+    return;
+  }
+
+  const tabButton = event.target.closest('[data-session-tab]');
+  if (tabButton) {
+    state.sessionTab = tabButton.dataset.sessionTab;
+    renderSessionView();
+    renderActions();
+  }
+});
+
+elements.refreshButton.addEventListener('click', () => refreshAll());
+elements.openStartButton.addEventListener('click', () => {
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  document.getElementById('start-prompt')?.focus();
+});
+
+window.setInterval(() => {
+  refreshAll();
+}, POLL_MS);
+
+refreshAll();

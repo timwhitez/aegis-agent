@@ -1,0 +1,9 @@
+.go-cli-agent/
+bin/
+tmp/
+.env
+
+# Keep top-level validation notes, but ignore historical run directories.
+validation/runs/*/
+validation/workspaces/**/.pytest_cache/
+validation/workspaces/**/__pycache__/

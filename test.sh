@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+UNFORMATTED="$(gofmt -l cmd internal pkg)"
+if [[ -n "$UNFORMATTED" ]]; then
+  printf 'gofmt needed for:\n%s\n' "$UNFORMATTED" >&2
+  exit 1
+fi
+
+PKG_PATTERNS=(
+  ./cmd/...
+  ./internal/...
+  ./pkg/...
+)
+
+# Keep the repo-level test surface on the owned module packages. The
+# validation tree contains copied historical workspaces and prior run artifacts
+# that are useful as evidence, but they are not part of the default module
+# acceptance surface.
+go test "${PKG_PATTERNS[@]}"

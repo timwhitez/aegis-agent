@@ -1,0 +1,248 @@
+# Go CLI Agent Spec Audit And Traceability
+
+## 1. 目的
+
+这份文档不重复产品 spec，而是回答两个问题：
+
+1. 哪些内容是已验证事实？
+2. 哪些内容是当前项目的明确设计取舍？
+
+## 2. 已验证的设计基线
+
+### 2.1 最小 loop
+
+来源：
+
+- `learn-claude-code` `s01`
+- `bitter-lesson-agent-frameworks`
+
+结论：
+
+- agent loop 应保持极简
+- 核心仍是“模型输出 -> 工具执行 -> 工具结果回写 -> 下一轮”
+- harness 不应在 loop 里塞固定 DAG 或重型 plan engine
+
+### 2.2 工具注册与 dispatch
+
+来源：
+
+- `learn-claude-code` `s02`
+
+结论：
+
+- 加工具时不应重写 loop
+- 应使用 registry / dispatch map 追加能力
+
+### 2.3 Todo + 持久化任务系统
+
+来源：
+
+- `learn-claude-code` `s03`
+- `learn-claude-code` `s07`
+- `opencode` 的 session todo 思路
+
+结论：
+
+- 需要同时保留高频 todo 与持久化 task graph
+- todo 负责短周期执行节奏
+- task graph 负责 durable goals、依赖、恢复
+
+### 2.4 Skill 按需加载
+
+来源：
+
+- `learn-claude-code` `s05`
+
+结论：
+
+- system prompt 只放 skill 摘要
+- skill 正文在需要时通过 `load_skill` 注入
+
+### 2.5 上下文压缩
+
+来源：
+
+- `learn-claude-code` `s06`
+- `blog-langchain-com__autonomous-context-compression.md`
+
+结论：
+
+- compaction 必须作为独立 harness 机制存在
+- 历史和工具输出不能无限增长
+- 原始日志必须和压缩视图分离
+
+### 2.6 薄 provider 层
+
+来源：
+
+- `pi-coding-agent`
+- `bitter-lesson-agent-frameworks`
+- `opencode`
+
+结论：
+
+- provider 层必须薄
+- 真正复杂的地方是协议差异、generation 选项映射、replay 细节、错误分类
+- 这些复杂度应停留在 adapter，而不是泄漏到 CLI 或 tool 层
+
+### 2.7 Live Steer
+
+来源：
+
+- `codex` 的 `turn/steer` / `turn/interrupt`
+- `opencode` 的 active session prompt 模式
+
+结论：
+
+- 运行中补充输入必须成为 harness 原生能力
+- v1 采用 queue-first + best-effort interrupt
+- 外部 `steer` 是标准入口，inline TUI 热键不是前提
+
+### 2.8 Audit / Review Evidence Discipline
+
+来源：
+
+- `codex` 的 findings-first review discipline
+- `openai-com__harness-engineering.md`
+- `blog-langchain-com__how-coding-agents-are-reshaping-engineering-product-and-design.md`
+
+结论：
+
+- 审计 / review 任务里的 `validated findings` 必须只写被行为证据支持的结论
+- 声明、保留名、接口、文档提及、目录形状、类型或枚举本身，不足以证明运行时行为
+- 若结论依赖默认暴露、注册路径、配置门控或真实执行语义，必须核对 owning code path；做不到时应降级为 risk / inference
+- findings-first review 产物应显式记录 `severity`、`confidence`、`evidence`、`why it matters` 和 `unresolved questions`
+- 当任务进入 review / audit 语义时，harness 可以对 `write_file` / `edit_file` / `finish` 施加轻量 validator，并在缺少 durable artifact 时阻断完成，避免缺字段或无证据锚点的报告被当作完成
+- 当外部指令已经明确声明“这不是 review / audit task”时，即使 prompt 中出现 `proof`、`drift` 一类词，runtime 也不应误启用 review artifact validator
+- 当外部指令已经显式给出 review / audit 交付路径时，`finish` 的满足条件必须绑定到该 exact artifact path，而不是被其他 review-like scratch artifact 旁路
+- 当 validator 进入 workspace-aware 模式时，`evidence` 不应只写 `path:line` 形状；还应附带短 snippet / identifier，并验证 cited path 可读、行窗存在、snippet 能在 cited lines 中找到
+- 当声明级线索已经指向具体文件时，应优先在同文件内追到 owning function / gate，再决定是否扩大检索范围
+- 当任务显式要求固定标题、精确 opening block、首个 section 顺序、literal anchor sentence 或 exact proof-anchor bullet/text 时，这些约束必须优先于默认 findings-first 习惯；runtime 可以在 write/edit/finish 前校验 exact-template 与 required literal anchors 是否都被保留
+
+### 2.9 Planner / Generator / Evaluator Separation
+
+来源：
+
+- `anthropic.com/engineering/harness-design-long-running-apps`
+
+结论：
+
+- 对长时间、大范围任务，planner、generator、evaluator 的角色分离可以作为真实增益，而不是默认把所有职责压回单个 session
+- 这种分离不要求 runtime 退化成固定 workflow graph；当前项目仍应保持“session + tools + durable artifacts”模型，只把 role 作为显式 hint
+- structured handoff 的关键不是一段总结词，而是 durable artifacts 是否完整且新鲜，至少应覆盖 spec / plan / progress / validation
+- evaluator / reviewer 角色必须保持怀疑式评审，不应把模型自评当成通过标准
+- 模型升级后要持续复盘哪些 scaffold 仍然 load-bearing；角色化、evaluator pass、handoff guard 都应按任务强度启用，而不是无差别铺满所有任务
+- role hint 不应只停留在 prompt 文本里；当 session 或 child job 显式声明 `planner` / `generator` / `evaluator` 时，该 role 应持久化进 session metadata、queue job、background notification 和 provider request metadata，方便后续 traceability 与 comparator 验证
+
+## 3. 已验证的 provider 协议事实
+
+### 3.1 OpenAI Responses
+
+已验证点：
+
+- 使用 `POST /responses`
+- 请求可包含 `instructions`、`input`、`tools`
+- generation 选项可映射为 `temperature`、`top_p`、`max_output_tokens`
+- reasoning 选项可映射为 `reasoning.effort`
+- 文本 verbosity 可映射为 `text.verbosity`
+- 工具调用是 `function_call`
+- 工具结果回放是 `function_call_output`
+
+设计结论：
+
+- `openai-compatible` + `wire_api=responses` 继续复用同一 adapter
+- 默认 `store: false`，保持本地 session 是唯一事实源
+
+### 3.2 Anthropic Messages
+
+已验证点：
+
+- 使用 `POST /v1/messages`
+- 认证头为 `x-api-key` 与 `anthropic-version`
+- `tool_use` / `tool_result` 配对必须正确
+- `tool_result` 在后续 `user` 消息里回放
+- `thinking` 可通过 `budget_tokens` 启用
+
+设计结论：
+
+- v1 允许把 `thinking_budget` 映射到 `thinking`
+- 但不把返回 thinking blocks 的持久化 replay 作为当前默认承诺
+
+### 3.3 Google Gemini `generateContent`
+
+已验证点：
+
+- 使用 `.../models/{model}:generateContent`
+- `systemInstruction` 承载系统提示
+- `contents` 承载历史
+- `functionCall` / `functionResponse` 表达工具调用与结果
+- `generationConfig` 可包含 `temperature`、`topP`、`maxOutputTokens`
+- `thinkingConfig` 可承载 `includeThoughts`、`thinkingBudget`
+
+设计结论：
+
+- v1 允许 generation / thinking 选项映射到 `generationConfig`
+- 但不把 Gemini thought signatures 的持久化 replay 作为当前默认承诺
+
+## 4. 当前锁定的产品决策
+
+### 4.1 Core v1 默认停在 Phase 10
+
+当前锁定的默认产品叙事仍是“极简 CLI 核心优先”，因此：
+
+- Core v1 的默认完成口径锁定在 Phase 0-10
+- `delegate` / `queue` / `tui` / `web` 只作为显式扩展入口存在
+
+### 4.2 扩展能力不再主导文档
+
+即使仓库里已有 Phase 11+ 代码：
+
+- README 不再把它们写成主路径
+- help / smoke / 验收默认不围绕它们设计
+
+### 4.2.1 Web 控制台的当前产品决策
+
+- 允许提供 local Web console 以降低上手门槛、增强 session/queue 可视观测性
+- Web 控制台只复用本地 session / state / messages / events / queue 文件事实
+- Web 控制台的后台并发执行必须建立在真实 worker / child session 之上，而不是前端假进度条
+- Web 控制台当前采用 polling-first，不承诺 SSE / WebSocket 作为 v1 前提
+
+### 4.3 Provider generation 选项进入事实源
+
+当前已锁定：
+
+- `temperature`
+- `top_p`
+- `max_output_tokens`
+- `reasoning_effort`
+- `text_verbosity`
+- `thinking_budget`
+- `include_thoughts`
+- `store`
+
+这些字段必须从 config 进入 runtime，并写入 session metadata。
+
+### 4.4 OpenAI 默认 `store: false`
+
+原因：
+
+- session / state / messages / events 的事实源必须是本地文件
+- 不把 provider 侧持久化变成恢复前提
+
+### 4.5 实话实说的 provider 限制
+
+当前明确承认：
+
+- 不持久化 OpenAI reasoning items
+- 不持久化 Gemini thought signatures
+- 因此 provider-native reasoning replay 不是当前主路径承诺
+
+## 5. Spec 完成判定
+
+当以下条件都成立时，当前 spec 才算收敛：
+
+- `run` / `exec` / `steer` / `continue` 语义一致
+- Core v1 与 extension phases 的边界明确
+- provider contract 与已验证协议事实一致
+- README / AGENTS / scripts 与 spec 一致
+- generation 选项的全链路传递已明确写清

@@ -1,0 +1,9 @@
+name: echo_args
+description: Echo JSON arguments for debugging
+command: ["/bin/sh", "-lc", "cat"]
+timeout_sec: 15
+input_schema:
+  type: object
+  properties:
+    message:
+      type: string
