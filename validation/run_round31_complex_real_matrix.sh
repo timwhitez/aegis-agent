@@ -93,6 +93,39 @@ copy_workspace_as() {
 	cp -R "validation/workspaces/${source}" "${WORKSPACE_DIR}/${target}"
 }
 
+prepare_isolated_review_workspace() {
+	local sandbox_root="$1"
+	shift
+	local rel=""
+	local src=""
+	local dst=""
+	mkdir -p "$sandbox_root"
+	for rel in "$@"; do
+		src="${ROOT_DIR}/${rel}"
+		dst="${sandbox_root}/${rel}"
+		if [[ ! -f "$src" ]]; then
+			echo "missing review sandbox source: ${src}" >&2
+			return 1
+		fi
+		mkdir -p "$(dirname "$dst")"
+		cp "$src" "$dst"
+	done
+}
+
+copy_file_into_sandbox() {
+	local sandbox_root="$1"
+	local source_rel="$2"
+	local target_rel="$3"
+	local src="${ROOT_DIR}/${source_rel}"
+	local dst="${sandbox_root}/${target_rel}"
+	if [[ ! -f "$src" ]]; then
+		echo "missing sandbox source: ${src}" >&2
+		return 1
+	fi
+	mkdir -p "$(dirname "$dst")"
+	cp "$src" "$dst"
+}
+
 prepare_agent_bin() {
 	mkdir -p "$BIN_DIR"
 	cp ./bin/go-cli-agent "$AGENT_BIN"
@@ -1066,6 +1099,30 @@ RT03_EXIT=$?
 finalize_scenario "RT03" "Top-Level Markdown Corpus Synthesis" "$RT03_EXIT" "$RT03_RAW" "${ARTIFACT_DIR}/rt03-top-level-md-synthesis.md" "$(extract_session_id "$RT03_RAW")"
 
 RT04_PROMPT="${PROMPT_DIR}/rt04-forced-compaction-proof.prompt.txt"
+RT04_SANDBOX_ROOT="${RUN_DIR}/rt04-sandbox"
+RT04_SANDBOX_REPO="${RT04_SANDBOX_ROOT}/go-cli-agent"
+RT04_SESSION_ID=""
+RT04_EXIT=0
+prepare_isolated_review_workspace "$RT04_SANDBOX_REPO" \
+	"README.md" \
+	"AGENTS.md" \
+	"spec/00-product.md" \
+	"spec/01-runtime-architecture.md" \
+	"spec/03-provider-contracts.md" \
+	"spec/10-context-compaction.md" \
+	"spec/11-spec-audit-and-traceability.md" \
+	"spec/12-task-system.md" \
+	"spec/13-live-input-and-steering.md" \
+	"internal/runtime/compaction.go" \
+	"internal/runtime/prompt.go" \
+	"internal/runtime/review_guard.go" \
+	"internal/runtime/engine.go" \
+	"internal/runtime/project_memory.go" \
+	"internal/session/store.go" \
+	"internal/tools/path.go"
+copy_file_into_sandbox "$RT04_SANDBOX_ROOT" "../blog-langchain-com__autonomous-context-compression.md" "blog-langchain-com__autonomous-context-compression.md" || RT04_EXIT="$(merge_exit_code "$RT04_EXIT" 1)"
+copy_file_into_sandbox "$RT04_SANDBOX_ROOT" "../openai-com__harness-engineering.md" "openai-com__harness-engineering.md" || RT04_EXIT="$(merge_exit_code "$RT04_EXIT" 1)"
+copy_file_into_sandbox "$RT04_SANDBOX_ROOT" "../learn-claude-code.md" "learn-claude-code.md" || RT04_EXIT="$(merge_exit_code "$RT04_EXIT" 1)"
 write_prompt "$RT04_PROMPT" "Use the review_pipeline skill for this task.
 Inspect only README.md, AGENTS.md, spec/00-product.md, spec/01-runtime-architecture.md, spec/03-provider-contracts.md, spec/10-context-compaction.md, spec/11-spec-audit-and-traceability.md, spec/12-task-system.md, spec/13-live-input-and-steering.md, internal/runtime/compaction.go, internal/runtime/prompt.go, internal/runtime/review_guard.go, internal/runtime/engine.go, internal/runtime/project_memory.go, internal/session/store.go, internal/tools/path.go, ../blog-langchain-com__autonomous-context-compression.md, ../openai-com__harness-engineering.md, and ../learn-claude-code.md.
 Do not use glob or grep_files on the workspace root. If you need text lookup, use grep or read_file only on the allowlisted paths above.
@@ -1073,8 +1130,9 @@ Use targeted retrieval, keep a short todo list in assistant text, and write ${AB
 The only valid deliverable path for this task is ${ABS_ARTIFACT_DIR}/rt04-forced-compaction-proof.md. Do not write to a relative file named rt04-forced-compaction-proof.md in the workspace root.
 Then call finish with a one-line summary."
 RT04_RAW="${RAW_DIR}/rt04-forced-compaction-proof.jsonl"
-run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$RT04_PROMPT" "$RT04_RAW" "$ROOT_DIR" 420
-RT04_EXIT=$?
+run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$RT04_PROMPT" "$RT04_RAW" "$RT04_SANDBOX_REPO" 420
+RT04_EXEC_EXIT=$?
+RT04_EXIT="$(merge_exit_code "$RT04_EXIT" "$RT04_EXEC_EXIT")"
 RT04_SESSION_ID="$(extract_session_id "$RT04_RAW")"
 if ! raw_contains "$RT04_RAW" '"type":"compact.started"'; then
 	RT04_EXIT="$(merge_exit_code "$RT04_EXIT" 1)"

@@ -123,6 +123,20 @@ prepare_isolated_review_workspace() {
 	done
 }
 
+copy_file_into_sandbox() {
+	local sandbox_root="$1"
+	local source_rel="$2"
+	local target_rel="$3"
+	local src="${ROOT_DIR}/${source_rel}"
+	local dst="${sandbox_root}/${target_rel}"
+	if [[ ! -f "$src" ]]; then
+		echo "missing sandbox source: ${src}" >&2
+		return 1
+	fi
+	mkdir -p "$(dirname "$dst")"
+	cp "$src" "$dst"
+}
+
 first_matching_line() {
 	local path="$1"
 	local pattern="$2"
@@ -1453,6 +1467,9 @@ TT12_CONFIG_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/config.py:4-8"
 TT12_CONFIG_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "Failed: DID NOT RAISE <class 'ValueError'>")"
 TT12_REPORT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/report.py:4-9")"
 TT12_REPORT_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "AssertionError: assert 'low' == 'high'")"
+if [[ -z "$TT12_REPORT_ASSERT_LINE" ]]; then
+	TT12_REPORT_ASSERT_LINE="$TT12_REPORT_LINE"
+fi
 append_snippet_block "$TT12_ARTIFACT" "decisive child evidence" \
 	"$TT12_CONFIG_LINE" \
 	"$TT12_CONFIG_ASSERT_LINE" \
@@ -1466,7 +1483,7 @@ TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_CHILDREN_RAW" "\"agent
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ROLE_PROOF" "child_workdir_differs=true")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_PARENT_BACKGROUND" "\"queue_job_id\":\"")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "Failed: DID NOT RAISE <class 'ValueError'>")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "AssertionError: assert 'low' == 'high'")"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "app/report.py:4-9")"
 finalize_case "TT12" "Background Queue Review With Role And Children Proof" "$TT12_EXIT" "$TT12_WORKER_RAW" "$TT12_ARTIFACT" "$TT12_PARENT_SESSION_ID" "" "$TT12_DIR"
 
 TT13_DIR="${CASES_DIR}/TT13"
@@ -1520,14 +1537,39 @@ TT14_PROMPT="${TT14_DIR}/prompt.txt"
 TT14_RAW="${TT14_DIR}/raw.jsonl"
 TT14_ARTIFACT="${TT14_DIR}/artifact.md"
 TT14_ARTIFACT_ABS="$(abs_path "$TT14_ARTIFACT")"
+TT14_SANDBOX_ROOT="${TT14_DIR}/sandbox"
+TT14_SANDBOX_REPO="${TT14_SANDBOX_ROOT}/go-cli-agent"
+TT14_SESSION_ID=""
+TT14_EXIT=0
+prepare_isolated_review_workspace "$TT14_SANDBOX_REPO" \
+	"README.md" \
+	"AGENTS.md" \
+	"spec/00-product.md" \
+	"spec/01-runtime-architecture.md" \
+	"spec/03-provider-contracts.md" \
+	"spec/10-context-compaction.md" \
+	"spec/11-spec-audit-and-traceability.md" \
+	"spec/12-task-system.md" \
+	"spec/13-live-input-and-steering.md" \
+	"internal/runtime/compaction.go" \
+	"internal/runtime/prompt.go" \
+	"internal/runtime/review_guard.go" \
+	"internal/runtime/engine.go" \
+	"internal/runtime/project_memory.go" \
+	"internal/session/store.go" \
+	"internal/tools/path.go"
+copy_file_into_sandbox "$TT14_SANDBOX_ROOT" "../blog-langchain-com__autonomous-context-compression.md" "blog-langchain-com__autonomous-context-compression.md" || TT14_EXIT="$(merge_exit_code "$TT14_EXIT" 1)"
+copy_file_into_sandbox "$TT14_SANDBOX_ROOT" "../openai-com__harness-engineering.md" "openai-com__harness-engineering.md" || TT14_EXIT="$(merge_exit_code "$TT14_EXIT" 1)"
+copy_file_into_sandbox "$TT14_SANDBOX_ROOT" "../learn-claude-code.md" "learn-claude-code.md" || TT14_EXIT="$(merge_exit_code "$TT14_EXIT" 1)"
 write_prompt "$TT14_PROMPT" "Use the review_pipeline skill for this task.
 Inspect only README.md, AGENTS.md, spec/00-product.md, spec/01-runtime-architecture.md, spec/03-provider-contracts.md, spec/10-context-compaction.md, spec/11-spec-audit-and-traceability.md, spec/12-task-system.md, spec/13-live-input-and-steering.md, internal/runtime/compaction.go, internal/runtime/prompt.go, internal/runtime/review_guard.go, internal/runtime/engine.go, internal/runtime/project_memory.go, internal/session/store.go, internal/tools/path.go, ../blog-langchain-com__autonomous-context-compression.md, ../openai-com__harness-engineering.md, and ../learn-claude-code.md.
 Use targeted retrieval only. Do not use glob or grep_files on the workspace root.
 In the artifact, inline exact owning-runtime anchors instead of saying the proof only comes from project memory. Include the exact code snippets 'cloned := cloneMessages(messages)', 'size := estimateChars(cloned)', 'if size <= threshold {', and one direct anchor showing transcript/artifact persistence.
 Write ${TT14_ARTIFACT_ABS} with sections: compaction evidence, proof-read behavior after compaction, remaining risks, next validation moves.
 Then call finish."
-run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$TT14_PROMPT" "$TT14_RAW" "$ROOT_DIR" 420
-TT14_EXIT=$?
+run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$TT14_PROMPT" "$TT14_RAW" "$TT14_SANDBOX_REPO" 420
+TT14_EXEC_EXIT=$?
+TT14_EXIT="$(merge_exit_code "$TT14_EXIT" "$TT14_EXEC_EXIT")"
 TT14_SESSION_ID="$(extract_session_id "$TT14_RAW")"
 copy_session_evidence "$TT14_SESSION_ID" "${TT14_DIR}/evidence/session"
 if [[ -f "$TT14_ARTIFACT" ]]; then

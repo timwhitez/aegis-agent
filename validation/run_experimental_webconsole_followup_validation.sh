@@ -25,8 +25,11 @@ CONFIG_RETRY2="${ROOT_DIR}/${RUN_DIR}/config.retry2.yaml"
 CONFIG_RETRY1="${ROOT_DIR}/${RUN_DIR}/config.retry1.yaml"
 RETRY_MARKER="RETRY_DRIFT_PROOF"
 RETRY_WORKDIR="${ROOT_DIR}/${RUN_DIR}/retry-workdir"
-DOCSET_DIR="${ROOT_DIR}/validation/workspaces/docset"
-PLATFORM_PY_DIR="${ROOT_DIR}/validation/workspaces/platform_py"
+WORKSPACE_STAGE_DIR="${ROOT_DIR}/${RUN_DIR}/workspaces"
+DOCSET_SOURCE_DIR="${ROOT_DIR}/validation/workspaces/docset"
+PLATFORM_PY_SOURCE_DIR="${ROOT_DIR}/validation/workspaces/platform_py"
+DOCSET_DIR="${WORKSPACE_STAGE_DIR}/docset"
+PLATFORM_PY_DIR="${WORKSPACE_STAGE_DIR}/platform_py"
 UI_SMOKE_JSON="${RAW_DIR}/webconsole-ui-smoke.json"
 UI_SMOKE_DOM="${RAW_DIR}/webconsole-ui-smoke.html"
 PROXY_READY_PATH="${RAW_DIR}/retry-proxy-url.txt"
@@ -52,8 +55,11 @@ if [[ -e "$RUN_DIR" ]]; then
 	exit 1
 fi
 
-mkdir -p "$RAW_DIR" "$ARTIFACT_DIR" "$NOTE_DIR" "$EVIDENCE_DIR" "$BIN_DIR" "$SESSION_ROOT_ABS" "$ISOLATION_ROOT_ABS"
+mkdir -p "$RAW_DIR" "$ARTIFACT_DIR" "$NOTE_DIR" "$EVIDENCE_DIR" "$BIN_DIR" "$SESSION_ROOT_ABS" "$ISOLATION_ROOT_ABS" "$WORKSPACE_STAGE_DIR"
 printf 'check\tstatus\texit_code\tpath\n' >"${NOTE_DIR}/preflight-index.tsv"
+
+cp -R "$DOCSET_SOURCE_DIR" "$DOCSET_DIR"
+cp -R "$PLATFORM_PY_SOURCE_DIR" "$PLATFORM_PY_DIR"
 
 mkdir -p "$RETRY_WORKDIR"
 cat >"${RETRY_WORKDIR}/AGENTS.md" <<'EOF'
