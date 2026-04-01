@@ -12,6 +12,7 @@
 在此基础上，session rail 和 queue 视图现在还有一键状态 chips；如果当前选中的 session 被 sidebar filter 隐藏，页面也会给出直接恢复可见的提示，而不是让 selection 静默“消失”。
 overview 里的 KPI 卡片现在也能直接 drill down 到对应的 session / queue 过滤视图，不再只是只读数字墙。
 Queue 主视图也已经从单列表推进成 list-detail 工作区：左侧过滤后的 job 列表，右侧是所选 queue job 的 durable payload、workdir、session linkage 和原始详情。
+如果 queue filter 暂时把当前所选 job 排除，列表仍会把该 selected job pin 住，并提供 `Reveal selected`；overview feed、recent jobs、failures、worker cards 也都能直接打开 queue detail。
 
 ## 当前定位
 

@@ -171,6 +171,8 @@ Sessions 列表项必须展示：
 
 - queue 视图不应只停留在过滤后的列表；当前实现还应提供 selected queue job 的 detail 面板
 - 该 detail 面板至少暴露 prompt、session linkage、requested/effective workdir、provider/model、visible paths 与 raw durable payload
+- 当 filter 排除当前 selected queue job 时，UI 仍应把它 pin 住并提示 operator 可一键 reveal
+- overview feed、recent jobs、failure cards、worker last-job 卡片都应能 drill down 到 queue detail，而不是只停留在静态文本
 
 ### 4.5 右侧动作区
 

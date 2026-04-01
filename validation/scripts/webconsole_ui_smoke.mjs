@@ -391,6 +391,22 @@ async function main() {
     );
     results.interactions.queue_job_detail = true;
 
+    await setField('#queue-filter-query', 'not-present-anywhere');
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.querySelector('[data-reveal-selected-queue-job]')) && Boolean(document.querySelector('#queue-view [data-open-queue-job-id]')) && document.getElementById('queue-filter-query')?.value === 'not-present-anywhere'`),
+      5000,
+      'queue pinned selected filter state'
+    );
+    results.interactions.queue_filter_pinned_selected = true;
+
+    await browserClient.evaluate(`document.querySelector('[data-reveal-selected-queue-job]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`!document.querySelector('[data-reveal-selected-queue-job]') && document.getElementById('queue-filter-query')?.value === ''`),
+      5000,
+      'queue reveal selected reset'
+    );
+    results.interactions.queue_filter_reveal = true;
+
     await browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.click(); true`);
     await browserClient.evaluate(`document.querySelector('[data-session-tab="timeline"]')?.click(); true`);
     const timelineCounts = await browserClient.evaluate(`(() => {

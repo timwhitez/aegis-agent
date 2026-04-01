@@ -238,7 +238,7 @@ function filteredSessions() {
   return selected ? [selected, ...matches] : matches;
 }
 
-function filteredQueueJobs() {
+function matchingQueueJobs() {
   return (state.queueJobs || []).filter((job) => matchesStatus(job.status, state.queueFilterStatus)
     && matchesQuery([
       job.id,
@@ -256,6 +256,14 @@ function filteredQueueJobs() {
       job.effective_workdir,
       ...(job.visible_paths || []),
     ], state.queueFilterQuery));
+}
+
+function filteredQueueJobs() {
+  const matches = matchingQueueJobs();
+  if (!state.selectedQueueJobId) return matches;
+  if (matches.some((job) => job.id === state.selectedQueueJobId)) return matches;
+  const selected = (state.queueJobs || []).find((job) => job.id === state.selectedQueueJobId);
+  return selected ? [selected, ...matches] : matches;
 }
 
 function filteredTimeline(detail) {
@@ -850,6 +858,13 @@ function renderOverviewJob(job) {
 }
 
 function renderFeedItem(item) {
+  const actions = [];
+  if (item.kind === 'session_summary' && item.text) {
+    actions.push({ sessionId: item.text, label: 'Open session' });
+  }
+  if (item.kind === 'queue_job' && item.text) {
+    actions.push({ queueJobId: item.text, label: 'Open queue detail' });
+  }
   return `
     <article class="feed-item">
       <div class="feed-header">
@@ -859,7 +874,7 @@ function renderFeedItem(item) {
       <div class="feed-text mono">${escapeHtml(item.text || item.event_type || 'event')}</div>
       ${renderTokenRow(summarizeDataFields(item.data), 'metadata-row')}
       <div class="table-meta">${escapeHtml(truncateText(JSON.stringify(item.data || {}, null, 2), 240) || 'No extra metadata')}</div>
-      ${item.kind === 'queue_job' ? renderMiniActions([{ queueJobId: item.text, label: 'Open queue detail' }]) : ''}
+      ${renderMiniActions(actions)}
     </article>
   `;
 }
@@ -884,9 +899,15 @@ function renderFailureItem(item) {
 }
 
 function renderQueueView() {
+  const strictMatches = matchingQueueJobs();
   const visibleJobs = filteredQueueJobs();
   const statusOptions = uniqueStatuses(state.queueJobs, (job) => job.status);
   const counts = statusCounts(state.queueJobs, (job) => job.status);
+  const selectedQueueHidden = Boolean(
+    state.selectedQueueJobId
+      && !strictMatches.some((job) => job.id === state.selectedQueueJobId)
+      && (state.queueJobs || []).some((job) => job.id === state.selectedQueueJobId),
+  );
   elements.queueView.innerHTML = `
     <div class="stats-grid">
       ${renderStatCard('Queued', state.overview?.queue_counters?.queued || 0, 'Jobs waiting for a worker', { target: 'queue-status', value: 'queued' })}
@@ -962,8 +983,14 @@ function renderQueueView() {
         chipCounts: counts,
         allCount: state.queueJobs.length,
         activeStatusLabel: 'All jobs',
-        summary: `${visibleJobs.length} visible of ${state.queueJobs.length} queue jobs`,
+        summary: `${strictMatches.length} matching of ${state.queueJobs.length} queue jobs`,
       })}
+      ${selectedQueueHidden ? `
+        <div class="hidden-selection-note">
+          <span class="helper-text">The selected queue job stays pinned even though the current filters exclude it.</span>
+          <button class="mini-button" type="button" data-reveal-selected-queue-job="true">Reveal selected</button>
+        </div>
+      ` : ''}
       <div class="queue-workspace">
         <div class="table-list">
           ${visibleJobs.length ? visibleJobs.map(renderJobItem).join('') : renderEmpty('No queue jobs match the current filters.')}
@@ -1137,6 +1164,7 @@ function renderWorkerItem(worker) {
           <span>${escapeHtml(worker.last_error || 'none')}</span>
         </div>
       </div>
+      ${renderMiniActions(worker.last_job_id ? [{ queueJobId: worker.last_job_id, label: 'Open last job' }] : [])}
     </article>
   `;
 }
@@ -1924,7 +1952,7 @@ async function applySessionStatusDrilldown(status) {
 function applyQueueStatusDrilldown(status) {
   state.queueFilterQuery = '';
   state.queueFilterStatus = status || 'all';
-  const matches = filteredQueueJobs();
+  const matches = matchingQueueJobs();
   if (matches.length && !matches.some((job) => job.id === state.selectedQueueJobId)) {
     state.selectedQueueJobId = matches[0].id;
     refreshSelectedQueueJob();
@@ -1933,6 +1961,14 @@ function applyQueueStatusDrilldown(status) {
 }
 
 document.addEventListener('click', (event) => {
+  const revealSelectedQueueButton = event.target.closest('[data-reveal-selected-queue-job]');
+  if (revealSelectedQueueButton) {
+    state.queueFilterQuery = '';
+    state.queueFilterStatus = 'all';
+    renderQueueView();
+    return;
+  }
+
   const drilldownCard = event.target.closest('[data-drilldown-target]');
   if (drilldownCard) {
     const target = drilldownCard.dataset.drilldownTarget;
