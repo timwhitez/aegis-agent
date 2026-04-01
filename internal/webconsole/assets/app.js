@@ -165,6 +165,7 @@ function renderMiniActions(actions) {
           type="button"
           ${item.sessionId ? `data-open-session-id="${escapeHtml(item.sessionId)}"` : ''}
           ${item.queueJobId ? `data-open-queue-job-id="${escapeHtml(item.queueJobId)}"` : ''}
+          ${item.actionSource ? `data-action-source="${escapeHtml(item.actionSource)}"` : ''}
         >
           ${escapeHtml(item.label)}
         </button>
@@ -836,7 +837,11 @@ function renderSessionSnapshot(item) {
 
 function renderOverviewJob(job) {
   return `
-    <article class="table-item table-item-actionable ${state.selectedQueueJobId === job.id ? 'is-selected' : ''}" data-open-queue-job-id="${escapeHtml(job.id)}">
+    <article
+      class="table-item table-item-actionable ${state.selectedQueueJobId === job.id ? 'is-selected' : ''}"
+      data-open-queue-job-id="${escapeHtml(job.id)}"
+      data-queue-drill-source="overview-recent-job"
+    >
       <div class="table-headline">
         <div>
           <div class="mono">${escapeHtml(shortId(job.id))}</div>
@@ -863,7 +868,7 @@ function renderFeedItem(item) {
     actions.push({ sessionId: item.text, label: 'Open session' });
   }
   if (item.kind === 'queue_job' && item.text) {
-    actions.push({ queueJobId: item.text, label: 'Open queue detail' });
+    actions.push({ queueJobId: item.text, label: 'Open queue detail', actionSource: 'overview-feed-queue-job' });
   }
   return `
     <article class="feed-item">
@@ -883,7 +888,7 @@ function renderFailureItem(item) {
   const openActions = item.kind === 'session'
     ? [{ sessionId: item.id, label: 'Open failed session' }]
     : item.kind === 'queue_job'
-      ? [{ queueJobId: item.id, label: 'Open failed job' }]
+      ? [{ queueJobId: item.id, label: 'Open failed job', actionSource: 'overview-failed-job' }]
       : [];
   return `
     <article class="failure-item">
@@ -1077,7 +1082,7 @@ function renderQueueJobDetail() {
   }
 
   return `
-    <aside id="queue-job-detail" class="section-card queue-detail-card">
+    <aside id="queue-job-detail" class="section-card queue-detail-card" data-queue-job-id="${escapeHtml(job.id)}">
       <div class="section-header">
         <div class="section-header-copy">
           <p class="eyebrow">Selected Queue Job</p>
@@ -1164,7 +1169,7 @@ function renderWorkerItem(worker) {
           <span>${escapeHtml(worker.last_error || 'none')}</span>
         </div>
       </div>
-      ${renderMiniActions(worker.last_job_id ? [{ queueJobId: worker.last_job_id, label: 'Open last job' }] : [])}
+      ${renderMiniActions(worker.last_job_id ? [{ queueJobId: worker.last_job_id, label: 'Open last job', actionSource: 'worker-last-job' }] : [])}
     </article>
   `;
 }

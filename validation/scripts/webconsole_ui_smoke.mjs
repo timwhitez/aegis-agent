@@ -266,6 +266,46 @@ async function main() {
       }
     };
 
+    const openQueueJobFromSelector = async (selector, label) => {
+      const target = await browserClient.evaluate(`(() => {
+        const source = document.querySelector(${JSON.stringify(selector)});
+        const clickable = source?.closest('[data-open-queue-job-id]') || source;
+        const jobId = clickable?.dataset?.openQueueJobId || clickable?.getAttribute?.('data-open-queue-job-id') || '';
+        if (!jobId) return null;
+        clickable.click();
+        return { jobId };
+      })()`);
+      if (!target?.jobId) {
+        throw new Error(`missing ${label}`);
+      }
+      await waitFor(
+        () => browserClient.evaluate(`document.getElementById('queue-job-detail')?.dataset.queueJobId === ${JSON.stringify(target.jobId)}`),
+        timeoutMs,
+        label
+      );
+      return target.jobId;
+    };
+
+    const openQueueJobMatchingText = async (scopeSelector, textNeedle, label) => {
+      const target = await browserClient.evaluate(`(() => {
+        const items = Array.from(document.querySelectorAll(${JSON.stringify(scopeSelector)}));
+        const clickable = items.find((item) => (item.textContent || '').includes(${JSON.stringify(textNeedle)}));
+        const jobId = clickable?.dataset?.openQueueJobId || clickable?.getAttribute?.('data-open-queue-job-id') || '';
+        if (!jobId) return null;
+        clickable.click();
+        return { jobId };
+      })()`);
+      if (!target?.jobId) {
+        throw new Error(`missing ${label}`);
+      }
+      await waitFor(
+        () => browserClient.evaluate(`document.getElementById('queue-job-detail')?.dataset.queueJobId === ${JSON.stringify(target.jobId)}`),
+        timeoutMs,
+        label
+      );
+      return target.jobId;
+    };
+
     await setField('#start-prompt', 'Reply with exactly the plain text WAITING. Do not call any tool.');
     await setField('#start-agent-role', 'generator');
     await setField('#start-agent-name', 'ui-smoke-driver');
@@ -383,11 +423,11 @@ async function main() {
     );
     results.interactions.queue_filter_chip = true;
 
-    await browserClient.evaluate(`document.querySelector('#queue-view [data-open-queue-job-id]')?.click(); true`);
+    await openQueueJobMatchingText('#queue-view .table-list [data-open-queue-job-id]', 'ui-smoke-reviewer', 'queue job detail open');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.getElementById('queue-job-detail')) && document.getElementById('queue-job-detail')?.textContent?.includes('Selected Queue Job') && document.getElementById('queue-job-detail')?.textContent?.includes('ui smoke queue ok')`),
+      () => browserClient.evaluate(`Boolean(document.getElementById('queue-job-detail')?.dataset.queueJobId) && document.getElementById('queue-job-detail')?.textContent?.includes('Selected Queue Job') && document.getElementById('queue-job-detail')?.textContent?.includes('ui smoke queue ok')`),
       timeoutMs,
-      'queue job detail open'
+      'queue job detail payload'
     );
     results.interactions.queue_job_detail = true;
 
@@ -406,6 +446,68 @@ async function main() {
       'queue reveal selected reset'
     );
     results.interactions.queue_filter_reveal = true;
+
+    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
+      5000,
+      'overview visible for queue drilldowns'
+    );
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.querySelector('[data-queue-drill-source="overview-recent-job"]'))`),
+      timeoutMs,
+      'overview recent queue job source'
+    );
+    const overviewRecentJobId = await openQueueJobFromSelector('[data-queue-drill-source="overview-recent-job"]', 'overview recent queue job drilldown');
+    results.interactions.queue_recent_jobs_drilldown = true;
+
+    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
+      5000,
+      'overview visible for feed drilldown'
+    );
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.querySelector('[data-action-source="overview-feed-queue-job"]'))`),
+      timeoutMs,
+      'overview feed queue source'
+    );
+    const overviewFeedJobId = await openQueueJobFromSelector('[data-action-source="overview-feed-queue-job"]', 'overview feed queue drilldown');
+    results.interactions.queue_feed_drilldown = true;
+
+    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
+      5000,
+      'overview visible for failure drilldown'
+    );
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.querySelector('[data-action-source="overview-failed-job"]'))`),
+      timeoutMs,
+      'overview failed queue source'
+    );
+    const overviewFailedJobId = await openQueueJobFromSelector('[data-action-source="overview-failed-job"]', 'overview failed queue drilldown');
+    results.interactions.queue_failure_drilldown = true;
+
+    await browserClient.evaluate(`document.querySelector('[data-view-button="queue"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`!document.getElementById('queue-view')?.classList.contains('is-hidden')`),
+      5000,
+      'queue visible for worker last-job drilldown'
+    );
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.querySelector('[data-action-source="worker-last-job"]'))`),
+      timeoutMs,
+      'worker last-job queue source'
+    );
+    const workerLastJobId = await openQueueJobFromSelector('[data-action-source="worker-last-job"]', 'worker last-job queue drilldown');
+    results.interactions.queue_worker_last_job_drilldown = true;
+    results.queue_drilldown_job_ids = {
+      overview_recent_job: overviewRecentJobId,
+      overview_feed: overviewFeedJobId,
+      overview_failure: overviewFailedJobId,
+      worker_last_job: workerLastJobId,
+    };
 
     await browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.click(); true`);
     await browserClient.evaluate(`document.querySelector('[data-session-tab="timeline"]')?.click(); true`);

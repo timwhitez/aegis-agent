@@ -255,6 +255,34 @@ wait_for_any_pattern() {
 	return 1
 }
 
+wait_for_queue_job_terminal() {
+	local job_id="$1"
+	local job_raw="$2"
+	local children_raw="$3"
+	local parent_session_id="$4"
+	local timeout_sec="${5:-180}"
+	local waited=0
+	local status=""
+	while (( waited < timeout_sec )); do
+		"${AGENT_BIN}" experimental queue show --config "$CONFIG_PATH" --json "$job_id" >"$job_raw" 2>&1 || true
+		if [[ -n "$parent_session_id" ]]; then
+			"${AGENT_BIN}" experimental children "$parent_session_id" \
+				--config "$CONFIG_PATH" \
+				--json >"$children_raw" 2>&1 || true
+		fi
+		status="$(extract_first_json_field "$job_raw" "session_status" "status")"
+		case "$status" in
+			completed|failed|cancelled)
+				return 0
+				;;
+		esac
+		sleep 1
+		waited=$((waited + 1))
+	done
+	echo "timed out waiting for queue job ${job_id} terminal state" >&2
+	return 1
+}
+
 raw_contains() {
 	local path="$1"
 	local pattern="$2"
@@ -1390,6 +1418,7 @@ TT12_PARENT_PROMPT="${TT12_DIR}/prompt.txt"
 TT12_PARENT_RAW="${TT12_DIR}/parent.raw.jsonl"
 TT12_SUBMIT_RAW="${TT12_DIR}/submit.raw.json"
 TT12_WORKER_RAW="${TT12_DIR}/worker.raw.json"
+TT12_JOB_RAW="${TT12_DIR}/job.raw.json"
 TT12_CHILDREN_RAW="${TT12_DIR}/children.raw.json"
 TT12_ARTIFACT="${TT12_DIR}/artifact.md"
 TT12_ROLE_PROOF="${TT12_DIR}/role-proof.txt"
@@ -1417,20 +1446,51 @@ if [[ -n "$TT12_PARENT_SESSION_ID" ]]; then
 	"${AGENT_BIN}" experimental queue worker --config "$CONFIG_PATH" --once --json >"$TT12_WORKER_RAW" 2>&1
 	TT12_WORKER_EXIT=$?
 	TT12_EXIT="$(merge_exit_code "$TT12_EXIT" "$TT12_WORKER_EXIT")"
-	"${AGENT_BIN}" experimental children "$TT12_PARENT_SESSION_ID" \
-		--config "$CONFIG_PATH" \
-		--json >"$TT12_CHILDREN_RAW" 2>&1
-	TT12_CHILDREN_EXIT=$?
-	TT12_EXIT="$(merge_exit_code "$TT12_EXIT" "$TT12_CHILDREN_EXIT")"
+	TT12_QUEUE_JOB_ID="$(extract_json_field "$TT12_SUBMIT_RAW" "id")"
+	if [[ -n "$TT12_QUEUE_JOB_ID" ]]; then
+		if ! wait_for_queue_job_terminal "$TT12_QUEUE_JOB_ID" "$TT12_JOB_RAW" "$TT12_CHILDREN_RAW" "$TT12_PARENT_SESSION_ID" 240; then
+			TT12_EXIT="$(merge_exit_code "$TT12_EXIT" 1)"
+		fi
+	else
+		TT12_EXIT="$(merge_exit_code "$TT12_EXIT" 1)"
+	fi
 else
 	TT12_EXIT="$(merge_exit_code "$TT12_EXIT" 1)"
 fi
 TT12_QUEUE_REVIEW="${TT12_DIR}/queue-review.md"
-copy_if_present "${TT12_PY_DIR}/reports/queue-review.md" "$TT12_QUEUE_REVIEW"
-TT12_CHILD_SESSION_ID="$(extract_json_field "$TT12_WORKER_RAW" "session_id")"
+TT12_CHILD_SESSION_ID="$(extract_first_json_field "$TT12_JOB_RAW" "session_id")"
+if [[ -z "$TT12_CHILD_SESSION_ID" ]]; then
+	TT12_CHILD_SESSION_ID="$(extract_first_json_field "$TT12_CHILDREN_RAW" "session_id")"
+fi
+if [[ -z "$TT12_CHILD_SESSION_ID" ]]; then
+	TT12_CHILD_SESSION_ID="$(extract_first_json_field "$TT12_WORKER_RAW" "session_id")"
+fi
 copy_session_evidence "$TT12_PARENT_SESSION_ID" "${TT12_DIR}/evidence/parent-session"
 copy_session_evidence "$TT12_CHILD_SESSION_ID" "${TT12_DIR}/evidence/child-session"
-TT12_CHILD_WORKDIR="$(extract_json_field "$TT12_WORKER_RAW" "effective_workdir")"
+TT12_CHILD_WORKDIR="$(extract_first_json_field "$TT12_JOB_RAW" "effective_workdir" "workdir" "requested_workdir")"
+if [[ -z "$TT12_CHILD_WORKDIR" ]]; then
+	TT12_CHILD_WORKDIR="$(extract_first_json_field "$TT12_CHILDREN_RAW" "effective_workdir" "workdir" "requested_workdir")"
+fi
+if [[ -z "$TT12_CHILD_WORKDIR" ]]; then
+	TT12_CHILD_WORKDIR="$(extract_first_json_field "$TT12_WORKER_RAW" "effective_workdir" "workdir" "requested_workdir")"
+fi
+TT12_QUEUE_JOB_ID="${TT12_QUEUE_JOB_ID:-$(extract_json_field "$TT12_SUBMIT_RAW" "id")}"
+TT12_PARENT_BACKGROUND_SOURCE="$(session_dir_for_id "$TT12_PARENT_SESSION_ID")/control/background.jsonl"
+if [[ -n "$TT12_QUEUE_JOB_ID" ]] && ! wait_for_pattern "$TT12_PARENT_BACKGROUND_SOURCE" "\"queue_job_id\":\"${TT12_QUEUE_JOB_ID}\"" 120; then
+	TT12_EXIT="$(merge_exit_code "$TT12_EXIT" 1)"
+fi
+copy_session_evidence "$TT12_PARENT_SESSION_ID" "${TT12_DIR}/evidence/parent-session"
+copy_session_evidence "$TT12_CHILD_SESSION_ID" "${TT12_DIR}/evidence/child-session"
+for _ in $(seq 1 30); do
+	copy_child_artifact_if_present "$TT12_JOB_RAW" "reports/queue-review.md" "$TT12_QUEUE_REVIEW" "$TT12_PY_DIR"
+	if [[ ! -f "$TT12_QUEUE_REVIEW" ]]; then
+		copy_child_artifact_if_present "$TT12_CHILDREN_RAW" "reports/queue-review.md" "$TT12_QUEUE_REVIEW" "$TT12_PY_DIR"
+	fi
+	if [[ -f "$TT12_QUEUE_REVIEW" ]]; then
+		break
+	fi
+	sleep 1
+done
 printf '%s\n' \
 	"parent_session_id=${TT12_PARENT_SESSION_ID}" \
 	"child_session_id=${TT12_CHILD_SESSION_ID}" \
@@ -1452,7 +1512,7 @@ copy_if_present "${TT12_DIR}/evidence/parent-session/control/background.jsonl" "
 	echo
 	echo "# confirmed findings"
 	echo
-	echo "- The background child completed with explicit evaluator role metadata and an isolated effective workdir."
+	echo "- The background child reached completed state with explicit evaluator role metadata and an isolated effective workdir."
 	echo "- Durable parent background notifications were written after the child completed."
 	echo
 	echo "# next steps"
@@ -1464,8 +1524,14 @@ copy_if_present "${TT12_DIR}/evidence/parent-session/control/background.jsonl" "
 	echo "- This focused role/children proof does not by itself claim any new repo-owned bug; benchmark-target review findings remain in \`queue-review.md\`."
 } >"$TT12_ARTIFACT"
 TT12_CONFIG_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/config.py:4-8")"
+if [[ -z "$TT12_CONFIG_LINE" ]]; then
+	TT12_CONFIG_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "tests/test_config.py:16")"
+fi
 TT12_CONFIG_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "Failed: DID NOT RAISE <class 'ValueError'>")"
 TT12_REPORT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/report.py:4-9")"
+if [[ -z "$TT12_REPORT_LINE" ]]; then
+	TT12_REPORT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "tests/test_report.py:11")"
+fi
 TT12_REPORT_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "AssertionError: assert 'low' == 'high'")"
 if [[ -z "$TT12_REPORT_ASSERT_LINE" ]]; then
 	TT12_REPORT_ASSERT_LINE="$TT12_REPORT_LINE"
@@ -1475,16 +1541,20 @@ append_snippet_block "$TT12_ARTIFACT" "decisive child evidence" \
 	"$TT12_CONFIG_ASSERT_LINE" \
 	"$TT12_REPORT_LINE" \
 	"$TT12_REPORT_ASSERT_LINE" \
+	"$(first_matching_line "$TT12_JOB_RAW" "\"status\":\"completed\"")" \
+	"$(first_matching_line "$TT12_JOB_RAW" "\"visible_paths\"")" \
 	"$(first_matching_line "$TT12_CHILDREN_RAW" "\"agent_role\":\"evaluator\"")" \
 	"$(first_matching_line "$TT12_PARENT_BACKGROUND" "\"queue_job_id\":\"")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_WORKER_RAW" "\"visible_paths\"")"
+TT12_EXIT="$(merge_if_missing_file "$TT12_EXIT" "$TT12_QUEUE_REVIEW")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_SUBMIT_RAW" "\"agent_role\":\"evaluator\"")"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_JOB_RAW" "\"status\":\"completed\"")"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_JOB_RAW" "\"visible_paths\"")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_CHILDREN_RAW" "\"agent_role\":\"evaluator\"")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ROLE_PROOF" "child_workdir_differs=true")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_PARENT_BACKGROUND" "\"queue_job_id\":\"")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "Failed: DID NOT RAISE <class 'ValueError'>")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "app/report.py:4-9")"
-finalize_case "TT12" "Background Queue Review With Role And Children Proof" "$TT12_EXIT" "$TT12_WORKER_RAW" "$TT12_ARTIFACT" "$TT12_PARENT_SESSION_ID" "" "$TT12_DIR"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "AssertionError: assert 'low' == 'high'")"
+finalize_case "TT12" "Background Queue Review With Role And Children Proof" "$TT12_EXIT" "$TT12_JOB_RAW" "$TT12_ARTIFACT" "$TT12_PARENT_SESSION_ID" "" "$TT12_DIR"
 
 TT13_DIR="${CASES_DIR}/TT13"
 mkdir -p "$TT13_DIR"
@@ -1536,9 +1606,10 @@ mkdir -p "$TT14_DIR"
 TT14_PROMPT="${TT14_DIR}/prompt.txt"
 TT14_RAW="${TT14_DIR}/raw.jsonl"
 TT14_ARTIFACT="${TT14_DIR}/artifact.md"
-TT14_ARTIFACT_ABS="$(abs_path "$TT14_ARTIFACT")"
 TT14_SANDBOX_ROOT="${TT14_DIR}/sandbox"
 TT14_SANDBOX_REPO="${TT14_SANDBOX_ROOT}/go-cli-agent"
+TT14_SANDBOX_ARTIFACT_REL="reports/tt14-proof.md"
+TT14_SANDBOX_ARTIFACT="${TT14_SANDBOX_REPO}/${TT14_SANDBOX_ARTIFACT_REL}"
 TT14_SESSION_ID=""
 TT14_EXIT=0
 prepare_isolated_review_workspace "$TT14_SANDBOX_REPO" \
@@ -1561,17 +1632,21 @@ prepare_isolated_review_workspace "$TT14_SANDBOX_REPO" \
 copy_file_into_sandbox "$TT14_SANDBOX_ROOT" "../blog-langchain-com__autonomous-context-compression.md" "blog-langchain-com__autonomous-context-compression.md" || TT14_EXIT="$(merge_exit_code "$TT14_EXIT" 1)"
 copy_file_into_sandbox "$TT14_SANDBOX_ROOT" "../openai-com__harness-engineering.md" "openai-com__harness-engineering.md" || TT14_EXIT="$(merge_exit_code "$TT14_EXIT" 1)"
 copy_file_into_sandbox "$TT14_SANDBOX_ROOT" "../learn-claude-code.md" "learn-claude-code.md" || TT14_EXIT="$(merge_exit_code "$TT14_EXIT" 1)"
-write_prompt "$TT14_PROMPT" "Use the review_pipeline skill for this task.
+write_prompt_literal "$TT14_PROMPT" <<'EOF'
+Use the review_pipeline skill for this task.
 Inspect only README.md, AGENTS.md, spec/00-product.md, spec/01-runtime-architecture.md, spec/03-provider-contracts.md, spec/10-context-compaction.md, spec/11-spec-audit-and-traceability.md, spec/12-task-system.md, spec/13-live-input-and-steering.md, internal/runtime/compaction.go, internal/runtime/prompt.go, internal/runtime/review_guard.go, internal/runtime/engine.go, internal/runtime/project_memory.go, internal/session/store.go, internal/tools/path.go, ../blog-langchain-com__autonomous-context-compression.md, ../openai-com__harness-engineering.md, and ../learn-claude-code.md.
 Use targeted retrieval only. Do not use glob or grep_files on the workspace root.
 In the artifact, inline exact owning-runtime anchors instead of saying the proof only comes from project memory. Include the exact code snippets 'cloned := cloneMessages(messages)', 'size := estimateChars(cloned)', 'if size <= threshold {', and one direct anchor showing transcript/artifact persistence.
-Write ${TT14_ARTIFACT_ABS} with sections: compaction evidence, proof-read behavior after compaction, remaining risks, next validation moves.
-Then call finish."
+Write __TT14_SANDBOX_ARTIFACT_REL__ with sections: compaction evidence, proof-read behavior after compaction, remaining risks, next validation moves.
+Then call finish.
+EOF
+sed -i "s#__TT14_SANDBOX_ARTIFACT_REL__#${TT14_SANDBOX_ARTIFACT_REL}#" "$TT14_PROMPT"
 run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$TT14_PROMPT" "$TT14_RAW" "$TT14_SANDBOX_REPO" 420
 TT14_EXEC_EXIT=$?
 TT14_EXIT="$(merge_exit_code "$TT14_EXIT" "$TT14_EXEC_EXIT")"
 TT14_SESSION_ID="$(extract_session_id "$TT14_RAW")"
 copy_session_evidence "$TT14_SESSION_ID" "${TT14_DIR}/evidence/session"
+copy_if_present "$TT14_SANDBOX_ARTIFACT" "$TT14_ARTIFACT"
 if [[ -f "$TT14_ARTIFACT" ]]; then
 	TT14_CLONE_LINE="$(first_matching_line "internal/runtime/compaction.go" "cloned := cloneMessages(messages)")"
 	TT14_SIZE_LINE="$(first_matching_line "internal/runtime/compaction.go" "size := estimateChars(cloned)")"
@@ -1817,7 +1892,7 @@ copy_if_present "${TT18_SUBRUN_DIR}/raw/webconsole-ui-smoke.html" "${TT18_DIR}/w
 	echo "- Subrun: \`${TT18_SUBRUN_DIR}\`"
 	echo "- UI smoke JSON: \`${TT18_SUBRUN_DIR}/raw/webconsole-ui-smoke.json\`"
 	echo "- DOM snapshot: \`${TT18_SUBRUN_DIR}/raw/webconsole-ui-smoke.html\`"
-	echo "- Result: embedded shell/assets plus real browser start/continue/queue/manual-refresh path were exercised."
+	echo "- Result: embedded shell/assets plus real browser start/continue/queue/manual-refresh path and queue drilldown entry points were exercised."
 } >"$TT18_ARTIFACT"
 append_snippet_block "$TT18_ARTIFACT" "decisive ui interaction snippets" \
 	"$(first_matching_line "$TT18_RAW" "\"open_start_focus\": true")" \
@@ -1829,7 +1904,14 @@ append_snippet_block "$TT18_ARTIFACT" "decisive ui interaction snippets" \
 	"$(first_matching_line "$TT18_RAW" "\"children_tab_visible\": true")" \
 	"$(first_matching_line "$TT18_RAW" "\"children_role_visible\": true")" \
 	"$(first_matching_line "$TT18_RAW" "\"background_notification_visible\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"manual_refresh\": true")"
+	"$(first_matching_line "$TT18_RAW" "\"manual_refresh\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_job_detail\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_filter_pinned_selected\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_filter_reveal\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_recent_jobs_drilldown\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_feed_drilldown\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_failure_drilldown\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_worker_last_job_drilldown\": true")"
 append_snippet_block "$TT18_ARTIFACT" "runtime cleanliness snippets" \
 	"$(first_matching_line "$TT18_RAW" "\"runtime_exceptions\": []")" \
 	"$(first_matching_line "$TT18_RAW" "\"console_errors\": []")"
@@ -1841,10 +1923,19 @@ TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"continued_sessi
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"children_tab_visible": true')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"children_role_visible": true')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"background_notification_visible": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_job_detail": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_filter_pinned_selected": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_filter_reveal": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_recent_jobs_drilldown": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_feed_drilldown": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_failure_drilldown": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_worker_last_job_drilldown": true')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"runtime_exceptions": []')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"console_errors": []')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"start_role_visible": true')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"children_role_visible": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"queue_recent_jobs_drilldown": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"queue_worker_last_job_drilldown": true')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"runtime_exceptions": []')"
 finalize_case "TT18" "Web Console Deep Smoke" "$TT18_EXIT" "$TT18_RAW" "$TT18_ARTIFACT" "" "" "$TT18_DIR"
 

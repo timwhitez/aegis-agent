@@ -32,6 +32,9 @@ DOCSET_DIR="${WORKSPACE_STAGE_DIR}/docset"
 PLATFORM_PY_DIR="${WORKSPACE_STAGE_DIR}/platform_py"
 UI_SMOKE_JSON="${RAW_DIR}/webconsole-ui-smoke.json"
 UI_SMOKE_DOM="${RAW_DIR}/webconsole-ui-smoke.html"
+PRE_SMOKE_WORKERS_SCALE_JSON="${RAW_DIR}/pre-smoke-workers-scale.json"
+PRE_SMOKE_FAILED_JOB_JSON="${RAW_DIR}/pre-smoke-failed-job.json"
+PRE_SMOKE_FAILED_JOB_DETAIL_JSON="${RAW_DIR}/pre-smoke-failed-job-detail.json"
 PROXY_READY_PATH="${RAW_DIR}/retry-proxy-url.txt"
 PROXY_REQUEST_LOG="${RAW_DIR}/retry-proxy-requests.jsonl"
 PROXY_LOG="${RAW_DIR}/retry-proxy.log"
@@ -746,6 +749,31 @@ if (( RETRY_POLICY_TWO_COUNT < 2 )); then
 	exit 1
 fi
 
+printf '== pre-smoke failed queue canary ==\n'
+CURRENT_PHASE="pre-smoke failed queue canary"
+PRE_SMOKE_SCALE_STATUS="$(post_json "${WEB_B_BASE_URL}/api/workers" '{"desired_count":1}' "${PRE_SMOKE_WORKERS_SCALE_JSON}")"
+if [[ "$PRE_SMOKE_SCALE_STATUS" != "202" ]]; then
+	echo "unexpected pre-smoke worker scale status: ${PRE_SMOKE_SCALE_STATUS}" >&2
+	exit 1
+fi
+
+PRE_SMOKE_FAILED_WORKDIR="${ROOT_DIR}/${RUN_DIR}/missing-ui-smoke-workdir"
+PRE_SMOKE_FAILED_PAYLOAD="$(cat <<EOF
+{"prompt":"This queue canary should fail before the model runs because its workdir is intentionally missing.","workdir":"${PRE_SMOKE_FAILED_WORKDIR}","isolation_mode":"auto","agent_name":"ui-smoke-failed-canary","agent_role":"evaluator","mode":"exec"}
+EOF
+)"
+PRE_SMOKE_FAILED_STATUS="$(post_json "${WEB_B_BASE_URL}/api/queue/jobs" "$PRE_SMOKE_FAILED_PAYLOAD" "${PRE_SMOKE_FAILED_JOB_JSON}")"
+if [[ "$PRE_SMOKE_FAILED_STATUS" != "202" ]]; then
+	echo "unexpected pre-smoke failed queue create status: ${PRE_SMOKE_FAILED_STATUS}" >&2
+	exit 1
+fi
+PRE_SMOKE_FAILED_JOB_ID="$(extract_json_field "${PRE_SMOKE_FAILED_JOB_JSON}" "id")"
+if [[ -z "$PRE_SMOKE_FAILED_JOB_ID" ]]; then
+	echo "missing pre-smoke failed queue job id" >&2
+	exit 1
+fi
+wait_for_job_status "$WEB_B_BASE_URL" "$PRE_SMOKE_FAILED_JOB_ID" "${PRE_SMOKE_FAILED_JOB_DETAIL_JSON}" '"status":"failed"' 180
+
 printf '== browser ui smoke ==\n'
 CURRENT_PHASE="browser ui smoke"
 node ./validation/scripts/webconsole_ui_smoke.mjs \
@@ -865,6 +893,13 @@ cat >"$SUMMARY_PATH" <<EOF
 - Proxy request log: \`raw/retry-proxy-requests.jsonl\`
 - Result: resumed session still shows only \`retry_policy.max_attempts=2\` in durable metadata / prepared events, and the resumed turn emitted a real \`provider.retry\`. The script records whether the bounded finish nudges left the session \`completed\` or still \`awaiting_input\`, but either way the retry-drift proof itself is taken from the durable retry metadata plus the real retry event.
 
+## Queue Failure Canary For Browser Drilldown
+
+- Worker scale before smoke: \`raw/pre-smoke-workers-scale.json\`
+- Failed canary job: \`${PRE_SMOKE_FAILED_JOB_ID}\` -> \`raw/pre-smoke-failed-job-detail.json\`
+- Missing workdir used to force the failure: \`${PRE_SMOKE_FAILED_WORKDIR}\`
+- Result: the browser smoke had a real failed queue job plus worker last-job state available before its own queue submit, so overview failure and worker drilldown assertions were exercised against durable failed-job facts rather than mock UI data.
+
 ## Queue Notification Dedup Follow-Up
 
 - Worker scale response: \`raw/queue-workers-scale.json\`
@@ -882,7 +917,7 @@ cat >"$SUMMARY_PATH" <<EOF
 - UI smoke JSON: \`raw/webconsole-ui-smoke.json\`
 - UI smoke DOM snapshot: \`raw/webconsole-ui-smoke.html\`
 - Shell/assets regression: \`raw/preflight-webconsole-assets.txt\`
-- Result: embedded shell and assets were served locally, headless Chrome exercised role-aware start, tasks/children/queue tab navigation, continue, worker update, queue submit, queue-links notification rendering, and manual refresh against the real webconsole.
+- Result: embedded shell and assets were served locally, headless Chrome exercised role-aware start, session sidebar filter/reveal, queue quick-filter pin/reveal, overview recent-job/feed/failed-job drilldowns, worker last-job drilldown, tasks/children/queue tab navigation, continue, worker update, queue submit, queue-links notification rendering, and manual refresh against the real webconsole.
 
 ## Evidence Paths
 

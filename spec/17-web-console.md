@@ -539,7 +539,7 @@ worker pool 允许并发 `N >= 1`。
 - queue completion 与 stale-running reconcile 重叠时，background notification 仍按 `queue_job_id` 去重
 - focused retry-resume live rerun 需要同时验证 durable retry metadata 未漂移，以及真实 `provider.retry` 事件出现
 - 若 retry proof 已经拿到上述 durable evidence，而 bounded finish nudges 后 session 仍为 `awaiting_input`，应将其记为 non-blocking completion quirk，而不是把整轮 webconsole follow-up 判成失败
-- headless browser UI smoke 覆盖 start、role-aware session chrome、session sidebar filter/reveal、queue quick-filter chips、timeline event filter、tasks/children/queue 标签切换、continue、worker 更新、queue submit、queue 视图、queue-links 通知与 manual refresh
+- headless browser UI smoke 覆盖 start、role-aware session chrome、session sidebar filter/reveal、queue quick-filter chips、queue pin/reveal、overview recent-job/feed/failed-job drilldown、worker last-job drilldown、timeline event filter、tasks/children/queue 标签切换、continue、worker 更新、queue submit、queue 视图、queue-links 通知与 manual refresh
 - 浏览器侧 `runtime exception` 与 `console error` 为空
 
 手工验证至少覆盖：

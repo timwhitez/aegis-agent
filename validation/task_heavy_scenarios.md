@@ -169,14 +169,14 @@ validation/runs/<run-id>/cases/<case-id>/
 
 - workspace: `go-cli-agent/`
 - mode: focused operator rerun
-- target: embedded assets、role-aware start、tasks/children/queue 标签切换、真实浏览器 continue/queue/refresh、console/runtime cleanliness，并把关键交互布尔项直接内联到 parent artifact
+- target: embedded assets、role-aware start、session sidebar filter/reveal、queue pin/reveal、overview recent-job/feed/failed-job drilldown、worker last-job drilldown、tasks/children/queue 标签切换、真实浏览器 continue/queue/refresh、console/runtime cleanliness，并把关键交互布尔项直接内联到 parent artifact
 - artifact: focused follow-up derived summary
 
 ### TT19 Retry-Resume And Queue-Dedup Operator Proof
 
 - workspace: `go-cli-agent/`
 - mode: focused operator rerun
-- target: durable retry restore、real `provider.retry`、queue notification dedup、stale-running reconcile，并把 retry/dedup 决定性 snippet 直接内联到 parent artifact
+- target: durable retry restore、real `provider.retry`、failed queue canary、queue notification dedup、stale-running reconcile，并把 retry/dedup/failed-job 决定性 snippet 直接内联到 parent artifact
 - artifact: focused follow-up derived summary
 
 ### TT20 Task-Heavy Readiness And Issue Inventory
@@ -191,7 +191,7 @@ validation/runs/<run-id>/cases/<case-id>/
 这组矩阵专门加厚三类旧边界：
 
 - `interrupt -> resume -> completion` 的端到端 durable 留证
-- `experimental web` 的真实浏览器 / operator 路径，而不只是内嵌资产 smoke
+- `experimental web` 的真实浏览器 / operator 路径，而不只是内嵌资产 smoke；当前尤其强调 recent-job/feed/failed-job/worker-last-job 四类 queue drilldown 入口
 - role-aware `delegate` / `queue` / `children` 可见性与 copy-isolation 证据
 - 真实修复任务下的多包、多模块、多阶段 taskboard / steer / continue 行为
 - delegated / background / focused subrun 的父级 artifact 会尽量内联决定性 snippet，避免 readiness 结论过度依赖下游路径跳转
