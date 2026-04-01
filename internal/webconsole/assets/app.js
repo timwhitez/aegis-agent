@@ -1142,7 +1142,7 @@ function renderTimelineItem(item) {
     ...summarizeDataFields(item.data),
   ];
   return `
-    <article class="timeline-item">
+    <article class="timeline-item" data-timeline-kind="${escapeHtml(item.kind)}">
       <div class="timeline-header">
         <div class="card-row">
           <span class="${statusClass(item.role || item.event_type || item.kind)}">${escapeHtml(item.kind === 'message' ? item.role : item.event_type || item.kind)}</span>

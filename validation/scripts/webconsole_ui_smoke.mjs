@@ -296,6 +296,22 @@ async function main() {
     );
     results.interactions.start_role_visible = true;
 
+    await setField('#session-filter-query', 'ui-smoke-reviewer');
+    await waitFor(
+      () => browserClient.evaluate(`document.querySelectorAll('.session-list-item').length === 1 && Boolean(document.querySelector('[data-reveal-selected-session]'))`),
+      5000,
+      'session sidebar filter state'
+    );
+    results.interactions.session_filter_query = true;
+
+    await browserClient.evaluate(`document.querySelector('[data-reveal-selected-session]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`document.querySelectorAll('.session-list-item').length >= 2 && !document.querySelector('[data-reveal-selected-session]') && document.getElementById('session-filter-query')?.value === ''`),
+      5000,
+      'session reveal selected reset'
+    );
+    results.interactions.session_filter_reveal = true;
+
     await browserClient.evaluate(`document.querySelector('[data-session-tab="tasks"]')?.click(); true`);
     await waitFor(
       () => browserClient.evaluate(`document.getElementById('session-view')?.textContent?.includes('No todo items for this session.')`),
@@ -340,7 +356,38 @@ async function main() {
     );
     results.interactions.queue_job_visible = true;
 
+    await browserClient.evaluate(`document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]')?.classList.contains('is-active') && document.getElementById('queue-filter-status')?.value === 'completed'`),
+      5000,
+      'queue completed chip active'
+    );
+    results.interactions.queue_filter_chip = true;
+
     await browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.click(); true`);
+    await browserClient.evaluate(`document.querySelector('[data-session-tab="timeline"]')?.click(); true`);
+    const timelineCounts = await browserClient.evaluate(`(() => {
+      const before = document.querySelectorAll('#session-view .timeline-item').length;
+      const eventChip = document.querySelector('[data-filter-chip-target="timeline-kind"][data-filter-chip-value="event"]');
+      if (!eventChip) return { before, after: -1 };
+      eventChip.click();
+      return { before, after: document.querySelectorAll('#session-view .timeline-item').length };
+    })()`);
+    await waitFor(
+      () => browserClient.evaluate(`document.querySelector('[data-filter-chip-target="timeline-kind"][data-filter-chip-value="event"]')?.classList.contains('is-active') && Array.from(document.querySelectorAll('#session-view .timeline-item')).every((item) => item.dataset.timelineKind === 'event')`),
+      5000,
+      'timeline event filter active'
+    );
+    results.interactions.timeline_filter_chip = true;
+    results.timeline_counts = timelineCounts;
+    await browserClient.evaluate(`document.querySelector('[data-clear-filter="timeline"]')?.click(); true`);
+    await waitFor(
+      () => browserClient.evaluate(`document.querySelector('[data-filter-chip-target="timeline-kind"][data-filter-chip-value="all"]')?.classList.contains('is-active') && !document.querySelector('[data-clear-filter="timeline"]')`),
+      5000,
+      'timeline filters cleared'
+    );
+    results.interactions.timeline_filter_clear = true;
+
     await browserClient.evaluate(`document.querySelector('[data-session-tab="children"]')?.click(); true`);
     await waitFor(
       () => browserClient.evaluate(`document.getElementById('session-view')?.textContent?.includes('ui-smoke-reviewer') && document.getElementById('session-view')?.textContent?.includes('evaluator')`),
@@ -381,6 +428,8 @@ async function main() {
       has_queue_form: await browserClient.evaluate(`Boolean(document.getElementById('queue-form'))`),
       has_worker_form: await browserClient.evaluate(`Boolean(document.getElementById('worker-form'))`),
       has_session_header: await browserClient.evaluate(`Boolean(document.querySelector('.session-header'))`),
+      has_session_filter: await browserClient.evaluate(`Boolean(document.getElementById('session-filter-query'))`),
+      has_queue_filter: await browserClient.evaluate(`Boolean(document.getElementById('queue-filter-query'))`),
     };
 
     const dom = await browserClient.evaluate('document.documentElement.outerHTML');
