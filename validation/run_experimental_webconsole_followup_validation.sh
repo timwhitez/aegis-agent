@@ -543,22 +543,25 @@ wait_for_job_status() {
 	local base_url="$1"
 	local job_id="$2"
 	local out="$3"
-	local pattern="$4"
-	local timeout_sec="${5:-180}"
+	local timeout_sec="$4"
+	shift 4
 	local waited=0
 	while (( waited < timeout_sec )); do
 		local status
 		status="$(get_json_quiet "${base_url}/api/queue/jobs/${job_id}" "${out}.tmp")"
 		if [[ "$status" == "200" ]]; then
 			mv "${out}.tmp" "$out"
-			if grep -Fq "$pattern" "$out"; then
-				return 0
-			fi
+			local desired=""
+			for desired in "$@"; do
+				if grep -Fq "$desired" "$out"; then
+					return 0
+				fi
+			done
 		fi
 		sleep 1
 		waited=$((waited + 1))
 	done
-	echo "timed out waiting for job ${job_id} pattern ${pattern}" >&2
+	echo "timed out waiting for job ${job_id} pattern in [$*]" >&2
 	return 1
 }
 
@@ -772,7 +775,7 @@ if [[ -z "$PRE_SMOKE_FAILED_JOB_ID" ]]; then
 	echo "missing pre-smoke failed queue job id" >&2
 	exit 1
 fi
-wait_for_job_status "$WEB_B_BASE_URL" "$PRE_SMOKE_FAILED_JOB_ID" "${PRE_SMOKE_FAILED_JOB_DETAIL_JSON}" '"status":"failed"' 180
+wait_for_job_status "$WEB_B_BASE_URL" "$PRE_SMOKE_FAILED_JOB_ID" "${PRE_SMOKE_FAILED_JOB_DETAIL_JSON}" 180 '"status":"failed"'
 
 printf '== browser ui smoke ==\n'
 CURRENT_PHASE="browser ui smoke"
@@ -813,8 +816,8 @@ if [[ -z "$JOB1_ID" || -z "$JOB2_ID" ]]; then
 	exit 1
 fi
 
-wait_for_job_status "$WEB_B_BASE_URL" "$JOB1_ID" "${RAW_DIR}/queue-job1-detail.json" '"status":"completed"' 300
-wait_for_job_status "$WEB_B_BASE_URL" "$JOB2_ID" "${RAW_DIR}/queue-job2-detail.json" '"status":"completed"' 300
+wait_for_job_status "$WEB_B_BASE_URL" "$JOB1_ID" "${RAW_DIR}/queue-job1-detail.json" 300 '"status":"completed"'
+wait_for_job_status "$WEB_B_BASE_URL" "$JOB2_ID" "${RAW_DIR}/queue-job2-detail.json" 300 '"status":"completed"' '"status":"failed"'
 
 wait_for_session_detail "$WEB_B_BASE_URL" "$PARENT_SESSION_ID" "${RAW_DIR}/queue-parent-detail-before-reconcile.json" "\"queue_job_id\":\"${JOB1_ID}\"" 120
 cp "${SESSION_ROOT_ABS}/${PARENT_SESSION_ID}/control/background.jsonl" "${RAW_DIR}/queue-background-before-reconcile.jsonl"
@@ -833,7 +836,7 @@ printf '%s\n' \
 	>"${NOTE_DIR}/forced-stale-running-job.txt"
 
 wait_for_session_detail "$WEB_B_BASE_URL" "$PARENT_SESSION_ID" "${RAW_DIR}/queue-parent-detail-after-reconcile.json" "\"queue_job_id\":\"${JOB2_ID}\"" 120
-wait_for_job_status "$WEB_B_BASE_URL" "$JOB1_ID" "${RAW_DIR}/queue-job1-detail-after-reconcile.json" '"status":"completed"' 120
+wait_for_job_status "$WEB_B_BASE_URL" "$JOB1_ID" "${RAW_DIR}/queue-job1-detail-after-reconcile.json" 120 '"status":"completed"'
 cp "${SESSION_ROOT_ABS}/${PARENT_SESSION_ID}/control/background.jsonl" "${RAW_DIR}/queue-background-after-reconcile.jsonl"
 
 BACKGROUND_BEFORE_COUNT="$(count_lines "${RAW_DIR}/queue-background-before-reconcile.jsonl")"

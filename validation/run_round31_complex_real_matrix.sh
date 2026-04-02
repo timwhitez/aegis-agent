@@ -1126,8 +1126,8 @@ copy_file_into_sandbox "$RT04_SANDBOX_ROOT" "../learn-claude-code.md" "learn-cla
 write_prompt "$RT04_PROMPT" "Use the review_pipeline skill for this task.
 Inspect only README.md, AGENTS.md, spec/00-product.md, spec/01-runtime-architecture.md, spec/03-provider-contracts.md, spec/10-context-compaction.md, spec/11-spec-audit-and-traceability.md, spec/12-task-system.md, spec/13-live-input-and-steering.md, internal/runtime/compaction.go, internal/runtime/prompt.go, internal/runtime/review_guard.go, internal/runtime/engine.go, internal/runtime/project_memory.go, internal/session/store.go, internal/tools/path.go, ../blog-langchain-com__autonomous-context-compression.md, ../openai-com__harness-engineering.md, and ../learn-claude-code.md.
 Do not use glob or grep_files on the workspace root. If you need text lookup, use grep or read_file only on the allowlisted paths above.
-Use targeted retrieval, keep a short todo list in assistant text, and write ${ABS_ARTIFACT_DIR}/rt04-forced-compaction-proof.md with sections: compaction evidence, proof-read behavior after compaction, remaining risks, next validation moves.
-The only valid deliverable path for this task is ${ABS_ARTIFACT_DIR}/rt04-forced-compaction-proof.md. Do not write to a relative file named rt04-forced-compaction-proof.md in the workspace root.
+Use targeted retrieval, keep a short todo list in assistant text, and write reports/rt04-forced-compaction-proof.md inside this sandbox with sections: compaction evidence, proof-read behavior after compaction, remaining risks, next validation moves.
+The harness will copy reports/rt04-forced-compaction-proof.md to ${ABS_ARTIFACT_DIR}/rt04-forced-compaction-proof.md after the run. Do not write a second copy to another path.
 Then call finish with a one-line summary."
 RT04_RAW="${RAW_DIR}/rt04-forced-compaction-proof.jsonl"
 run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$RT04_PROMPT" "$RT04_RAW" "$RT04_SANDBOX_REPO" 420
@@ -1140,6 +1140,7 @@ fi
 if ! raw_contains "$RT04_RAW" '"type":"compact.finished"'; then
 	RT04_EXIT="$(merge_exit_code "$RT04_EXIT" 1)"
 fi
+copy_if_present "${RT04_SANDBOX_REPO}/reports/rt04-forced-compaction-proof.md" "${ARTIFACT_DIR}/rt04-forced-compaction-proof.md"
 copy_session_evidence "$RT04_SESSION_ID" "${EVIDENCE_DIR}/rt04-session"
 printf '%s\n' \
 	"session_id=${RT04_SESSION_ID}" \
@@ -1362,6 +1363,12 @@ RT09_EXIT=$?
 RT09_PARENT_SESSION_ID="$(extract_session_id "$RT09_PARENT_RAW")"
 RT09_SUBMIT_RAW="${RAW_DIR}/rt09-queue-submit.json"
 RT09_WORKER_RAW="${RAW_DIR}/rt09-queue-worker.json"
+RT09_CONTINUE_RAW="${RAW_DIR}/rt09-queue-continue.jsonl"
+RT09_RECOVER_PROMPT="${PROMPT_DIR}/rt09-queue-recover.prompt.txt"
+RT09_RECOVER_RAW="${RAW_DIR}/rt09-queue-recovery.jsonl"
+RT09_CONTINUE_EXIT=0
+RT09_RECOVER_EXIT=0
+RT09_PARENT_FINAL_LINE=""
 if [[ -n "$RT09_PARENT_SESSION_ID" ]]; then
 	"${AGENT_BIN}" experimental queue submit \
 		--config "$CONFIG_PATH" \
@@ -1369,6 +1376,7 @@ if [[ -n "$RT09_PARENT_SESSION_ID" ]]; then
 		--provider openai-compatible \
 		--model "$MODEL" \
 		--workdir "$PLATFORM_PY_DIR" \
+		--isolation copy \
 		--agent reviewer \
 		--json \
 		"Use the review_pipeline skill for this task. Start by reading reports/spec.md, reports/plan.md, reports/progress.md, and reports/validation.md as the parent handoff. Review README.md, app/config.py, app/report.py, tests/test_config.py, and tests/test_report.py. Write reports/queue-review.md with sections: findings, remaining risks, next fixes. Refresh reports/progress.md and reports/validation.md before finish so the background handoff stays current. Then call finish." \
@@ -1378,23 +1386,38 @@ if [[ -n "$RT09_PARENT_SESSION_ID" ]]; then
 	"${AGENT_BIN}" experimental queue worker --config "$CONFIG_PATH" --once --json >"$RT09_WORKER_RAW" 2>&1
 	RT09_WORKER_EXIT=$?
 	RT09_EXIT="$(merge_exit_code "$RT09_EXIT" "$RT09_WORKER_EXIT")"
+	RT09_JOB_ID="$(extract_json_field "$RT09_SUBMIT_RAW" "id")"
+	RT09_CHILD_WORKDIR="$(extract_first_json_field "$RT09_WORKER_RAW" "workdir" "effective_workdir" "requested_workdir")"
+	RT09_CHILD_SESSION_ID="$(extract_json_field "$RT09_WORKER_RAW" "session_id")"
+	if [[ -n "$RT09_CHILD_WORKDIR" ]]; then
+		copy_if_present "${RT09_CHILD_WORKDIR}/reports/queue-review.md" "${PLATFORM_PY_DIR}/reports/queue-review.md"
+	fi
+	RT09_PARENT_FINAL_LINE="$(tail -n 1 "$RT09_PARENT_RAW" 2>/dev/null || true)"
 	"${AGENT_BIN}" continue "$RT09_PARENT_SESSION_ID" \
 		--config "$CONFIG_PATH" \
 		--provider openai-compatible \
 		--model "$MODEL" \
 		--json \
 		--message "A background child result already exists for this session. Do not create or rewrite reports/spec.md, reports/plan.md, reports/progress.md, or reports/validation.md in this step unless one is actually missing. Accept the already-queued background child result, summarize it in reports/background-summary.md with sections: child result summary, confirmed findings, next steps, unresolved questions, and then call finish." \
-		>"${RAW_DIR}/rt09-queue-continue.jsonl" 2>&1
-	RT09_CONTINUE_EXIT=$?
-	RT09_EXIT="$(merge_exit_code "$RT09_EXIT" "$RT09_CONTINUE_EXIT")"
+		>"${RT09_CONTINUE_RAW}" 2>&1 || RT09_CONTINUE_EXIT=$?
+	if (( RT09_CONTINUE_EXIT != 0 )); then
+		if grep -Fq 'session is not resumable' "${RT09_CONTINUE_RAW}" && printf '%s' "$RT09_PARENT_FINAL_LINE" | grep -Fq '"status":"completed"'; then
+			write_prompt "$RT09_RECOVER_PROMPT" "A background child result already exists in reports/queue-review.md for this workspace.
+Do not create or rewrite reports/spec.md, reports/plan.md, reports/progress.md, or reports/validation.md in this step unless one is actually missing.
+Write reports/background-summary.md with sections: child result summary, confirmed findings, next steps, unresolved questions.
+Then call finish."
+			run_exec_with_config "$CONFIG_PATH" "$RT09_RECOVER_PROMPT" "$RT09_RECOVER_RAW" "$PLATFORM_PY_DIR" 240
+			RT09_RECOVER_EXIT=$?
+			RT09_EXIT="$(merge_exit_code "$RT09_EXIT" "$RT09_RECOVER_EXIT")"
+		else
+			RT09_EXIT="$(merge_exit_code "$RT09_EXIT" "$RT09_CONTINUE_EXIT")"
+		fi
+	fi
 else
 	RT09_EXIT="$(merge_exit_code "$RT09_EXIT" 1)"
 fi
 copy_if_present "${PLATFORM_PY_DIR}/reports/background-summary.md" "${ARTIFACT_DIR}/rt09-background-summary.md"
 copy_child_artifact_if_present "$RT09_WORKER_RAW" "reports/queue-review.md" "${ARTIFACT_DIR}/rt09-queue-review.md" "$PLATFORM_PY_DIR"
-RT09_JOB_ID="$(extract_json_field "$RT09_SUBMIT_RAW" "id")"
-RT09_CHILD_WORKDIR="$(extract_first_json_field "$RT09_WORKER_RAW" "effective_workdir" "workdir" "requested_workdir")"
-RT09_CHILD_SESSION_ID="$(extract_json_field "$RT09_WORKER_RAW" "session_id")"
 RT09_EXIT="$(merge_if_missing_pattern "$RT09_EXIT" "$RT09_WORKER_RAW" "\"visible_paths\"")"
 RT09_EXIT="$(merge_if_missing_pattern "$RT09_EXIT" "$RT09_WORKER_RAW" "reports/progress.md")"
 RT09_EXIT="$(merge_if_missing_pattern "$RT09_EXIT" "$RT09_WORKER_RAW" "reports/validation.md")"
@@ -1405,8 +1428,13 @@ printf '%s\n' \
 	"queue_job_id=${RT09_JOB_ID}" \
 	"child_session_id=${RT09_CHILD_SESSION_ID}" \
 	"child_workdir=${RT09_CHILD_WORKDIR}" \
+	"continue_exit=${RT09_CONTINUE_EXIT}" \
+	"recovery_exit=${RT09_RECOVER_EXIT}" \
 	>"${NOTE_DIR}/rt09-queue-metadata.txt"
-RT09_FINAL_RAW="${RAW_DIR}/rt09-queue-continue.jsonl"
+RT09_FINAL_RAW="$RT09_CONTINUE_RAW"
+if [[ ! -f "$RT09_FINAL_RAW" && -f "$RT09_RECOVER_RAW" ]]; then
+	RT09_FINAL_RAW="$RT09_RECOVER_RAW"
+fi
 if [[ ! -f "$RT09_FINAL_RAW" ]]; then
 	RT09_FINAL_RAW="$RT09_PARENT_RAW"
 fi
@@ -1481,7 +1509,7 @@ Write reports/post-fix-review.md with sections: findings, unresolved questions, 
 If there is no validated finding, say so explicitly inside findings.
 Then call finish with a one-line summary."
 RT12_RAW="${RAW_DIR}/rt12-platform-go-review.jsonl"
-run_exec "$RT12_PROMPT" "$RT12_RAW" "$PLATFORM_GO_DIR" 300
+run_exec "$RT12_PROMPT" "$RT12_RAW" "$PLATFORM_GO_DIR" 300 90
 RT12_EXIT=$?
 copy_if_present "${PLATFORM_GO_DIR}/reports/post-fix-review.md" "${ARTIFACT_DIR}/rt12-platform-go-review.md"
 finalize_scenario "RT12" "Platform Go Post-Fix Review" "$RT12_EXIT" "$RT12_RAW" "${ARTIFACT_DIR}/rt12-platform-go-review.md" "$(extract_session_id "$RT12_RAW")"
@@ -1941,7 +1969,7 @@ copy_if_present "$RT26_DONE_REPORT" "${RAW_DIR}/rt26-steer-done.md"
 RT26_EXIT="$(merge_exit_code "$RT26_EXIT" "$RT26_STEER_EXIT")"
 RT26_EXIT="$(merge_exit_code "$RT26_EXIT" "$RT26_WAIT_EXIT")"
 RT26_EXIT="$(merge_if_missing_pattern "$RT26_EXIT" "$RT26_STEER_RAW" "\"accepted\":true")"
-RT26_EXIT="$(merge_if_missing_pattern "$RT26_RAW" "$RT25_RAW" "\"type\":\"provider.cancelled\"")"
+RT26_EXIT="$(merge_if_missing_pattern "$RT26_EXIT" "$RT25_RAW" "\"type\":\"provider.cancelled\"")"
 RT26_EXIT="$(merge_if_missing_pattern "$RT26_EXIT" "$RT25_RAW" "\"reason\":\"steer_interrupt\"")"
 RT26_EXIT="$(merge_if_missing_pattern "$RT26_EXIT" "$RT25_RAW" "\"type\":\"session.steer.accepted\"")"
 RT26_EXIT="$(merge_if_missing_pattern "$RT26_EXIT" "$RT25_PROXY_REQUEST_LOG" "\"delay_injected\":true")"
