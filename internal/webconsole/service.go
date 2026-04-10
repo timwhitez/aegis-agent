@@ -1057,6 +1057,8 @@ func serveEmbeddedFile(w http.ResponseWriter, files fs.FS, name string) {
 		contentType = "text/html; charset=utf-8"
 	}
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-cache")
+
 	_, _ = w.Write(data)
 }
 

@@ -14,7 +14,7 @@
           <div class="brand-copy">
             <p class="eyebrow">Experimental Web Console</p>
             <h1>Go CLI Agent Console</h1>
-            <p>Reference-inspired local control surface for sessions, queue jobs, task boards, and recovery flows.</p>
+            <p>Browser control surface for durable sessions, queue jobs, worker throughput, and recovery flows.</p>
           </div>
         </section>
 
@@ -24,8 +24,9 @@
             <span class="sidebar-caption">Pinned</span>
           </div>
           <div class="nav-list">
-            <button class="nav-button is-active" data-view-button="overview" type="button">Overview</button>
-            <button class="nav-button" data-view-button="queue" type="button">Queue</button>
+            <button class="nav-button active is-active" data-view="overview" data-view-button="overview" type="button">Overview</button>
+            <button class="nav-button" data-view="queue" data-view-button="queue" type="button">Queue</button>
+            <button class="nav-button" data-view="session" data-view-button="session" type="button">Session</button>
           </div>
         </section>
 
@@ -34,7 +35,7 @@
             <h2>Sessions</h2>
             <span id="session-count-badge" class="badge">0</span>
           </div>
-          <p class="sidebar-copy">Select a durable session to inspect timeline, tasks, children, or queue notifications.</p>
+          <p class="sidebar-copy">Filter and pin durable sessions before drilling into timeline, tasks, children, or queue links.</p>
           <div id="session-list" class="session-list"></div>
         </section>
 
@@ -42,7 +43,7 @@
           <div class="sidebar-foot-avatar" aria-hidden="true">LC</div>
           <div>
             <div class="sidebar-foot-title">Local Environment</div>
-            <div class="sidebar-foot-copy">CLI-first runtime with experimental browser control.</div>
+            <div class="sidebar-foot-copy">CLI-first runtime with an experimental browser shell.</div>
           </div>
         </section>
       </aside>
@@ -51,9 +52,9 @@
         <header class="topbar">
           <div class="topbar-copy">
             <p class="eyebrow">CLI-First Operator Surface</p>
-            <h2>Run, steer, continue, and observe without changing the durable session contract.</h2>
+            <h2>Run, steer, continue, and observe without breaking the durable session contract.</h2>
             <p class="subtitle">
-              The browser is a lower-friction control shell over the same local files, runtime handles, and worker queue that power the CLI path.
+              The browser stays a lower-friction shell over the same local files, runtime handles, and worker queue that power the CLI path.
             </p>
           </div>
           <div id="topbar-meta" class="topbar-meta" aria-live="polite"></div>
@@ -66,8 +67,8 @@
         <div class="shell">
           <main class="content">
             <section id="overview-view" class="view-panel"></section>
-            <section id="queue-view" class="view-panel is-hidden"></section>
-            <section id="session-view" class="view-panel is-hidden"></section>
+            <section id="queue-view" class="view-panel hidden is-hidden"></section>
+            <section id="session-view" class="view-panel hidden is-hidden"></section>
           </main>
 
           <aside class="actions">

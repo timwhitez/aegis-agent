@@ -27,7 +27,7 @@ const elements = {
   queueView: document.getElementById('queue-view'),
   sessionView: document.getElementById('session-view'),
   sessionList: document.getElementById('session-list'),
-  sessionCountBadge: document.getElementById('session-count-badge'),
+  sessionCountBadge: document.getElementById('session-count-badge') || document.getElementById('session-badge'),
   startCard: document.getElementById('start-card'),
   sessionActionCard: document.getElementById('session-action-card'),
   queueJobCard: document.getElementById('queue-job-card'),
@@ -318,11 +318,11 @@ function renderFilterToolbar({
       ${statusOptions.length
         ? `
           <div class="filter-chip-row">
-            <button class="filter-chip ${statusValue === 'all' ? 'is-active' : ''}" type="button" data-filter-chip-target="${escapeHtml(chipTarget)}" data-filter-chip-value="all">
+            <button class="filter-chip ${statusValue === 'all' ? 'active is-active' : ''}" type="button" data-filter-chip-target="${escapeHtml(chipTarget)}" data-filter-chip-value="all">
               ${escapeHtml(activeStatusLabel)} · ${escapeHtml(String(allCount))}
             </button>
             ${statusOptions.map((status) => `
-              <button class="filter-chip ${statusValue === status ? 'is-active' : ''}" type="button" data-filter-chip-target="${escapeHtml(chipTarget)}" data-filter-chip-value="${escapeHtml(status)}">
+              <button class="filter-chip ${statusValue === status ? 'active is-active' : ''}" type="button" data-filter-chip-target="${escapeHtml(chipTarget)}" data-filter-chip-value="${escapeHtml(status)}">
                 ${escapeHtml(status)} · ${escapeHtml(String(chipCounts[status] || 0))}
               </button>
             `).join('')}
@@ -359,9 +359,9 @@ function renderTimelineToolbar(detail) {
         </label>
       </div>
       <div class="filter-chip-row">
-        <button class="filter-chip ${state.timelineFilterKind === 'all' ? 'is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="all">All · ${escapeHtml(String(items.length))}</button>
-        <button class="filter-chip ${state.timelineFilterKind === 'message' ? 'is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="message">Messages · ${escapeHtml(String(messageCount))}</button>
-        <button class="filter-chip ${state.timelineFilterKind === 'event' ? 'is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="event">Events · ${escapeHtml(String(eventCount))}</button>
+        <button class="filter-chip ${state.timelineFilterKind === 'all' ? 'active is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="all">All · ${escapeHtml(String(items.length))}</button>
+        <button class="filter-chip ${state.timelineFilterKind === 'message' ? 'active is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="message">Messages · ${escapeHtml(String(messageCount))}</button>
+        <button class="filter-chip ${state.timelineFilterKind === 'event' ? 'active is-active' : ''}" type="button" data-filter-chip-target="timeline-kind" data-filter-chip-value="event">Events · ${escapeHtml(String(eventCount))}</button>
       </div>
       <div class="filter-toolbar-foot">
         <span class="helper-text">${escapeHtml(`${filtered.length} visible of ${items.length} timeline entries · ${messageCount} messages · ${eventCount} events`)}</span>
@@ -376,7 +376,7 @@ function renderTimelineToolbar(detail) {
 function showToast(message, type = 'info') {
   const id = `toast-${++state.toastCounter}`;
   const node = document.createElement('div');
-  node.className = `toast ${type === 'error' ? 'is-error' : ''}`;
+  node.className = `toast ${type === 'error' ? 'error' : ''}`;
   node.id = id;
   node.setAttribute('role', type === 'error' ? 'alert' : 'status');
   node.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
@@ -436,8 +436,9 @@ function setButtonPending(button, pending, pendingLabel) {
 }
 
 function setView(view) {
-  state.currentView = view;
-  if (view !== 'session') {
+  const normalizedView = view === 'sessions' ? 'session' : view;
+  state.currentView = normalizedView;
+  if (normalizedView !== 'session') {
     state.sessionTab = 'timeline';
   }
   render();
@@ -1308,7 +1309,7 @@ function renderMetaItem(label, value) {
 }
 
 function renderTabButton(value, label) {
-  return `<button class="tab-button ${state.sessionTab === value ? 'is-active' : ''}" type="button" data-session-tab="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+  return `<button class="tab-button ${state.sessionTab === value ? 'active is-active' : ''}" type="button" data-session-tab="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
 }
 
 function renderTimelineItem(item) {
@@ -1526,6 +1527,9 @@ function renderEmpty(message) {
 }
 
 function renderSidebar() {
+  if (!elements.sessionList || !elements.sessionCountBadge) {
+    return;
+  }
   const strictMatches = matchingSessions();
   const visibleSessions = filteredSessions();
   const statusOptions = uniqueStatuses(state.sessions, (item) => item.status);
@@ -1562,7 +1566,7 @@ function renderSidebar() {
     ` : ''}
     ${visibleSessions.length
       ? visibleSessions.map((item) => `
-        <button class="session-list-item ${state.selectedSessionId === item.id ? 'is-active' : ''}" type="button" data-session-id="${escapeHtml(item.id)}">
+        <button class="session-list-item ${state.selectedSessionId === item.id ? 'active is-active' : ''}" type="button" data-session-id="${escapeHtml(item.id)}">
           <div class="card-row">
             <span class="session-id">${escapeHtml(shortId(item.id))}</span>
             <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
@@ -1575,8 +1579,12 @@ function renderSidebar() {
       : renderEmpty(state.sessions.length ? 'No sessions match the current filters.' : 'No sessions yet.')}
   `;
 
-  document.querySelectorAll('[data-view-button]').forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.viewButton === state.currentView);
+  document.querySelectorAll('[data-view], [data-view-button]').forEach((button) => {
+    const rawView = button.dataset.view || button.dataset.viewButton;
+    const targetView = rawView === 'sessions' ? 'session' : rawView;
+    const isActive = targetView === state.currentView;
+    button.classList.toggle('active', isActive);
+    button.classList.toggle('is-active', isActive);
   });
 }
 
@@ -1733,7 +1741,6 @@ function queueJobTemplate() {
         <div class="field">
           <label for="queue-isolation">Isolation</label>
           <select id="queue-isolation" name="isolation_mode">
-            <option value="">auto</option>
             <option value="off">off</option>
             <option value="auto">auto</option>
             <option value="copy">copy</option>
@@ -1915,8 +1922,11 @@ function render() {
   renderSessionView();
   renderActions();
 
+  elements.overviewView.classList.toggle('hidden', state.currentView !== 'overview');
   elements.overviewView.classList.toggle('is-hidden', state.currentView !== 'overview');
+  elements.queueView.classList.toggle('hidden', state.currentView !== 'queue');
   elements.queueView.classList.toggle('is-hidden', state.currentView !== 'queue');
+  elements.sessionView.classList.toggle('hidden', state.currentView !== 'session');
   elements.sessionView.classList.toggle('is-hidden', state.currentView !== 'session');
 }
 
@@ -2044,9 +2054,9 @@ document.addEventListener('click', (event) => {
     return;
   }
 
-  const viewButton = event.target.closest('[data-view-button]');
+  const viewButton = event.target.closest('[data-view], [data-view-button]');
   if (viewButton) {
-    setView(viewButton.dataset.viewButton);
+    setView(viewButton.dataset.view || viewButton.dataset.viewButton);
     return;
   }
 

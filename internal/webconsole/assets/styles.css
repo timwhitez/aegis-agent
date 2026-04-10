@@ -69,8 +69,8 @@ a {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 296px minmax(0, 1fr);
-  gap: 24px;
-  padding: 24px;
+  gap: 20px;
+  padding: 20px;
 }
 
 .workspace-shell,
@@ -209,6 +209,8 @@ a {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .sidebar-title-row,
@@ -310,14 +312,16 @@ a {
   background: rgba(248, 250, 252, 0.94);
 }
 
-.nav-button.is-active {
+.nav-button.is-active,
+.nav-button.active {
   color: var(--accent-strong);
   border-color: rgba(37, 99, 235, 0.16);
   background: linear-gradient(180deg, rgba(37, 99, 235, 0.11), rgba(255, 255, 255, 0.98));
   box-shadow: 0 16px 30px rgba(37, 99, 235, 0.12);
 }
 
-.nav-button.is-active::before {
+.nav-button.is-active::before,
+.nav-button.active::before {
   background: var(--accent);
 }
 
@@ -346,7 +350,8 @@ a {
     box-shadow 180ms ease;
 }
 
-.session-list-item.is-active {
+.session-list-item.is-active,
+.session-list-item.active {
   border-color: rgba(37, 99, 235, 0.18);
   background: linear-gradient(180deg, rgba(37, 99, 235, 0.1), rgba(255, 255, 255, 0.96));
   box-shadow: 0 18px 34px rgba(37, 99, 235, 0.12);
@@ -382,6 +387,7 @@ a {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 18px;
+  min-width: 0;
 }
 
 .topbar {
@@ -441,6 +447,7 @@ a {
   gap: 18px;
   overflow: auto;
   padding-right: 4px;
+  align-content: start;
 }
 
 .view-panel {
@@ -448,7 +455,8 @@ a {
   gap: 18px;
 }
 
-.view-panel.is-hidden {
+.view-panel.is-hidden,
+.view-panel.hidden {
   display: none;
 }
 
@@ -773,7 +781,8 @@ a {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
 }
 
-.filter-chip.is-active {
+.filter-chip.is-active,
+.filter-chip.active {
   color: var(--accent-strong);
   background: rgba(37, 99, 235, 0.09);
   border-color: rgba(37, 99, 235, 0.18);
@@ -822,7 +831,8 @@ a {
   font-weight: 600;
 }
 
-.tab-button.is-active {
+.tab-button.is-active,
+.tab-button.active {
   color: var(--accent-strong);
   border-color: rgba(37, 99, 235, 0.18);
   background: rgba(37, 99, 235, 0.09);
@@ -1121,7 +1131,8 @@ a {
   box-shadow: var(--shadow-float);
 }
 
-.toast.is-error {
+.toast.is-error,
+.toast.error {
   background: linear-gradient(135deg, var(--danger), #991b1b);
 }
 
