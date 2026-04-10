@@ -400,7 +400,7 @@ function renderChrome() {
     { label: 'Workspace Root', value: state.meta?.session_root || 'Loading...' },
     { label: 'Worker Pool', value: workerSummary },
     { label: 'Default Provider', value: state.meta?.default_provider || 'Loading...' },
-    { label: 'Active Context', value: selectedSummary },
+    { label: 'Active Session', value: selectedSummary },
   ].map((item) => `
       <div class="topbar-meta-item">
         <span class="topbar-meta-label">${escapeHtml(item.label)}</span>
@@ -436,7 +436,10 @@ function setButtonPending(button, pending, pendingLabel) {
 }
 
 function setView(view) {
-  const normalizedView = view === 'sessions' ? 'session' : view;
+  let normalizedView = view;
+  if (view === 'sessions' || view === 'chat') normalizedView = 'session';
+  if (view === 'tasks' || view === 'background') normalizedView = 'queue';
+  if (view === 'history') normalizedView = 'overview';
   state.currentView = normalizedView;
   if (normalizedView !== 'session') {
     state.sessionTab = 'timeline';
@@ -475,6 +478,10 @@ async function refreshAll() {
     state.workers = workers;
     state.queueJobs = Array.isArray(queueJobs) ? queueJobs : [];
     state.providers = meta.providers || [];
+
+    if (!state.selectedSessionId && state.sessions.length) {
+      state.selectedSessionId = state.sessions[0].id;
+    }
 
     if (!state.queueJobs.length) {
       state.selectedQueueJobId = '';
@@ -550,8 +557,8 @@ function roleOptions(selected = '') {
 function startFormTemplate() {
   return `
     <div class="section-header-copy">
-      <h2>Start Session</h2>
-      <p>Create a new <span class="mono">run</span> or <span class="mono">exec</span> session without leaving the browser. Use this for the main task you want the agent to own.</p>
+      <h2>New Session</h2>
+      <p>Launch a new <span class="mono">run</span> or <span class="mono">exec</span> session from the same operator shell. This maps to the main chat entrypoint in the reference UI.</p>
     </div>
     <form id="start-form" class="form-grid">
       <div class="field">
@@ -637,11 +644,11 @@ function renderOverview() {
       <section class="section-card">
         <div class="section-header">
           <div class="section-header-copy">
-            <p class="eyebrow">Overview</p>
-            <h2>Operational control without leaving the durable session model.</h2>
-            <p>Use <span class="mono">steer</span> while a session is still running, and switch to <span class="mono">continue</span> once the state is paused, failed, or awaiting input.</p>
+            <p class="eyebrow">History</p>
+            <h2>Recent sessions, queue jobs, and failures collected into one timeline-oriented control surface.</h2>
+            <p>This page fills the role of the reference history/dashboard view while staying backed by the local durable store.</p>
           </div>
-          <span class="${statusClass('running')}">CLI-first runtime</span>
+          <span class="${statusClass('session_summary')}">history rail</span>
         </div>
         <div class="detail-pairs">
           <div class="detail-pair">
@@ -667,7 +674,7 @@ function renderOverview() {
         <div class="section-header">
           <div class="section-header-copy">
             <p class="eyebrow">Control Map</p>
-            <h2>Start on the right rail, inspect in the center, keep the CLI contract intact.</h2>
+            <h2>Use history for orientation, chat for live session work, and background tasks for the durable queue.</h2>
             <p>The browser shell stays subordinate to the same local files, runtime handles, and queue workers that back the CLI.</p>
           </div>
         </div>
@@ -926,9 +933,9 @@ function renderQueueView() {
       <section class="section-card">
         <div class="section-header">
           <div class="section-header-copy">
-            <p class="eyebrow">Queue Overview</p>
-            <h2>Background jobs stay durable, role-aware, and cross-linked to their child sessions.</h2>
-            <p>Use the right rail to submit unattended work, then inspect queue state, worker capacity, and child-session outcomes from one place.</p>
+            <p class="eyebrow">Background Tasks</p>
+            <h2>Queue jobs stay durable, role-aware, and cross-linked to their child sessions.</h2>
+            <p>This page maps the reference background-task view onto the current durable queue contract.</p>
           </div>
           <span class="${statusClass('queued')}">${escapeHtml(String(state.queueJobs.length))} jobs</span>
         </div>
@@ -954,7 +961,7 @@ function renderQueueView() {
       <section class="section-card">
         <div class="section-header">
           <div class="section-header-copy">
-            <p class="eyebrow">Job Contract</p>
+            <p class="eyebrow">Execution Contract</p>
             <h2>Worker count affects throughput only.</h2>
             <p>The queue remains file-backed: prompt, parent linkage, requested workdir, role hints, and final outcome all stay durable.</p>
           </div>
@@ -1229,9 +1236,9 @@ function renderSessionView() {
     <section class="session-header">
       <div class="session-header-top">
         <div class="session-header-copy">
-          <p class="eyebrow">Selected Session</p>
+          <p class="eyebrow">Chat</p>
           <h2>${escapeHtml(shortId(meta.id))}</h2>
-          <p>${escapeHtml(meta.provider)} · ${escapeHtml(meta.model)} · ${escapeHtml(meta.mode)}</p>
+          <p>${escapeHtml(meta.provider)} · ${escapeHtml(meta.model)} · ${escapeHtml(meta.mode)} · ${escapeHtml(sessionRoleLabel(meta))}</p>
         </div>
         <div class="card-row">
           <span class="${statusClass(detail.state.status)}">${escapeHtml(detail.state.status)}</span>
@@ -2106,7 +2113,7 @@ document.addEventListener('change', (event) => {
 
 elements.refreshButton.addEventListener('click', () => refreshAll());
 elements.openStartButton.addEventListener('click', () => {
-  setView('overview');
+  setView('session');
   window.scrollTo({ top: 0, behavior: 'smooth' });
   document.getElementById('start-prompt')?.focus();
 });
