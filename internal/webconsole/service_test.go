@@ -1,11 +1,14 @@
 package webconsole
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -644,6 +647,191 @@ func TestServiceEmptySlicesEncodeAsArrays(t *testing.T) {
 	}
 }
 
+func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
+	cfg := testConfig(t, "")
+	provider := cfg.Providers["openai"]
+	provider.APIKeyEnv = "OPENAI_API_KEY"
+	cfg.Providers["openai"] = provider
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var before map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &before)
+	if before["default_provider"] != "openai" {
+		t.Fatalf("unexpected default provider: %#v", before)
+	}
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"base_url": "http://example.invalid/v1",
+		"model":    "gpt-test",
+		"api_key":  "secret-key",
+	}, http.StatusOK, nil)
+
+	var after map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &after)
+	if after["default_provider"] != "openai" {
+		t.Fatalf("unexpected default provider after update: %#v", after)
+	}
+	providers, _ := after["providers"].(map[string]any)
+	openaiProvider, _ := providers["openai"].(map[string]any)
+	if openaiProvider["base_url"] != "http://example.invalid/v1" {
+		t.Fatalf("expected updated base_url, got %#v", openaiProvider)
+	}
+	if openaiProvider["model"] != "gpt-test" {
+		t.Fatalf("expected updated model, got %#v", openaiProvider)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "secret-key" {
+		t.Fatalf("expected OPENAI_API_KEY to update, got %q", got)
+	}
+}
+
+func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
+	root := t.TempDir()
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "hello.txt"), []byte("hello workspace"), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	outside := filepath.Join(filepath.Dir(root), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var tree []map[string]any
+	postGetJSON(t, ts.URL+"/api/files", &tree)
+	if len(tree) == 0 {
+		t.Fatal("expected file tree entries")
+	}
+
+	var readResp map[string]string
+	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt"), &readResp)
+	if readResp["content"] != "hello workspace" {
+		t.Fatalf("unexpected file content: %#v", readResp)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../outside.txt"))
+	if err != nil {
+		t.Fatalf("escape read request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected forbidden for escape read, got %d body=%s", resp.StatusCode, string(body))
+	}
+}
+
+func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	createSkillZip(t, zipPath, "demo-skill", "---\nname: demo-skill\ndescription: uploaded demo\n---\n")
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(zipPath))
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	zipBytes, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	if _, err := part.Write(zipBytes); err != nil {
+		t.Fatalf("write zip to multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/upload", body)
+	if err != nil {
+		t.Fatalf("new upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		uploadBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected upload status %d body=%s", resp.StatusCode, string(uploadBody))
+	}
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 1 {
+		t.Fatalf("expected one uploaded skill, got %#v", listed)
+	}
+	if listed[0]["id"] != "demo-skill" {
+		t.Fatalf("unexpected listed skill: %#v", listed[0])
+	}
+
+	resp, err = http.Post(ts.URL+"/api/skills/demo-skill/install", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("install request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected install to be unsupported, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	resp, err = http.Post(ts.URL+"/api/skills/demo-skill/uninstall", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("uninstall request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected uninstall status %d body=%s", resp.StatusCode, string(body))
+	}
+
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 0 {
+		t.Fatalf("expected skill list to be empty after uninstall, got %#v", listed)
+	}
+}
+
 func testConfig(t *testing.T, baseURL string) *config.Config {
 	t.Helper()
 	cfg := config.Default()
@@ -724,6 +912,43 @@ func newTextReplyServer(reply string) *httptest.Server {
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
 	}))
+}
+
+func createSkillZip(t *testing.T, zipPath, skillDir, skillMD string) {
+	t.Helper()
+	file, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip: %v", err)
+	}
+	defer file.Close()
+
+	zipWriter := zip.NewWriter(file)
+	entry, err := zipWriter.Create(filepath.ToSlash(filepath.Join(skillDir, "SKILL.md")))
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := entry.Write([]byte(skillMD)); err != nil {
+		t.Fatalf("write skill md: %v", err)
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+}
+
+func postGetJSON(t *testing.T, url string, target any) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected get status %d body=%s", resp.StatusCode, string(body))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
 }
 
 func postJSON(t *testing.T, url string, payload any, wantStatus int, target any) {

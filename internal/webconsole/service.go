@@ -21,6 +21,7 @@ import (
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
+	"go-cli-agent/internal/tools"
 
 	"github.com/gorilla/websocket"
 )
@@ -1020,7 +1021,12 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	cwd, _ := os.Getwd()
-	tree, err := s.getFileTree(cwd, cwd)
+	root, err := tools.ResolveWorkspacePath(cwd, ".")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	tree, err := s.getFileTree(root, root)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1035,8 +1041,8 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cwd, _ := os.Getwd()
-	fullPath := filepath.Join(cwd, path)
-	if !strings.HasPrefix(fullPath, cwd) {
+	fullPath, err := tools.ResolveWorkspacePath(cwd, path)
+	if err != nil {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
@@ -1112,11 +1118,13 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		Installed   bool     `json:"installed"`
 	}
 
-	cwd, _ := os.Getwd()
 	var skills []skillMeta
 
 	for _, rawDir := range s.cfg.Skills.Dirs {
-		dir := filepath.Join(cwd, rawDir)
+		dir, err := resolveSkillDir(rawDir)
+		if err != nil {
+			continue
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -1167,7 +1175,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	writeError(w, http.StatusNotImplemented, errors.New("installing marketplace skills is not supported; upload a .zip skill instead"))
 }
 
 func processSkillZip(src string, globalDest string) (int, error) {
@@ -1320,7 +1328,11 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	dest := s.cfg.Skills.Dirs[0]
+	dest, err := resolveSkillDir(s.cfg.Skills.Dirs[0])
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	os.MkdirAll(dest, 0755)
 
 	tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
@@ -1353,9 +1365,14 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	skillID := parts[3]
 
-	targetDir := filepath.Join(s.cfg.Skills.Dirs[0], skillID)
+	rootDir, err := resolveSkillDir(s.cfg.Skills.Dirs[0])
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	targetDir := filepath.Join(rootDir, skillID)
 	// simple protection against directory traversal
-	if !strings.HasPrefix(targetDir, filepath.Clean(s.cfg.Skills.Dirs[0])+string(os.PathSeparator)) {
+	if !strings.HasPrefix(targetDir, filepath.Clean(rootDir)+string(os.PathSeparator)) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
@@ -1638,6 +1655,17 @@ func (s *Service) settleWebSocketChatState(sessionID string, state session.State
 func stringValue(value any) string {
 	text, _ := value.(string)
 	return text
+}
+
+func resolveSkillDir(rawDir string) (string, error) {
+	if filepath.IsAbs(rawDir) {
+		return filepath.Clean(rawDir), nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cwd, rawDir), nil
 }
 
 func newWorkerPool(cfg *config.Config, desired int) *workerPool {

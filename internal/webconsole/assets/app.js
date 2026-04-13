@@ -273,7 +273,10 @@ function renderSkills(skills) {
 }
 
 async function handleSkillAction(id, isInstalled, btn) {
-  if (!isInstalled) return; // not supported locally yet for 'Install' marketplace flow
+  if (!isInstalled) {
+    alert('Marketplace install is not supported in this local console yet. Upload a .zip skill instead.');
+    return;
+  }
   btn.disabled = true;
   btn.innerText = 'Uninstalling...';
   try {
