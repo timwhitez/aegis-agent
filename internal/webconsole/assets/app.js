@@ -450,7 +450,7 @@ async function renderSettings() {
 // --- Workspace ---
 async function fetchWorkspace() {
   try {
-    const res = await fetch('/api/files');
+    const res = await fetch('/api/files?path=.');
     const tree = await res.json();
     state.fileTree = tree;
     renderFileTree(tree);
@@ -479,13 +479,28 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
       childrenContainer.style.display = 'none'; // Collapsed by default
     }
     
-    btn.onclick = () => {
+    btn.onclick = async () => {
       if (node.type === 'file') {
         loadFile(node.path);
         document.querySelectorAll('.tree-node').forEach(n => n.classList.remove('active'));
         btn.classList.add('active');
       } else if (node.type === 'directory') {
         const isHidden = childrenContainer.style.display === 'none';
+        if (isHidden && !node.childrenLoaded) {
+          btn.disabled = true;
+          try {
+            const res = await fetch(`/api/files?path=${encodeURIComponent(node.path)}`);
+            node.children = await res.json();
+            node.childrenLoaded = true;
+            renderFileTree(node.children, childrenContainer, level + 1);
+          } catch (err) {
+            nodes.editorFilename.innerText = node.path;
+            nodes.editorContent.innerText = 'Error loading directory.';
+            btn.disabled = false;
+            return;
+          }
+          btn.disabled = false;
+        }
         childrenContainer.style.display = isHidden ? 'block' : 'none';
         const newIcon = isHidden ? 'folder-open' : 'folder';
         btn.innerHTML = `<i data-lucide="${newIcon}" style="width: 14px; height: 14px;"></i><span>${node.name}</span>`;

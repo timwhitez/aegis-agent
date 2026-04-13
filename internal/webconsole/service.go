@@ -1026,7 +1026,25 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	tree, err := s.getFileTree(root, root)
+	target := root
+	requestedPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if requestedPath != "" && requestedPath != "." {
+		target, err = tools.ResolveWorkspacePath(root, requestedPath)
+		if err != nil {
+			writeError(w, http.StatusForbidden, errors.New("access denied"))
+			return
+		}
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a directory"))
+		return
+	}
+	tree, err := s.listDirectory(root, target)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1381,11 +1399,17 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
-func (s *Service) getFileTree(root, current string) ([]any, error) {
+func (s *Service) listDirectory(root, current string) ([]any, error) {
 	entries, err := os.ReadDir(current)
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir() != entries[j].IsDir() {
+			return entries[i].IsDir()
+		}
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
 	var tree []any
 	for _, entry := range entries {
 		if entry.Name() == "node_modules" || entry.Name() == ".git" || entry.Name() == ".go-cli-agent" {
@@ -1399,10 +1423,6 @@ func (s *Service) getFileTree(root, current string) ([]any, error) {
 		}
 		if entry.IsDir() {
 			node["type"] = "directory"
-			children, err := s.getFileTree(root, fullPath)
-			if err == nil {
-				node["children"] = children
-			}
 		} else {
 			node["type"] = "file"
 		}

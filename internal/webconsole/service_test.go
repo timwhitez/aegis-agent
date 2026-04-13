@@ -731,6 +731,15 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if len(tree) == 0 {
 		t.Fatal("expected file tree entries")
 	}
+	if firstType, _ := tree[0]["type"].(string); firstType != "directory" {
+		t.Fatalf("expected directories to sort first, got %#v", tree[0])
+	}
+
+	var nested []map[string]any
+	postGetJSON(t, ts.URL+"/api/files?path="+url.QueryEscape("nested"), &nested)
+	if len(nested) != 1 || nested[0]["name"] != "hello.txt" {
+		t.Fatalf("unexpected nested directory listing: %#v", nested)
+	}
 
 	var readResp map[string]string
 	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt"), &readResp)
@@ -746,6 +755,16 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected forbidden for escape read, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape("../"))
+	if err != nil {
+		t.Fatalf("escape list request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected forbidden for escape list, got %d body=%s", resp.StatusCode, string(body))
 	}
 }
 
