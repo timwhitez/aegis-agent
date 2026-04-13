@@ -1,12 +1,15 @@
 package webconsole
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -18,7 +21,13 @@ import (
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
+
+	"github.com/gorilla/websocket"
 )
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 type Options struct {
 	WorkerCount int
@@ -171,7 +180,7 @@ func (s *Service) Close() {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" || r.URL.Path == "/api/ws" {
 		s.serveAPI(w, r)
 		return
 	}
@@ -205,6 +214,24 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.workers.Snapshot())
 	case r.Method == http.MethodPost && r.URL.Path == "/api/workers":
 		s.handleScaleWorkers(w, r)
+	case r.URL.Path == "/api/ws" || r.URL.Path == "/ws":
+		s.handleWebSocket(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/config":
+		s.handleGetConfig(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/config":
+		s.handleUpdateConfig(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/files":
+		s.handleListFiles(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/file/read":
+		s.handleReadFile(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/skills":
+		s.handleListSkills(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/skills/upload":
+		s.handleUploadSkill(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/skills/") && strings.HasSuffix(r.URL.Path, "/install"):
+		s.handleInstallSkill(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/skills/") && strings.HasSuffix(r.URL.Path, "/uninstall"):
+		s.handleUninstallSkill(w, r)
 	default:
 		writeError(w, http.StatusNotFound, errors.New("route not found"))
 	}
@@ -215,8 +242,8 @@ func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
 		serveEmbeddedFile(w, s.staticFS, "index.html")
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/assets/") {
-		name := strings.TrimPrefix(r.URL.Path, "/assets/")
+	name := strings.TrimPrefix(r.URL.Path, "/")
+	if _, err := fs.Stat(s.staticFS, name); err == nil {
 		serveEmbeddedFile(w, s.staticFS, name)
 		return
 	}
@@ -793,11 +820,592 @@ func (s *Service) finishHandle(handle *launchHandle, _ launchOutcome) {
 	delete(s.handles, handle.sessionID)
 }
 
+func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	sendQueue := make(chan map[string]any, 128)
+	stop := make(chan struct{})
+	var writeWG sync.WaitGroup
+	writeWG.Add(1)
+	go func() {
+		defer writeWG.Done()
+		for msg := range sendQueue {
+			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+		}
+	}()
+
+	send := func(msg map[string]any) {
+		select {
+		case sendQueue <- msg:
+		case <-stop:
+		}
+	}
+
+	var watched sync.Map
+	attachRunner := func(runner *runtime.Runner, sessionID string) {
+		if runner == nil {
+			return
+		}
+		if _, loaded := watched.LoadOrStore(runner, struct{}{}); loaded {
+			return
+		}
+		sub := runner.Bus().Subscribe(64)
+		s.relayWebSocketEvents(sub, sessionID, send, stop)
+	}
+
+	currentSessionID := ""
+	setSessionID := func(frontendSessionID, backendSessionID string) {
+		currentSessionID = backendSessionID
+		send(map[string]any{
+			"type": "session",
+			"payload": map[string]any{
+				"clientSessionId": frontendSessionID,
+				"sessionId":       backendSessionID,
+			},
+		})
+	}
+
+	processChat := func(frontendSessionID, text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			send(map[string]any{
+				"type": "error",
+				"payload": map[string]any{
+					"content": "message is required",
+				},
+			})
+			return
+		}
+
+		startNewSession := func() {
+			sessionID, err := s.startWebSocketSession(frontendSessionID, text, send, stop)
+			if err != nil {
+				send(map[string]any{
+					"type": "error",
+					"payload": map[string]any{
+						"content": err.Error(),
+					},
+				})
+				return
+			}
+			currentSessionID = sessionID
+		}
+
+		if currentSessionID == "" {
+			startNewSession()
+			return
+		}
+
+		state, err := s.store.LoadState(currentSessionID)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				startNewSession()
+				return
+			}
+			send(map[string]any{
+				"type": "error",
+				"payload": map[string]any{
+					"content": err.Error(),
+				},
+			})
+			return
+		}
+		state = s.settleWebSocketChatState(currentSessionID, state)
+
+		switch state.Status {
+		case session.StatusRunning:
+			handle, ok := s.handleForSession(currentSessionID)
+			if !ok {
+				send(map[string]any{
+					"type": "error",
+					"payload": map[string]any{
+						"content": "session is running but is not actively owned by this web console",
+					},
+				})
+				return
+			}
+			attachRunner(handle.runner, currentSessionID)
+			if _, err := handle.runner.Steer(context.Background(), runtime.SteerRequest{
+				SessionID: currentSessionID,
+				Message:   text,
+				Source:    "web",
+			}); err != nil {
+				send(map[string]any{
+					"type": "error",
+					"payload": map[string]any{
+						"sessionId": currentSessionID,
+						"content":   err.Error(),
+					},
+				})
+			}
+		case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
+			s.continueWebSocketSession(currentSessionID, text, send, stop)
+		default:
+			startNewSession()
+		}
+	}
+
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var data struct {
+			Type      string `json:"type"`
+			Message   string `json:"message"`
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal(message, &data); err != nil {
+			send(map[string]any{
+				"type": "error",
+				"payload": map[string]any{
+					"content": "invalid websocket payload",
+				},
+			})
+			continue
+		}
+
+		switch data.Type {
+		case "chat":
+			if data.SessionID != "" && currentSessionID == "" {
+				currentSessionID = data.SessionID
+			}
+			processChat(data.SessionID, data.Message)
+		case "reset_session":
+			currentSessionID = ""
+			setSessionID(data.SessionID, data.SessionID)
+		case "stop":
+			if currentSessionID == "" {
+				send(map[string]any{
+					"type": "error",
+					"payload": map[string]any{
+						"content": "no active session to interrupt",
+					},
+				})
+				continue
+			}
+			handle, ok := s.handleForSession(currentSessionID)
+			if !ok {
+				send(map[string]any{
+					"type": "error",
+					"payload": map[string]any{
+						"sessionId": currentSessionID,
+						"content":   "session is not actively owned by this web console",
+					},
+				})
+				continue
+			}
+			if err := handle.runner.InterruptWithReason(currentSessionID, "manual_interrupt"); err != nil {
+				send(map[string]any{
+					"type": "error",
+					"payload": map[string]any{
+						"sessionId": currentSessionID,
+						"content":   err.Error(),
+					},
+				})
+			}
+		}
+	}
+
+	close(stop)
+	close(sendQueue)
+	writeWG.Wait()
+}
+
+func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	cwd, _ := os.Getwd()
+	tree, err := s.getFileTree(cwd, cwd)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tree)
+}
+
+func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeError(w, http.StatusBadRequest, errors.New("path is required"))
+		return
+	}
+	cwd, _ := os.Getwd()
+	fullPath := filepath.Join(cwd, path)
+	if !strings.HasPrefix(fullPath, cwd) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"content": string(content)})
+}
+
+func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	provs := map[string]any{}
+	for name, p := range s.cfg.Providers {
+		provs[name] = map[string]any{
+			"base_url": p.BaseURL,
+			"model":    p.Model,
+			"has_key":  os.Getenv(p.APIKeyEnv) != "",
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"default_provider": s.cfg.DefaultProvider,
+		"providers":        provs,
+	})
+}
+
+func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider string `json:"provider"`
+		BaseURL  string `json:"base_url"`
+		Model    string `json:"model"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if req.Provider != "" {
+		s.cfg.DefaultProvider = req.Provider
+	}
+
+	if p, ok := s.cfg.Providers[req.Provider]; ok {
+		if req.BaseURL != "" {
+			p.BaseURL = req.BaseURL
+		}
+		if req.Model != "" {
+			p.Model = req.Model
+		}
+		if req.APIKey != "" && req.APIKey != "••••••••••••••••" {
+			os.Setenv(p.APIKeyEnv, req.APIKey)
+		}
+		s.cfg.Providers[req.Provider] = p
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
+	type skillMeta struct {
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Author      string   `json:"author"`
+		Description string   `json:"description"`
+		Icon        string   `json:"icon"`
+		Tags        []string `json:"tags"`
+		Downloads   int      `json:"downloads"`
+		Installed   bool     `json:"installed"`
+	}
+
+	cwd, _ := os.Getwd()
+	var skills []skillMeta
+
+	for _, rawDir := range s.cfg.Skills.Dirs {
+		dir := filepath.Join(cwd, rawDir)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			skillDir := filepath.Join(dir, entry.Name())
+			mdData, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+			desc := "Local skill"
+			name := entry.Name()
+			if err == nil {
+				// Simple frontmatter extraction
+				lines := strings.Split(string(mdData), "\n")
+				inFront := false
+				for _, l := range lines {
+					l = strings.TrimSpace(l)
+					if l == "---" {
+						inFront = !inFront
+						continue
+					}
+					if inFront && strings.HasPrefix(l, "description:") {
+						desc = strings.TrimSpace(strings.TrimPrefix(l, "description:"))
+					}
+					if inFront && strings.HasPrefix(l, "name:") {
+						name = strings.TrimSpace(strings.TrimPrefix(l, "name:"))
+					}
+				}
+			}
+			skills = append(skills, skillMeta{
+				ID:          entry.Name(),
+				Name:        name,
+				Author:      "Local",
+				Description: desc,
+				Icon:        "Box",
+				Tags:        []string{"local", entry.Name()},
+				Downloads:   1,
+				Installed:   true,
+			})
+		}
+	}
+
+	if len(skills) == 0 {
+		skills = make([]skillMeta, 0)
+	}
+	writeJSON(w, http.StatusOK, skills)
+}
+
+func (s *Service) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func processSkillZip(src string, globalDest string) (int, error) {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return 0, err
+	}
+	defer r.Close()
+
+	var skillRoots []string
+	for _, f := range r.File {
+		if filepath.Base(f.Name) == "SKILL.md" {
+			dir := filepath.Dir(f.Name)
+			skillRoots = append(skillRoots, dir)
+		}
+	}
+
+	if len(skillRoots) == 0 {
+		return 0, errors.New("no SKILL.md found in zip, not a valid skill package")
+	}
+
+	extractedCount := 0
+
+	for _, root := range skillRoots {
+		var targetDirName string
+		mdPath := "SKILL.md"
+		if root != "." && root != "/" && root != "" {
+			mdPath = root + "/" + "SKILL.md"
+		} else {
+			root = "."
+		}
+
+		for _, f := range r.File {
+			if filepath.ToSlash(filepath.Clean(f.Name)) == filepath.ToSlash(filepath.Clean(mdPath)) {
+				rc, err := f.Open()
+				if err == nil {
+					data, _ := io.ReadAll(rc)
+					rc.Close()
+					targetDirName = extractSkillNameFromMd(data)
+				}
+				break
+			}
+		}
+
+		if targetDirName == "" {
+			if root == "." {
+				targetDirName = "skill_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			} else {
+				targetDirName = filepath.Base(root)
+			}
+		}
+
+		targetDirName = sanitizeDirName(targetDirName)
+		targetPath := filepath.Join(globalDest, targetDirName)
+
+		os.RemoveAll(targetPath)
+		os.MkdirAll(targetPath, 0755)
+
+		for _, f := range r.File {
+			cleanedName := filepath.ToSlash(filepath.Clean(f.Name))
+			cleanRoot := filepath.ToSlash(filepath.Clean(root))
+
+			var rel string
+			var isInRoot bool
+
+			if cleanRoot == "." {
+				rel = cleanedName
+				isInRoot = true
+			} else {
+				if strings.HasPrefix(cleanedName, cleanRoot+"/") {
+					rel = strings.TrimPrefix(cleanedName, cleanRoot+"/")
+					isInRoot = true
+				} else if cleanedName == cleanRoot {
+					continue
+				}
+			}
+
+			if !isInRoot {
+				continue
+			}
+
+			outPath := filepath.Join(targetPath, rel)
+
+			if f.FileInfo().IsDir() {
+				os.MkdirAll(outPath, f.Mode())
+				continue
+			}
+			os.MkdirAll(filepath.Dir(outPath), 0755)
+
+			rc, err := f.Open()
+			if err != nil {
+				return extractedCount, err
+			}
+
+			destFile, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+			if err != nil {
+				rc.Close()
+				return extractedCount, err
+			}
+			io.Copy(destFile, rc)
+			destFile.Close()
+			rc.Close()
+		}
+		extractedCount++
+	}
+	return extractedCount, nil
+}
+
+func sanitizeDirName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+func extractSkillNameFromMd(data []byte) string {
+	lines := strings.Split(string(data), "\n")
+	inFront := false
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "---" {
+			inFront = !inFront
+			continue
+		}
+		if inFront && strings.HasPrefix(l, "name:") {
+			return strings.TrimSpace(strings.TrimPrefix(l, "name:"))
+		}
+	}
+	return ""
+}
+
+func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
+	if len(s.cfg.Skills.Dirs) == 0 {
+		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
+		return
+	}
+	if err := r.ParseMultipartForm(50 << 20); err != nil { // limit 50MB
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	defer file.Close()
+
+	dest := s.cfg.Skills.Dirs[0]
+	os.MkdirAll(dest, 0755)
+
+	tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	io.Copy(tmpFile, file)
+	tmpFile.Close()
+
+	count, err := processSkillZip(tmpFile.Name(), dest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "installed_count": count})
+}
+
+func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
+	if len(s.cfg.Skills.Dirs) == 0 {
+		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
+		return
+	}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid path format"))
+		return
+	}
+	skillID := parts[3]
+
+	targetDir := filepath.Join(s.cfg.Skills.Dirs[0], skillID)
+	// simple protection against directory traversal
+	if !strings.HasPrefix(targetDir, filepath.Clean(s.cfg.Skills.Dirs[0])+string(os.PathSeparator)) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+
+	os.RemoveAll(targetDir)
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (s *Service) getFileTree(root, current string) ([]any, error) {
+	entries, err := os.ReadDir(current)
+	if err != nil {
+		return nil, err
+	}
+	var tree []any
+	for _, entry := range entries {
+		if entry.Name() == "node_modules" || entry.Name() == ".git" || entry.Name() == ".go-cli-agent" {
+			continue
+		}
+		fullPath := filepath.Join(current, entry.Name())
+		relPath, _ := filepath.Rel(root, fullPath)
+		node := map[string]any{
+			"name": entry.Name(),
+			"path": relPath,
+		}
+		if entry.IsDir() {
+			node["type"] = "directory"
+			children, err := s.getFileTree(root, fullPath)
+			if err == nil {
+				node["children"] = children
+			}
+		} else {
+			node["type"] = "file"
+		}
+		tree = append(tree, node)
+	}
+	return tree, nil
+}
+
 func (s *Service) hasActiveHandle(sessionID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	_, ok := s.handles[sessionID]
 	return ok
+}
+
+func (s *Service) handleForSession(sessionID string) (*launchHandle, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	handle, ok := s.handles[sessionID]
+	return handle, ok
 }
 
 type launchOutcome struct {
@@ -826,6 +1434,210 @@ func waitForSessionID(sub <-chan events.Event, outcomeCh <-chan launchOutcome) (
 			return "", nil, errors.New("timed out waiting for session creation")
 		}
 	}
+}
+
+func (s *Service) relayWebSocketEvents(sub <-chan events.Event, sessionID string, send func(map[string]any), done <-chan struct{}) {
+	go func() {
+		for {
+			select {
+			case evt := <-sub:
+				if sessionID != "" && evt.SessionID != "" && evt.SessionID != sessionID {
+					continue
+				}
+				for _, msg := range s.translateWebSocketEvent(evt) {
+					send(msg)
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Service) translateWebSocketEvent(evt events.Event) []map[string]any {
+	messages := []map[string]any{
+		{
+			"type": "engine_event",
+			"payload": map[string]any{
+				"id":        evt.ID,
+				"sessionId": evt.SessionID,
+				"type":      evt.Type,
+				"phase":     evt.Phase,
+				"data":      evt.Data,
+				"time":      evt.Time,
+			},
+		},
+	}
+
+	switch evt.Type {
+	case "assistant.message":
+		agentName := "Agent"
+		if meta, err := s.store.LoadMetadata(evt.SessionID); err == nil {
+			if strings.TrimSpace(meta.AgentName) != "" {
+				agentName = meta.AgentName
+			}
+		}
+		messages = append(messages, map[string]any{
+			"type": "message",
+			"payload": map[string]any{
+				"sessionId": evt.SessionID,
+				"role":      "assistant",
+				"content":   stringValue(evt.Data["text"]),
+				"agentName": agentName,
+			},
+		})
+	case "session.started":
+		messages = append(messages, map[string]any{
+			"type": "status",
+			"payload": map[string]any{
+				"sessionId": evt.SessionID,
+				"status":    session.StatusRunning,
+				"phase":     evt.Phase,
+			},
+		})
+	case "session.awaiting_input":
+		messages = append(messages, map[string]any{
+			"type": "status",
+			"payload": map[string]any{
+				"sessionId": evt.SessionID,
+				"status":    session.StatusAwaitingInput,
+				"phase":     evt.Phase,
+			},
+		})
+	case "session.paused":
+		messages = append(messages, map[string]any{
+			"type": "status",
+			"payload": map[string]any{
+				"sessionId": evt.SessionID,
+				"status":    session.StatusPaused,
+				"phase":     evt.Phase,
+			},
+		})
+	case "session.completed":
+		messages = append(messages, map[string]any{
+			"type": "status",
+			"payload": map[string]any{
+				"sessionId": evt.SessionID,
+				"status":    session.StatusCompleted,
+				"phase":     evt.Phase,
+			},
+		})
+	case "session.failed":
+		errText := firstNonEmpty(stringValue(evt.Data["error"]), "session failed")
+		messages = append(messages,
+			map[string]any{
+				"type": "status",
+				"payload": map[string]any{
+					"sessionId": evt.SessionID,
+					"status":    session.StatusFailed,
+					"phase":     evt.Phase,
+				},
+			},
+			map[string]any{
+				"type": "error",
+				"payload": map[string]any{
+					"sessionId": evt.SessionID,
+					"content":   errText,
+				},
+			},
+		)
+	}
+
+	return messages
+}
+
+func (s *Service) startWebSocketSession(frontendSessionID, prompt string, send func(map[string]any), done <-chan struct{}) (string, error) {
+	runner := runtime.NewRunner(s.cfg)
+	sub := runner.Bus().Subscribe(64)
+	runCtx, cancel := context.WithCancel(context.Background())
+	outcomeCh := make(chan launchOutcome, 1)
+	go func() {
+		result, err := runner.Start(runCtx, runtime.StartRequest{
+			Prompt: prompt,
+		})
+		outcomeCh <- launchOutcome{result: result, err: err}
+	}()
+
+	sessionID, early, err := waitForSessionID(sub, outcomeCh)
+	if err != nil {
+		cancel()
+		return "", err
+	}
+
+	handle := &launchHandle{
+		sessionID: sessionID,
+		runner:    runner,
+		cancel:    cancel,
+	}
+	s.addHandle(handle)
+	send(map[string]any{
+		"type": "session",
+		"payload": map[string]any{
+			"clientSessionId": frontendSessionID,
+			"sessionId":       sessionID,
+		},
+	})
+	s.relayWebSocketEvents(sub, sessionID, send, done)
+
+	if early != nil {
+		go s.finishHandle(handle, *early)
+	} else {
+		go func() {
+			s.finishHandle(handle, <-outcomeCh)
+		}()
+	}
+	return sessionID, nil
+}
+
+func (s *Service) continueWebSocketSession(sessionID, message string, send func(map[string]any), done <-chan struct{}) {
+	runner := runtime.NewRunner(s.cfg)
+	sub := runner.Bus().Subscribe(64)
+	runCtx, cancel := context.WithCancel(context.Background())
+	handle := &launchHandle{
+		sessionID: sessionID,
+		runner:    runner,
+		cancel:    cancel,
+	}
+	s.addHandle(handle)
+	s.relayWebSocketEvents(sub, sessionID, send, done)
+	go func() {
+		result, err := runner.Continue(runCtx, runtime.ContinueRequest{
+			SessionID: sessionID,
+			Message:   message,
+		})
+		s.finishHandle(handle, launchOutcome{result: result, err: err})
+	}()
+}
+
+func (s *Service) settleWebSocketChatState(sessionID string, state session.State) session.State {
+	if state.Status != session.StatusRunning {
+		return state
+	}
+	switch state.Phase {
+	case "provider_call", "assistant_output", "turn_decide":
+	default:
+		return state
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	current := state
+	for time.Now().Before(deadline) {
+		time.Sleep(40 * time.Millisecond)
+		next, err := s.store.LoadState(sessionID)
+		if err != nil {
+			return current
+		}
+		current = next
+		if current.Status != session.StatusRunning {
+			return current
+		}
+	}
+	return current
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func newWorkerPool(cfg *config.Config, desired int) *workerPool {

@@ -1,88 +1,135 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Go CLI Agent Console</title>
-    <link rel="stylesheet" href="/assets/styles.css" />
-  </head>
-  <body>
-    <div id="app">
-      <aside class="sidebar">
-        <section class="brand-card">
-          <div class="brand-mark" aria-hidden="true">M</div>
-          <div class="brand-copy">
-            <p class="eyebrow">Experimental Web</p>
-            <h1>Go CLI Agent Console</h1>
-            <p>Reference-driven local operator shell over the same durable session, queue, and worker state that powers the CLI.</p>
-          </div>
-        </section>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Console</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="logo">
+        <div class="logo-icon">
+          <i data-lucide="zap"></i>
+        </div>
+        <span>Agentic</span>
+      </div>
+      
+      <nav>
+        <button class="nav-item active" data-view="chat">
+          <i data-lucide="message-square"></i>
+          <span>Session</span>
+        </button>
+        <button class="nav-item" data-view="history">
+          <i data-lucide="history"></i>
+          <span>History</span>
+        </button>
+        <button class="nav-item" data-view="skills">
+          <i data-lucide="box"></i>
+          <span>Skills</span>
+        </button>
+        <button class="nav-item" data-view="workspace">
+          <i data-lucide="folder-git-2"></i>
+          <span>Workspace</span>
+        </button>
+      </nav>
+      
+      <div class="sidebar-footer">
+        <button class="nav-item" data-view="settings">
+          <i data-lucide="settings"></i>
+          <span>Settings</span>
+        </button>
+      </div>
+    </aside>
 
-        <section class="sidebar-card">
-          <div class="sidebar-title-row">
-            <h2>Menu</h2>
-            <span class="sidebar-caption">Views</span>
-          </div>
-          <div class="nav-list">
-            <button class="nav-button" data-view="session" data-view-button="session" type="button">Chat</button>
-            <button class="nav-button" data-view="queue" data-view-button="queue" type="button">Background Tasks</button>
-            <button class="nav-button active is-active" data-view="overview" data-view-button="overview" type="button">History</button>
-          </div>
-        </section>
+    <!-- Main View -->
+    <main class="main-content">
+      <header>
+        <div class="status-indicator">
+          <div class="dot online" id="connection-dot"></div>
+          <span id="connection-status">Agent Session</span>
+          <span style="font-size: 11px; opacity: 0.5; margin-left: 8px;" id="session-id-display">ID: 0x8F9A2B</span>
+        </div>
+        <div class="header-actions">
+          <button class="nav-item" style="padding: 6px 12px; margin: 0;" id="clear-chat-btn">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </div>
+      </header>
 
-        <section class="sidebar-card sidebar-session-card">
-          <div class="sidebar-title-row">
-            <h2>Sessions</h2>
-            <span id="session-count-badge" class="badge">0</span>
+      <!-- Chat View (Default) -->
+      <div id="chat-view" class="view">
+        <div class="chat-container scrollbar-hide" id="chat-container">
+          <div class="chat-inner" id="chat-messages">
+            <!-- Messages injected here -->
           </div>
-          <p class="sidebar-copy">Filter and pin durable sessions before drilling into timeline, tasks, children, or queue links.</p>
-          <div id="session-list" class="session-list"></div>
-        </section>
-
-        <section class="sidebar-foot">
-          <div class="sidebar-foot-avatar" aria-hidden="true">LC</div>
-          <div>
-            <div class="sidebar-foot-title">Local Environment</div>
-            <div class="sidebar-foot-copy">CLI-first runtime with an experimental browser shell.</div>
+        </div>
+        
+        <div class="input-area">
+          <div class="input-container">
+            <textarea id="chat-input" placeholder="Ask anything..." rows="1"></textarea>
+            <div class="input-actions">
+              <span style="font-size: 10px; color: var(--text-muted); margin-right: auto; padding-left: 12px;">
+                Enter to send, Shift+Enter for new line
+              </span>
+              <button class="send-btn" id="send-btn">
+                <i data-lucide="send"></i>
+              </button>
+            </div>
           </div>
-        </section>
-      </aside>
-
-      <div class="workspace-shell">
-        <header class="topbar">
-          <div class="topbar-copy">
-            <p class="eyebrow">Operator Surface</p>
-            <h2>Inspect durable sessions, queue activity, and live agent execution from one reference-style control surface.</h2>
-            <p class="subtitle">
-              The browser remains subordinate to the same local files, runtime handles, and worker queue that drive the CLI path.
-            </p>
-          </div>
-          <div id="topbar-meta" class="topbar-meta" aria-live="polite"></div>
-          <div class="topbar-actions">
-            <button id="open-start-button" class="button button-primary" type="button">New Session</button>
-            <button id="manual-refresh-button" class="button button-secondary" type="button">Refresh</button>
-          </div>
-        </header>
-
-        <div class="shell">
-          <main class="content">
-            <section id="overview-view" class="view-panel"></section>
-            <section id="queue-view" class="view-panel hidden is-hidden"></section>
-            <section id="session-view" class="view-panel hidden is-hidden"></section>
-          </main>
-
-          <aside class="actions">
-            <section id="start-card" class="action-card"></section>
-            <section id="session-action-card" class="action-card"></section>
-            <section id="queue-job-card" class="action-card"></section>
-            <section id="worker-card" class="action-card"></section>
-          </aside>
         </div>
       </div>
-    </div>
 
-    <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+      <!-- Skills View -->
+      <div id="skills-view" class="view" style="display: none;">
+        <div class="view-header" style="display: flex; justify-content: space-between; align-items: flex-start;">
+          <div>
+            <h2 class="view-title">Skills Engine</h2>
+            <p class="view-subtitle">Enhance your agent's capabilities with community-driven tools.</p>
+          </div>
+          <button class="skill-btn install" style="padding: 8px 16px; margin-top: 5px; cursor: pointer;" onclick="document.getElementById('skill-upload').click()">
+            Upload .zip Skill
+          </button>
+          <input type="file" id="skill-upload" accept=".zip" style="display: none;">
+        </div>
+        <div class="skills-grid" id="skills-grid">
+          <!-- Skills injected here -->
+        </div>
+      </div>
 
-    <script type="module" src="/assets/app.js"></script>
-  </body>
+      <!-- Workspace View -->
+      <div id="workspace-view" class="view" style="display: none;">
+        <div class="view-header">
+          <h2 class="view-title">Workspace</h2>
+        </div>
+        <div class="workspace-layout">
+          <div class="file-tree" id="file-tree">
+            <!-- Files injected here -->
+          </div>
+          <div class="editor-container">
+            <div class="editor-header" id="editor-filename">Select a file</div>
+            <div class="editor-content" id="editor-content">
+              Select a file to view its content...
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- History View -->
+      <div id="history-view" class="view" style="display: none;"></div>
+
+      <!-- Settings View -->
+      <div id="settings-view" class="view" style="display: none;"></div>
+
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
 </html>

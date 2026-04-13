@@ -14,6 +14,8 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/session"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestServiceSteerWritesWebSource(t *testing.T) {
@@ -190,18 +192,124 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Go CLI Agent Console") || !strings.Contains(indexBody, "open-start-button") || !strings.Contains(indexBody, "/assets/app.js") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "clear-chat-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 
-	jsBody := checkBody(server.URL + "/assets/app.js")
-	if !strings.Contains(jsBody, "start-form") || !strings.Contains(jsBody, "start-agent-role") || !strings.Contains(jsBody, "Continue Session") || !strings.Contains(jsBody, "Submit Queue Job") {
+	jsBody := checkBody(server.URL + "/app.js")
+	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "fetchSkills") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
 	}
 
-	cssBody := checkBody(server.URL + "/assets/styles.css")
-	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".topbar") || !strings.Contains(cssBody, ".view-panel") {
+	cssBody := checkBody(server.URL + "/styles.css")
+	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-container") {
 		t.Fatalf("unexpected styles.css body: %s", cssBody)
+	}
+}
+
+func TestServiceWebSocketChatReusesSessionAndStreamsAssistantMessage(t *testing.T) {
+	server := newTextReplyServer("chat reply")
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	sendChat := func(sessionID, message string) {
+		t.Helper()
+		if err := conn.WriteJSON(map[string]any{
+			"type":      "chat",
+			"sessionId": sessionID,
+			"message":   message,
+		}); err != nil {
+			t.Fatalf("write websocket message: %v", err)
+		}
+	}
+
+	readUntil := func(deadline time.Duration, fn func(map[string]any) bool) {
+		t.Helper()
+		if err := conn.SetReadDeadline(time.Now().Add(deadline)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
+		}
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				t.Fatalf("read websocket message: %v", err)
+			}
+			if fn(msg) {
+				return
+			}
+		}
+	}
+
+	clientSessionID := "0xWSCHAT"
+	assistantMessages := 0
+	backendSessionID := ""
+
+	sendChat(clientSessionID, "hello")
+	readUntil(5*time.Second, func(msg map[string]any) bool {
+		switch msg["type"] {
+		case "session":
+			payload, _ := msg["payload"].(map[string]any)
+			backendSessionID, _ = payload["sessionId"].(string)
+		case "message":
+			payload, _ := msg["payload"].(map[string]any)
+			if payload["role"] == "assistant" && payload["content"] == "chat reply" {
+				assistantMessages++
+			}
+		}
+		return backendSessionID != "" && assistantMessages == 1
+	})
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(backendSessionID)
+		return err == nil && state.Status == session.StatusAwaitingInput
+	}, func() string {
+		state, err := svc.store.LoadState(backendSessionID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+
+	sendChat(backendSessionID, "again")
+	readUntil(5*time.Second, func(msg map[string]any) bool {
+		if msg["type"] != "message" {
+			return false
+		}
+		payload, _ := msg["payload"].(map[string]any)
+		if payload["role"] == "assistant" && payload["content"] == "chat reply" {
+			assistantMessages++
+		}
+		return assistantMessages == 2
+	})
+
+	items, err := svc.store.List(10)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one backend session, got %#v", items)
+	}
+	if items[0].ID != backendSessionID {
+		t.Fatalf("expected backend session %q, got %#v", backendSessionID, items)
 	}
 }
 
@@ -598,6 +706,20 @@ func newSleepToolServer() *httptest.Server {
 			"status":"completed",
 			"output":[
 				{"type":"function_call","call_id":"call_shell_1","name":"shell","arguments":"{\"command\":\"sleep 10\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+}
+
+func newTextReplyServer(reply string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + reply + `"}]}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
