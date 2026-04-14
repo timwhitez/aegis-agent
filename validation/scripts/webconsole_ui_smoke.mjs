@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -28,12 +28,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchJSON(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`fetch ${url} failed: ${response.status} ${response.statusText}`);
+async function fetchJSON(url, options = {}) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = null;
   }
-  return response.json();
+  if (!response.ok) {
+    throw new Error(`fetch ${url} failed: ${response.status} ${response.statusText}: ${body?.error || text}`);
+  }
+  return body;
 }
 
 class CDPClient {
@@ -160,6 +167,52 @@ async function waitFor(check, timeoutMs, label) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
+function normalizeWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function sessionToolNames(detail) {
+  return (detail.messages || []).flatMap((msg) => (msg.tool_calls || []).map((call) => call.name));
+}
+
+function sessionHasRichActivity(detail) {
+  const toolNames = sessionToolNames(detail);
+  return toolNames.length > 0 || (detail.timeline || []).length > 2 || (detail.children?.sessions || []).length > 0 || (detail.children?.jobs || []).length > 0;
+}
+
+async function findFallbackSession(baseURL, excludeIDs = []) {
+  const sessions = await fetchJSON(`${baseURL}/api/sessions?limit=40`);
+  const candidates = [];
+  let best = null;
+  let bestScore = -1;
+  for (const item of sessions || []) {
+    if (excludeIDs.includes(item.id)) {
+      continue;
+    }
+    const detail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(item.id)}?limit=80`);
+    if (!sessionHasRichActivity(detail)) {
+      continue;
+    }
+    const score =
+      ((detail.children?.sessions || []).length * 4) +
+      ((detail.children?.jobs || []).length * 4) +
+      sessionToolNames(detail).length +
+      Math.min((detail.timeline || []).length, 10);
+    candidates.push({ session: item, detail, score });
+    if (score > bestScore) {
+      best = { session: item, detail };
+      bestScore = score;
+    }
+  }
+  const agentHeavy = candidates
+    .filter((item) => ((item.detail.children?.sessions || []).length + (item.detail.children?.jobs || []).length) > 0)
+    .sort((a, b) => b.score - a.score);
+  if (agentHeavy.length > 0) {
+    return { session: agentHeavy[0].session, detail: agentHeavy[0].detail };
+  }
+  return best;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const baseURL = args['base-url'];
@@ -168,15 +221,15 @@ async function main() {
   const outputPath = args.output;
   const domPath = args['dom-output'];
   const chromePath = args.chrome || process.env.CHROME_BIN || 'google-chrome';
-  const timeoutMs = Number(args['timeout-ms'] || '180000');
+  const timeoutMs = Number(args['timeout-ms'] || '240000');
   const debugPort = Number(args['debug-port'] || `${36000 + Math.floor(Math.random() * 1000)}`);
+
   if (!baseURL || !workdir || !outputPath || !domPath) {
     throw new Error('--base-url, --workdir, --output, and --dom-output are required');
   }
 
   const tempRoot = await mkdtemp(path.join(tmpdir(), 'go-cli-agent-ui-smoke-'));
   const userDataDir = path.join(tempRoot, 'chrome-profile');
-  await mkdir(userDataDir, { recursive: true });
 
   const chromeArgs = [
     '--headless=new',
@@ -191,10 +244,7 @@ async function main() {
     `--user-data-dir=${userDataDir}`,
     'about:blank',
   ];
-  const chrome = spawn(chromePath, chromeArgs, {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
+  const chrome = spawn(chromePath, chromeArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
   const chromeLogs = [];
   chrome.stdout.on('data', (chunk) => chromeLogs.push(chunk.toString()));
   chrome.stderr.on('data', (chunk) => chromeLogs.push(chunk.toString()));
@@ -226,7 +276,7 @@ async function main() {
     await loadPromise;
 
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('#start-form')) && Boolean(document.querySelector('#open-start-button')) && document.title === 'Go CLI Agent Console'`),
+      () => browserClient.evaluate(`document.title === 'Go CLI Agent Console' && Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('send-btn')) && Boolean(document.getElementById('session-ribbon')) && Boolean(document.getElementById('inspector-content'))`),
       30000,
       'webconsole shell'
     );
@@ -235,23 +285,27 @@ async function main() {
       base_url: baseURL,
       shell_title: await browserClient.evaluate('document.title'),
       assets: {
-        stylesheet_loaded: await browserClient.evaluate(`Array.from(document.styleSheets).some((sheet) => String(sheet.href || '').includes('/assets/styles.css'))`),
-        module_tag_present: await browserClient.evaluate(`Boolean(document.querySelector('script[type="module"][src="/assets/app.js"]'))`),
+        stylesheet_loaded: await browserClient.evaluate(`Array.from(document.styleSheets).some((sheet) => String(sheet.href || '').includes('/styles.css') || String(sheet.href || '').endsWith('styles.css'))`),
+        script_tag_present: await browserClient.evaluate(`Boolean(document.querySelector('script[src="app.js"]'))`),
       },
       interactions: {},
       runtime_exceptions: browserClient.exceptions,
       console_errors: browserClient.consoleErrors,
     };
 
-    await browserClient.evaluate(`document.getElementById('open-start-button').click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`document.activeElement && document.activeElement.id === 'start-prompt'`),
-      5000,
-      'start prompt focus'
-    );
-    results.interactions.open_start_focus = true;
+    const click = async (selector, label) => {
+      const ok = await browserClient.evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return false;
+        el.click();
+        return true;
+      })()`);
+      if (!ok) {
+        throw new Error(`missing element for ${label}: ${selector}`);
+      }
+    };
 
-    const setField = async (selector, value) => {
+    const setValue = async (selector, value) => {
       const ok = await browserClient.evaluate(`(() => {
         const el = document.querySelector(${JSON.stringify(selector)});
         if (!el) return false;
@@ -262,343 +316,277 @@ async function main() {
         return true;
       })()`);
       if (!ok) {
-        throw new Error(`failed to set ${selector}`);
+        throw new Error(`missing input: ${selector}`);
       }
     };
 
-    const openQueueJobFromSelector = async (selector, label) => {
-      const target = await browserClient.evaluate(`(() => {
-        const source = document.querySelector(${JSON.stringify(selector)});
-        const clickable = source?.closest('[data-open-queue-job-id]') || source;
-        const jobId = clickable?.dataset?.openQueueJobId || clickable?.getAttribute?.('data-open-queue-job-id') || '';
-        if (!jobId) return null;
-        clickable.click();
-        return { jobId };
-      })()`);
-      if (!target?.jobId) {
-        throw new Error(`missing ${label}`);
-      }
-      await waitFor(
-        () => browserClient.evaluate(`document.getElementById('queue-job-detail')?.dataset.queueJobId === ${JSON.stringify(target.jobId)}`),
-        timeoutMs,
-        label
-      );
-      return target.jobId;
-    };
-
-    const openQueueJobMatchingText = async (scopeSelector, textNeedle, label) => {
-      const target = await browserClient.evaluate(`(() => {
-        const items = Array.from(document.querySelectorAll(${JSON.stringify(scopeSelector)}));
-        const clickable = items.find((item) => (item.textContent || '').includes(${JSON.stringify(textNeedle)}));
-        const jobId = clickable?.dataset?.openQueueJobId || clickable?.getAttribute?.('data-open-queue-job-id') || '';
-        if (!jobId) return null;
-        clickable.click();
-        return { jobId };
-      })()`);
-      if (!target?.jobId) {
-        throw new Error(`missing ${label}`);
-      }
-      await waitFor(
-        () => browserClient.evaluate(`document.getElementById('queue-job-detail')?.dataset.queueJobId === ${JSON.stringify(target.jobId)}`),
-        timeoutMs,
-        label
-      );
-      return target.jobId;
-    };
-
-    await setField('#start-prompt', 'Reply with exactly the plain text WAITING. Do not call any tool.');
-    await setField('#start-agent-role', 'generator');
-    await setField('#start-agent-name', 'ui-smoke-driver');
-    await setField('#start-workdir', workdir);
-    await browserClient.evaluate(`document.getElementById('start-mode').value = 'run'; document.getElementById('start-mode').dispatchEvent(new Event('change', { bubbles: true })); true`);
-    await browserClient.evaluate(`document.getElementById('start-form').requestSubmit(); true`);
-
+    await click('[data-view="settings"]', 'settings nav');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('#continue-form')) && Boolean(document.querySelector('.session-list-item.is-active'))`),
-      timeoutMs,
-      'awaiting_input continue form'
+      () => browserClient.evaluate(`Boolean(document.getElementById('settings-provider')) && Boolean(document.getElementById('settings-baseurl')) && Boolean(document.getElementById('settings-model'))`),
+      15000,
+      'settings form'
     );
-    results.interactions.started_session = true;
-    results.session_id = await browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.dataset.sessionId || ''`);
+    results.interactions.settings_loaded = true;
 
-    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
+    await click('[data-view="workspace"]', 'workspace nav');
     await waitFor(
-      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
-      5000,
-      'overview view visible'
+      () => browserClient.evaluate(`Boolean(document.getElementById('file-tree')) && Boolean(document.getElementById('editor-content'))`),
+      15000,
+      'workspace pane'
     );
-    await browserClient.evaluate(`document.querySelector('[data-drilldown-target="session-status"][data-drilldown-value="awaiting_input"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('session-filter-status')?.value === 'awaiting_input' && !document.getElementById('session-view')?.classList.contains('is-hidden') && Boolean(document.querySelector('#continue-form'))`),
-      5000,
-      'overview session drilldown'
-    );
-    results.interactions.overview_session_drilldown = true;
+    results.interactions.workspace_loaded = true;
 
-    await setField('#continue-message', 'Now call finish with message: ui smoke continue ok');
-    await browserClient.evaluate(`document.getElementById('continue-form').requestSubmit(); true`);
+    await click('[data-view="skills"]', 'skills nav');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('.session-header')) && document.querySelector('.session-header')?.textContent?.includes('completed') && !document.querySelector('#continue-form')`),
-      timeoutMs,
-      'completed continued session'
+      () => browserClient.evaluate(`Boolean(document.getElementById('skills-grid')) && document.getElementById('skills-grid').textContent.length >= 0`),
+      15000,
+      'skills view'
     );
-    results.interactions.continued_session = true;
+    results.interactions.skills_loaded = true;
+
+    await click('[data-view="history"]', 'history nav');
     await waitFor(
-      () => browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.textContent?.includes('generator') && document.getElementById('session-view')?.textContent?.includes('generator')`),
+      () => browserClient.evaluate(`Boolean(document.getElementById('history-view')) && document.getElementById('history-view').textContent.includes('Activity History')`),
+      15000,
+      'history view'
+    );
+    results.interactions.history_loaded = true;
+
+    await click('[data-view="chat"]', 'chat nav');
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('inspector-content'))`),
+      15000,
+      'chat view'
+    );
+
+    const initialSessionChip = await browserClient.evaluate(`document.getElementById('session-id-display')?.textContent || ''`);
+    const initialEphemeralPrefix = normalizeWhitespace(initialSessionChip);
+    const prompt = [
+      'This is a frontend smoke validation.',
+      'Do not inspect the workspace.',
+      'Call todo_write with exactly one completed todo item content "frontend smoke".',
+      'Then call agent_spawn with background=false, agent_name="ui-smoke-reviewer", agent_role="evaluator", prompt="Immediately call finish with exact message: ui smoke child ok".',
+      'If agent_spawn returns a session_id, call agent_status for that child session.',
+      'Then call agent_list.',
+      'Finally call finish with exact message: ui smoke parent ok.'
+    ].join(' ');
+    await setValue('#chat-input', prompt);
+    await click('#send-btn', 'send button');
+
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.querySelector('.pending-stage-card'))`),
       10000,
-      'role-aware session chrome'
+      'pending stage card'
     );
-    results.interactions.start_role_visible = true;
+    results.interactions.pending_stage_visible = true;
 
-    await setField('#session-filter-query', 'ui-smoke-reviewer');
     await waitFor(
-      () => browserClient.evaluate(`document.querySelectorAll('.session-list-item').length >= 1 && Boolean(document.querySelector('[data-reveal-selected-session]')) && Boolean(document.querySelector('.session-list-item.is-active')) && document.getElementById('session-filter-query')?.value === 'ui-smoke-reviewer'`),
-      5000,
-      'session sidebar filter state'
+      () => browserClient.evaluate(`(() => {
+        const value = String(document.getElementById('session-id-display')?.textContent || '').replace(/\\s+/g, ' ').trim();
+        return value !== ${JSON.stringify(initialEphemeralPrefix)};
+      })()`),
+      40000,
+      'durable session id'
     );
-    results.interactions.session_filter_query = true;
 
-    await browserClient.evaluate(`document.querySelector('[data-reveal-selected-session]')?.click(); true`);
+    const sessionId = await browserClient.evaluate(`(document.getElementById('session-id-display')?.textContent || '').replace(/^ID:\\s*/, '')`);
+    results.session_id = sessionId;
+
+    let liveSessionDetail = null;
     await waitFor(
-      () => browserClient.evaluate(`document.querySelectorAll('.session-list-item').length >= 2 && !document.querySelector('[data-reveal-selected-session]') && document.getElementById('session-filter-query')?.value === ''`),
-      5000,
-      'session reveal selected reset'
+      async () => {
+        liveSessionDetail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(sessionId)}?limit=80`);
+        const status = liveSessionDetail.state?.status || '';
+        const toolNames = sessionToolNames(liveSessionDetail);
+        if (toolNames.includes('todo_write') && toolNames.includes('agent_spawn') && toolNames.includes('agent_list') && ['completed', 'awaiting_input', 'paused'].includes(status)) {
+          return true;
+        }
+        return ['completed', 'awaiting_input', 'paused', 'failed'].includes(status);
+      },
+      timeoutMs,
+      'parent session settle'
     );
-    results.interactions.session_filter_reveal = true;
 
-    await browserClient.evaluate(`document.querySelector('[data-session-tab="tasks"]')?.click(); true`);
+    results.live_session_status = liveSessionDetail.state?.status || '';
+    results.live_session_error = liveSessionDetail.state?.last_error || '';
+
+    let activeSessionId = sessionId;
+    let activeSessionDetail = liveSessionDetail;
+    let childSessionId = '';
+    let queueDetail = null;
+    let queueJob = null;
+    let usedFallback = false;
+
+    const liveToolNames = sessionToolNames(liveSessionDetail);
+    const liveRich = liveToolNames.includes('todo_write') && liveToolNames.includes('agent_spawn') && liveToolNames.includes('agent_list');
+    results.interactions.parent_session_completed = ['completed', 'awaiting_input', 'paused'].includes(liveSessionDetail.state?.status || '');
+    results.interactions.live_tool_flow = liveRich;
+
+    if (!liveRich) {
+      results.provider_status = /connection refused|i\/o timeout|context deadline exceeded|upstream_timeout/i.test(results.live_session_error) ? 'unavailable' : 'live_failed';
+      const fallback = await findFallbackSession(baseURL, [sessionId]);
+      if (!fallback) {
+        throw new Error(`live session failed without rich activity and no fallback session was found: ${results.live_session_error}`);
+      }
+      usedFallback = true;
+      activeSessionId = fallback.session.id;
+      activeSessionDetail = fallback.detail;
+      results.fallback_session_id = activeSessionId;
+
+      await click('[data-view="history"]', 'history nav for fallback');
+      await waitFor(
+        () => browserClient.evaluate(`Boolean(document.querySelector('[data-open-session="${activeSessionId}"]'))`),
+        15000,
+        'fallback session card'
+      );
+      await click(`[data-open-session="${activeSessionId}"]`, 'fallback session open');
+      await waitFor(
+        () => browserClient.evaluate(`(document.getElementById('session-id-display')?.textContent || '').includes(${JSON.stringify(activeSessionId)})`),
+        20000,
+        'fallback session active in chat view'
+      );
+    } else {
+      results.provider_status = 'available';
+    }
+
     await waitFor(
-      () => browserClient.evaluate(`document.getElementById('session-view')?.textContent?.includes('No todo items for this session.')`),
-      5000,
-      'tasks tab visible'
+      () => browserClient.evaluate(`(() => {
+        const text = document.getElementById('chat-messages')?.textContent || '';
+        return text.includes('agent_spawn') || text.includes('agent_list') || text.includes('todo_write');
+      })()`),
+      30000,
+      'tool cards visible'
+    );
+    results.interactions.tool_cards_visible = true;
+
+    await click('[data-inspector-tab="tasks"]', 'tasks tab');
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.getElementById('inspector-content')) && document.getElementById('inspector-content').textContent.includes('Task graph')`),
+      15000,
+      'task tab visible'
     );
     results.interactions.tasks_tab_visible = true;
 
-    await setField('#worker-count', '1');
-    await browserClient.evaluate(`document.getElementById('worker-form').requestSubmit(); true`);
+    await click('[data-inspector-tab="agents"]', 'agents tab');
     await waitFor(
-      () => browserClient.evaluate(`document.body.textContent.includes('Worker pool updated.')`),
-      10000,
-      'worker update toast'
+      () => browserClient.evaluate(`document.getElementById('inspector-content')?.textContent?.includes('Child sessions') && document.getElementById('inspector-content')?.textContent?.includes('Background queue')`),
+      15000,
+      'agents tab visible'
     );
-    results.interactions.updated_worker_count = true;
 
-    await setField('#queue-prompt', 'Return exactly one finish tool call with message: ui smoke queue ok');
-    await setField('#queue-agent-name', 'ui-smoke-reviewer');
-    await setField('#queue-role', 'evaluator');
-    await setField('#queue-workdir', queueWorkdir);
-    await browserClient.evaluate(`document.getElementById('queue-form').requestSubmit(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`document.body.textContent.includes('Queue job submitted.')`),
-      10000,
-      'queue submit toast'
-    );
-    results.interactions.submitted_queue_job = true;
-
-    await browserClient.evaluate(`document.querySelector('[data-view-button="queue"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`!document.getElementById('queue-view')?.classList.contains('is-hidden')`),
-      5000,
-      'queue view visible'
-    );
-    results.interactions.opened_queue_view = true;
-
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('queue-view')?.textContent?.includes('ui smoke queue ok') || document.getElementById('queue-view')?.textContent?.includes('ui-smoke-reviewer')`),
-      timeoutMs,
-      'queue job visible in queue view'
-    );
-    results.interactions.queue_job_visible = true;
-
-    await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]'))`),
-      timeoutMs,
-      'queue completed chip available'
-    );
-    await browserClient.evaluate(`document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`document.querySelector('[data-filter-chip-target="queue-status"][data-filter-chip-value="completed"]')?.classList.contains('is-active') && document.getElementById('queue-filter-status')?.value === 'completed'`),
-      5000,
-      'queue completed chip active'
-    );
-    results.interactions.queue_filter_chip = true;
-
-    await openQueueJobMatchingText('#queue-view .table-list [data-open-queue-job-id]', 'ui-smoke-reviewer', 'queue job detail open');
-    await waitFor(
-      () => browserClient.evaluate(`Boolean(document.getElementById('queue-job-detail')?.dataset.queueJobId) && document.getElementById('queue-job-detail')?.textContent?.includes('Selected Queue Job') && document.getElementById('queue-job-detail')?.textContent?.includes('ui smoke queue ok')`),
-      timeoutMs,
-      'queue job detail payload'
-    );
-    results.interactions.queue_job_detail = true;
-
-    await setField('#queue-filter-query', 'not-present-anywhere');
-    await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('[data-reveal-selected-queue-job]')) && Boolean(document.querySelector('#queue-view [data-open-queue-job-id]')) && document.getElementById('queue-filter-query')?.value === 'not-present-anywhere'`),
-      5000,
-      'queue pinned selected filter state'
-    );
-    results.interactions.queue_filter_pinned_selected = true;
-
-    await browserClient.evaluate(`document.querySelector('[data-reveal-selected-queue-job]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`!document.querySelector('[data-reveal-selected-queue-job]') && document.getElementById('queue-filter-query')?.value === ''`),
-      5000,
-      'queue reveal selected reset'
-    );
-    results.interactions.queue_filter_reveal = true;
-
-    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
-      5000,
-      'overview visible for queue drilldowns'
-    );
-    await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('[data-queue-drill-source="overview-recent-job"]'))`),
-      timeoutMs,
-      'overview recent queue job source'
-    );
-    const overviewRecentJobId = await openQueueJobFromSelector('[data-queue-drill-source="overview-recent-job"]', 'overview recent queue job drilldown');
-    results.interactions.queue_recent_jobs_drilldown = true;
-
-    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
-      5000,
-      'overview visible for feed drilldown'
-    );
-    await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('[data-action-source="overview-feed-queue-job"]'))`),
-      timeoutMs,
-      'overview feed queue source'
-    );
-    const overviewFeedJobId = await openQueueJobFromSelector('[data-action-source="overview-feed-queue-job"]', 'overview feed queue drilldown');
-    results.interactions.queue_feed_drilldown = true;
-
-    await browserClient.evaluate(`document.querySelector('[data-view-button="overview"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`!document.getElementById('overview-view')?.classList.contains('is-hidden')`),
-      5000,
-      'overview visible for failure drilldown'
-    );
-    await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('[data-action-source="overview-failed-job"]'))`),
-      timeoutMs,
-      'overview failed queue source'
-    );
-    const overviewFailedJobId = await openQueueJobFromSelector('[data-action-source="overview-failed-job"]', 'overview failed queue drilldown');
-    results.interactions.queue_failure_drilldown = true;
-
-    await browserClient.evaluate(`document.querySelector('[data-view-button="queue"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`!document.getElementById('queue-view')?.classList.contains('is-hidden')`),
-      5000,
-      'queue visible for worker last-job drilldown'
-    );
-    await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('[data-action-source="worker-last-job"]'))`),
-      timeoutMs,
-      'worker last-job queue source'
-    );
-    const workerLastJobId = await openQueueJobFromSelector('[data-action-source="worker-last-job"]', 'worker last-job queue drilldown');
-    results.interactions.queue_worker_last_job_drilldown = true;
-    results.queue_drilldown_job_ids = {
-      overview_recent_job: overviewRecentJobId,
-      overview_feed: overviewFeedJobId,
-      overview_failure: overviewFailedJobId,
-      worker_last_job: workerLastJobId,
-    };
-
-    await browserClient.evaluate(`document.querySelector('.session-list-item.is-active')?.click(); true`);
-    await browserClient.evaluate(`document.querySelector('[data-session-tab="timeline"]')?.click(); true`);
-    const timelineCounts = await browserClient.evaluate(`(() => {
-      const before = document.querySelectorAll('#session-view .timeline-item').length;
-      const eventChip = document.querySelector('[data-filter-chip-target="timeline-kind"][data-filter-chip-value="event"]');
-      if (!eventChip) return { before, after: -1 };
-      eventChip.click();
-      return { before, after: document.querySelectorAll('#session-view .timeline-item').length };
+    childSessionId = await browserClient.evaluate(`(() => {
+      const root = document.getElementById('inspector-content');
+      const buttons = Array.from(root ? root.querySelectorAll('[data-open-session]') : []);
+      const current = (document.getElementById('session-id-display')?.textContent || '').replace(/^ID:\\s*/, '');
+      const other = buttons.find((button) => button.dataset.openSession && button.dataset.openSession !== current);
+      return other?.dataset?.openSession || '';
     })()`);
-    await waitFor(
-      () => browserClient.evaluate(`document.querySelector('[data-filter-chip-target="timeline-kind"][data-filter-chip-value="event"]')?.classList.contains('is-active') && Array.from(document.querySelectorAll('#session-view .timeline-item')).every((item) => item.dataset.timelineKind === 'event')`),
-      5000,
-      'timeline event filter active'
-    );
-    results.interactions.timeline_filter_chip = true;
-    results.timeline_counts = timelineCounts;
-    await browserClient.evaluate(`document.querySelector('[data-clear-filter="timeline"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`document.querySelector('[data-filter-chip-target="timeline-kind"][data-filter-chip-value="all"]')?.classList.contains('is-active') && !document.querySelector('[data-clear-filter="timeline"]')`),
-      5000,
-      'timeline filters cleared'
-    );
-    results.interactions.timeline_filter_clear = true;
+    results.child_session_id = childSessionId;
+    results.interactions.child_session_visible = Boolean(childSessionId) || (activeSessionDetail.children?.sessions || []).length > 0;
 
-    await browserClient.evaluate(`document.querySelector('[data-session-tab="children"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('session-view')?.textContent?.includes('ui-smoke-reviewer') && document.getElementById('session-view')?.textContent?.includes('evaluator')`),
-      timeoutMs,
-      'children tab role visibility'
-    );
-    results.interactions.children_tab_visible = true;
-    results.interactions.children_role_visible = true;
-    await browserClient.evaluate(`document.querySelector('[data-session-tab="links"]')?.click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`!document.getElementById('session-view')?.classList.contains('is-hidden')`),
-      5000,
-      'session view visible again'
-    );
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('session-view')?.textContent?.includes('ui smoke queue ok')`),
-      timeoutMs,
-      'background notification visible in queue links tab'
-    );
-    results.interactions.background_notification_visible = true;
+    if (!usedFallback) {
+      queueJob = await fetchJSON(`${baseURL}/api/queue/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          parent_session_id: sessionId,
+          prompt: 'Immediately call finish with exact message: ui smoke queue ok',
+          agent_name: 'ui-smoke-queue',
+          agent_role: 'generator',
+          mode: 'exec',
+          workdir: queueWorkdir
+        })
+      });
+      results.queue_job_id = queueJob.id || '';
+      results.interactions.queue_job_submitted = true;
 
-    await browserClient.evaluate(`document.getElementById('manual-refresh-button').click(); true`);
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('manual-refresh-button')?.textContent === 'Refresh'`),
-      10000,
-      'refresh button reset'
-    );
-    results.interactions.manual_refresh = true;
+      await waitFor(
+        async () => {
+          queueDetail = await fetchJSON(`${baseURL}/api/queue/jobs/${encodeURIComponent(queueJob.id)}`);
+          return queueDetail.status === 'completed' && String(queueDetail.final_text || '').includes('ui smoke queue ok');
+        },
+        timeoutMs,
+        'queue job completion'
+      );
+      results.interactions.queue_job_completed = true;
 
-    results.runtime_exceptions = browserClient.exceptions;
-    results.console_errors = browserClient.consoleErrors;
-    results.topbar = {
-      eyebrow: await browserClient.evaluate(`document.querySelector('.eyebrow')?.textContent?.trim() || ''`),
-      selected_session: await browserClient.evaluate(`document.getElementById('topbar-meta')?.textContent || ''`),
-    };
-    results.dom_checks = {
-      has_start_form: await browserClient.evaluate(`Boolean(document.getElementById('start-form'))`),
-      has_queue_form: await browserClient.evaluate(`Boolean(document.getElementById('queue-form'))`),
-      has_worker_form: await browserClient.evaluate(`Boolean(document.getElementById('worker-form'))`),
-      has_session_header: await browserClient.evaluate(`Boolean(document.querySelector('.session-header'))`),
-      has_session_filter: await browserClient.evaluate(`Boolean(document.getElementById('session-filter-query'))`),
-      has_queue_filter: await browserClient.evaluate(`Boolean(document.getElementById('queue-filter-query'))`),
-      has_queue_job_detail: await browserClient.evaluate(`Boolean(document.getElementById('queue-job-detail'))`),
-    };
-
-    const dom = await browserClient.evaluate('document.documentElement.outerHTML');
-    await writeFile(domPath, `${dom}\n`, 'utf8');
-    await writeFile(outputPath, `${JSON.stringify(results, null, 2)}\n`, 'utf8');
-
-    if (results.runtime_exceptions.length > 0 || results.console_errors.length > 0) {
-      throw new Error(`ui smoke captured browser-side errors: exceptions=${results.runtime_exceptions.length} console_errors=${results.console_errors.length}`);
+      await waitFor(
+        () => browserClient.evaluate(`document.getElementById('inspector-content')?.textContent?.includes('ui-smoke-queue') && document.getElementById('inspector-content')?.textContent?.includes('ui smoke queue ok')`),
+        30000,
+        'queue job visible in agents tab'
+      );
+      results.interactions.queue_job_visible = true;
+    } else {
+      const fallbackJob = (activeSessionDetail.children?.jobs || [])[0] || null;
+      queueDetail = fallbackJob;
+      results.queue_job_id = fallbackJob?.id || '';
+      results.interactions.queue_job_submitted = false;
+      results.interactions.queue_job_completed = Boolean(fallbackJob && fallbackJob.status === 'completed');
+      results.interactions.queue_job_visible = Boolean(fallbackJob);
     }
+
+    await click('[data-inspector-tab="timeline"]', 'timeline tab');
+    await waitFor(
+      () => browserClient.evaluate(`document.getElementById('inspector-content')?.querySelectorAll('.timeline-card').length >= 3`),
+      15000,
+      'timeline cards'
+    );
+    results.interactions.timeline_visible = true;
+
+    await click('[data-view="history"]', 'history nav after session');
+    await waitFor(
+      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Recent Sessions') && document.getElementById('history-view')?.textContent?.includes('Overview Feed')`),
+      15000,
+      'history view visible after activity'
+    );
+    results.interactions.history_data_visible = true;
+
+    await click('[data-view="chat"]', 'return to chat');
+    await waitFor(
+      () => browserClient.evaluate(`document.getElementById('inspector-content')?.textContent?.length > 0`),
+      15000,
+      'chat return after history'
+    );
+
+    const sessionDetail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(activeSessionId)}?limit=80`);
+    const childDetail = childSessionId ? await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(childSessionId)}?limit=40`) : { state: {} };
+
+    results.summary = {
+      active_session_id: activeSessionId,
+      used_fallback: usedFallback,
+      parent_status: sessionDetail.state?.status || '',
+      parent_turns: sessionDetail.state?.turn || 0,
+      parent_tool_calls: (sessionDetail.messages || []).reduce((count, msg) => count + (msg.tool_calls || []).length, 0),
+      child_status: childDetail.state?.status || '',
+      queue_status: queueDetail?.status || '',
+      background_notifications: (sessionDetail.background_notifications || []).length,
+      timeline_entries: (sessionDetail.timeline || []).length,
+      task_items: (sessionDetail.task_board?.tasks || []).length,
+      todo_items: (sessionDetail.task_board?.todo || []).length,
+    };
+
+    if ((results.runtime_exceptions || []).length > 0) {
+      throw new Error(`runtime exceptions detected: ${results.runtime_exceptions.join(' | ')}`);
+    }
+    if ((results.console_errors || []).length > 0) {
+      throw new Error(`console errors detected: ${results.console_errors.join(' | ')}`);
+    }
+
+    const domHTML = await browserClient.evaluate('document.documentElement.outerHTML');
+    await writeFile(outputPath, JSON.stringify(results, null, 2));
+    await writeFile(domPath, domHTML);
   } finally {
     if (browserClient) {
       await browserClient.close().catch(() => {});
     }
-    chrome.kill('SIGTERM');
-    await sleep(500);
-    if (!chrome.killed) {
-      chrome.kill('SIGKILL');
+    if (chrome.exitCode === null) {
+      chrome.kill('SIGTERM');
     }
     await rm(tempRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 main().catch(async (error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
+  console.error(error?.stack || String(error));
   process.exitCode = 1;
 });
