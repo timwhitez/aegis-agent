@@ -851,6 +851,47 @@ func TestServiceClearSessionsRouteRemovesHistory(t *testing.T) {
 	}
 }
 
+func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "stale_handle_session",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		RootSessionID:    "stale_handle_session",
+	}
+	state := session.State{
+		Status:    session.StatusCompleted,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	svc.handles[meta.ID] = &launchHandle{
+		sessionID: meta.ID,
+		cancel:    func() {},
+	}
+
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected clear status with stale handle: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	cfg := testConfig(t, "")
 	provider := cfg.Providers["openai"]

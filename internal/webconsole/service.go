@@ -1518,6 +1518,7 @@ func (s *Service) listDirectory(root, current string) ([]any, error) {
 }
 
 func (s *Service) hasActiveHandle(sessionID string) bool {
+	s.pruneInactiveHandles()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	_, ok := s.handles[sessionID]
@@ -1525,12 +1526,14 @@ func (s *Service) hasActiveHandle(sessionID string) bool {
 }
 
 func (s *Service) hasAnyActiveHandle() bool {
+	s.pruneInactiveHandles()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.handles) > 0
 }
 
 func (s *Service) hasActiveDescendantHandle(sessionID string) bool {
+	s.pruneInactiveHandles()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if _, ok := s.handles[sessionID]; ok {
@@ -1546,6 +1549,33 @@ func (s *Service) hasActiveDescendantHandle(sessionID string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) pruneInactiveHandles() {
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.handles))
+	for id := range s.handles {
+		ids = append(ids, id)
+	}
+	s.mu.RUnlock()
+	if len(ids) == 0 {
+		return
+	}
+	stale := make([]string, 0, len(ids))
+	for _, id := range ids {
+		state, err := s.store.LoadState(id)
+		if err != nil || state.Status != session.StatusRunning {
+			stale = append(stale, id)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range stale {
+		delete(s.handles, id)
+	}
 }
 
 func (s *Service) ensureSessionTreeNotRunning(sessionID string) error {
