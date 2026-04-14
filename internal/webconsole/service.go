@@ -487,7 +487,7 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		writeError(w, http.StatusConflict, errors.New("cannot delete an active session tree"))
 		return
 	}
-	if err := s.ensureSessionTreeNotRunning(sessionID); err != nil {
+	if err := s.ensureSessionTreeNotLive(sessionID); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
@@ -507,16 +507,14 @@ func (s *Service) handleClearSessions(w http.ResponseWriter) {
 		writeError(w, http.StatusConflict, errors.New("cannot clear history while sessions are active in this web console"))
 		return
 	}
-	items, _, err := s.store.ListPage(1000000, 0)
+	hasRunningJobs, err := s.hasRunningQueueJobs("")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	for _, item := range items {
-		if item.Status == session.StatusRunning {
-			writeError(w, http.StatusConflict, errors.New("cannot clear history while a session is still running"))
-			return
-		}
+	if hasRunningJobs {
+		writeError(w, http.StatusConflict, errors.New("cannot clear history while queue jobs are still running"))
+		return
 	}
 	if err := s.store.ClearHistory(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1578,10 +1576,34 @@ func (s *Service) pruneInactiveHandles() {
 	}
 }
 
-func (s *Service) ensureSessionTreeNotRunning(sessionID string) error {
-	items, _, err := s.store.ListPage(1000000, 0)
+func (s *Service) ensureSessionTreeNotLive(sessionID string) error {
+	hasRunningJobs, err := s.hasRunningQueueJobs(sessionID)
 	if err != nil {
 		return err
+	}
+	if hasRunningJobs {
+		return errors.New("cannot delete a running session tree")
+	}
+	return nil
+}
+
+func (s *Service) hasRunningQueueJobs(sessionID string) (bool, error) {
+	jobs, _, err := s.store.ListJobsPage(1000000, 0)
+	if err != nil {
+		return false, err
+	}
+	if sessionID == "" {
+		for _, job := range jobs {
+			if job.Status == session.QueueStatusRunning {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return false, err
 	}
 	targets := map[string]struct{}{sessionID: {}}
 	changed := true
@@ -1597,12 +1619,21 @@ func (s *Service) ensureSessionTreeNotRunning(sessionID string) error {
 			}
 		}
 	}
-	for _, item := range items {
-		if _, ok := targets[item.ID]; ok && item.Status == session.StatusRunning {
-			return errors.New("cannot delete a running session tree")
+	for _, job := range jobs {
+		if job.Status != session.QueueStatusRunning {
+			continue
+		}
+		if _, ok := targets[job.ParentSessionID]; ok {
+			return true, nil
+		}
+		if _, ok := targets[job.SessionID]; ok {
+			return true, nil
+		}
+		if _, ok := targets[job.RootSessionID]; ok {
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (s *Service) handleForSession(sessionID string) (*launchHandle, bool) {

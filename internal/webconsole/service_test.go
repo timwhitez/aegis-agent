@@ -892,6 +892,72 @@ func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
 	}
 }
 
+func TestServiceClearSessionsIgnoresStaleRunningSessionsWithoutLiveOwners(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "stale_running_session",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "stale_running_session",
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "provider_call",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(meta, state); err != nil {
+		t.Fatalf("create stale running session: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected clear status with stale running session: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServiceClearSessionsRejectsRunningQueueJobs(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_running_clear_block",
+		Status:          session.QueueStatusRunning,
+		ParentSessionID: "parent_running_clear_block",
+		RootSessionID:   "parent_running_clear_block",
+		Prompt:          "busy",
+		Mode:            "exec",
+	}); err != nil {
+		t.Fatalf("save running queue job: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected conflict while running queue job exists, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "queue jobs are still running") {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
 func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	cfg := testConfig(t, "")
 	provider := cfg.Providers["openai"]
