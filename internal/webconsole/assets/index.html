@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agent Console</title>
+  <title>Go CLI Agent Console</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -66,16 +66,58 @@
 
       <!-- Chat View (Default) -->
       <div id="chat-view" class="view">
-        <div class="chat-container scrollbar-hide" id="chat-container">
-          <div class="chat-inner" id="chat-messages">
-            <!-- Messages injected here -->
-          </div>
+        <div class="chat-shell">
+          <section class="chat-stage">
+            <div class="chat-stage-header">
+              <div>
+                <h2 class="view-title compact-title">Live Session</h2>
+                <p class="view-subtitle" id="chat-stage-subtitle">Transcript, tool calls, and child-agent activity in one place.</p>
+              </div>
+              <div class="stage-actions">
+                <button class="ghost-action-btn" id="refresh-session-btn" type="button">
+                  <i data-lucide="refresh-cw"></i>
+                  <span>Refresh</span>
+                </button>
+                <button class="ghost-action-btn danger" id="interrupt-session-btn" type="button">
+                  <i data-lucide="hand"></i>
+                  <span>Interrupt</span>
+                </button>
+              </div>
+            </div>
+            <div class="session-ribbon scrollbar-hide" id="session-ribbon"></div>
+            <div class="chat-container scrollbar-hide" id="chat-container">
+              <div class="chat-inner" id="chat-messages">
+                <!-- Messages injected here -->
+              </div>
+            </div>
+          </section>
+
+          <aside class="inspector-panel">
+            <div class="inspector-header">
+              <div>
+                <div class="inspector-eyebrow">Operator Surface</div>
+                <h3>Session Cockpit</h3>
+              </div>
+              <span class="status-badge neutral" id="inspector-status-badge">Idle</span>
+            </div>
+            <div class="inspector-tabs" id="inspector-tabs">
+              <button class="inspector-tab active" type="button" data-inspector-tab="summary">Summary</button>
+              <button class="inspector-tab" type="button" data-inspector-tab="timeline">Timeline</button>
+              <button class="inspector-tab" type="button" data-inspector-tab="agents">Agents</button>
+              <button class="inspector-tab" type="button" data-inspector-tab="tasks">Tasks</button>
+            </div>
+            <div class="inspector-content scrollbar-hide" id="inspector-content"></div>
+          </aside>
         </div>
         
         <div class="input-area">
           <div class="input-container" id="input-container">
             <textarea id="chat-input" placeholder="Ask anything..." rows="1"></textarea>
             <div class="input-actions">
+              <button class="interrupt-toggle-btn" id="interrupt-toggle-btn" type="button" aria-pressed="false">
+                <i data-lucide="siren"></i>
+                <span>Interrupt next send</span>
+              </button>
               <span class="input-status-text" id="input-status-text">
                 Enter to send, Shift+Enter for new line
               </span>
