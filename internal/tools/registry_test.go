@@ -243,7 +243,7 @@ func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	}
 }
 
-func TestAgentToolsAreHiddenUnlessMultiAgentEnabled(t *testing.T) {
+func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
 
@@ -252,19 +252,19 @@ func TestAgentToolsAreHiddenUnlessMultiAgentEnabled(t *testing.T) {
 		t.Fatalf("new registry: %v", err)
 	}
 	for _, name := range []string{"agent_spawn", "agent_status", "agent_list"} {
-		if _, ok := registry.defs[name]; ok {
-			t.Fatalf("expected %s to be hidden by default", name)
+		if _, ok := registry.defs[name]; !ok {
+			t.Fatalf("expected %s to be registered by default", name)
 		}
 	}
 
-	cfg.Runtime.MultiAgent.Enabled = true
+	cfg.Runtime.MultiAgent.Enabled = false
 	registry, err = NewRegistry(cfg, nil, store, nil)
 	if err != nil {
-		t.Fatalf("new registry with multi-agent enabled: %v", err)
+		t.Fatalf("new registry with multi-agent disabled: %v", err)
 	}
 	for _, name := range []string{"agent_spawn", "agent_status", "agent_list"} {
-		if _, ok := registry.defs[name]; !ok {
-			t.Fatalf("expected %s to be registered when multi-agent is enabled", name)
+		if _, ok := registry.defs[name]; ok {
+			t.Fatalf("expected %s to be hidden when multi-agent is disabled", name)
 		}
 	}
 }

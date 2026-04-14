@@ -61,8 +61,9 @@ runtime:
     keep_recent_tool_results: 3
 
   # 以下字段是扩展 phase 兼容配置，不是 core v1 默认主路径。
+  # multi_agent 默认开启只是暴露 child-agent 工具，是否真正派生 child 仍由当前 master agent 自主决定。
   multi_agent:
-    enabled: false
+    enabled: true
     max_depth: 4
   isolation:
     default_mode: off

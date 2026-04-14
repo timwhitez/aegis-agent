@@ -218,7 +218,7 @@ providers:
 
 默认 `go-cli-agent` 帮助文本只展示 core v1 命令；只有显式进入 `experimental` 子树时，才展示这些扩展入口。
 
-默认 core 会话也不会暴露 `agent_spawn` / `agent_status` / `agent_list`；只有显式开启 `runtime.multi_agent.enabled=true` 时才注册这些扩展工具。
+当前默认会向 session 工具面暴露 `agent_spawn` / `agent_status` / `agent_list`，让 master agent 自己决定是否需要新建 child agent；若部署方明确不希望暴露这些能力，可显式设置 `runtime.multi_agent.enabled=false`。
 
 ## 目录
 

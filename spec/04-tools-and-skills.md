@@ -31,11 +31,13 @@ v1 内置工具固定为：
 - `task_list`
 - `task_get`
 
-扩展 phase 兼容工具默认不暴露给 core 会话；只有显式开启相关扩展配置时才注册：
+当前仓库默认还会向 session 工具面暴露一组扩展 phase 兼容工具，让 master agent 自己决定是否需要派生 child：
 
 - `agent_spawn`
 - `agent_status`
 - `agent_list`
+
+若部署方明确不希望暴露这组能力，可设置 `runtime.multi_agent.enabled=false` 把它们从 tool list 中移除。
 
 ## 3. 工具通用契约
 
@@ -153,19 +155,23 @@ v1 内置工具固定为：
 
 ### 4.16 `agent_spawn`
 
-- 仅在 `runtime.multi_agent.enabled=true` 时注册
+- 默认注册到 session tool list
+- 设置 `runtime.multi_agent.enabled=false` 时不注册
 - 从当前 session 派生 child agent
 - 支持同步执行和后台自治
 - 支持 worktree / copy 隔离
+- 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
 
 ### 4.17 `agent_status`
 
-- 仅在 `runtime.multi_agent.enabled=true` 时注册
+- 默认注册到 session tool list
+- 设置 `runtime.multi_agent.enabled=false` 时不注册
 - 查询 child session 或后台 job 的状态
 
 ### 4.18 `agent_list`
 
-- 仅在 `runtime.multi_agent.enabled=true` 时注册
+- 默认注册到 session tool list
+- 设置 `runtime.multi_agent.enabled=false` 时不注册
 - 查询当前 session 的 child sessions 和关联 jobs
 
 ## 5. 工作区安全

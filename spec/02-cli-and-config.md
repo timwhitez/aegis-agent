@@ -289,12 +289,18 @@ runtime:
     input_char_threshold: 160000
     keep_recent_tool_results: 3
   multi_agent:
-    enabled: false
+    enabled: true
     max_depth: 4
 
 hooks:
   default_timeout_sec: 15
 ```
+
+说明：
+
+- `runtime.multi_agent.enabled` 默认 `true`
+- 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`
+- 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
 
 ## 8. Provider 配置字段
 

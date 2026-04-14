@@ -207,6 +207,12 @@
 - Web 控制台的后台并发执行必须建立在真实 worker / child session 之上，而不是前端假进度条
 - Web 控制台当前采用 polling-first，不承诺 SSE / WebSocket 作为 v1 前提
 
+### 4.2.2 Multi-agent 工具面的当前产品决策
+
+- `agent_spawn` / `agent_status` / `agent_list` 默认暴露给 session tool list
+- 这只是给当前 master agent 提供 delegation 能力，不代表 runtime 会自动拆任务或自动新建 child session
+- 若部署方需要更窄的能力面，仍可显式设置 `runtime.multi_agent.enabled=false`
+
 ### 4.3 Provider generation 选项进入事实源
 
 当前已锁定：

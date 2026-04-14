@@ -110,7 +110,7 @@ child session 使用独立工作目录执行。当前支持：
 - `agent_status`
 - `agent_list`
 
-这些工具默认不暴露给 core 会话；只有显式设置 `runtime.multi_agent.enabled=true` 时才注册到 tool list。
+这些工具当前默认注册到 session tool list，让 master agent 自己决定是否需要新建 child agent；若部署方显式设置 `runtime.multi_agent.enabled=false`，则不注册到 tool list。
 
 #### `agent_spawn`
 
@@ -133,6 +133,7 @@ child session 使用独立工作目录执行。当前支持：
 - 默认从当前 session 派生一个 child session
 - 默认 `mode=exec`
 - 默认 `isolation_mode=auto`
+- 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
 - `background=true` 时提交到后台自治队列
 - 当 parent 处于活跃 `run` / `exec` 中时，后台 child 默认由同一 CLI 进程内的 auto worker 自动拉起执行
 - child 完成或失败后，结果需要回投到 parent session 的控制通知，供下一安全边界自动并入上下文

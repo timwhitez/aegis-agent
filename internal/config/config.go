@@ -220,7 +220,7 @@ func Default() *Config {
 				DefaultBehavior: "queue",
 			},
 			MultiAgent: MultiAgentConfig{
-				Enabled:  false,
+				Enabled:  true,
 				MaxDepth: 4,
 			},
 			Isolation: IsolationConfig{

@@ -68,3 +68,10 @@ func TestNormalizeConfigPreservesExplicitSendMetadata(t *testing.T) {
 		t.Fatalf("expected send_metadata false to be preserved, got %#v", provider.SendMetadata)
 	}
 }
+
+func TestDefaultEnablesMultiAgentTools(t *testing.T) {
+	cfg := Default()
+	if !cfg.Runtime.MultiAgent.Enabled {
+		t.Fatal("expected multi-agent to be enabled by default")
+	}
+}

@@ -1714,10 +1714,13 @@ func containsBehaviorProofToken(text string) bool {
 		"func builtinDefinitions(",
 		"cfg.Runtime.MultiAgent.Enabled",
 		"Runtime.MultiAgent.Enabled",
+		"enabled by default",
+		"registered by default",
+		"disabled via runtime.multi_agent.enabled=false",
 		"register only when",
 		"registered when",
 		"hidden by default",
-		"TestAgentToolsAreHiddenUnlessMultiAgentEnabled",
+		"TestAgentToolsAreEnabledByDefaultAndCanBeDisabled",
 		"if cfg != nil && cfg.Runtime.MultiAgent.Enabled",
 	} {
 		if strings.Contains(text, token) {

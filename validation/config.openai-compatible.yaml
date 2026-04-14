@@ -46,6 +46,7 @@ runtime:
     input_char_threshold: 160000
     keep_recent_tool_results: 3
   multi_agent:
+    enabled: true
     max_depth: 4
   isolation:
     default_mode: off
