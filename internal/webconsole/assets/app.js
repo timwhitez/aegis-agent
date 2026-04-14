@@ -24,7 +24,6 @@ const state = {
     copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
     tone: 'neutral'
   },
-  activeInspectorTab: 'summary',
   nextSendInterrupt: false,
   pollHandle: null,
   refreshingOverview: false,
@@ -42,7 +41,6 @@ const nodes = {
   connectionStatus: document.getElementById('connection-status'),
   sessionIdDisplay: document.getElementById('session-id-display'),
   newSessionBtn: document.getElementById('new-session-btn'),
-  refreshSessionBtn: document.getElementById('refresh-session-btn'),
   interruptSessionBtn: document.getElementById('interrupt-session-btn'),
   interruptToggleBtn: document.getElementById('interrupt-toggle-btn'),
   inputContainer: document.getElementById('input-container'),
@@ -52,11 +50,6 @@ const nodes = {
   fileTree: document.getElementById('file-tree'),
   editorFilename: document.getElementById('editor-filename'),
   editorContent: document.getElementById('editor-content'),
-  sessionRibbon: document.getElementById('session-ribbon'),
-  chatStageSubtitle: document.getElementById('chat-stage-subtitle'),
-  inspectorContent: document.getElementById('inspector-content'),
-  inspectorStatusBadge: document.getElementById('inspector-status-badge'),
-  inspectorTabs: document.querySelectorAll('[data-inspector-tab]'),
   views: {
     chat: document.getElementById('chat-view'),
     skills: document.getElementById('skills-view'),
@@ -243,10 +236,6 @@ function setupEventListeners() {
   });
 
   nodes.sendBtn.addEventListener('click', sendMessage);
-  nodes.refreshSessionBtn?.addEventListener('click', () => {
-    refreshOverview();
-    refreshCurrentSession();
-  });
   nodes.interruptSessionBtn?.addEventListener('click', requestInterrupt);
   nodes.interruptToggleBtn?.addEventListener('click', toggleInterruptArm);
   nodes.newSessionBtn?.addEventListener('click', () => {
@@ -292,22 +281,6 @@ function setupEventListeners() {
       return;
     }
 
-    const focusTabButton = event.target.closest('[data-focus-inspector-tab]');
-    if (focusTabButton) {
-      const tab = focusTabButton.getAttribute('data-focus-inspector-tab');
-      if (tab) {
-        state.activeInspectorTab = tab;
-        switchView('chat');
-        renderCurrentSession();
-      }
-      return;
-    }
-
-    const tabButton = event.target.closest('[data-inspector-tab]');
-    if (tabButton) {
-      state.activeInspectorTab = tabButton.getAttribute('data-inspector-tab') || 'summary';
-      renderCurrentSession();
-    }
   });
 
   document.addEventListener('change', async (event) => {
@@ -488,11 +461,10 @@ function resetChatSession({ notifyBackend }) {
   state.sessionDetail = null;
   state.optimisticMessages = [];
   state.liveEvents = [];
-  state.activeInspectorTab = 'summary';
   state.nextSendInterrupt = false;
   state.liveActivity = {
     title: 'Ready for a new session',
-    copy: 'Send a prompt to create a durable session. Once the backend starts running, this panel will switch to live tool and child-agent telemetry.',
+    copy: 'Send a prompt to create a durable session. Answers, tool calls, and running flow will appear here.',
     tone: 'neutral'
   };
   state.isGenerating = false;
@@ -530,6 +502,7 @@ function updateUI() {
   nodes.inputContainer.classList.toggle('is-busy', state.isGenerating);
   nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
   nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
+  nodes.interruptSessionBtn?.classList.toggle('is-visible', state.isGenerating && hasDurableSession());
   nodes.interruptToggleBtn?.classList.toggle('is-visible', state.isGenerating && hasDurableSession());
   nodes.interruptToggleBtn?.classList.toggle('is-armed', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
   nodes.interruptToggleBtn?.setAttribute('aria-pressed', state.nextSendInterrupt ? 'true' : 'false');
@@ -602,7 +575,6 @@ async function refreshOverview() {
   state.refreshingOverview = true;
   try {
     state.overview = await requestJSON('/api/overview');
-    renderSessionRibbon();
     if (state.currentView === 'history') {
       renderHistory(state.overview);
     }
@@ -656,26 +628,8 @@ async function refreshCurrentSession() {
 }
 
 function renderCurrentSession() {
-  renderStageSubtitle();
-  renderSessionRibbon();
   renderMessageStream();
-  renderInspector();
   lucide.createIcons();
-}
-
-function renderStageSubtitle() {
-  const counters = summarizeCurrentSession();
-  if (!hasDurableSession()) {
-    nodes.chatStageSubtitle.textContent = state.isGenerating
-      ? 'Bootstrapping the first durable session. Provider and tool events will appear here shortly.'
-      : 'Transcript, tool activity, and child sessions.';
-    return;
-  }
-  if (!state.sessionDetail) {
-    nodes.chatStageSubtitle.textContent = 'Loading durable session detail…';
-    return;
-  }
-  nodes.chatStageSubtitle.textContent = `${humanizeStatus(state.sessionDetail.state.status)} · ${phaseHeadline(state.sessionDetail.state.phase)} · ${counters.toolCalls} tool calls · ${counters.childSessions} child sessions · ${counters.queueJobs} queue jobs`;
 }
 
 function summarizeCurrentSession() {
@@ -711,47 +665,24 @@ function summarizeCurrentSession() {
   };
 }
 
-function renderSessionRibbon() {
-  const items = maybeArray(state.overview?.recent_sessions);
-  const cards = [];
-  if (!hasDurableSession()) {
-    cards.push(`
-      <button class="session-ribbon-card ephemeral active" type="button">
-        <div class="session-ribbon-top">
-          <span class="status-badge neutral">Draft</span>
-          <span class="tiny-code-chip">${escapeHTML(shortId(state.sessionId))}</span>
-        </div>
-        <div class="session-ribbon-title">New local session</div>
-        <div class="session-ribbon-meta">No durable state yet. Send a prompt to create the session and load activity.</div>
-      </button>
-    `);
-  }
-  items.slice(0, 8).forEach((item) => {
-    const active = item.id === state.sessionId;
-    cards.push(`
-      <button class="session-ribbon-card ${active ? 'active' : ''}" type="button" data-open-session="${escapeAttr(item.id)}">
-        <div class="session-ribbon-top">
-          <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
-          <span class="tiny-code-chip">${escapeHTML(shortId(item.id))}</span>
-        </div>
-        <div class="session-ribbon-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
-        <div class="session-ribbon-meta">${escapeHTML(item.model || item.provider || 'n/a')} · ${escapeHTML(phaseHeadline(item.phase || 'prepare'))}</div>
-      </button>
-    `);
-  });
-
-  nodes.sessionRibbon.innerHTML = cards.length
-    ? cards.join('')
-    : '<div class="empty-panel">No recent durable sessions yet.</div>';
-}
-
 function renderMessageStream() {
   const detailMessages = maybeArray(state.sessionDetail?.messages);
   const optimisticMessages = state.optimisticMessages.slice();
   const stream = detailMessages.length ? detailMessages.concat(optimisticMessages) : optimisticMessages;
+  const sections = [];
+
+  if (hasDurableSession() || state.isGenerating) {
+    sections.push(renderSessionActivityCard());
+  }
+
+  const flowLane = renderFlowLane();
+  if (flowLane) {
+    sections.push(flowLane);
+  }
 
   if (!stream.length) {
     nodes.chatMessages.innerHTML = `
+      ${sections.join('')}
       ${renderEmptySessionState()}
       ${state.isGenerating ? renderPendingStageCard() : ''}
     `;
@@ -760,34 +691,61 @@ function renderMessageStream() {
   }
 
   const html = stream.map((message) => renderMessage(message)).join('');
-  nodes.chatMessages.innerHTML = html + (state.isGenerating ? renderPendingStageCard() : '');
+  sections.push(html);
+  if (state.isGenerating) {
+    sections.push(renderPendingStageCard());
+  }
+  nodes.chatMessages.innerHTML = sections.join('');
   nodes.chatContainer.scrollTop = nodes.chatContainer.scrollHeight;
 }
 
 function renderEmptySessionState() {
-  const workerCount = state.overview?.workers?.active_count ?? 0;
   const recentSessions = maybeArray(state.overview?.recent_sessions).length;
-  const recentJobs = maybeArray(state.overview?.recent_jobs).length;
   return `
     <section class="empty-session-state">
-      <div>
-        <div class="status-badge neutral">Session ready</div>
-        <h1 class="empty-session-title">Start a session to load transcript, tools, and agents.</h1>
-        <p class="empty-session-copy">The transcript stays primary while durable tool activity, child sessions, queue jobs, and tasks remain visible.</p>
+      <div class="status-badge neutral">Ready</div>
+      <h1 class="empty-session-title">Start a session.</h1>
+      <p class="empty-session-copy">Answers, tool calls, and running flow will appear here. Use History to reopen older sessions.</p>
+      ${recentSessions ? `<div class="empty-session-note">${escapeHTML(String(recentSessions))} recent sessions available in History.</div>` : ''}
+    </section>
+  `;
+}
+
+function renderSessionActivityCard() {
+  const detail = state.sessionDetail;
+  const counters = summarizeCurrentSession();
+  const status = detail?.state?.status || (state.isGenerating ? 'running' : 'idle');
+  const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : state.liveActivity.title;
+  const tone = toneForStatus(status);
+  const copy = detail?.state?.last_error || detail?.state?.last_assistant_excerpt || state.liveActivity.copy;
+
+  return `
+    <section class="session-flow-card">
+      <div class="session-flow-head">
+        <div class="message-header-meta">
+          <span class="status-badge ${tone}">${escapeHTML(humanizeStatus(status))}</span>
+          ${detail?.metadata?.id ? `<span class="tiny-code-chip">${escapeHTML(shortId(detail.metadata.id))}</span>` : `<span class="tiny-code-chip">${escapeHTML(shortId(state.sessionId))}</span>`}
+          <span class="surface-chip">${escapeHTML(phase)}</span>
+          ${counters.toolCalls ? `<span class="surface-chip">${escapeHTML(String(counters.toolCalls))} tool call${counters.toolCalls === 1 ? '' : 's'}</span>` : ''}
+          ${counters.childSessions ? `<span class="surface-chip">${escapeHTML(String(counters.childSessions))} child session${counters.childSessions === 1 ? '' : 's'}</span>` : ''}
+          ${counters.queueJobs ? `<span class="surface-chip">${escapeHTML(String(counters.queueJobs))} queue job${counters.queueJobs === 1 ? '' : 's'}</span>` : ''}
+        </div>
       </div>
-      <div class="empty-session-grid">
-        <div class="empty-session-card">
-          <strong>Tool activity</strong>
-          <span>Each call and result stays inspectable with arguments, metadata, and output previews.</span>
-        </div>
-        <div class="empty-session-card">
-          <strong>Agent activity</strong>
-          <span>Child sessions, queue jobs, and background notifications stay visible in the side panel.</span>
-        </div>
-        <div class="empty-session-card">
-          <strong>${escapeHTML(String(recentSessions))} recent sessions</strong>
-          <span>${escapeHTML(String(recentJobs))} queue jobs · ${escapeHTML(String(workerCount))} active workers</span>
-        </div>
+      <div class="session-flow-copy">${escapeHTML(copy || 'Waiting for the next update.')}</div>
+    </section>
+  `;
+}
+
+function renderFlowLane() {
+  const detailItems = maybeArray(state.sessionDetail?.timeline).slice(-4).reverse();
+  if (!detailItems.length) {
+    return '';
+  }
+  return `
+    <section class="flow-lane">
+      <div class="flow-lane-label">Flow</div>
+      <div class="flow-lane-stack">
+        ${detailItems.map((item) => renderTimelineItem(item)).join('')}
       </div>
     </section>
   `;
@@ -919,7 +877,6 @@ function renderSpecialToolResult(result, parsed) {
         </div>
         <div class="card-actions">
           ${parsed.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(parsed.session_id)}">Open child session</button>` : ''}
-          <button class="mini-link-btn" type="button" data-focus-inspector-tab="agents">Open agents</button>
         </div>
         ${renderVisiblePaths(parsed.visible_paths)}
       </div>
@@ -964,9 +921,6 @@ function renderSpecialToolResult(result, parsed) {
             `).join('')}
           </div>
         ` : ''}
-        <div class="card-actions">
-          <button class="mini-link-btn" type="button" data-focus-inspector-tab="agents">Open agents</button>
-        </div>
       </div>
     `;
   }

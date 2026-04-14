@@ -58,6 +58,9 @@
           <span class="session-chip" id="session-id-display">ID: 0x8F9A2B</span>
         </div>
         <div class="header-actions">
+          <button class="icon-action-btn danger" id="interrupt-session-btn" aria-label="Interrupt session" title="Interrupt session" data-tooltip="Interrupt">
+            <i data-lucide="hand"></i>
+          </button>
           <button class="icon-action-btn" id="new-session-btn" aria-label="New session" title="New session" data-tooltip="New session">
             <i data-lucide="plus"></i>
           </button>
@@ -66,48 +69,10 @@
 
       <!-- Chat View (Default) -->
       <div id="chat-view" class="view">
-        <div class="chat-shell">
-          <section class="chat-stage">
-            <div class="chat-stage-header">
-              <div>
-                <h2 class="view-title compact-title">Live Session</h2>
-                <p class="view-subtitle" id="chat-stage-subtitle">Transcript, tool activity, and child sessions.</p>
-              </div>
-              <div class="stage-actions">
-                <button class="ghost-action-btn" id="refresh-session-btn" type="button">
-                  <i data-lucide="refresh-cw"></i>
-                  <span>Refresh</span>
-                </button>
-                <button class="ghost-action-btn danger" id="interrupt-session-btn" type="button">
-                  <i data-lucide="hand"></i>
-                  <span>Interrupt</span>
-                </button>
-              </div>
-            </div>
-            <div class="session-ribbon scrollbar-hide" id="session-ribbon"></div>
-            <div class="chat-container scrollbar-hide" id="chat-container">
-              <div class="chat-inner" id="chat-messages">
-                <!-- Messages injected here -->
-              </div>
-            </div>
-          </section>
-
-          <aside class="inspector-panel">
-            <div class="inspector-header">
-              <div>
-                <div class="inspector-eyebrow">Session Detail</div>
-                <h3>Session Overview</h3>
-              </div>
-              <span class="status-badge neutral" id="inspector-status-badge">Idle</span>
-            </div>
-            <div class="inspector-tabs" id="inspector-tabs">
-              <button class="inspector-tab active" type="button" data-inspector-tab="summary">Summary</button>
-              <button class="inspector-tab" type="button" data-inspector-tab="timeline">Timeline</button>
-              <button class="inspector-tab" type="button" data-inspector-tab="agents">Agents</button>
-              <button class="inspector-tab" type="button" data-inspector-tab="tasks">Tasks</button>
-            </div>
-            <div class="inspector-content scrollbar-hide" id="inspector-content"></div>
-          </aside>
+        <div class="chat-container scrollbar-hide" id="chat-container">
+          <div class="chat-inner" id="chat-messages">
+            <!-- Messages injected here -->
+          </div>
         </div>
         
         <div class="input-area">

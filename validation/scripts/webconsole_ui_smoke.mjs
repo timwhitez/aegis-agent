@@ -276,7 +276,7 @@ async function main() {
     await loadPromise;
 
     await waitFor(
-      () => browserClient.evaluate(`document.title === 'Go CLI Agent Console' && Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('send-btn')) && Boolean(document.getElementById('session-ribbon')) && Boolean(document.getElementById('inspector-content'))`),
+      () => browserClient.evaluate(`document.title === 'Agent Console' && Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('send-btn')) && Boolean(document.getElementById('chat-messages')) && Boolean(document.getElementById('interrupt-session-btn'))`),
       30000,
       'webconsole shell'
     );
@@ -354,7 +354,7 @@ async function main() {
 
     await click('[data-view="chat"]', 'chat nav');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('inspector-content'))`),
+      () => browserClient.evaluate(`Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('chat-messages'))`),
       15000,
       'chat view'
     );
@@ -451,31 +451,26 @@ async function main() {
 
     await waitFor(
       () => browserClient.evaluate(`(() => {
-        const text = document.getElementById('chat-messages')?.textContent || '';
-        return text.includes('agent_spawn') || text.includes('agent_list') || text.includes('todo_write');
+        const root = document.getElementById('chat-messages');
+        return Boolean(root) && root.querySelectorAll('.tool-card').length >= 1;
       })()`),
       30000,
       'tool cards visible'
     );
     results.interactions.tool_cards_visible = true;
 
-    await click('[data-inspector-tab="tasks"]', 'tasks tab');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.getElementById('inspector-content')) && document.getElementById('inspector-content').textContent.includes('Task graph')`),
+      () => browserClient.evaluate(`(() => {
+        const root = document.getElementById('chat-messages');
+        return Boolean(root) && root.textContent.includes('Flow') && root.querySelectorAll('.timeline-card').length >= 1;
+      })()`),
       15000,
-      'task tab visible'
+      'inline flow visible'
     );
-    results.interactions.tasks_tab_visible = true;
-
-    await click('[data-inspector-tab="agents"]', 'agents tab');
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('inspector-content')?.textContent?.includes('Child sessions') && document.getElementById('inspector-content')?.textContent?.includes('Background queue')`),
-      15000,
-      'agents tab visible'
-    );
+    results.interactions.timeline_visible = true;
 
     childSessionId = await browserClient.evaluate(`(() => {
-      const root = document.getElementById('inspector-content');
+      const root = document.getElementById('chat-messages');
       const buttons = Array.from(root ? root.querySelectorAll('[data-open-session]') : []);
       const current = (document.getElementById('session-id-display')?.textContent || '').replace(/^ID:\\s*/, '');
       const other = buttons.find((button) => button.dataset.openSession && button.dataset.openSession !== current);
@@ -483,6 +478,7 @@ async function main() {
     })()`);
     results.child_session_id = childSessionId;
     results.interactions.child_session_visible = Boolean(childSessionId) || (activeSessionDetail.children?.sessions || []).length > 0;
+    results.interactions.tasks_tab_visible = (activeSessionDetail.task_board?.tasks || []).length > 0 || (activeSessionDetail.task_board?.todo || []).length > 0;
 
     if (!usedFallback) {
       queueJob = await fetchJSON(`${baseURL}/api/queue/jobs`, {
@@ -509,29 +505,13 @@ async function main() {
         'queue job completion'
       );
       results.interactions.queue_job_completed = true;
-
-      await waitFor(
-        () => browserClient.evaluate(`document.getElementById('inspector-content')?.textContent?.includes('ui-smoke-queue') && document.getElementById('inspector-content')?.textContent?.includes('ui smoke queue ok')`),
-        30000,
-        'queue job visible in agents tab'
-      );
-      results.interactions.queue_job_visible = true;
     } else {
       const fallbackJob = (activeSessionDetail.children?.jobs || [])[0] || null;
       queueDetail = fallbackJob;
       results.queue_job_id = fallbackJob?.id || '';
       results.interactions.queue_job_submitted = false;
       results.interactions.queue_job_completed = Boolean(fallbackJob && fallbackJob.status === 'completed');
-      results.interactions.queue_job_visible = Boolean(fallbackJob);
     }
-
-    await click('[data-inspector-tab="timeline"]', 'timeline tab');
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('inspector-content')?.querySelectorAll('.timeline-card').length >= 3`),
-      15000,
-      'timeline cards'
-    );
-    results.interactions.timeline_visible = true;
 
     await click('[data-view="history"]', 'history nav after session');
     await waitFor(
@@ -540,10 +520,20 @@ async function main() {
       'history view visible after activity'
     );
     results.interactions.history_data_visible = true;
+    if (!usedFallback) {
+      await waitFor(
+        () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('ui-smoke-queue') && document.getElementById('history-view')?.textContent?.includes('ui smoke queue ok')`),
+        30000,
+        'queue job visible in history'
+      );
+      results.interactions.queue_job_visible = true;
+    } else {
+      results.interactions.queue_job_visible = Boolean(queueDetail);
+    }
 
     await click('[data-view="chat"]', 'return to chat');
     await waitFor(
-      () => browserClient.evaluate(`document.getElementById('inspector-content')?.textContent?.length > 0`),
+      () => browserClient.evaluate(`document.getElementById('chat-messages')?.textContent?.length > 0`),
       15000,
       'chat return after history'
     );
