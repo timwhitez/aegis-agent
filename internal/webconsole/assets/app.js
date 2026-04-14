@@ -10,6 +10,8 @@ const state = {
   isConnected: false,
   ws: null,
   sessionId: '0x' + Math.random().toString(16).slice(2, 8).toUpperCase(),
+  pendingMessageEl: null,
+  toastCounter: 0,
   skills: [],
   fileTree: []
 };
@@ -23,7 +25,10 @@ const nodes = {
   connectionDot: document.getElementById('connection-dot'),
   connectionStatus: document.getElementById('connection-status'),
   sessionIdDisplay: document.getElementById('session-id-display'),
-  clearChatBtn: document.getElementById('clear-chat-btn'),
+  newSessionBtn: document.getElementById('new-session-btn'),
+  inputContainer: document.getElementById('input-container'),
+  inputStatusText: document.getElementById('input-status-text'),
+  toastRack: document.getElementById('toast-rack'),
   skillsGrid: document.getElementById('skills-grid'),
   fileTree: document.getElementById('file-tree'),
   editorFilename: document.getElementById('editor-filename'),
@@ -44,6 +49,10 @@ function init() {
   setupWebSocket();
   setupEventListeners();
   resetChatSession({ notifyBackend: false });
+}
+
+function currentClientSessionId() {
+  return state.sessionId;
 }
 
 // --- WebSocket ---
@@ -78,34 +87,51 @@ function setupWebSocket() {
 function handleServerEvent(data) {
   switch (data.type) {
     case 'session':
+      if (data.payload?.clientSessionId && data.payload.clientSessionId !== currentClientSessionId()) {
+        return;
+      }
       if (data.payload?.sessionId) {
         state.sessionId = data.payload.sessionId;
         updateSessionId();
       }
       break;
     case 'message':
+      if (data.payload?.sessionId && data.payload.sessionId !== currentClientSessionId()) {
+        return;
+      }
+      clearPendingAssistant();
       addMessage(data.payload.role, data.payload.agentName || 'Agent', data.payload.content);
       break;
     case 'status':
+      if (data.payload?.sessionId && data.payload.sessionId !== currentClientSessionId()) {
+        return;
+      }
       if (data.payload?.sessionId) {
         state.sessionId = data.payload.sessionId;
         updateSessionId();
       }
       if (['awaiting_input', 'completed', 'paused', 'failed'].includes(data.payload?.status)) {
-        state.isGenerating = false;
+        setGenerating(false);
       }
       if (data.payload?.status === 'running') {
-        state.isGenerating = true;
+        setGenerating(true);
       }
       updateUI();
       break;
     case 'engine_event':
+      if (data.payload?.sessionId && data.payload.sessionId !== currentClientSessionId()) {
+        return;
+      }
       // Progress/Terminal logs could be shown here
       console.log('Engine Event:', data.payload);
       break;
     case 'error':
+      if (data.payload?.sessionId && data.payload.sessionId !== currentClientSessionId()) {
+        return;
+      }
       addMessage('system', 'System', data.payload.content);
-      state.isGenerating = false;
+      showToast(data.payload.content || 'The session failed.', 'error');
+      setGenerating(false);
       updateUI();
       break;
   }
@@ -126,7 +152,7 @@ function setupEventListeners() {
     const text = nodes.chatInput.value.trim();
     if (!text || state.isGenerating) return;
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
-      addMessage('system', 'System', 'The agent connection is offline. Wait for reconnection and try again.');
+      showToast('The agent connection is offline. Wait for reconnection and try again.', 'error');
       updateUI();
       return;
     }
@@ -142,13 +168,20 @@ function setupEventListeners() {
       message: text,
       sessionId: state.sessionId
     }));
-    state.isGenerating = true;
+    setGenerating(true);
     updateUI();
   };
 
   nodes.sendBtn.addEventListener('click', sendMessage);
-  nodes.clearChatBtn?.addEventListener('click', () => {
+  nodes.newSessionBtn?.addEventListener('click', () => {
+    const wasGenerating = state.isGenerating;
     resetChatSession({ notifyBackend: true });
+    showToast(
+      wasGenerating
+        ? 'Started a new session. The previous run may still finish in the background.'
+        : 'Started a new session.',
+      'info'
+    );
   });
   
   nodes.chatInput.addEventListener('keydown', (e) => {
@@ -188,6 +221,16 @@ function switchView(viewName) {
 
 function updateUI() {
   nodes.sendBtn.disabled = state.isGenerating || !state.isConnected;
+  nodes.sendBtn.classList.toggle('is-loading', state.isGenerating);
+  nodes.inputContainer.classList.toggle('is-busy', state.isGenerating);
+  nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
+  nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
+  nodes.chatInput.placeholder = state.isGenerating ? 'Agent is responding…' : 'Ask anything...';
+  nodes.inputStatusText.textContent = !state.isConnected
+    ? 'Reconnecting to the local agent…'
+    : state.isGenerating
+      ? 'Agent is responding. Wait for the reply or start a new session.'
+      : 'Enter to send, Shift+Enter for new line';
   if (!state.isConnected) {
     nodes.connectionDot.className = 'dot';
     return;
@@ -205,6 +248,7 @@ function nextSessionId() {
 
 function resetChatSession({ notifyBackend }) {
   state.sessionId = nextSessionId();
+  clearPendingAssistant();
   state.isGenerating = false;
   updateSessionId();
   nodes.chatMessages.innerHTML = '';
@@ -216,6 +260,57 @@ function resetChatSession({ notifyBackend }) {
     }));
   }
   updateUI();
+}
+
+function setGenerating(value) {
+  state.isGenerating = value;
+  if (value) {
+    showPendingAssistant();
+  } else {
+    clearPendingAssistant();
+  }
+}
+
+function showPendingAssistant() {
+  if (state.pendingMessageEl) return;
+  const msgEl = document.createElement('div');
+  msgEl.className = 'message assistant pending';
+  msgEl.innerHTML = `
+    <div class="message-header">
+      <i data-lucide="sparkles" class="message-header-icon" style="width: 14px; height: 14px;"></i>
+      <span class="message-header-name">Agent</span>
+    </div>
+    <div class="message-bubble pending-bubble">
+      <span class="pending-chip">Thinking</span>
+      <span class="typing-dots" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+      </span>
+    </div>
+  `;
+  nodes.chatMessages.appendChild(msgEl);
+  lucide.createIcons();
+  nodes.chatContainer.scrollTop = nodes.chatContainer.scrollHeight;
+  state.pendingMessageEl = msgEl;
+}
+
+function clearPendingAssistant() {
+  if (!state.pendingMessageEl) return;
+  state.pendingMessageEl.remove();
+  state.pendingMessageEl = null;
+}
+
+function showToast(message, tone = 'info') {
+  const id = `toast-${++state.toastCounter}`;
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${tone}`;
+  toast.id = id;
+  toast.textContent = message;
+  nodes.toastRack.appendChild(toast);
+  window.setTimeout(() => {
+    document.getElementById(id)?.remove();
+  }, 3200);
 }
 
 function addMessage(role, name, content) {
@@ -244,15 +339,27 @@ function addMessage(role, name, content) {
 // --- Skills ---
 async function fetchSkills() {
   try {
+    nodes.skillsGrid.innerHTML = '<div class="view-loading">Loading local skills…</div>';
     const res = await fetch('/api/skills');
     const skills = await res.json();
     renderSkills(skills);
   } catch (err) {
     console.error('Skills error', err);
+    nodes.skillsGrid.innerHTML = '<div class="empty-panel">Failed to load local skills.</div>';
+    showToast('Failed to load local skills.', 'error');
   }
 }
 
 function renderSkills(skills) {
+  if (!skills.length) {
+    nodes.skillsGrid.innerHTML = `
+      <div class="empty-panel">
+        <strong>No local skills found.</strong>
+        <span>Upload a .zip skill to add one to this console.</span>
+      </div>
+    `;
+    return;
+  }
   nodes.skillsGrid.innerHTML = skills.map(skill => `
     <div class="skill-card">
       <div class="skill-icon">
@@ -274,7 +381,7 @@ function renderSkills(skills) {
 
 async function handleSkillAction(id, isInstalled, btn) {
   if (!isInstalled) {
-    alert('Marketplace install is not supported in this local console yet. Upload a .zip skill instead.');
+    showToast('Marketplace install is not supported here yet. Upload a .zip skill instead.', 'info');
     return;
   }
   btn.disabled = true;
@@ -282,8 +389,9 @@ async function handleSkillAction(id, isInstalled, btn) {
   try {
     await fetch(`/api/skills/${id}/uninstall`, { method: 'POST' });
     await fetchSkills();
+    showToast('Skill removed from the local catalog.', 'success');
   } catch (err) {
-    alert('Failed to uninstall skill.');
+    showToast('Failed to uninstall skill.', 'error');
     btn.disabled = false;
     btn.innerText = 'Uninstall';
   }
@@ -302,12 +410,12 @@ document.addEventListener('change', async (e) => {
         method: 'POST',
         body: formData
       });
-      alert('Skill uploaded and extracted successfully.');
+      showToast('Skill uploaded and extracted successfully.', 'success');
       if (state.currentView === 'skills') {
         await fetchSkills();
       }
     } catch(err) {
-      alert('Failed to upload skill zip.');
+      showToast('Failed to upload skill zip.', 'error');
     }
     e.target.value = ''; // clear
   }
@@ -316,11 +424,20 @@ document.addEventListener('change', async (e) => {
 // --- History (Tasks) ---
 async function fetchHistory() {
   try {
+    const container = document.getElementById('history-view');
+    if (container) {
+      container.innerHTML = '<div class="view-loading">Loading recent activity…</div>';
+    }
     const res = await fetch('/api/overview');
     const data = await res.json();
     renderHistory(data);
   } catch (err) {
     console.error('History error', err);
+    const container = document.getElementById('history-view');
+    if (container) {
+      container.innerHTML = '<div class="empty-panel">Failed to load recent activity.</div>';
+    }
+    showToast('Failed to load recent activity.', 'error');
   }
 }
 
@@ -350,7 +467,7 @@ function renderHistory(data) {
           </div>
         </div>
       `).join('')}
-      ${feed.length === 0 ? '<p class="text-muted">No activity yet.</p>' : ''}
+      ${feed.length === 0 ? '<div class="empty-panel">No activity yet.</div>' : ''}
     </div>
   `;
   lucide.createIcons();
@@ -366,7 +483,8 @@ async function renderSettings() {
     const res = await fetch('/api/config');
     configData = await res.json();
   } catch(e) {
-    container.innerHTML = 'Failed to load backend settings.';
+    container.innerHTML = '<div class="empty-panel">Failed to load backend settings.</div>';
+    showToast('Failed to load backend settings.', 'error');
     return;
   }
   
@@ -427,6 +545,7 @@ async function renderSettings() {
   
   saveBtn.addEventListener('click', async () => {
     saveBtn.innerText = 'Saving...';
+    saveBtn.disabled = true;
     try {
       await fetch('/api/config', {
         method: 'POST',
@@ -440,28 +559,41 @@ async function renderSettings() {
       });
       // Optionally reload config to get the definitive state
       await renderSettings();
+      showToast('Settings saved.', 'success');
     } catch(e) {
-      alert('Failed to save configuration');
+      showToast('Failed to save configuration.', 'error');
     }
     saveBtn.innerText = 'Save Changes';
+    saveBtn.disabled = false;
   });
 }
 
 // --- Workspace ---
 async function fetchWorkspace() {
   try {
+    nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
+    nodes.editorFilename.innerText = 'Workspace';
+    nodes.editorContent.innerText = 'Choose a file or directory to inspect.';
     const res = await fetch('/api/files?path=.');
     const tree = await res.json();
     state.fileTree = tree;
     renderFileTree(tree);
   } catch (err) {
     console.error('File tree error', err);
+    nodes.fileTree.innerHTML = '<div class="empty-panel">Failed to load workspace.</div>';
+    nodes.editorFilename.innerText = 'Workspace';
+    nodes.editorContent.innerText = 'Failed to load workspace.';
+    showToast('Failed to load workspace.', 'error');
   }
 }
 
 function renderFileTree(tree, container = nodes.fileTree, level = 0) {
   if (level === 0) container.innerHTML = '';
   if (!Array.isArray(tree)) return;
+  if (level === 0 && tree.length === 0) {
+    container.innerHTML = '<div class="empty-panel">This workspace is empty.</div>';
+    return;
+  }
 
   tree.forEach(node => {
     const itemWrapper = document.createElement('div');
@@ -488,6 +620,7 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
         const isHidden = childrenContainer.style.display === 'none';
         if (isHidden && !node.childrenLoaded) {
           btn.disabled = true;
+          btn.classList.add('is-loading');
           try {
             const res = await fetch(`/api/files?path=${encodeURIComponent(node.path)}`);
             node.children = await res.json();
@@ -496,10 +629,13 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
           } catch (err) {
             nodes.editorFilename.innerText = node.path;
             nodes.editorContent.innerText = 'Error loading directory.';
+            showToast(`Failed to load directory: ${node.path}`, 'error');
             btn.disabled = false;
+            btn.classList.remove('is-loading');
             return;
           }
           btn.disabled = false;
+          btn.classList.remove('is-loading');
         }
         childrenContainer.style.display = isHidden ? 'block' : 'none';
         const newIcon = isHidden ? 'folder-open' : 'folder';
@@ -529,6 +665,7 @@ async function loadFile(path) {
     nodes.editorContent.innerText = data.content;
   } catch (err) {
     nodes.editorContent.innerText = 'Error loading file.';
+    showToast(`Failed to load file: ${path}`, 'error');
   }
 }
 

@@ -195,17 +195,17 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "clear-chat-btn") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "toast-rack") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 
 	jsBody := checkBody(server.URL + "/app.js")
-	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "fetchSkills") {
+	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showPendingAssistant") || !strings.Contains(jsBody, "showToast") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
 	}
 
 	cssBody := checkBody(server.URL + "/styles.css")
-	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-container") {
+	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".pending-chip") || !strings.Contains(cssBody, ".toast-rack") {
 		t.Fatalf("unexpected styles.css body: %s", cssBody)
 	}
 }

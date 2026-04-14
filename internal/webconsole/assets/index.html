@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -55,11 +55,11 @@
         <div class="status-indicator">
           <div class="dot online" id="connection-dot"></div>
           <span id="connection-status">Agent Session</span>
-          <span style="font-size: 11px; opacity: 0.5; margin-left: 8px;" id="session-id-display">ID: 0x8F9A2B</span>
+          <span class="session-chip" id="session-id-display">ID: 0x8F9A2B</span>
         </div>
         <div class="header-actions">
-          <button class="nav-item" style="padding: 6px 12px; margin: 0;" id="clear-chat-btn">
-            <i data-lucide="trash-2"></i>
+          <button class="icon-action-btn" id="new-session-btn" aria-label="New session" title="New session" data-tooltip="New session">
+            <i data-lucide="plus"></i>
           </button>
         </div>
       </header>
@@ -73,10 +73,10 @@
         </div>
         
         <div class="input-area">
-          <div class="input-container">
+          <div class="input-container" id="input-container">
             <textarea id="chat-input" placeholder="Ask anything..." rows="1"></textarea>
             <div class="input-actions">
-              <span style="font-size: 10px; color: var(--text-muted); margin-right: auto; padding-left: 12px;">
+              <span class="input-status-text" id="input-status-text">
                 Enter to send, Shift+Enter for new line
               </span>
               <button class="send-btn" id="send-btn">
@@ -130,6 +130,7 @@
 
     </main>
   </div>
+  <div class="toast-rack" id="toast-rack" aria-live="polite" aria-atomic="true"></div>
   <script src="app.js"></script>
 </body>
 </html>
