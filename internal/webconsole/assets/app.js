@@ -569,7 +569,7 @@ function startPolling() {
   stopPolling();
   state.pollHandle = window.setInterval(() => {
     if (state.currentView === 'history') {
-      fetchHistory(state.historyPage);
+      fetchHistory(state.historyPage, { showLoading: false, silentError: true });
       return;
     }
     if (state.currentView === 'chat') {
@@ -1875,14 +1875,18 @@ function showToast(message, tone = 'info') {
   }, 3200);
 }
 
-async function fetchHistory(page = state.historyPage) {
+async function fetchHistory(page = state.historyPage, options = {}) {
   if (state.refreshingHistory) {
     return;
   }
   const container = nodes.views.history;
+  const showLoading = options.showLoading ?? !state.historyData;
+  const silentError = options.silentError ?? false;
   state.refreshingHistory = true;
   state.historyPage = Math.max(1, Number(page) || 1);
-  container.innerHTML = '<div class="view-loading">Loading durable history…</div>';
+  if (showLoading) {
+    container.innerHTML = '<div class="view-loading">Loading durable history…</div>';
+  }
   try {
     const data = await requestJSON(`/api/history?page=${encodeURIComponent(state.historyPage)}&page_size=${encodeURIComponent(state.historyPageSize)}`);
     state.historyData = data;
@@ -1892,8 +1896,12 @@ async function fetchHistory(page = state.historyPage) {
     });
   } catch (err) {
     console.error('history error', err);
-    container.innerHTML = '<div class="empty-panel">Failed to load recent activity.</div>';
-    showToast('Failed to load recent activity.', 'error');
+    if (!state.historyData) {
+      container.innerHTML = '<div class="empty-panel">Failed to load recent activity.</div>';
+    }
+    if (!silentError) {
+      showToast('Failed to load recent activity.', 'error');
+    }
   } finally {
     state.refreshingHistory = false;
   }
