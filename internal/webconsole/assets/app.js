@@ -4,6 +4,7 @@
 
 const POLL_INTERVAL_MS = 1600;
 const MAX_LIVE_EVENTS = 80;
+const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
 
 const state = {
   currentView: 'chat',
@@ -65,6 +66,7 @@ const nodes = {
 };
 
 function init() {
+  restoreUIState();
   if (window.marked?.setOptions) {
     window.marked.setOptions({
       breaks: true,
@@ -77,6 +79,7 @@ function init() {
   resetChatSession({ notifyBackend: false });
   startPolling();
   refreshOverview();
+  switchView(state.currentView, { skipPersist: true });
   renderCurrentSession();
 }
 
@@ -342,7 +345,7 @@ function setupEventListeners() {
   });
 }
 
-function switchView(viewName) {
+function applyViewVisibility(viewName) {
   if (!nodes.views[viewName]) {
     return;
   }
@@ -356,6 +359,16 @@ function switchView(viewName) {
     activeNav.classList.add('active');
   }
   state.currentView = viewName;
+}
+
+function switchView(viewName, options = {}) {
+  if (!nodes.views[viewName]) {
+    return;
+  }
+  applyViewVisibility(viewName);
+  if (!options.skipPersist) {
+    persistUIState();
+  }
 
   if (viewName === 'chat') {
     renderCurrentSession();
@@ -1884,6 +1897,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
   const silentError = options.silentError ?? false;
   state.refreshingHistory = true;
   state.historyPage = Math.max(1, Number(page) || 1);
+  persistUIState();
   if (showLoading) {
     container.innerHTML = '<div class="view-loading">Loading durable history…</div>';
   }
@@ -1962,6 +1976,43 @@ function renderHistory(data) {
     </section>
   `;
   lucide.createIcons();
+}
+
+function loadPersistedUIState() {
+  try {
+    const raw = window.localStorage?.getItem(UI_STATE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistUIState() {
+  try {
+    window.localStorage?.setItem(UI_STATE_STORAGE_KEY, JSON.stringify({
+      currentView: state.currentView,
+      historyPage: state.historyPage
+    }));
+  } catch {
+    // Ignore storage failures and continue with in-memory state.
+  }
+}
+
+function restoreUIState() {
+  const persisted = loadPersistedUIState();
+  const nextView = typeof persisted.currentView === 'string' && nodes.views[persisted.currentView]
+    ? persisted.currentView
+    : 'chat';
+  const nextHistoryPage = Number(persisted.historyPage);
+  state.currentView = nextView;
+  if (Number.isFinite(nextHistoryPage) && nextHistoryPage >= 1) {
+    state.historyPage = Math.floor(nextHistoryPage);
+  }
+  applyViewVisibility(state.currentView);
 }
 
 function renderHistorySessionCard(item) {
