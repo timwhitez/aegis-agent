@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Go CLI Agent Console</title>
+  <title>Agent Console</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -71,7 +71,7 @@
             <div class="chat-stage-header">
               <div>
                 <h2 class="view-title compact-title">Live Session</h2>
-                <p class="view-subtitle" id="chat-stage-subtitle">Transcript, tool calls, and child-agent activity in one place.</p>
+                <p class="view-subtitle" id="chat-stage-subtitle">Transcript, tool activity, and child sessions.</p>
               </div>
               <div class="stage-actions">
                 <button class="ghost-action-btn" id="refresh-session-btn" type="button">
@@ -95,8 +95,8 @@
           <aside class="inspector-panel">
             <div class="inspector-header">
               <div>
-                <div class="inspector-eyebrow">Operator Surface</div>
-                <h3>Session Cockpit</h3>
+                <div class="inspector-eyebrow">Session Detail</div>
+                <h3>Session Overview</h3>
               </div>
               <span class="status-badge neutral" id="inspector-status-badge">Idle</span>
             </div>

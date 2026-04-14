@@ -21,7 +21,7 @@ const state = {
   liveEvents: [],
   liveActivity: {
     title: 'Ready for a new session',
-    copy: 'Send a prompt to start a durable session and watch tool activity appear here.',
+    copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
     tone: 'neutral'
   },
   activeInspectorTab: 'summary',
@@ -667,8 +667,8 @@ function renderStageSubtitle() {
   const counters = summarizeCurrentSession();
   if (!hasDurableSession()) {
     nodes.chatStageSubtitle.textContent = state.isGenerating
-      ? 'Bootstrapping a durable session. The first provider and tool events will populate this surface shortly.'
-      : 'Transcript, tool calls, and child-agent activity in one place.';
+      ? 'Bootstrapping the first durable session. Provider and tool events will appear here shortly.'
+      : 'Transcript, tool activity, and child sessions.';
     return;
   }
   if (!state.sessionDetail) {
@@ -722,7 +722,7 @@ function renderSessionRibbon() {
           <span class="tiny-code-chip">${escapeHTML(shortId(state.sessionId))}</span>
         </div>
         <div class="session-ribbon-title">New local session</div>
-        <div class="session-ribbon-meta">No durable state yet. Send a prompt to start the loop and populate the operator surface.</div>
+        <div class="session-ribbon-meta">No durable state yet. Send a prompt to create the session and load activity.</div>
       </button>
     `);
   }
@@ -771,18 +771,18 @@ function renderEmptySessionState() {
   return `
     <section class="empty-session-state">
       <div>
-        <div class="status-badge live">Operator-ready</div>
-        <h1 class="empty-session-title">See the full loop, not just the final reply.</h1>
-        <p class="empty-session-copy">This console now exposes durable session state, tool calls, tool results, timeline events, children, queue jobs, and task boards. Start a run and the right-hand cockpit will fill in automatically.</p>
+        <div class="status-badge neutral">Session ready</div>
+        <h1 class="empty-session-title">Start a session to load transcript, tools, and agents.</h1>
+        <p class="empty-session-copy">The transcript stays primary while durable tool activity, child sessions, queue jobs, and tasks remain visible.</p>
       </div>
       <div class="empty-session-grid">
         <div class="empty-session-card">
-          <strong>Tool lane</strong>
-          <span>Every tool call and tool result is rendered as an inspectable card with arguments, metadata, and output previews.</span>
+          <strong>Tool activity</strong>
+          <span>Each call and result stays inspectable with arguments, metadata, and output previews.</span>
         </div>
         <div class="empty-session-card">
-          <strong>Multi-agent surface</strong>
-          <span>Child sessions, background queue jobs, worker state, and background notifications are grouped into a dedicated agent lane.</span>
+          <strong>Agent activity</strong>
+          <span>Child sessions, queue jobs, and background notifications stay visible in the side panel.</span>
         </div>
         <div class="empty-session-card">
           <strong>${escapeHTML(String(recentSessions))} recent sessions</strong>
@@ -919,7 +919,7 @@ function renderSpecialToolResult(result, parsed) {
         </div>
         <div class="card-actions">
           ${parsed.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(parsed.session_id)}">Open child session</button>` : ''}
-          <button class="mini-link-btn" type="button" data-focus-inspector-tab="agents">Open agent lane</button>
+          <button class="mini-link-btn" type="button" data-focus-inspector-tab="agents">Open agents</button>
         </div>
         ${renderVisiblePaths(parsed.visible_paths)}
       </div>
@@ -965,7 +965,7 @@ function renderSpecialToolResult(result, parsed) {
           </div>
         ` : ''}
         <div class="card-actions">
-          <button class="mini-link-btn" type="button" data-focus-inspector-tab="agents">Open agent lane</button>
+          <button class="mini-link-btn" type="button" data-focus-inspector-tab="agents">Open agents</button>
         </div>
       </div>
     `;
@@ -1031,7 +1031,7 @@ function renderInspector() {
       <div class="empty-panel">
         ${hasDurableSession()
           ? 'Loading durable session detail, timeline events, tools, and child-agent state…'
-          : 'No durable session selected yet. Start a prompt or pick one from the ribbon above.'}
+          : 'No durable session selected yet. Start a prompt or pick one from recent sessions.'}
       </div>
     `;
     return;
@@ -1092,7 +1092,7 @@ function renderSummaryPanel(detail) {
 
     <section class="panel-section">
       <div class="section-title-row">
-        <h4>Latest tool lane</h4>
+        <h4>Recent tool activity</h4>
         <button class="inline-action-btn" type="button" data-focus-inspector-tab="timeline">Open timeline</button>
       </div>
       ${recentTools.length ? `
@@ -1104,8 +1104,8 @@ function renderSummaryPanel(detail) {
 
     <section class="panel-section">
       <div class="section-title-row">
-        <h4>Control queue</h4>
-        <button class="inline-action-btn" type="button" data-focus-inspector-tab="agents">Open agent lane</button>
+        <h4>Queued input and notifications</h4>
+        <button class="inline-action-btn" type="button" data-focus-inspector-tab="agents">Open agents</button>
       </div>
       <div class="card-stack">
         ${renderSteerQueue(detail.steer_requests)}
