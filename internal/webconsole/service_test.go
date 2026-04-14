@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -644,6 +645,209 @@ func TestServiceEmptySlicesEncodeAsArrays(t *testing.T) {
 		if !ok || len(items) != 0 {
 			t.Fatalf("expected %s to encode as empty array, got %#v", key, detail[key])
 		}
+	}
+}
+
+func TestServiceHistoryPagination(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	for i := 0; i < 3; i++ {
+		meta := session.SessionMetadata{
+			SchemaVersion:    1,
+			ID:               "history_page_" + strconv.Itoa(i),
+			CreatedAt:        time.Now().UTC().Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano),
+			Workdir:          t.TempDir(),
+			RequestedWorkdir: t.TempDir(),
+			Mode:             session.ModeExec,
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			CompletionPolicy: session.CompletionPolicyAutonomous,
+			RootSessionID:    "history_page_" + strconv.Itoa(i),
+		}
+		state := session.State{
+			Status:    session.StatusCompleted,
+			Phase:     "turn_decide",
+			UpdatedAt: time.Now().UTC().Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano),
+		}
+		if err := svc.store.Create(meta, state); err != nil {
+			t.Fatalf("create session %d: %v", i, err)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/history?page=2&page_size=2", nil)
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if payload["total"].(float64) != 3 {
+		t.Fatalf("expected total 3, got %#v", payload["total"])
+	}
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected one item on page 2, got %#v", payload["items"])
+	}
+	if payload["page"].(float64) != 2 {
+		t.Fatalf("expected page 2, got %#v", payload["page"])
+	}
+}
+
+func TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	parentMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_session",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "parent_session",
+	}
+	parentState := session.State{
+		Status:    session.StatusCompleted,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(parentMeta, parentState); err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+
+	childMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_session",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		QueueJobID:       "job_history_delete",
+	}
+	childState := session.State{
+		Status:    session.StatusCompleted,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(childMeta, childState); err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_history_delete",
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       childMeta.ID,
+		AgentName:       "history-reviewer",
+		AgentRole:       "evaluator",
+		Prompt:          "done",
+		Mode:            "exec",
+	}); err != nil {
+		t.Fatalf("save queue job: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, "/api/sessions/"+parentMeta.ID, nil)
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := svc.store.LoadMetadata(parentMeta.ID); !os.IsNotExist(err) {
+		t.Fatalf("expected parent session to be deleted, got err=%v", err)
+	}
+	if _, err := svc.store.LoadMetadata(childMeta.ID); !os.IsNotExist(err) {
+		t.Fatalf("expected child session to be deleted, got err=%v", err)
+	}
+	if _, err := svc.store.LoadJob("job_history_delete"); !os.IsNotExist(err) {
+		t.Fatalf("expected queue job to be deleted, got err=%v", err)
+	}
+}
+
+func TestServiceClearSessionsRouteRemovesHistory(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "clear_history_session",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		RootSessionID:    "clear_history_session",
+	}
+	state := session.State{
+		Status:    session.StatusCompleted,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_history_clear",
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: meta.ID,
+		RootSessionID:   meta.ID,
+		AgentName:       "history-reviewer",
+		AgentRole:       "evaluator",
+		Prompt:          "done",
+		Mode:            "exec",
+	}); err != nil {
+		t.Fatalf("save queue job: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected clear status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	items, err := svc.store.List(10)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no sessions after clear, got %#v", items)
+	}
+	jobs, err := svc.store.ListJobs(10)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("expected no jobs after clear, got %#v", jobs)
 	}
 }
 

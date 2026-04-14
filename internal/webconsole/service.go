@@ -95,6 +95,14 @@ type OverviewResponse struct {
 	Feed            []TimelineEntry          `json:"feed"`
 }
 
+type HistoryResponse struct {
+	Items      []session.SessionSummary `json:"items"`
+	Total      int                      `json:"total"`
+	Page       int                      `json:"page"`
+	PageSize   int                      `json:"page_size"`
+	TotalPages int                      `json:"total_pages"`
+}
+
 type FailureSummary struct {
 	Kind      string `json:"kind"`
 	ID        string `json:"id"`
@@ -199,8 +207,12 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/history":
+		s.handleHistory(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/sessions":
 		s.handleListSessions(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/sessions/clear":
+		s.handleClearSessions(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/sessions/start":
 		s.handleStartSession(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/sessions/"):
@@ -374,6 +386,34 @@ func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
+	pageSize := queryInt(r, "page_size", 10)
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	page := queryInt(r, "page", 1)
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+	items, total, err := s.store.ListPage(pageSize, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	writeJSON(w, http.StatusOK, HistoryResponse{
+		Items:      items,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	})
+}
+
 func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
@@ -383,20 +423,23 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID := parts[0]
 	if len(parts) == 1 {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
-			return
-		}
-		resp, err := s.sessionDetail(sessionID, queryInt(r, "limit", 40))
-		if err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, fs.ErrNotExist) {
-				status = http.StatusNotFound
+		switch r.Method {
+		case http.MethodGet:
+			resp, err := s.sessionDetail(sessionID, queryInt(r, "limit", 40))
+			if err != nil {
+				status := http.StatusInternalServerError
+				if errors.Is(err, fs.ErrNotExist) {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, err)
+				return
 			}
-			writeError(w, status, err)
-			return
+			writeJSON(w, http.StatusOK, resp)
+		case http.MethodDelete:
+			s.handleDeleteSession(w, sessionID)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		}
-		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	if len(parts) != 2 {
@@ -437,6 +480,49 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, errors.New("session route not found"))
 	}
+}
+
+func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
+	if s.hasActiveDescendantHandle(sessionID) {
+		writeError(w, http.StatusConflict, errors.New("cannot delete an active session tree"))
+		return
+	}
+	if err := s.ensureSessionTreeNotRunning(sessionID); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	if err := s.store.DeleteSessionTree(sessionID); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, fs.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "deleted": true})
+}
+
+func (s *Service) handleClearSessions(w http.ResponseWriter) {
+	if s.hasAnyActiveHandle() {
+		writeError(w, http.StatusConflict, errors.New("cannot clear history while sessions are active in this web console"))
+		return
+	}
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, item := range items {
+		if item.Status == session.StatusRunning {
+			writeError(w, http.StatusConflict, errors.New("cannot clear history while a session is still running"))
+			return
+		}
+	}
+	if err := s.store.ClearHistory(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
 }
 
 func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailResponse, error) {
@@ -1436,6 +1522,57 @@ func (s *Service) hasActiveHandle(sessionID string) bool {
 	defer s.mu.RUnlock()
 	_, ok := s.handles[sessionID]
 	return ok
+}
+
+func (s *Service) hasAnyActiveHandle() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.handles) > 0
+}
+
+func (s *Service) hasActiveDescendantHandle(sessionID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.handles[sessionID]; ok {
+		return true
+	}
+	for id := range s.handles {
+		meta, err := s.store.LoadMetadata(id)
+		if err != nil {
+			continue
+		}
+		if meta.ParentSessionID == sessionID || meta.RootSessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) ensureSessionTreeNotRunning(sessionID string) error {
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return err
+	}
+	targets := map[string]struct{}{sessionID: {}}
+	changed := true
+	for changed {
+		changed = false
+		for _, item := range items {
+			if _, ok := targets[item.ID]; ok {
+				continue
+			}
+			if _, ok := targets[item.ParentSessionID]; ok {
+				targets[item.ID] = struct{}{}
+				changed = true
+			}
+		}
+	}
+	for _, item := range items {
+		if _, ok := targets[item.ID]; ok && item.Status == session.StatusRunning {
+			return errors.New("cannot delete a running session tree")
+		}
+	}
+	return nil
 }
 
 func (s *Service) handleForSession(sessionID string) (*launchHandle, bool) {

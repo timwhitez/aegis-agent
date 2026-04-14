@@ -346,7 +346,7 @@ async function main() {
 
     await click('[data-view="history"]', 'history nav');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.getElementById('history-view')) && document.getElementById('history-view').textContent.includes('Activity History')`),
+      () => browserClient.evaluate(`Boolean(document.getElementById('history-view')) && document.getElementById('history-view').textContent.includes('Clear history') && document.getElementById('history-view').textContent.includes('Sessions')`),
       15000,
       'history view'
     );
@@ -435,8 +435,20 @@ async function main() {
 
       await click('[data-view="history"]', 'history nav for fallback');
       await waitFor(
-        () => browserClient.evaluate(`Boolean(document.querySelector('[data-open-session="${activeSessionId}"]'))`),
-        15000,
+        async () => {
+          const found = await browserClient.evaluate(`Boolean(document.querySelector('[data-open-session="${activeSessionId}"]'))`);
+          if (found) {
+            return true;
+          }
+          await browserClient.evaluate(`(() => {
+            const next = document.querySelector('[data-history-page="next"]');
+            if (!next || next.disabled) return false;
+            next.click();
+            return true;
+          })()`);
+          return false;
+        },
+        30000,
         'fallback session card'
       );
       await click(`[data-open-session="${activeSessionId}"]`, 'fallback session open');
@@ -515,7 +527,7 @@ async function main() {
 
     await click('[data-view="history"]', 'history nav after session');
     await waitFor(
-      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Recent Sessions') && document.getElementById('history-view')?.textContent?.includes('Overview Feed')`),
+      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear history') && document.getElementById('history-view')?.textContent?.includes('Page')`),
       15000,
       'history view visible after activity'
     );

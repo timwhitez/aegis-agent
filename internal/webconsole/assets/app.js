@@ -14,6 +14,10 @@ const state = {
   sessionBacked: false,
   sessionDetail: null,
   overview: null,
+  historyData: null,
+  historyPage: 1,
+  historyPageSize: 8,
+  refreshingHistory: false,
   toastCounter: 0,
   skills: [],
   fileTree: [],
@@ -263,6 +267,35 @@ function setupEventListeners() {
   });
 
   document.addEventListener('click', async (event) => {
+    const historyPageButton = event.target.closest('[data-history-page]');
+    if (historyPageButton) {
+      const direction = historyPageButton.getAttribute('data-history-page');
+      if (direction === 'prev') {
+        await fetchHistory(Math.max(1, state.historyPage - 1));
+      } else if (direction === 'next') {
+        const nextPage = state.historyData?.total_pages
+          ? Math.min(state.historyData.total_pages, state.historyPage + 1)
+          : state.historyPage + 1;
+        await fetchHistory(nextPage);
+      }
+      return;
+    }
+
+    const clearHistoryButton = event.target.closest('[data-history-clear]');
+    if (clearHistoryButton) {
+      await clearHistory();
+      return;
+    }
+
+    const deleteHistoryButton = event.target.closest('[data-delete-session]');
+    if (deleteHistoryButton) {
+      const sessionID = deleteHistoryButton.getAttribute('data-delete-session');
+      if (sessionID) {
+        await deleteHistorySession(sessionID);
+      }
+      return;
+    }
+
     const openSessionButton = event.target.closest('[data-open-session]');
     if (openSessionButton) {
       const sessionID = openSessionButton.getAttribute('data-open-session');
@@ -535,7 +568,11 @@ function updateUI() {
 function startPolling() {
   stopPolling();
   state.pollHandle = window.setInterval(() => {
-    if (state.currentView === 'chat' || state.currentView === 'history') {
+    if (state.currentView === 'history') {
+      fetchHistory(state.historyPage);
+      return;
+    }
+    if (state.currentView === 'chat') {
       refreshOverview();
     }
     if (state.currentView === 'chat' && hasDurableSession()) {
@@ -575,9 +612,6 @@ async function refreshOverview() {
   state.refreshingOverview = true;
   try {
     state.overview = await requestJSON('/api/overview');
-    if (state.currentView === 'history') {
-      renderHistory(state.overview);
-    }
     renderCurrentSession();
   } catch (err) {
     console.error('overview error', err);
@@ -1841,95 +1875,81 @@ function showToast(message, tone = 'info') {
   }, 3200);
 }
 
-async function fetchHistory() {
+async function fetchHistory(page = state.historyPage) {
+  if (state.refreshingHistory) {
+    return;
+  }
   const container = nodes.views.history;
+  state.refreshingHistory = true;
+  state.historyPage = Math.max(1, Number(page) || 1);
   container.innerHTML = '<div class="view-loading">Loading durable history…</div>';
   try {
-    await refreshOverview();
-    renderHistory(state.overview);
+    const data = await requestJSON(`/api/history?page=${encodeURIComponent(state.historyPage)}&page_size=${encodeURIComponent(state.historyPageSize)}`);
+    state.historyData = data;
+    renderHistory(data);
+    refreshOverview().catch((err) => {
+      console.error('overview refresh error', err);
+    });
   } catch (err) {
     console.error('history error', err);
     container.innerHTML = '<div class="empty-panel">Failed to load recent activity.</div>';
     showToast('Failed to load recent activity.', 'error');
+  } finally {
+    state.refreshingHistory = false;
   }
 }
 
 function renderHistory(data) {
   const container = nodes.views.history;
-  const overview = data || state.overview;
-  if (!overview) {
+  const history = data || state.historyData;
+  if (!history) {
     container.innerHTML = '<div class="empty-panel">No history data available yet.</div>';
     return;
   }
-  const recentSessions = maybeArray(overview.recent_sessions);
-  const recentJobs = maybeArray(overview.recent_jobs);
-  const recentFailures = maybeArray(overview.recent_failures);
-  const feed = maybeArray(overview.feed);
+  const items = maybeArray(history.items);
+  const total = Number(history.total || 0);
+  const page = Number(history.page || 1);
+  const pageSize = Number(history.page_size || state.historyPageSize || 8);
+  const totalPages = Number(history.total_pages || 0);
+  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = total === 0 ? 0 : rangeStart + items.length - 1;
   container.innerHTML = `
-    <div class="view-header">
-      <h2 class="view-title">Activity History</h2>
-      <p class="view-subtitle">Recent sessions, queue jobs, workers, and durable feed entries.</p>
+    <div class="view-header history-header">
+      <div>
+        <h2 class="view-title">History</h2>
+        <p class="view-subtitle">Durable sessions only. Open one to inspect or continue it.</p>
+      </div>
+      <div class="history-toolbar">
+        <span class="surface-chip">${escapeHTML(String(total))} total</span>
+        <button class="ghost-action-btn danger" type="button" data-history-clear ${total === 0 ? 'disabled' : ''}>
+          <i data-lucide="trash-2"></i>
+          <span>Clear history</span>
+        </button>
+      </div>
     </div>
 
-    <div class="overview-grid">
-      ${renderMetricCard('Running sessions', String(overview.session_counters?.running || 0), `${overview.session_counters?.awaiting_input || 0} awaiting input`)}
-      ${renderMetricCard('Completed sessions', String(overview.session_counters?.completed || 0), `${overview.session_counters?.failed || 0} failed`)}
-      ${renderMetricCard('Queued jobs', String(overview.queue_counters?.queued || 0), `${overview.queue_counters?.running || 0} running`)}
-      ${renderMetricCard('Workers', String(overview.workers?.active_count || 0), `${overview.workers?.desired_count || 0} desired`)}
-    </div>
-
-    <div class="history-columns">
-      <section class="panel-card">
-        <div class="panel-card-header">
-          <div>
-            <h3 class="view-title compact-title">Recent Sessions</h3>
-            <p class="view-subtitle">Open any durable session to inspect tool calls and child-agent state.</p>
-          </div>
-        </div>
-        <div class="panel-card-body">
-          ${recentSessions.length ? `<div class="session-card-list">${recentSessions.map((item) => renderHistorySessionCard(item)).join('')}</div>` : '<div class="empty-panel">No sessions yet.</div>'}
-        </div>
-      </section>
-
-      <section class="panel-card">
-        <div class="panel-card-header">
-          <div>
-            <h3 class="view-title compact-title">Queue & Failures</h3>
-            <p class="view-subtitle">Background jobs, worker progress, and failed surfaces.</p>
-          </div>
-        </div>
-        <div class="panel-card-body">
-          ${recentJobs.length ? `<div class="job-card-list">${recentJobs.map((job) => renderQueueJobCard(job)).join('')}</div>` : '<div class="empty-panel">No queue jobs yet.</div>'}
-          ${recentFailures.length ? `
-            <div class="panel-section">
-              <div class="section-title-row"><h4>Recent failures</h4></div>
-              <div class="card-stack">
-                ${recentFailures.map((item) => `
-                  <div class="notification-card">
-                    <div class="job-card-top">
-                      <div class="job-card-title">${escapeHTML(item.kind)} · ${escapeHTML(shortId(item.id))}</div>
-                      <span class="status-badge danger">${escapeHTML(humanizeStatus(item.status))}</span>
-                    </div>
-                    <div class="notification-copy">${escapeHTML(item.message || 'Failure details unavailable.')}</div>
-                    <div class="job-card-meta">${escapeHTML(formatTimestamp(item.updated_at))}</div>
-                  </div>
-                `).join('')}
-              </div>
-            </div>
-          ` : ''}
-        </div>
-      </section>
-    </div>
-
-    <section class="panel-card">
-      <div class="panel-card-header">
+    <section class="panel-card history-panel">
+      <div class="panel-card-header history-panel-header">
         <div>
-          <h3 class="view-title compact-title">Overview Feed</h3>
-          <p class="view-subtitle">High-level durable feed from recent sessions and queue activity.</p>
+          <h3 class="view-title compact-title">Sessions</h3>
+          <p class="view-subtitle">${total ? `${rangeStart}-${rangeEnd} of ${total}` : 'No saved sessions yet.'}</p>
+        </div>
+        <div class="history-pager">
+          <button class="ghost-action-btn" type="button" data-history-page="prev" ${page <= 1 ? 'disabled' : ''}>
+            <i data-lucide="chevron-left"></i>
+            <span>Prev</span>
+          </button>
+          <div>
+            <span class="history-page-label">Page ${escapeHTML(String(page))}${totalPages ? ` / ${escapeHTML(String(totalPages))}` : ''}</span>
+          </div>
+          <button class="ghost-action-btn" type="button" data-history-page="next" ${totalPages !== 0 && page >= totalPages ? 'disabled' : ''}>
+            <span>Next</span>
+            <i data-lucide="chevron-right"></i>
+          </button>
         </div>
       </div>
       <div class="panel-card-body">
-        ${feed.length ? `<div class="feed-stack">${feed.map((item) => renderOverviewFeedItem(item)).join('')}</div>` : '<div class="empty-panel">No feed entries yet.</div>'}
+        ${items.length ? `<div class="history-session-list">${items.map((item) => renderHistorySessionCard(item)).join('')}</div>` : '<div class="empty-panel">No history yet.</div>'}
       </div>
     </section>
   `;
@@ -1938,18 +1958,64 @@ function renderHistory(data) {
 
 function renderHistorySessionCard(item) {
   return `
-    <div class="session-card">
-      <div class="session-ribbon-top">
-        <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
-        <span class="tiny-code-chip">${escapeHTML(shortId(item.id))}</span>
+    <div class="history-session-row">
+      <div class="history-session-main">
+        <div class="history-session-top">
+          <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
+          <span class="tiny-code-chip">${escapeHTML(shortId(item.id))}</span>
+          <span class="history-session-time">${escapeHTML(formatTimestamp(item.updated_at || item.created_at))}</span>
+        </div>
+        <div class="history-session-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
+        <div class="history-session-meta">${escapeHTML(item.model || item.provider || 'n/a')} · ${escapeHTML(phaseHeadline(item.phase || 'prepare'))}</div>
       </div>
-      <div class="session-ribbon-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
-      <div class="session-ribbon-meta">${escapeHTML(item.model || item.provider || 'n/a')} · ${escapeHTML(phaseHeadline(item.phase || 'prepare'))}</div>
-      <div class="card-actions">
+      <div class="history-row-actions">
         <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">Open session</button>
+        <button class="mini-link-btn danger" type="button" data-delete-session="${escapeAttr(item.id)}">Delete</button>
       </div>
     </div>
   `;
+}
+
+async function deleteHistorySession(sessionID) {
+  if (!window.confirm(`Delete history for session ${sessionID}?`)) {
+    return;
+  }
+  try {
+    await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}`, {
+      method: 'DELETE'
+    });
+    const activeMeta = state.sessionDetail?.metadata || {};
+    if (state.sessionId === sessionID || activeMeta.parent_session_id === sessionID || activeMeta.root_session_id === sessionID) {
+      resetChatSession({ notifyBackend: false });
+    }
+    showToast('History entry deleted.', 'success');
+    await fetchHistory(state.historyPage);
+    if ((state.historyData?.items || []).length === 0 && state.historyPage > 1) {
+      await fetchHistory(state.historyPage - 1);
+    }
+    refreshOverview().catch(() => {});
+  } catch (err) {
+    showToast(err.message || 'Failed to delete history entry.', 'error');
+  }
+}
+
+async function clearHistory() {
+  if (!window.confirm('Clear all session history? This will remove saved sessions and queue history.')) {
+    return;
+  }
+  try {
+    await requestJSON('/api/sessions/clear', {
+      method: 'POST'
+    });
+    resetChatSession({ notifyBackend: false });
+    state.historyData = null;
+    state.historyPage = 1;
+    showToast('History cleared.', 'success');
+    await fetchHistory(1);
+    refreshOverview().catch(() => {});
+  } catch (err) {
+    showToast(err.message || 'Failed to clear history.', 'error');
+  }
 }
 
 function renderOverviewFeedItem(item) {

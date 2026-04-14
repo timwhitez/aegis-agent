@@ -250,9 +250,42 @@ func (s *Store) PendingSteerRequests(sessionID string) ([]SteerRequest, error) {
 }
 
 func (s *Store) List(limit int) ([]SessionSummary, error) {
+	result, err := s.listAllSessions()
+	if err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 20
 	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+func (s *Store) ListPage(limit, offset int) ([]SessionSummary, int, error) {
+	result, err := s.listAllSessions()
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(result)
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return []SessionSummary{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return result[offset:end], total, nil
+}
+
+func (s *Store) listAllSessions() ([]SessionSummary, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -293,9 +326,6 @@ func (s *Store) List(limit int) ([]SessionSummary, error) {
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].UpdatedAt > result[j].UpdatedAt
 	})
-	if len(result) > limit {
-		result = result[:limit]
-	}
 	return result, nil
 }
 
@@ -485,6 +515,28 @@ func (s *Store) ListJobs(limit int) ([]QueueJob, error) {
 	return s.listJobs(limit, "")
 }
 
+func (s *Store) ListJobsPage(limit, offset int) ([]QueueJob, int, error) {
+	items, err := s.listJobs(0, "")
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(items)
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return []QueueJob{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return items[offset:end], total, nil
+}
+
 func (s *Store) ListJobsByParent(parentSessionID string, limit int) ([]QueueJob, error) {
 	return s.listJobs(limit, parentSessionID)
 }
@@ -530,6 +582,95 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *Store) DeleteSessionTree(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.LoadMetadata(sessionID); err != nil {
+		return err
+	}
+
+	summaries, err := s.listAllSessions()
+	if err != nil {
+		return err
+	}
+	targets := map[string]struct{}{sessionID: {}}
+	changed := true
+	for changed {
+		changed = false
+		for _, item := range summaries {
+			if _, ok := targets[item.ID]; ok {
+				continue
+			}
+			if _, ok := targets[item.ParentSessionID]; ok {
+				targets[item.ID] = struct{}{}
+				changed = true
+			}
+		}
+	}
+	for id := range targets {
+		if err := os.RemoveAll(s.SessionDir(id)); err != nil {
+			return err
+		}
+	}
+	jobs, err := s.listJobs(0, "")
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if _, ok := targets[job.ParentSessionID]; ok {
+			if err := s.deleteJobLocked(job.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, ok := targets[job.SessionID]; ok {
+			if err := s.deleteJobLocked(job.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, ok := targets[job.RootSessionID]; ok {
+			if err := s.deleteJobLocked(job.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) ClearHistory() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureRoot(); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(s.root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return s.EnsureRoot()
+}
+
+func (s *Store) deleteJobLocked(jobID string) error {
+	for _, status := range queueStatuses() {
+		path := s.queueJobPath(status, jobID)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
