@@ -33,6 +33,7 @@ Queue 主视图也已经从单列表推进成 list-detail 工作区：左侧过�
 ```sh
 ./build.sh
 ./test.sh
+./run.sh
 
 ./bin/go-cli-agent init --force
 ./bin/go-cli-agent doctor --skip-probe
@@ -47,7 +48,29 @@ export ANTHROPIC_API_KEY=...
 export GEMINI_API_KEY=...
 ```
 
-如果想用本地 Web 控制台查看 session、queue、children 和 worker 状态：
+如果想一键启动本地 Web 控制台前后端服务：
+
+```sh
+./run.sh
+```
+
+它默认会：
+
+- 自动执行 `./build.sh`
+- 启动同一个 `experimental web` Go 进程，同时提供内嵌前端静态资源和后端 API
+- 默认监听 `0.0.0.0:3940`，方便从 WSL 里的服务直接被 Windows 浏览器访问
+- 把 PID 和日志写到 `.go-cli-agent/runtime/`
+
+常用子命令：
+
+```sh
+./run.sh status
+./run.sh logs
+./run.sh stop
+./run.sh foreground
+```
+
+如果只想手动启动底层 web 进程，也可以直接运行：
 
 ```sh
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
@@ -188,7 +211,8 @@ providers:
 
 ## 脚本
 
-- `build.sh`: 构建 `bin/go-cli-agent`
+- `build.sh`: 构建 `bin/go-cli-agent`；支持通过 `GO_CLI_AGENT_BUILD_OUT`、`GO_CLI_AGENT_GOOS`、`GO_CLI_AGENT_GOARCH` 覆盖输出路径和目标平台
+- `run.sh`: 一键启动或停止本地 Web 控制台前后端服务；默认启动内嵌 frontend+backend 的 `experimental web` 进程，并提供 `status|logs|stop|restart|foreground`
 - `test.sh`: 检查 `gofmt` 漂移并执行 `go test ./cmd/... ./internal/... ./pkg/...`，把默认仓库测试面限制在受控模块包上，不把 `validation/` 下的历史 run/workspace 副本扫进主路径验收
 - `live_smoke.sh`: 真实 provider 的在线探活脚本；如果目标是会拒绝 `metadata` 字段的非官方 `openai-compatible` 网关，可先设置 `GO_CLI_AGENT_LIVE_SEND_METADATA=false`
 - `validation/run_round31_complex_real_matrix.sh`: 当前最完整的 26 场景真实矩阵入口；现在会额外产出 RT21 gap-proof preflight evidence，直接覆盖 provider metadata durability、review artifact enforcement、report path hardening 三条 proof-completeness 缺口
