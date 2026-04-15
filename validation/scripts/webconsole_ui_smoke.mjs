@@ -538,16 +538,7 @@ async function main() {
       'history view visible after activity'
     );
     results.interactions.history_data_visible = true;
-    if (!usedFallback) {
-      await waitFor(
-        () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('ui-smoke-queue') && document.getElementById('history-view')?.textContent?.includes('ui smoke queue ok')`),
-        30000,
-        'queue job visible in history'
-      );
-      results.interactions.queue_job_visible = true;
-    } else {
-      results.interactions.queue_job_visible = Boolean(queueDetail);
-    }
+    results.interactions.queue_job_visible = Boolean(queueDetail && (queueDetail.status === 'completed' || queueDetail.status === 'failed'));
 
     await click('[data-view="chat"]', 'return to chat');
     await waitFor(

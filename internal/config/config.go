@@ -12,6 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const legacyIsolationRootDir = ".go-cli-agent/_worktrees"
+
 type Config struct {
 	SchemaVersion   int                 `yaml:"schema_version"`
 	DefaultProvider string              `yaml:"default_provider"`
@@ -225,7 +227,7 @@ func Default() *Config {
 			},
 			Isolation: IsolationConfig{
 				DefaultMode: "off",
-				RootDir:     ".go-cli-agent/_worktrees",
+				RootDir:     defaultIsolationRootDir(),
 			},
 			Queue: QueueConfig{
 				PollIntervalMS: 1000,
@@ -329,7 +331,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 		cfg.Runtime.ShellEnvAllowlist = []string{"PATH", "HOME", "LANG", "TERM"}
 	}
 	cfg.Session.Dir = resolveMaybeRelative(cwd, cfg.Session.Dir)
-	cfg.Runtime.Isolation.RootDir = resolveMaybeRelative(cwd, cfg.Runtime.Isolation.RootDir)
+	cfg.Runtime.Isolation.RootDir = normalizeIsolationRootDir(cwd, cfg.Runtime.Isolation.RootDir)
 	for i, dir := range cfg.Skills.Dirs {
 		cfg.Skills.Dirs[i] = resolveMaybeRelative(cwd, dir)
 	}
@@ -339,10 +341,45 @@ func resolveMaybeRelative(cwd, value string) string {
 	if value == "" {
 		return value
 	}
+	value = expandHomeDir(value)
 	if filepath.IsAbs(value) {
 		return value
 	}
 	return filepath.Join(cwd, value)
+}
+
+func normalizeIsolationRootDir(cwd, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || filepath.Clean(value) == filepath.Clean(legacyIsolationRootDir) {
+		return defaultIsolationRootDir()
+	}
+	return resolveMaybeRelative(cwd, value)
+}
+
+func expandHomeDir(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value[0] != '~' {
+		return value
+	}
+	if value != "~" && !strings.HasPrefix(value, "~/") {
+		return value
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return value
+	}
+	if value == "~" {
+		return home
+	}
+	return filepath.Join(home, value[2:])
+}
+
+func defaultIsolationRootDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".go-cli-agent", "_worktrees")
+	}
+	return filepath.Join(os.TempDir(), "go-cli-agent", "_worktrees")
 }
 
 func (c *Config) ProviderConfig(name string) (Provider, error) {

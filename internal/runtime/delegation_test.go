@@ -56,6 +56,93 @@ func TestRunnerDelegateCreatesChildSessionWithIsolation(t *testing.T) {
 	}
 }
 
+func TestRunnerDelegateTreatsNoneIsolationModeAsOff(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Isolation != nil {
+		t.Fatalf("expected no isolation metadata for none/off mode, got %#v", meta.Isolation)
+	}
+	if meta.Workdir != parentWorkdir {
+		t.Fatalf("expected child to reuse parent workdir when isolation_mode=none, got %q want %q", meta.Workdir, parentWorkdir)
+	}
+}
+
+func TestRunnerDelegateTreatsDefaultProviderAndModelAsInherited(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		Provider:        "default",
+		Model:           "default",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed child, got %#v", result)
+	}
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Provider != cfg.DefaultProvider {
+		t.Fatalf("expected provider %q, got %#v", cfg.DefaultProvider, meta.Provider)
+	}
+	if meta.Model != cfg.Providers[cfg.DefaultProvider].Model {
+		t.Fatalf("expected model %q, got %#v", cfg.Providers[cfg.DefaultProvider].Model, meta.Model)
+	}
+}
+
+func TestRunnerDelegateTreatsDefaultIsolationModeAsAuto(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		IsolationMode:   "default",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Isolation == nil || meta.Isolation.Mode != "copy" {
+		t.Fatalf("expected default isolation mode to fall back to auto/copy, got %#v", meta.Isolation)
+	}
+}
+
 func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

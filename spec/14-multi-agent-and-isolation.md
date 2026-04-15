@@ -67,8 +67,8 @@ child session 使用独立工作目录执行。当前支持：
   "mode": "git",
   "requested_mode": "auto",
   "parent_workdir": "/repo",
-  "workdir": "/root/.go-cli-agent/sessions/_worktrees/20260319-120000-ab12cd",
-  "root_dir": "/root/.go-cli-agent/sessions/_worktrees",
+  "workdir": "/root/.go-cli-agent/_worktrees/20260319-120000-ab12cd",
+  "root_dir": "/root/.go-cli-agent/_worktrees",
   "git_repo_root": "/repo"
 }
 ```
@@ -187,13 +187,18 @@ runtime 真正执行时使用的目录。
 
 ### 5.3 isolation root
 
-默认放在 session root 下：
+默认放在 user-scoped root 下，并且必须位于 source workdir 外部：
 
 ```text
-<session.dir>/_worktrees/<session-id>/
+~/.go-cli-agent/_worktrees/<session-id>/
 ```
 
 也允许通过 CLI / tool 显式覆盖。
+
+约束：
+
+- 若显式配置的 `isolation_root` 位于 source workdir 内部，应直接返回错误
+- legacy 的 workspace-local 形状（例如 `.go-cli-agent/_worktrees`）不再作为默认推荐值，因为 parent workdir 指向仓库根目录时会与“不得在源目录内部创建隔离目录”的约束冲突
 
 ## 6. git worktree 契约
 

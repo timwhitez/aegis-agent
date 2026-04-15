@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestNormalizeConfigSetsProviderRetryDefaults(t *testing.T) {
 	cfg := &Config{
@@ -73,5 +77,58 @@ func TestDefaultEnablesMultiAgentTools(t *testing.T) {
 	cfg := Default()
 	if !cfg.Runtime.MultiAgent.Enabled {
 		t.Fatal("expected multi-agent to be enabled by default")
+	}
+}
+
+func TestNormalizeConfigMigratesLegacyIsolationRootOutsideWorkspace(t *testing.T) {
+	cfg := &Config{
+		Runtime: RuntimeConfig{
+			Isolation: IsolationConfig{
+				DefaultMode: "auto",
+				RootDir:     ".go-cli-agent/_worktrees",
+			},
+		},
+		Session: SessionConfig{
+			Dir: ".go-cli-agent/sessions",
+		},
+		Skills: SkillsConfig{
+			Dirs: []string{"./skills"},
+		},
+	}
+
+	normalizeConfig(cfg, "/tmp/project")
+
+	if cfg.Runtime.Isolation.RootDir == "/tmp/project/.go-cli-agent/_worktrees" {
+		t.Fatalf("expected legacy isolation root to be migrated outside workspace, got %q", cfg.Runtime.Isolation.RootDir)
+	}
+	if cfg.Runtime.Isolation.RootDir != defaultIsolationRootDir() {
+		t.Fatalf("expected isolation root %q, got %q", defaultIsolationRootDir(), cfg.Runtime.Isolation.RootDir)
+	}
+}
+
+func TestNormalizeConfigExpandsHomeIsolationRoot(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("home directory unavailable")
+	}
+	cfg := &Config{
+		Runtime: RuntimeConfig{
+			Isolation: IsolationConfig{
+				RootDir: "~/.go-cli-agent/_worktrees",
+			},
+		},
+		Session: SessionConfig{
+			Dir: ".go-cli-agent/sessions",
+		},
+		Skills: SkillsConfig{
+			Dirs: []string{"./skills"},
+		},
+	}
+
+	normalizeConfig(cfg, "/tmp/project")
+
+	want := filepath.Join(home, ".go-cli-agent", "_worktrees")
+	if cfg.Runtime.Isolation.RootDir != want {
+		t.Fatalf("expected expanded home isolation root %q, got %q", want, cfg.Runtime.Isolation.RootDir)
 	}
 }

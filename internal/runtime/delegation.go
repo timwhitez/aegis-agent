@@ -50,8 +50,8 @@ func (r *Runner) Delegate(ctx context.Context, req DelegateRequest) (DelegateRes
 		Prompt:          req.Prompt,
 		AgentName:       req.AgentName,
 		AgentRole:       req.AgentRole,
-		Provider:        req.Provider,
-		Model:           req.Model,
+		Provider:        normalizeProviderOverride(req.Provider),
+		Model:           normalizeModelOverride(req.Model),
 		Workdir:         req.Workdir,
 		SystemOverride:  req.SystemOverride,
 		Background:      req.Background,
@@ -99,10 +99,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	if mode == "" {
 		mode = session.ModeExec
 	}
-	isolationMode := strings.TrimSpace(req.IsolationMode)
-	if isolationMode == "" {
-		isolationMode = "auto"
-	}
+	isolationMode := normalizeIsolationMode(req.IsolationMode, "auto")
 	if req.Background {
 		job, err := r.QueueSubmit(ctx, QueueSubmitRequest{
 			ParentSessionID: req.ParentSessionID,
@@ -282,12 +279,12 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		AgentRole:        req.AgentRole,
 		Prompt:           req.Prompt,
 		Mode:             mode,
-		Provider:         req.Provider,
-		Model:            req.Model,
+		Provider:         normalizeProviderOverride(req.Provider),
+		Model:            normalizeModelOverride(req.Model),
 		RequestedWorkdir: workdir,
 		SystemOverride:   req.SystemOverride,
 		Background:       true,
-		IsolationMode:    firstNonEmpty(req.IsolationMode, "auto"),
+		IsolationMode:    normalizeIsolationMode(req.IsolationMode, "auto"),
 		IsolationRoot:    req.IsolationRoot,
 	}
 	return job, r.store.EnqueueJob(job)

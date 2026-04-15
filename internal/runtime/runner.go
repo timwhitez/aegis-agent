@@ -136,7 +136,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		return RunResult{}, err
 	}
 	requestedWorkdir := workdir
-	providerName := req.Provider
+	providerName := normalizeProviderOverride(req.Provider)
 	if providerName == "" {
 		providerName = r.cfg.DefaultProvider
 	}
@@ -144,7 +144,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err != nil {
 		return RunResult{}, WrapConfigError(err)
 	}
-	model := req.Model
+	model := normalizeModelOverride(req.Model)
 	if model == "" {
 		model = providerCfg.Model
 	}
@@ -182,10 +182,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		}
 	}
 	effectiveWorkdir := requestedWorkdir
-	isolationMode := strings.TrimSpace(req.IsolationMode)
-	if isolationMode == "" {
-		isolationMode = r.cfg.Runtime.Isolation.DefaultMode
-	}
+	isolationMode := normalizeIsolationMode(req.IsolationMode, r.cfg.Runtime.Isolation.DefaultMode)
 	var isolationInfo *session.IsolationInfo
 	if isolationMode != "" && isolationMode != "off" {
 		rootDir := req.IsolationRoot
@@ -250,6 +247,35 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		}
 	}
 	return r.runExisting(ctx, meta, state, req.SystemOverride)
+}
+
+func normalizeIsolationMode(value, fallback string) string {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode == "" || mode == "default" {
+		mode = strings.ToLower(strings.TrimSpace(fallback))
+	}
+	switch mode {
+	case "none":
+		return "off"
+	default:
+		return mode
+	}
+}
+
+func normalizeProviderOverride(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "default") {
+		return ""
+	}
+	return strings.ToLower(value)
+}
+
+func normalizeModelOverride(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "default") {
+		return ""
+	}
+	return value
 }
 
 func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {

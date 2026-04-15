@@ -67,7 +67,8 @@ runtime:
     max_depth: 4
   isolation:
     default_mode: off
-    root_dir: .go-cli-agent/_worktrees
+    # Must live outside the source workspace to avoid recursive copy/worktree targets.
+    root_dir: ~/.go-cli-agent/_worktrees
   queue:
     poll_interval_ms: 1000
     auto_worker: true

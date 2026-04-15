@@ -483,6 +483,9 @@ func (s *Store) saveJobLocked(job QueueJob) error {
 	}
 	job.UpdatedAt = now
 	target := s.queueJobPath(job.Status, job.ID)
+	if err := s.writeJSONFile(target, job); err != nil {
+		return err
+	}
 	for _, status := range queueStatuses() {
 		path := s.queueJobPath(status, job.ID)
 		if path == target {
@@ -490,7 +493,7 @@ func (s *Store) saveJobLocked(job QueueJob) error {
 		}
 		_ = os.Remove(path)
 	}
-	return s.writeJSONFile(target, job)
+	return nil
 }
 
 func (s *Store) LoadJob(jobID string) (QueueJob, error) {
