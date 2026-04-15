@@ -278,7 +278,7 @@ func (s *Service) meta() MetaResponse {
 		DefaultMode:   s.cfg.Runtime.Isolation.DefaultMode,
 		QueuePollMS:   s.cfg.Runtime.Queue.PollIntervalMS,
 		WorkerCount:   s.workers.Snapshot().DesiredCount,
-		Capabilities:  []string{"start", "steer", "continue", "interrupt", "queue", "children", "tasks"},
+		Capabilities:  []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks"},
 		DefaultVendor: s.cfg.DefaultProvider,
 		Providers:     providers,
 	}
@@ -465,6 +465,12 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleInterruptSession(w, sessionID)
+	case "stop":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		s.handleStopSession(w, sessionID)
 	case "children":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -800,6 +806,21 @@ func (s *Service) handleInterruptSession(w http.ResponseWriter, sessionID string
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "interrupt_requested"})
+}
+
+func (s *Service) handleStopSession(w http.ResponseWriter, sessionID string) {
+	s.mu.RLock()
+	handle, ok := s.handles[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		writeError(w, http.StatusConflict, errors.New("session is not actively owned by this web console; it may already be settled"))
+		return
+	}
+	if err := handle.runner.InterruptWithReason(sessionID, "manual_stop"); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stop_requested"})
 }
 
 func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {

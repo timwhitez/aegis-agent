@@ -196,7 +196,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 
@@ -646,6 +646,59 @@ func TestServiceEmptySlicesEncodeAsArrays(t *testing.T) {
 			t.Fatalf("expected %s to encode as empty array, got %#v", key, detail[key])
 		}
 	}
+}
+
+func TestServiceStopSessionPausesWithManualStopReason(t *testing.T) {
+	server := newSleepToolServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var result LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt": "Long-running task that will be stopped.",
+		"mode":   "exec",
+	}, http.StatusAccepted, &result)
+
+	waitFor(t, 2*time.Second, func() bool {
+		state, err := svc.store.LoadState(result.SessionID)
+		return err == nil && state.Status == session.StatusRunning && state.Phase == "tool_execute" && svc.hasActiveHandle(result.SessionID)
+	}, func() string {
+		state, err := svc.store.LoadState(result.SessionID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+
+	postJSON(t, ts.URL+"/api/sessions/"+result.SessionID+"/stop", map[string]any{}, http.StatusAccepted, nil)
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(result.SessionID)
+		return err == nil && state.Status == session.StatusPaused && state.PauseReason == "manual_stop"
+	}, func() string {
+		state, err := svc.store.LoadState(result.SessionID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
 }
 
 func TestServiceHistoryPagination(t *testing.T) {

@@ -183,7 +183,7 @@ Sessions 列表项必须展示：
 - 若 `status = running`
   - 显示 steer 输入框
   - 显示 `interrupt steer` 开关
-  - 若该 session 由当前 Web server 托管，还显示 `pause` / `interrupt` 按钮
+  - 若该 session 由当前 Web server 托管，还显示 `stop` / `interrupt` 按钮
 - 若 `status = awaiting_input | paused | failed`
   - 显示 continue 输入框
   - 支持 provider / model 覆盖
@@ -388,14 +388,21 @@ worker pool 允许并发 `N >= 1`。
 - 若 session 由当前 Web server 托管并仍在运行，则调用其 active runner interrupt
 - 否则返回可理解的错误，提示改用 `steer + interrupt`
 
-### 7.9 `GET /api/sessions/{id}/children`
+### 7.9 `POST /api/sessions/{id}/stop`
+
+行为：
+
+- 若 session 由当前 Web server 托管并仍在运行，则调用其 active runner interrupt，并把 pause reason 写为 `manual_stop`
+- 否则返回可理解的错误，提示该 session 可能已结算
+
+### 7.10 `GET /api/sessions/{id}/children`
 
 返回：
 
 - child sessions
 - child jobs
 
-### 7.10 `GET /api/sessions/{id}/tasks`
+### 7.11 `GET /api/sessions/{id}/tasks`
 
 返回：
 

@@ -232,7 +232,14 @@ header {
   box-shadow: var(--shadow-soft);
 }
 
-.icon-action-btn:hover {
+.icon-action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+  transform: none;
+}
+
+.icon-action-btn:not(:disabled):hover {
   background: white;
   transform: translateY(-1px);
   box-shadow: var(--shadow-float);
@@ -1783,7 +1790,7 @@ header {
   box-shadow: none;
 }
 
-.icon-action-btn:hover {
+.icon-action-btn:not(:disabled):hover {
   background: var(--surface-hover);
   box-shadow: none;
   transform: none;
@@ -2322,17 +2329,32 @@ header {
   gap: 20px;
 }
 
+#stop-session-btn,
 #interrupt-session-btn {
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-2px);
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity 0.16s ease;
 }
 
+#stop-session-btn.is-visible,
 #interrupt-session-btn.is-visible {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+}
+
+#stop-session-btn.is-visible:disabled,
+#interrupt-session-btn.is-visible:disabled {
+  opacity: 0.52;
+}
+
+.icon-action-btn.stop {
+  border-color: rgba(180, 83, 9, 0.14);
+  color: #b45309;
+  background: rgba(255, 251, 235, 0.96);
+}
+
+.icon-action-btn.stop:not(:disabled):hover {
+  background: rgba(255, 251, 235, 1);
 }
 
 .icon-action-btn.danger {
@@ -2341,7 +2363,7 @@ header {
   background: rgba(254, 242, 242, 0.95);
 }
 
-.icon-action-btn.danger:hover {
+.icon-action-btn.danger:not(:disabled):hover {
   background: rgba(254, 242, 242, 1);
 }
 
@@ -2350,7 +2372,7 @@ header {
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--surface);
-  padding: 14px 16px;
+  padding: 12px 14px;
   box-shadow: none;
   transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.22s ease;
 }
@@ -2358,23 +2380,37 @@ header {
 .session-flow-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
 }
 
+.session-flow-state,
+.session-flow-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.session-flow-phase {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
 .session-flow-copy {
-  margin-top: 10px;
+  margin-top: 8px;
   color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .flow-lane {
-  padding: 12px;
+  padding: 10px 12px;
 }
 
 .flow-lane-label {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
@@ -2400,6 +2436,126 @@ header {
 #chat-view .pending-stage-card,
 #chat-view .tool-card {
   transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.22s ease;
+}
+
+#chat-view .tool-card {
+  border-radius: 16px;
+  border-color: rgba(71, 85, 105, 0.14);
+  box-shadow: none;
+}
+
+#chat-view .tool-call-card {
+  border-left: 3px solid rgba(37, 99, 235, 0.16);
+}
+
+#chat-view .tool-result-card {
+  border-left: 3px solid rgba(22, 163, 74, 0.16);
+}
+
+#chat-view .tool-result-card.error {
+  border-left-color: rgba(220, 38, 38, 0.22);
+}
+
+#chat-view .tool-card summary {
+  padding: 12px 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.92));
+}
+
+#chat-view .tool-card[open] {
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+}
+
+.tool-card-summary-copy {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+#chat-view .flow-lane .timeline-card {
+  padding: 10px 0 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#chat-view .flow-lane .timeline-card:first-child {
+  padding-top: 0;
+}
+
+#chat-view .flow-lane .timeline-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+}
+
+#chat-view .flow-lane .timeline-card.compact .timeline-card-copy {
+  gap: 4px;
+}
+
+#chat-view .flow-lane .timeline-card.compact .timeline-card-title {
+  font-size: 12px;
+}
+
+#chat-view .flow-lane .timeline-card.compact .timeline-card-text,
+#chat-view .flow-lane .timeline-card.compact .timeline-card-meta {
+  font-size: 11px;
+}
+
+#chat-view .pending-stage-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: none;
+}
+
+#chat-view .pending-stage-indicator {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.85);
+  animation: pendingPulse 1.45s linear infinite;
+}
+
+#chat-view .pending-stage-body {
+  gap: 4px;
+  min-width: 0;
+}
+
+#chat-view .pending-stage-topline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#chat-view .pending-stage-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+#chat-view .pending-stage-copy {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+#chat-view .pending-stage-mark,
+#chat-view .pending-stage-track {
+  display: none;
+}
+
+@keyframes pendingPulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
 }
 
 @keyframes chatFadeLift {

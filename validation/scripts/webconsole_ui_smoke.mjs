@@ -276,7 +276,7 @@ async function main() {
     await loadPromise;
 
     await waitFor(
-      () => browserClient.evaluate(`document.title === 'Agent Console' && Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('send-btn')) && Boolean(document.getElementById('chat-messages')) && Boolean(document.getElementById('interrupt-session-btn'))`),
+      () => browserClient.evaluate(`document.title === 'Agent Console' && Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('send-btn')) && Boolean(document.getElementById('chat-messages')) && Boolean(document.getElementById('interrupt-session-btn')) && Boolean(document.getElementById('stop-session-btn'))`),
       30000,
       'webconsole shell'
     );
@@ -385,6 +385,11 @@ async function main() {
       'pending stage card'
     );
     results.interactions.pending_stage_visible = true;
+    results.interactions.stop_button_visible = await browserClient.evaluate(`(() => {
+      const el = document.getElementById('stop-session-btn');
+      if (!el) return false;
+      return el.classList.contains('is-visible');
+    })()`);
 
     await waitFor(
       () => browserClient.evaluate(`(() => {
@@ -494,9 +499,6 @@ async function main() {
       const other = buttons.find((button) => button.dataset.openSession && button.dataset.openSession !== current);
       return other?.dataset?.openSession || '';
     })()`);
-    results.child_session_id = childSessionId;
-    results.interactions.child_session_visible = Boolean(childSessionId) || (activeSessionDetail.children?.sessions || []).length > 0;
-    results.interactions.tasks_tab_visible = (activeSessionDetail.task_board?.tasks || []).length > 0 || (activeSessionDetail.task_board?.todo || []).length > 0;
 
     if (!usedFallback) {
       queueJob = await fetchJSON(`${baseURL}/api/queue/jobs`, {
@@ -516,7 +518,14 @@ async function main() {
 
       await waitFor(
         async () => {
-          queueDetail = await fetchJSON(`${baseURL}/api/queue/jobs/${encodeURIComponent(queueJob.id)}`);
+          try {
+            queueDetail = await fetchJSON(`${baseURL}/api/queue/jobs/${encodeURIComponent(queueJob.id)}`);
+          } catch (err) {
+            if (String(err?.message || '').includes('404 Not Found')) {
+              return false;
+            }
+            throw err;
+          }
           return queueDetail.status === 'completed' && String(queueDetail.final_text || '').includes('ui smoke queue ok');
         },
         timeoutMs,
@@ -530,6 +539,14 @@ async function main() {
       results.interactions.queue_job_submitted = false;
       results.interactions.queue_job_completed = Boolean(fallbackJob && fallbackJob.status === 'completed');
     }
+
+    activeSessionDetail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(activeSessionId)}?limit=80`);
+    if (!childSessionId) {
+      childSessionId = activeSessionDetail.children?.sessions?.[0]?.id || '';
+    }
+    results.child_session_id = childSessionId;
+    results.interactions.child_session_visible = Boolean(childSessionId) || (activeSessionDetail.children?.sessions || []).length > 0;
+    results.interactions.tasks_tab_visible = (activeSessionDetail.task_board?.tasks || []).length > 0 || (activeSessionDetail.task_board?.todo || []).length > 0;
 
     await click('[data-view="history"]', 'history nav after session');
     await waitFor(

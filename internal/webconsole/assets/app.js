@@ -52,6 +52,7 @@ const nodes = {
   connectionStatus: document.getElementById('connection-status'),
   sessionIdDisplay: document.getElementById('session-id-display'),
   newSessionBtn: document.getElementById('new-session-btn'),
+  stopSessionBtn: document.getElementById('stop-session-btn'),
   interruptSessionBtn: document.getElementById('interrupt-session-btn'),
   interruptToggleBtn: document.getElementById('interrupt-toggle-btn'),
   inputContainer: document.getElementById('input-container'),
@@ -176,11 +177,13 @@ function handleServerEvent(data) {
           tone: 'live'
         });
       } else {
-        setGenerating(false, {
-          title: humanizeStatus(data.payload?.status || 'idle'),
-          copy: 'Durable session state has been updated.',
-          tone: toneForStatus(data.payload?.status)
-        });
+        setGenerating(false, sessionActivityForState({
+          status: data.payload?.status || 'idle',
+          phase: data.payload?.phase || '',
+          pause_reason: data.payload?.pauseReason || data.payload?.pause_reason || '',
+          last_error: '',
+          last_assistant_excerpt: ''
+        }));
       }
       queueSessionRefresh(120);
       queueOverviewRefresh(260);
@@ -249,6 +252,7 @@ function setupEventListeners() {
   });
 
   nodes.sendBtn.addEventListener('click', sendMessage);
+  nodes.stopSessionBtn?.addEventListener('click', requestStop);
   nodes.interruptSessionBtn?.addEventListener('click', requestInterrupt);
   nodes.interruptToggleBtn?.addEventListener('click', toggleInterruptArm);
   nodes.newSessionBtn?.addEventListener('click', () => {
@@ -502,6 +506,28 @@ async function requestInterrupt() {
   renderCurrentSession();
 }
 
+async function requestStop() {
+  if (!state.isGenerating || !hasDurableSession()) {
+    showToast('No running session is available to stop.', 'info');
+    return;
+  }
+  try {
+    await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/stop`, {
+      method: 'POST'
+    });
+    state.liveActivity = {
+      title: 'Stopping run',
+      copy: 'The current run is being stopped. Partial output and tool results will remain visible.',
+      tone: 'danger'
+    };
+    showToast('Stop requested.', 'success');
+    queueSessionRefresh(120);
+  } catch (err) {
+    showToast(err.message || 'Failed to stop the session.', 'error');
+  }
+  renderCurrentSession();
+}
+
 function adoptSession(sessionID, backed) {
   if (!sessionID) {
     return;
@@ -558,10 +584,14 @@ function updateUI() {
   nodes.inputContainer.classList.toggle('is-busy', state.isGenerating);
   nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
   nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
-  nodes.interruptSessionBtn?.classList.toggle('is-visible', state.isGenerating && hasDurableSession());
+  nodes.stopSessionBtn?.classList.toggle('is-visible', state.isGenerating);
+  nodes.interruptSessionBtn?.classList.toggle('is-visible', state.isGenerating);
   nodes.interruptToggleBtn?.classList.toggle('is-visible', state.isGenerating && hasDurableSession());
   nodes.interruptToggleBtn?.classList.toggle('is-armed', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
   nodes.interruptToggleBtn?.setAttribute('aria-pressed', state.nextSendInterrupt ? 'true' : 'false');
+  if (nodes.stopSessionBtn) {
+    nodes.stopSessionBtn.disabled = !state.isGenerating || !hasDurableSession();
+  }
   if (nodes.interruptSessionBtn) {
     nodes.interruptSessionBtn.disabled = !state.isGenerating || !hasDurableSession();
   }
@@ -645,6 +675,58 @@ function shouldPollCurrentSession() {
   return state.isGenerating || !state.sessionDetail;
 }
 
+function sessionActivityForState(sessionState = {}) {
+  const status = sessionState?.status || 'idle';
+  const pauseReason = sessionState?.pause_reason || sessionState?.pauseReason || '';
+  if (status === 'completed') {
+    return {
+      title: 'Completed',
+      copy: 'The run finished. Answers and tool results remain visible below.',
+      tone: 'live'
+    };
+  }
+  if (status === 'awaiting_input') {
+    return {
+      title: 'Awaiting input',
+      copy: 'The session is waiting for the next message before it can continue.',
+      tone: 'queued'
+    };
+  }
+  if (status === 'paused' && pauseReason === 'manual_stop') {
+    return {
+      title: 'Stopped',
+      copy: 'The run was stopped. Partial output remains visible and you can continue later if needed.',
+      tone: 'danger'
+    };
+  }
+  if (status === 'paused' && pauseReason === 'manual_interrupt') {
+    return {
+      title: 'Interrupted',
+      copy: 'The run stopped at a safe boundary. Review the partial results or continue later.',
+      tone: 'queued'
+    };
+  }
+  if (status === 'paused') {
+    return {
+      title: 'Paused',
+      copy: 'The session paused and can be continued when you are ready.',
+      tone: 'queued'
+    };
+  }
+  if (status === 'failed') {
+    return {
+      title: 'Failed',
+      copy: sessionState?.last_error || 'The run failed. Review the last tool result or continue after adjusting the prompt.',
+      tone: 'danger'
+    };
+  }
+  return {
+    title: humanizeStatus(status),
+    copy: sessionState?.last_error || 'Durable session data is loaded.',
+    tone: toneForStatus(status)
+  };
+}
+
 async function refreshOverview() {
   if (state.refreshingOverview) {
     return;
@@ -686,11 +768,7 @@ async function refreshCurrentSession() {
     } else {
       state.isGenerating = false;
       if (!state.liveEvents.length || toneForStatus(detail?.state?.status) !== 'live') {
-        state.liveActivity = {
-          title: humanizeStatus(detail?.state?.status || 'idle'),
-          copy: detail?.state?.last_error || detail?.state?.last_assistant_excerpt || 'Durable session data is loaded.',
-          tone: toneForStatus(detail?.state?.status)
-        };
+        state.liveActivity = sessionActivityForState(detail?.state);
       }
       state.nextSendInterrupt = false;
     }
@@ -838,24 +916,39 @@ function renderEmptySessionState() {
   `;
 }
 
+function summarizeLiveCounters(counters) {
+  const items = [];
+  if (counters.toolCalls) {
+    items.push(`${counters.toolCalls} call${counters.toolCalls === 1 ? '' : 's'}`);
+  }
+  if (counters.childSessions) {
+    items.push(`${counters.childSessions} child`);
+  }
+  if (counters.queueJobs) {
+    items.push(`${counters.queueJobs} queue`);
+  }
+  return items.join(' · ');
+}
+
 function renderSessionActivityCard() {
   const detail = state.sessionDetail;
   const counters = summarizeCurrentSession();
   const status = detail?.state?.status || (state.isGenerating ? 'running' : 'idle');
   const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : state.liveActivity.title;
   const tone = toneForStatus(status);
-  const copy = detail?.state?.last_error || detail?.state?.last_assistant_excerpt || state.liveActivity.copy;
+  const copy = detail?.state?.last_error || state.liveActivity.copy;
+  const summary = summarizeLiveCounters(counters);
 
   return `
     <section class="session-flow-card">
       <div class="session-flow-head">
-        <div class="message-header-meta">
+        <div class="session-flow-state">
           <span class="status-badge ${tone}">${escapeHTML(humanizeStatus(status))}</span>
+          <span class="session-flow-phase">${escapeHTML(phase)}</span>
+        </div>
+        <div class="session-flow-meta">
           ${detail?.metadata?.id ? `<span class="tiny-code-chip">${escapeHTML(shortId(detail.metadata.id))}</span>` : `<span class="tiny-code-chip">${escapeHTML(shortId(state.sessionId))}</span>`}
-          <span class="surface-chip">${escapeHTML(phase)}</span>
-          ${counters.toolCalls ? `<span class="surface-chip">${escapeHTML(String(counters.toolCalls))} tool call${counters.toolCalls === 1 ? '' : 's'}</span>` : ''}
-          ${counters.childSessions ? `<span class="surface-chip">${escapeHTML(String(counters.childSessions))} child session${counters.childSessions === 1 ? '' : 's'}</span>` : ''}
-          ${counters.queueJobs ? `<span class="surface-chip">${escapeHTML(String(counters.queueJobs))} queue job${counters.queueJobs === 1 ? '' : 's'}</span>` : ''}
+          ${summary ? `<span class="surface-chip">${escapeHTML(summary)}</span>` : ''}
         </div>
       </div>
       <div class="session-flow-copy">${escapeHTML(copy || 'Waiting for the next update.')}</div>
@@ -864,7 +957,10 @@ function renderSessionActivityCard() {
 }
 
 function renderFlowLane() {
-  const detailItems = maybeArray(state.sessionDetail?.timeline).slice(-4).reverse();
+  const detailItems = maybeArray(state.sessionDetail?.timeline)
+    .filter((item) => item.kind === 'event' && isCompactFlowEvent(item.event_type))
+    .slice(-3)
+    .reverse();
   if (!detailItems.length) {
     return '';
   }
@@ -872,7 +968,7 @@ function renderFlowLane() {
     <section class="flow-lane">
       <div class="flow-lane-label">Flow</div>
       <div class="flow-lane-stack">
-        ${detailItems.map((item) => renderTimelineItem(item)).join('')}
+        ${detailItems.map((item) => renderTimelineItem(item, { compact: true, hideData: true })).join('')}
       </div>
     </section>
   `;
@@ -936,8 +1032,65 @@ function renderMessageMetaChips(message) {
   return chips.join('');
 }
 
+function renderUniqueCodeChips(...values) {
+  const seen = new Set();
+  return values
+    .map((value) => shortId(value || ''))
+    .filter((value) => value && value !== 'n/a' && !seen.has(value) && seen.add(value))
+    .map((value) => `<span class="tiny-code-chip">${escapeHTML(value)}</span>`)
+    .join('');
+}
+
+function summarizeToolCall(call) {
+  const parsed = parseMaybeJSON(call.arguments);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (typeof parsed.path === 'string' && parsed.path) {
+      return shortenPath(parsed.path);
+    }
+    if (typeof parsed.pattern === 'string' && parsed.pattern) {
+      return `pattern: ${parsed.pattern}`;
+    }
+    if (typeof parsed.prompt === 'string' && parsed.prompt) {
+      return truncateText(parsed.prompt, 120);
+    }
+    if (Array.isArray(parsed.todos)) {
+      return `${parsed.todos.length} todo item${parsed.todos.length === 1 ? '' : 's'}`;
+    }
+    if (typeof parsed.message === 'string' && parsed.message) {
+      return truncateText(parsed.message, 120);
+    }
+  }
+  return compactText(prettyJSON(call.arguments), 120);
+}
+
+function summarizeToolResult(result, parsed, payloadText) {
+  if (result.final) {
+    return truncateText(payloadText, 120);
+  }
+  if (result.is_error) {
+    return truncateText(payloadText, 140);
+  }
+  if (result.name === 'todo_write' && Array.isArray(parsed)) {
+    return `${parsed.length} todo item${parsed.length === 1 ? '' : 's'} saved`;
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (typeof parsed.final_text === 'string' && parsed.final_text) {
+      return truncateText(parsed.final_text, 120);
+    }
+    if (typeof parsed.status === 'string') {
+      return humanizeStatus(parsed.status);
+    }
+  }
+  return compactText(payloadText, 140);
+}
+
+function compactText(value, maxLength = 120) {
+  return truncateText(String(value || '').replace(/\s+/g, ' ').trim(), maxLength);
+}
+
 function renderToolCall(call) {
   const delegate = isMultiAgentTool(call.name);
+  const preview = summarizeToolCall(call);
   return `
     <details class="tool-card tool-call-card ${delegate ? 'delegate' : ''}" ${delegate ? 'open' : ''}>
       <summary>
@@ -947,10 +1100,10 @@ function renderToolCall(call) {
             <strong>${escapeHTML(call.name || 'tool')}</strong>
           </div>
           <div class="tool-card-meta">
-            ${call.id ? `<span class="tiny-code-chip">${escapeHTML(shortId(call.id))}</span>` : ''}
-            ${call.provider_call_id ? `<span class="tiny-code-chip">${escapeHTML(shortId(call.provider_call_id))}</span>` : ''}
+            ${renderUniqueCodeChips(call.id, call.provider_call_id)}
           </div>
         </div>
+        ${preview ? `<div class="tool-card-summary-copy">${escapeHTML(preview)}</div>` : ''}
       </summary>
       <pre class="tool-json-block">${escapeHTML(prettyJSON(call.arguments))}</pre>
     </details>
@@ -963,6 +1116,7 @@ function renderToolResult(result) {
   const delegate = isMultiAgentTool(result.name);
   const open = delegate || result.is_error || result.final;
   const special = renderSpecialToolResult(result, parsed);
+  const preview = summarizeToolResult(result, parsed, payloadText);
   return `
     <details class="tool-card tool-result-card ${delegate ? 'delegate' : ''} ${result.is_error ? 'error' : ''}" ${open ? 'open' : ''}>
       <summary>
@@ -976,6 +1130,7 @@ function renderToolResult(result) {
             ${result.final ? '<span class="status-badge live">Final</span>' : ''}
           </div>
         </div>
+        ${preview ? `<div class="tool-card-summary-copy">${escapeHTML(preview)}</div>` : ''}
       </summary>
       ${special || `<pre class="tool-output-block">${escapeHTML(truncateText(payloadText, 3200))}</pre>`}
       ${renderMetadataChips(result.metadata)}
@@ -1079,21 +1234,14 @@ function renderPendingStageCard() {
   return `
     <section class="message assistant pending">
       <div class="pending-stage-card">
-        <div class="pending-stage-mark">
-          <i data-lucide="activity" style="width:20px;height:20px;color:var(--accent-strong);"></i>
-        </div>
+        <div class="pending-stage-indicator" aria-hidden="true"></div>
         <div class="pending-stage-body">
-          <div class="tool-card-meta">
+          <div class="pending-stage-topline">
             <span class="status-badge ${state.liveActivity.tone || 'neutral'}">${escapeHTML(state.isGenerating ? 'Running' : 'Settling')}</span>
+            <span class="pending-stage-title">${escapeHTML(state.liveActivity.title)}</span>
             ${state.nextSendInterrupt ? '<span class="status-badge queued">Interrupt armed</span>' : ''}
           </div>
-          <div class="pending-stage-title">${escapeHTML(state.liveActivity.title)}</div>
           <div class="pending-stage-copy">${escapeHTML(state.liveActivity.copy)}</div>
-          <div class="pending-stage-track">
-            <span class="pending-stage-segment"></span>
-            <span class="pending-stage-segment"></span>
-            <span class="pending-stage-segment"></span>
-          </div>
         </div>
       </div>
     </section>
@@ -1366,10 +1514,11 @@ function renderBackgroundNotificationsPreview(items) {
   `).join('');
 }
 
-function renderTimelineItem(item) {
+function renderTimelineItem(item, options = {}) {
   const descriptor = describeTimelineItem(item);
+  const showData = !options.hideData && descriptor.data;
   return `
-    <div class="timeline-card">
+    <div class="timeline-card ${options.compact ? 'compact' : ''}">
       <div class="timeline-icon ${descriptor.tone === 'danger' ? 'danger' : descriptor.tone === 'queued' ? 'warning' : ''}">
         <i data-lucide="${escapeAttr(descriptor.icon)}" style="width:16px;height:16px;"></i>
       </div>
@@ -1380,7 +1529,7 @@ function renderTimelineItem(item) {
         </div>
         <div class="timeline-card-text">${escapeHTML(descriptor.copy)}</div>
         ${descriptor.meta ? `<div class="timeline-card-meta">${escapeHTML(descriptor.meta)}</div>` : ''}
-        ${descriptor.data ? `<pre class="timeline-card-data">${escapeHTML(descriptor.data)}</pre>` : ''}
+        ${showData ? `<pre class="timeline-card-data">${escapeHTML(descriptor.data)}</pre>` : ''}
       </div>
     </div>
   `;
@@ -1537,14 +1686,33 @@ function describeTimelineItem(item) {
   return describeEventDescriptor(item.event_type, item.data, item.phase, item.event_id);
 }
 
+function isCompactFlowEvent(eventType) {
+  return [
+    'provider.call',
+    'tool.before',
+    'tool.after',
+    'tool.interrupted',
+    'tool.blocked',
+    'session.child.spawned',
+    'session.child.queued',
+    'queue.job.claimed',
+    'queue.job.completed',
+    'queue.job.failed',
+    'provider.cancelled',
+    'session.paused',
+    'session.completed',
+    'session.failed'
+  ].includes(eventType || '');
+}
+
 function describeEventDescriptor(eventType, data, phase, eventID) {
   const toolName = data?.tool_name || data?.tool || '';
   switch (eventType) {
     case 'provider.call':
       return {
         icon: 'radio',
-        title: 'Provider call started',
-        copy: 'The runner is waiting on the model provider.',
+        title: 'Provider call',
+        copy: 'Waiting for the model provider.',
         meta: phaseHeadline(phase),
         tone: 'live',
         data: ''
@@ -1552,8 +1720,8 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
     case 'provider.request.prepared':
       return {
         icon: 'package-search',
-        title: 'Provider request prepared',
-        copy: 'The durable turn request has been assembled.',
+        title: 'Request prepared',
+        copy: 'Durable turn request assembled.',
         meta: phaseHeadline(phase),
         tone: 'neutral',
         data: ''
@@ -1571,7 +1739,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
       return {
         icon: 'wrench',
         title: `Tool started: ${toolName || 'tool'}`,
-        copy: 'The runtime is executing a tool call.',
+        copy: summarizeToolArgumentsData(data?.arguments),
         meta: phaseHeadline(phase),
         tone: 'live',
         data: truncateText(data?.arguments || '', 600)
@@ -1580,7 +1748,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
       return {
         icon: 'check-circle-2',
         title: `Tool finished: ${toolName || 'tool'}`,
-        copy: truncateText(data?.display_output || 'Tool output recorded.', 180),
+        copy: summarizeToolOutputData(data?.display_output || 'Tool output recorded.'),
         meta: phaseHeadline(phase),
         tone: data?.is_error ? 'danger' : 'live',
         data: data?.metadata ? prettyJSON(data.metadata) : ''
@@ -1671,6 +1839,35 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         tone: 'danger',
         data: ''
       };
+    case 'session.paused':
+      return {
+        icon: 'pause-circle',
+        title: data?.reason === 'manual_stop' ? 'Run stopped' : 'Run paused',
+        copy: data?.reason === 'manual_stop'
+          ? 'The active run was stopped and can be reviewed or continued later.'
+          : 'The active run paused at a safe boundary.',
+        meta: phaseHeadline(phase),
+        tone: 'queued',
+        data: ''
+      };
+    case 'session.completed':
+      return {
+        icon: 'check-check',
+        title: 'Session completed',
+        copy: 'The run finished cleanly.',
+        meta: phaseHeadline(phase),
+        tone: 'live',
+        data: ''
+      };
+    case 'session.failed':
+      return {
+        icon: 'x-circle',
+        title: 'Session failed',
+        copy: data?.error || 'The run failed.',
+        meta: phaseHeadline(phase),
+        tone: 'danger',
+        data: ''
+      };
     default:
       return {
         icon: 'dot',
@@ -1683,13 +1880,55 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
   }
 }
 
+function summarizeToolArgumentsData(value) {
+  const parsed = parseMaybeJSON(value);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (typeof parsed.path === 'string' && parsed.path) {
+      return shortenPath(parsed.path);
+    }
+    if (typeof parsed.pattern === 'string' && parsed.pattern) {
+      return `pattern: ${parsed.pattern}`;
+    }
+    if (typeof parsed.prompt === 'string' && parsed.prompt) {
+      return truncateText(parsed.prompt, 100);
+    }
+  }
+  return compactText(value, 100) || 'Tool call is running.';
+}
+
+function summarizeToolOutputData(value) {
+  return compactText(value, 120) || 'Tool output recorded.';
+}
+
 function updateLiveActivityFromEvent(event) {
+  if (!shouldPromoteLiveActivity(event.type)) {
+    return;
+  }
   const descriptor = describeEventDescriptor(event.type, event.data, event.phase, event.id);
   state.liveActivity = {
     title: descriptor.title,
     copy: descriptor.copy,
     tone: descriptor.tone || 'neutral'
   };
+}
+
+function shouldPromoteLiveActivity(type) {
+  return [
+    'provider.call',
+    'tool.before',
+    'tool.after',
+    'tool.blocked',
+    'tool.interrupted',
+    'session.child.spawned',
+    'session.child.queued',
+    'queue.job.claimed',
+    'queue.job.completed',
+    'queue.job.failed',
+    'provider.cancelled',
+    'session.paused',
+    'session.completed',
+    'session.failed'
+  ].includes(type || '');
 }
 
 function shouldRefreshAfterEvent(type) {
