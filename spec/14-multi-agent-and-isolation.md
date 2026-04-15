@@ -131,8 +131,11 @@ child session 使用独立工作目录执行。当前支持：
 行为：
 
 - 默认从当前 session 派生一个 child session
+- 未显式提供 `provider` / `model` 或传入 `default` 时，child 默认继承当前 parent session 的 provider / model
 - 默认 `mode=exec`
 - 默认 `isolation_mode=auto`
+- `mode=full-auto` 作为兼容别名按 `exec` 处理
+- `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 - 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
 - `background=true` 时提交到后台自治队列
 - 当 parent 处于活跃 `run` / `exec` 中时，后台 child 默认由同一 CLI 进程内的 auto worker 自动拉起执行

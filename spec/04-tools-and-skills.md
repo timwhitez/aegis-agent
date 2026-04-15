@@ -160,6 +160,9 @@ v1 内置工具固定为：
 - 从当前 session 派生 child agent
 - 支持同步执行和后台自治
 - 支持 worktree / copy 隔离
+- 未显式提供 `provider` / `model` 或传入 `default` 时，默认继承当前 parent session 的 provider / model
+- `mode=full-auto` 作为兼容别名按 `exec` 处理
+- `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 - 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
 
 ### 4.17 `agent_status`

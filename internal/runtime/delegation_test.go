@@ -118,6 +118,50 @@ func TestRunnerDelegateTreatsDefaultProviderAndModelAsInherited(t *testing.T) {
 	}
 }
 
+func TestRunnerDelegateInheritsParentProviderAndModelWhenOmitted(t *testing.T) {
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"unexpected fallback provider"}}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(fallback.Close)
+
+	cfg := testRuntimeConfig(t)
+	cfg.DefaultProvider = "openai"
+	cfg.Providers["openai"] = config.Provider{
+		APIKeyEnv:  "OPENAI_API_KEY",
+		BaseURL:    fallback.URL,
+		Model:      "gpt-5",
+		TimeoutSec: 5,
+		WireAPI:    "responses",
+	}
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed child, got %#v", result)
+	}
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Provider != "openai-compatible" {
+		t.Fatalf("expected provider to inherit from parent, got %#v", meta.Provider)
+	}
+	if meta.Model != "gpt-5.4" {
+		t.Fatalf("expected model to inherit from parent, got %#v", meta.Model)
+	}
+}
+
 func TestRunnerDelegateTreatsDefaultIsolationModeAsAuto(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
@@ -205,6 +249,109 @@ func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	}
 	if notifications[0].AgentRole != "planner" {
 		t.Fatalf("expected planner role on background notification, got %#v", notifications[0].AgentRole)
+	}
+}
+
+func TestRunnerQueueSubmitInheritsParentProviderAndModelWhenOmitted(t *testing.T) {
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"unexpected fallback provider"}}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(fallback.Close)
+
+	cfg := testRuntimeConfig(t)
+	cfg.DefaultProvider = "openai"
+	cfg.Providers["openai"] = config.Provider{
+		APIKeyEnv:  "OPENAI_API_KEY",
+		BaseURL:    fallback.URL,
+		Model:      "gpt-5",
+		TimeoutSec: 5,
+		WireAPI:    "responses",
+	}
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if job.Provider != "openai-compatible" {
+		t.Fatalf("expected queued provider to inherit from parent, got %#v", job.Provider)
+	}
+	if job.Model != "gpt-5.4" {
+		t.Fatalf("expected queued model to inherit from parent, got %#v", job.Model)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil {
+		t.Fatalf("process next job: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a queued job to be processed")
+	}
+	if processed.Status != session.QueueStatusCompleted {
+		t.Fatalf("expected completed job, got %#v", processed)
+	}
+	if processed.Provider != "openai-compatible" {
+		t.Fatalf("expected processed provider to inherit from parent, got %#v", processed.Provider)
+	}
+	if processed.Model != "gpt-5.4" {
+		t.Fatalf("expected processed model to inherit from parent, got %#v", processed.Model)
+	}
+}
+
+func TestRunnerQueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		Mode:            "full-auto",
+		IsolationMode:   "workspace-write",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if job.Mode != session.ModeExec {
+		t.Fatalf("expected full-auto alias to normalize to exec, got %#v", job.Mode)
+	}
+	if job.IsolationMode != "off" {
+		t.Fatalf("expected workspace-write alias to normalize to off, got %#v", job.IsolationMode)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil {
+		t.Fatalf("process next job: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a queued job to be processed")
+	}
+	if processed.Status != session.QueueStatusCompleted {
+		t.Fatalf("expected completed job, got %#v", processed)
+	}
+	if processed.SessionID == "" {
+		t.Fatalf("expected child session id, got %#v", processed)
+	}
+	meta, err := runner.store.LoadMetadata(processed.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Mode != session.ModeExec || meta.CompletionPolicy != session.CompletionPolicyAutonomous {
+		t.Fatalf("expected exec/autonomous child mode, got %#v", meta)
+	}
+	if meta.Isolation != nil {
+		t.Fatalf("expected workspace-write alias to reuse parent workspace, got %#v", meta.Isolation)
+	}
+	if meta.Workdir != parentWorkdir {
+		t.Fatalf("expected child workdir to reuse parent workspace, got %q want %q", meta.Workdir, parentWorkdir)
 	}
 }
 

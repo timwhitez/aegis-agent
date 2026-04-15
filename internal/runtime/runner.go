@@ -136,34 +136,21 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		return RunResult{}, err
 	}
 	requestedWorkdir := workdir
-	providerName := normalizeProviderOverride(req.Provider)
-	if providerName == "" {
-		providerName = r.cfg.DefaultProvider
-	}
-	providerCfg, err := r.cfg.ProviderConfig(providerName)
-	if err != nil {
-		return RunResult{}, WrapConfigError(err)
-	}
-	model := normalizeModelOverride(req.Model)
-	if model == "" {
-		model = providerCfg.Model
-	}
 	agentRole, err := normalizeAgentRole(req.AgentRole, req.AgentName)
 	if err != nil {
 		return RunResult{}, err
 	}
-	mode := req.Mode
-	if mode == "" {
-		mode = session.ModeRun
-	}
+	mode := normalizeRunMode(req.Mode, session.ModeRun)
 	sessionID := session.NewSessionID()
 	rootSessionID := sessionID
 	depth := 0
+	var parentMeta *session.SessionMetadata
 	if req.ParentSessionID != "" {
-		parentMeta, err := r.store.LoadMetadata(req.ParentSessionID)
+		loadedParentMeta, err := r.store.LoadMetadata(req.ParentSessionID)
 		if err != nil {
 			return RunResult{}, err
 		}
+		parentMeta = &loadedParentMeta
 		if parentMeta.RootSessionID != "" {
 			rootSessionID = parentMeta.RootSessionID
 		} else {
@@ -180,6 +167,14 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 				requestedWorkdir = parentMeta.Workdir
 			}
 		}
+	}
+	providerName, model, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model)
+	if err != nil {
+		return RunResult{}, WrapConfigError(err)
+	}
+	providerCfg, err := r.cfg.ProviderConfig(providerName)
+	if err != nil {
+		return RunResult{}, WrapConfigError(err)
 	}
 	effectiveWorkdir := requestedWorkdir
 	isolationMode := normalizeIsolationMode(req.IsolationMode, r.cfg.Runtime.Isolation.DefaultMode)
@@ -255,8 +250,23 @@ func normalizeIsolationMode(value, fallback string) string {
 		mode = strings.ToLower(strings.TrimSpace(fallback))
 	}
 	switch mode {
-	case "none":
+	case "none", "workspace-write", "workspace_write":
 		return "off"
+	default:
+		return mode
+	}
+}
+
+func normalizeRunMode(value, fallback string) string {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode == "" || mode == "default" {
+		mode = strings.ToLower(strings.TrimSpace(fallback))
+	}
+	switch mode {
+	case "full-auto", "full_auto", "autonomous":
+		return session.ModeExec
+	case "interactive":
+		return session.ModeRun
 	default:
 		return mode
 	}
@@ -276,6 +286,29 @@ func normalizeModelOverride(value string) string {
 		return ""
 	}
 	return value
+}
+
+func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMetadata, providerOverride, modelOverride string) (string, string, error) {
+	providerName := normalizeProviderOverride(providerOverride)
+	model := normalizeModelOverride(modelOverride)
+	if providerName == "" && parentMeta != nil && strings.TrimSpace(parentMeta.Provider) != "" {
+		providerName = parentMeta.Provider
+	}
+	if providerName == "" {
+		providerName = cfg.DefaultProvider
+	}
+	providerCfg, err := cfg.ProviderConfig(providerName)
+	if err != nil {
+		return "", "", err
+	}
+	if model == "" {
+		if parentMeta != nil && providerName == parentMeta.Provider && strings.TrimSpace(parentMeta.Model) != "" {
+			model = parentMeta.Model
+		} else {
+			model = providerCfg.Model
+		}
+	}
+	return providerName, model, nil
 }
 
 func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {

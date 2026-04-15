@@ -96,18 +96,20 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		}
 	}
 	mode := strings.TrimSpace(req.Mode)
-	if mode == "" {
-		mode = session.ModeExec
-	}
+	mode = normalizeRunMode(mode, session.ModeExec)
 	isolationMode := normalizeIsolationMode(req.IsolationMode, "auto")
+	providerName, modelName, err := resolveProviderAndModel(r.cfg, &parentMeta, req.Provider, req.Model)
+	if err != nil {
+		return tools.AgentSpawnResult{}, WrapConfigError(err)
+	}
 	if req.Background {
 		job, err := r.QueueSubmit(ctx, QueueSubmitRequest{
 			ParentSessionID: req.ParentSessionID,
 			Prompt:          req.Prompt,
 			AgentName:       req.AgentName,
 			AgentRole:       req.AgentRole,
-			Provider:        req.Provider,
-			Model:           req.Model,
+			Provider:        providerName,
+			Model:           modelName,
 			Workdir:         workdir,
 			SystemOverride:  req.SystemOverride,
 			Mode:            mode,
@@ -132,8 +134,8 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	childRunner := NewRunner(r.cfg)
 	result, err := childRunner.Start(ctx, StartRequest{
 		Prompt:          req.Prompt,
-		Provider:        req.Provider,
-		Model:           req.Model,
+		Provider:        providerName,
+		Model:           modelName,
 		Workdir:         workdir,
 		Mode:            mode,
 		SystemOverride:  req.SystemOverride,
@@ -248,16 +250,16 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	}
 	req.AgentRole = agentRole
 	mode := strings.TrimSpace(req.Mode)
-	if mode == "" {
-		mode = session.ModeExec
-	}
+	mode = normalizeRunMode(mode, session.ModeExec)
 	workdir := strings.TrimSpace(req.Workdir)
 	rootSessionID := req.ParentSessionID
+	var parentMeta *session.SessionMetadata
 	if req.ParentSessionID != "" {
-		parentMeta, err := r.store.LoadMetadata(req.ParentSessionID)
+		loadedParentMeta, err := r.store.LoadMetadata(req.ParentSessionID)
 		if err != nil {
 			return session.QueueJob{}, err
 		}
+		parentMeta = &loadedParentMeta
 		if parentMeta.RootSessionID != "" {
 			rootSessionID = parentMeta.RootSessionID
 		} else {
@@ -266,6 +268,10 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		if workdir == "" {
 			workdir = firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir)
 		}
+	}
+	providerName, modelName, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model)
+	if err != nil {
+		return session.QueueJob{}, WrapConfigError(err)
 	}
 	job := session.QueueJob{
 		SchemaVersion:    1,
@@ -279,8 +285,8 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		AgentRole:        req.AgentRole,
 		Prompt:           req.Prompt,
 		Mode:             mode,
-		Provider:         normalizeProviderOverride(req.Provider),
-		Model:            normalizeModelOverride(req.Model),
+		Provider:         providerName,
+		Model:            modelName,
 		RequestedWorkdir: workdir,
 		SystemOverride:   req.SystemOverride,
 		Background:       true,

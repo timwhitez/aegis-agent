@@ -1069,20 +1069,34 @@ func taskFilePath(execCtx ExecContext, taskID string) string {
 func defAgentSpawn(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_spawn",
-		Description: "Spawn a child agent session from the current session.",
+		Description: "Spawn a child agent session from the current session. Omit provider and model to inherit the current session settings. Prefer isolation_mode=auto for an isolated child or none/off to reuse the current workspace; only set isolation_root when you need a custom external root.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prompt":         map[string]any{"type": "string"},
-				"agent_name":     map[string]any{"type": "string"},
-				"agent_role":     map[string]any{"type": "string", "enum": []string{"planner", "generator", "evaluator"}},
-				"provider":       map[string]any{"type": "string"},
-				"model":          map[string]any{"type": "string"},
-				"workdir":        map[string]any{"type": "string"},
-				"system":         map[string]any{"type": "string"},
-				"mode":           map[string]any{"type": "string"},
-				"background":     map[string]any{"type": "boolean"},
-				"isolation_mode": map[string]any{"type": "string"},
+				"prompt":     map[string]any{"type": "string"},
+				"agent_name": map[string]any{"type": "string"},
+				"agent_role": map[string]any{"type": "string", "enum": []string{"planner", "generator", "evaluator"}},
+				"provider": map[string]any{
+					"type":        "string",
+					"description": "Optional provider override. Omit or use default to inherit the current session provider.",
+				},
+				"model": map[string]any{
+					"type":        "string",
+					"description": "Optional model override. Omit or use default to inherit the current session model.",
+				},
+				"workdir": map[string]any{"type": "string"},
+				"system":  map[string]any{"type": "string"},
+				"mode": map[string]any{
+					"type":        "string",
+					"enum":        []string{"run", "exec", "full-auto", "default"},
+					"description": "Optional run mode. full-auto is accepted as an alias for exec.",
+				},
+				"background": map[string]any{"type": "boolean"},
+				"isolation_mode": map[string]any{
+					"type":        "string",
+					"enum":        []string{"auto", "copy", "git", "off", "none", "workspace-write", "default"},
+					"description": "Optional isolation mode. workspace-write is accepted as an alias for off.",
+				},
 				"isolation_root": map[string]any{"type": "string"},
 			},
 			"required": []string{"prompt"},

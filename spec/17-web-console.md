@@ -436,6 +436,12 @@ worker pool 允许并发 `N >= 1`。
 - `isolation_mode?`
 - `isolation_root?`
 
+说明：
+
+- 未显式提供 `provider` / `model` 或传入 `default` 时，child 默认继承 parent session 的 provider / model
+- `mode=full-auto` 作为兼容别名按 `exec` 处理
+- `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
+
 ### 7.14 `GET /api/workers`
 
 返回：
