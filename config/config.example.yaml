@@ -45,6 +45,9 @@ skills:
 
 runtime:
   exec_finish_required: true
+  # standard: keep runtime retrieval/report/project-memory guardrails
+  # yolo: disable those runtime guardrails and let the model self-manage within tool-enforced boundaries
+  guardrails_mode: yolo
   max_turns_soft: 24
   max_turns_hard: 40
   command_timeout_sec: 120

@@ -300,6 +300,7 @@ while true:
 
 1. 触发 `tool.before`
 2. 必要时先应用 runtime 级 guard
+   - 若 `runtime.guardrails_mode = yolo`，则跳过 retrieval / project-memory / review-artifact 这类 runtime reminder 与 guard，由模型在工具边界内自主管理
    - 当最近 harness reminder 已明确要求“停止只读探索、直接基于当前证据行动”时
    - runtime 可以拒绝继续的 read-only tool call，并写入一条普通可重放错误结果
    - retrieval-tail guard 允许至多两次新的、精确命名的 `read_file`

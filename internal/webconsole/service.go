@@ -1190,16 +1190,18 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"default_provider": s.cfg.DefaultProvider,
+		"guardrails_mode":  s.cfg.Runtime.GuardrailsMode,
 		"providers":        provs,
 	})
 }
 
 func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider string `json:"provider"`
-		BaseURL  string `json:"base_url"`
-		Model    string `json:"model"`
-		APIKey   string `json:"api_key"`
+		Provider       string `json:"provider"`
+		BaseURL        string `json:"base_url"`
+		Model          string `json:"model"`
+		APIKey         string `json:"api_key"`
+		GuardrailsMode string `json:"guardrails_mode"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1211,6 +1213,9 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	if req.Provider != "" {
 		s.cfg.DefaultProvider = req.Provider
+	}
+	if strings.TrimSpace(req.GuardrailsMode) != "" {
+		s.cfg.Runtime.GuardrailsMode = configMode(req.GuardrailsMode)
 	}
 
 	if p, ok := s.cfg.Providers[req.Provider]; ok {
@@ -1227,6 +1232,15 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func configMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "yolo":
+		return "yolo"
+	default:
+		return "standard"
+	}
 }
 
 func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {

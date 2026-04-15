@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -1030,18 +1031,25 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if before["default_provider"] != "openai" {
 		t.Fatalf("unexpected default provider: %#v", before)
 	}
+	if before["guardrails_mode"] != "yolo" {
+		t.Fatalf("unexpected default guardrails mode: %#v", before)
+	}
 
 	postJSON(t, ts.URL+"/api/config", map[string]any{
-		"provider": "openai",
-		"base_url": "http://example.invalid/v1",
-		"model":    "gpt-test",
-		"api_key":  "secret-key",
+		"provider":        "openai",
+		"base_url":        "http://example.invalid/v1",
+		"model":           "gpt-test",
+		"api_key":         "secret-key",
+		"guardrails_mode": "standard",
 	}, http.StatusOK, nil)
 
 	var after map[string]any
 	postGetJSON(t, ts.URL+"/api/config", &after)
 	if after["default_provider"] != "openai" {
 		t.Fatalf("unexpected default provider after update: %#v", after)
+	}
+	if after["guardrails_mode"] != "standard" {
+		t.Fatalf("expected standard guardrails mode after update, got %#v", after["guardrails_mode"])
 	}
 	providers, _ := after["providers"].(map[string]any)
 	openaiProvider, _ := providers["openai"].(map[string]any)
@@ -1367,4 +1375,17 @@ func waitFor(t *testing.T, timeout time.Duration, fn func() bool, describe func(
 		time.Sleep(40 * time.Millisecond)
 	}
 	t.Fatalf("condition was not satisfied before timeout: %s", describe())
+}
+
+func mustEmbeddedAsset(t *testing.T, name string) []byte {
+	t.Helper()
+	assets, err := assetFS()
+	if err != nil {
+		t.Fatalf("asset fs: %v", err)
+	}
+	data, err := fs.ReadFile(assets, name)
+	if err != nil {
+		t.Fatalf("read asset %s: %v", name, err)
+	}
+	return data
 }

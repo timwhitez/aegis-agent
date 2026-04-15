@@ -128,6 +128,67 @@ func TestEnginePassesSessionMetadataIntoProviderRequest(t *testing.T) {
 	}
 }
 
+func TestEngineYoloBypassesRetrievalGuards(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "yolo"
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
+	writeEvidenceFile(t, meta.Workdir, "docs/guide.md", "hello from yolo\n")
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit the repo and keep going.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
+	reminder.Meta = map[string]any{
+		"source": "harness_reminder",
+		"kind":   "retrieval_tail",
+	}
+	if err := engine.store.AppendMessage(meta.ID, reminder); err != nil {
+		t.Fatalf("append reminder: %v", err)
+	}
+
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:   "call_shell_yolo",
+					Name: "shell",
+					Arguments: json.RawMessage(`{
+						"command":"python - <<'PY'\nfrom pathlib import Path\nprint(Path('docs/guide.md').read_text())\nPY"
+					}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != "tool" || len(last.ToolResults) == 0 {
+				t.Fatalf("expected tool result before finish, got %#v", last)
+			}
+			if last.ToolResults[0].IsError {
+				t.Fatalf("expected shell result to pass in yolo mode, got %#v", last.ToolResults[0])
+			}
+			if !strings.Contains(last.ToolResults[0].DisplayOutput, "hello from yolo") {
+				t.Fatalf("expected shell output to contain file text, got %#v", last.ToolResults[0].DisplayOutput)
+			}
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_finish_yolo",
+					Name:      "finish",
+					Arguments: json.RawMessage(`{"message":"done"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed status, got %s (%s)", result.Status, result.LastError)
+	}
+}
+
 func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	meta.Provider = "openai-compatible"
@@ -1385,11 +1446,21 @@ func TestEngineEmitsContextLoadedEventWithDurableState(t *testing.T) {
 }
 
 func newTestEngine(t *testing.T, mode string) (*Engine, session.SessionMetadata, session.State, *tools.Registry, *hooks.Manager, *skills.Catalog) {
-	return newTestEngineWithConfig(t, config.Default(), mode)
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	return newTestEngineWithConfig(t, cfg, mode)
 }
 
 func newTestEngineWithConfig(t *testing.T, cfg *config.Config, mode string) (*Engine, session.SessionMetadata, session.State, *tools.Registry, *hooks.Manager, *skills.Catalog) {
 	t.Helper()
+	switch strings.ToLower(strings.TrimSpace(cfg.Runtime.GuardrailsMode)) {
+	case "", "standard":
+		cfg.Runtime.GuardrailsMode = "standard"
+	case "yolo":
+		cfg.Runtime.GuardrailsMode = "yolo"
+	default:
+		cfg.Runtime.GuardrailsMode = "standard"
+	}
 	cfg.Session.Dir = t.TempDir()
 	cfg.Runtime.MaxTurnsHard = 4
 	store := session.NewStore(cfg.Session.Dir)

@@ -190,8 +190,9 @@ session 系统保证下面四件事同时成立：
 2. 读取 `state.json`
 3. 重建消息历史
 4. 追加新的 user message（如果提供）
-5. 将状态切回 `running`
-6. 继续 loop
+5. 重置本次恢复 run 的 bounded turn budget（避免沿用上一次 run 已耗尽的 `state.turn`）
+6. 将状态切回 `running`
+7. 继续 loop
 
 ### 9.2 不恢复的内容
 

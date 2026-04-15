@@ -273,6 +273,7 @@ skills:
     - ./skills
 
 runtime:
+  guardrails_mode: yolo
   exec_finish_required: true
   max_turns_soft: 24
   max_turns_hard: 40
@@ -298,6 +299,9 @@ hooks:
 
 说明：
 
+- `runtime.guardrails_mode` 支持 `yolo | standard`
+- 默认 `yolo`，即关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理
+- `standard` 会重新开启这些 runtime reminder / guard，适合更保守、更可控的 operator profile
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`

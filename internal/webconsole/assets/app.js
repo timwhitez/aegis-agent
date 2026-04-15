@@ -2390,12 +2390,16 @@ async function clearHistory() {
     await requestJSON('/api/sessions/clear', {
       method: 'POST'
     });
+    const wasHistoryView = state.currentView === 'history';
     resetChatSession({ notifyBackend: false });
     state.historyData = null;
     state.historyPage = 1;
     showToast('History cleared.', 'success');
     await fetchHistory(1);
     refreshOverview().catch(() => {});
+    if (wasHistoryView) {
+      switchView('chat');
+    }
   } catch (err) {
     showToast(err.message || 'Failed to clear history.', 'error');
   }
@@ -2500,6 +2504,7 @@ async function renderSettings() {
     const configData = await requestJSON('/api/config');
     const providers = configData.providers || {};
     const defaultProvider = configData.default_provider || '';
+    const guardrailsMode = configData.guardrails_mode || 'yolo';
     const options = Object.keys(providers).map((providerName) => `
       <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
     `).join('');
@@ -2507,10 +2512,20 @@ async function renderSettings() {
     container.innerHTML = `
       <div class="view-header">
         <h2 class="view-title">Settings</h2>
-        <p class="view-subtitle">Configure provider defaults and local API credentials.</p>
+        <p class="view-subtitle">Configure provider defaults, local API credentials, and guardrails mode.</p>
       </div>
       <div class="skill-card" style="max-width:680px;">
         <div style="display:flex; flex-direction:column; gap:20px;">
+          <div class="field">
+            <label style="display:block; font-weight:600; margin-bottom:8px;">Guardrails Mode</label>
+            <select id="settings-guardrails" class="input-container" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:12px;">
+              <option value="yolo" ${guardrailsMode === 'yolo' ? 'selected' : ''}>YOLO (default)</option>
+              <option value="standard" ${guardrailsMode === 'standard' ? 'selected' : ''}>Standard</option>
+            </select>
+            <p class="view-subtitle" style="margin-top:8px;">
+              YOLO disables runtime retrieval, project-memory, and review-artifact guardrails for new or resumed turns.
+            </p>
+          </div>
           <div class="field">
             <label style="display:block; font-weight:600; margin-bottom:8px;">API Provider</label>
             <select id="settings-provider" class="input-container" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:12px;">
@@ -2536,6 +2551,7 @@ async function renderSettings() {
     lucide.createIcons();
 
     const providerSelect = document.getElementById('settings-provider');
+    const guardrailsSelect = document.getElementById('settings-guardrails');
     const baseURLInput = document.getElementById('settings-baseurl');
     const modelInput = document.getElementById('settings-model');
     const apiKeyInput = document.getElementById('settings-apikey');
@@ -2562,6 +2578,7 @@ async function renderSettings() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            guardrails_mode: guardrailsSelect.value,
             provider: providerSelect.value,
             base_url: baseURLInput.value,
             model: modelInput.value,

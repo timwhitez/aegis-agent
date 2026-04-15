@@ -102,9 +102,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err != nil {
 			return RunResult{}, err
 		}
-		messages, err = e.maybeAppendHarnessReminder(meta, messages)
-		if err != nil {
-			return RunResult{}, err
+		if !e.guardrailsYolo() {
+			messages, err = e.maybeAppendHarnessReminder(meta, messages)
+			if err != nil {
+				return RunResult{}, err
+			}
 		}
 		todo, err := e.store.LoadTodo(meta.ID)
 		if err != nil {
@@ -118,6 +120,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		e.emit(meta.ID, "session.context.loaded", "prepare", contextLoadedEventData(meta, state.Turn, projectMemory, todo, tasks))
 
 		systemPrompt := buildSystemPrompt(meta.Workdir, meta.Mode, systemOverride, catalog.Summaries(), catalog.CommandTools(), state, messages, meta.AgentName, meta.AgentRole)
+		if e.guardrailsYolo() {
+			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Runtime retrieval, project-memory, and review-artifact guardrails are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
+		}
 		view, err := e.compactor.Build(meta.ID, meta.Workdir, state, messages, todo, tasks, e.cfg.Runtime.Compact.InputCharThreshold, e.cfg.Runtime.Compact.KeepRecentToolResults, func(evt events.Event) {
 			_ = e.store.AppendEvent(meta.ID, evt)
 			e.bus.Publish(evt)
@@ -264,7 +269,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if len(toolResults) > 0 {
 					currentMessages = append(currentMessages, session.NewToolMessage(toolResults))
 				}
-				guardKind, guardText := toolGuard(meta.Workdir, currentMessages, call.Name, toolArgs)
+				guardKind := ""
+				guardText := ""
+				if !e.guardrailsYolo() {
+					guardKind, guardText = toolGuard(meta.Workdir, currentMessages, call.Name, toolArgs)
+				}
 				var toolResult session.ToolResult
 				var toolErr error
 				if guardText != "" {
@@ -462,6 +471,10 @@ func (e *Engine) emit(sessionID, eventType, phase string, data map[string]any) {
 	evt := events.New(sessionID, eventType, phase, data)
 	_ = e.store.AppendEvent(sessionID, evt)
 	e.bus.Publish(evt)
+}
+
+func (e *Engine) guardrailsYolo() bool {
+	return strings.EqualFold(strings.TrimSpace(e.cfg.Runtime.GuardrailsMode), "yolo")
 }
 
 func (e *Engine) maybeAppendHarnessReminder(meta session.SessionMetadata, messages []session.Message) ([]session.Message, error) {

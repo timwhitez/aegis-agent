@@ -136,7 +136,7 @@ export GEMINI_API_KEY=...
 
 ## Provider 配置
 
-默认配置文件是 `.go-cli-agent/config.yaml`。当前项目保持“默认配置简洁，可选高级项显式开启”的风格。
+默认配置文件是 `.go-cli-agent/config.yaml`。当前项目默认使用 `runtime.guardrails_mode: yolo`，也就是关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理；如果你要更保守的行为，可以改回 `standard`，或者直接在 `experimental web` 的 Settings 页面里切换。
 
 OpenAI / `openai-compatible` 默认走 `Responses API`。为了保持本地 session 是唯一事实源，adapter 会默认发送 `store: false`，不依赖服务端持久化来续跑。
 

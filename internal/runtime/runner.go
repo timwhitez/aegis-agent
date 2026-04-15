@@ -314,6 +314,11 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
+	state.Turn = 0
+	state.PendingSteerCount = 0
+	state.PauseReason = ""
+	state.IncompleteReason = ""
+	state.LastError = ""
 	state.Status = session.StatusRunning
 	return r.runExisting(ctx, meta, state, req.SystemOverride)
 }

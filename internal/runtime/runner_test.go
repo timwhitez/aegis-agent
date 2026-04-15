@@ -407,6 +407,94 @@ func TestRunnerAppendUserMessageAppliesUserHook(t *testing.T) {
 	}
 }
 
+func TestRunnerContinueResetsTurnBudgetAfterMaxTurnsFailure(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Runtime.MaxTurnsHard = 1
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{
+					"type":"function_call",
+					"call_id":"call_1",
+					"name":"finish",
+					"arguments":"{\"message\":\"continued\"}"
+				}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIKeyEnv:  "OPENAI_API_KEY",
+		BaseURL:    server.URL + "/v1",
+		Model:      "gpt-5.4",
+		TimeoutSec: 30,
+		WireAPI:    "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+		RootSessionID:    "root",
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	state := session.State{
+		Status:    session.StatusFailed,
+		Phase:     "tool_execute",
+		Turn:      41,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		LastError: "max_turns_hard_exceeded",
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Message:   "Resume and finish.",
+	})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+
+	loaded, err := runner.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.Status != session.StatusCompleted {
+		t.Fatalf("expected completed state after continue, got %#v", loaded)
+	}
+	if loaded.Turn != 1 {
+		t.Fatalf("expected resumed run to restart turn budget, got turn=%d", loaded.Turn)
+	}
+	if loaded.LastError != "" {
+		t.Fatalf("expected continue to clear stale last_error, got %q", loaded.LastError)
+	}
+}
+
 func TestRunnerSteerRejectsEmptyMessage(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

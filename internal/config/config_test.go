@@ -78,6 +78,35 @@ func TestDefaultEnablesMultiAgentTools(t *testing.T) {
 	if !cfg.Runtime.MultiAgent.Enabled {
 		t.Fatal("expected multi-agent to be enabled by default")
 	}
+	if cfg.Runtime.GuardrailsMode != "yolo" {
+		t.Fatalf("expected yolo guardrails mode by default, got %q", cfg.Runtime.GuardrailsMode)
+	}
+}
+
+func TestNormalizeConfigNormalizesGuardrailsMode(t *testing.T) {
+	cfg := &Config{
+		Runtime: RuntimeConfig{
+			GuardrailsMode: " YOLO ",
+		},
+		Session: SessionConfig{
+			Dir: ".go-cli-agent/sessions",
+		},
+		Skills: SkillsConfig{
+			Dirs: []string{"./skills"},
+		},
+	}
+
+	normalizeConfig(cfg, "/tmp/project")
+
+	if cfg.Runtime.GuardrailsMode != "yolo" {
+		t.Fatalf("expected yolo guardrails mode, got %q", cfg.Runtime.GuardrailsMode)
+	}
+
+	cfg.Runtime.GuardrailsMode = "unknown"
+	normalizeConfig(cfg, "/tmp/project")
+	if cfg.Runtime.GuardrailsMode != "standard" {
+		t.Fatalf("expected invalid guardrails mode to fall back to standard, got %q", cfg.Runtime.GuardrailsMode)
+	}
 }
 
 func TestNormalizeConfigMigratesLegacyIsolationRootOutsideWorkspace(t *testing.T) {

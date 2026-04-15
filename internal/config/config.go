@@ -66,6 +66,7 @@ type RuntimeConfig struct {
 	MaxTurnsSoft       int              `yaml:"max_turns_soft"`
 	MaxTurnsHard       int              `yaml:"max_turns_hard"`
 	CommandTimeoutSec  int              `yaml:"command_timeout_sec"`
+	GuardrailsMode     string           `yaml:"guardrails_mode"`
 	Steer              SteerConfig      `yaml:"steer"`
 	MultiAgent         MultiAgentConfig `yaml:"multi_agent"`
 	Isolation          IsolationConfig  `yaml:"isolation"`
@@ -217,6 +218,7 @@ func Default() *Config {
 			MaxTurnsSoft:       24,
 			MaxTurnsHard:       40,
 			CommandTimeoutSec:  120,
+			GuardrailsMode:     "yolo",
 			Steer: SteerConfig{
 				PollIntervalMS:  250,
 				DefaultBehavior: "queue",
@@ -293,6 +295,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.Runtime.CommandTimeoutSec <= 0 {
 		cfg.Runtime.CommandTimeoutSec = 120
 	}
+	cfg.Runtime.GuardrailsMode = normalizeGuardrailsMode(cfg.Runtime.GuardrailsMode)
 	for name, provider := range cfg.Providers {
 		if provider.TimeoutSec <= 0 {
 			provider.TimeoutSec = 120
@@ -334,6 +337,17 @@ func normalizeConfig(cfg *Config, cwd string) {
 	cfg.Runtime.Isolation.RootDir = normalizeIsolationRootDir(cwd, cfg.Runtime.Isolation.RootDir)
 	for i, dir := range cfg.Skills.Dirs {
 		cfg.Skills.Dirs[i] = resolveMaybeRelative(cwd, dir)
+	}
+}
+
+func normalizeGuardrailsMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "standard":
+		return "standard"
+	case "yolo":
+		return "yolo"
+	default:
+		return "standard"
 	}
 }
 
