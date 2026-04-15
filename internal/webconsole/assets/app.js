@@ -40,7 +40,8 @@ const state = {
   refreshingOverview: false,
   refreshingSession: false,
   pendingSessionRefresh: null,
-  pendingOverviewRefresh: null
+  pendingOverviewRefresh: null,
+  lastInputWasEmpty: true
 };
 
 const nodes = {
@@ -90,6 +91,7 @@ function init() {
   renderCurrentSession();
   
   if (state.currentView === 'chat' && nodes.chatInput) {
+    state.lastInputWasEmpty = !nodes.chatInput.value.trim();
     nodes.chatInput.focus();
   }
 }
@@ -271,13 +273,7 @@ function setupEventListeners() {
   });
 
   nodes.chatInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      if (!event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-      // Allow Cmd+Enter / Ctrl+Enter as an alternative to submit, especially useful on multi-line modes
+    if (event.key === 'Enter' && (!event.shiftKey || event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       sendMessage();
     }
@@ -293,9 +289,9 @@ function setupEventListeners() {
     
     // Only update UI if we really need to (e.g. for empty vs non-empty state)
     const isNowEmpty = !this.value.trim();
-    const wasEmpty = !state._lastInputWasEmpty;
+    const wasEmpty = state.lastInputWasEmpty;
     if (isNowEmpty !== wasEmpty || state.nextSendInterrupt) {
-      state._lastInputWasEmpty = isNowEmpty;
+      state.lastInputWasEmpty = isNowEmpty;
       updateUI();
     }
   });
@@ -412,6 +408,7 @@ function switchView(viewName, options = {}) {
   if (viewName === 'chat') {
     renderCurrentSession();
     if (nodes.chatInput) {
+      state.lastInputWasEmpty = !nodes.chatInput.value.trim();
       nodes.chatInput.focus();
     }
     if (shouldPollCurrentSession()) {
@@ -453,6 +450,7 @@ async function sendMessage() {
 
   nodes.chatInput.value = '';
   nodes.chatInput.style.height = 'auto';
+  state.lastInputWasEmpty = true;
   updateUI();
   renderCurrentSession();
 
@@ -582,6 +580,7 @@ function resetChatSession({ notifyBackend }) {
     tone: 'neutral'
   };
   state.isGenerating = false;
+  state.lastInputWasEmpty = !nodes.chatInput.value.trim();
   updateSessionId();
   if (notifyBackend && state.ws && state.ws.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify({
@@ -842,7 +841,6 @@ function renderCurrentSession() {
     return;
   }
 
-  lucide.createIcons();
   if (shouldStick) {
     nodes.chatContainer.scrollTo({
       top: nodes.chatContainer.scrollHeight,
@@ -2310,7 +2308,7 @@ function renderHistory(data) {
     </section>
   `;
   if (window.lucide && lucide.createIcons) {
-    lucide.createIcons({ root: nodes.historyContainer });
+    lucide.createIcons({ root: container });
   }
 }
 
@@ -2532,7 +2530,7 @@ async function renderSettings() {
       </div>
     `;
     if (window.lucide && lucide.createIcons) {
-      lucide.createIcons({ root: nodes.settingsContainer });
+      lucide.createIcons({ root: container });
     }
 
     const providerSelect = document.getElementById('settings-provider');
