@@ -1,4 +1,6 @@
 # Progress
-- Refreshed the report stack for TT14 round66 using only the owning runtime compaction path and direct store writes.
-- Reused existing evidence and spent only narrow targeted reads for decisive line-backed anchors in `internal/runtime/compaction.go` and `internal/session/store.go`.
-- Wrote the round66 TT14 artifact at `validation/runs/2026-04-01-openai-compatible-gpt-5.4-round66-task-heavy-real-matrix-after-review-sandbox-fix/cases/TT14/artifact.md`.
+
+- Completed the experimental webconsole frontend interaction audit and captured findings in `reports/webconsole_interaction_audit.md`.
+- Kept the scope frontend-only and made one minimal UI interaction fix in `internal/webconsole/assets/app.js`: clearing history from the history screen now returns the user to the chat view instead of leaving them on an emptied history panel.
+- Simplified validation to the smallest necessary project-local check and confirmed `go test ./internal/webconsole/...` passes.
+- Left broader UX observations documented as audit items rather than expanding implementation scope.

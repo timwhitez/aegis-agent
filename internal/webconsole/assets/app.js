@@ -88,6 +88,10 @@ function init() {
   refreshOverview();
   switchView(state.currentView, { skipPersist: true });
   renderCurrentSession();
+  
+  if (state.currentView === 'chat' && nodes.chatInput) {
+    nodes.chatInput.focus();
+  }
 }
 
 function nextEphemeralSessionId() {
@@ -267,16 +271,33 @@ function setupEventListeners() {
   });
 
   nodes.chatInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter') {
+      if (!event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      // Allow Cmd+Enter / Ctrl+Enter as an alternative to submit, especially useful on multi-line modes
       event.preventDefault();
       sendMessage();
     }
   });
 
+  let lastScrollHeight = 0;
   nodes.chatInput.addEventListener('input', function onInput() {
-    this.style.height = 'auto';
-    this.style.height = `${this.scrollHeight}px`;
-    updateUI();
+    if (this.scrollHeight !== lastScrollHeight) {
+      this.style.height = 'auto';
+      this.style.height = `${this.scrollHeight}px`;
+      lastScrollHeight = this.scrollHeight;
+    }
+    
+    // Only update UI if we really need to (e.g. for empty vs non-empty state)
+    const isNowEmpty = !this.value.trim();
+    const wasEmpty = !state._lastInputWasEmpty;
+    if (isNowEmpty !== wasEmpty || state.nextSendInterrupt) {
+      state._lastInputWasEmpty = isNowEmpty;
+      updateUI();
+    }
   });
 
   document.addEventListener('click', async (event) => {
@@ -324,6 +345,14 @@ function setupEventListeners() {
       if (parentSessionID) {
         await openSession(parentSessionID, { switchToChat: true });
       }
+      return;
+    }
+
+    const skillActionBtn = event.target.closest('[data-skill-action]');
+    if (skillActionBtn) {
+      const id = skillActionBtn.getAttribute('data-skill-action');
+      const isInstalled = skillActionBtn.getAttribute('data-skill-installed') === '1';
+      handleSkillAction(id, isInstalled, skillActionBtn);
       return;
     }
 
@@ -382,6 +411,9 @@ function switchView(viewName, options = {}) {
 
   if (viewName === 'chat') {
     renderCurrentSession();
+    if (nodes.chatInput) {
+      nodes.chatInput.focus();
+    }
     if (shouldPollCurrentSession()) {
       queueSessionRefresh(60);
     }
@@ -620,23 +652,35 @@ function updateUI() {
 
 function startPolling() {
   stopPolling();
-  state.pollHandle = window.setInterval(() => {
+  
+  const pollStep = () => {
+    let nextInterval = POLL_INTERVAL_MS;
+
     if (state.currentView === 'history') {
       fetchHistory(state.historyPage, { showLoading: false, silentError: true });
-      return;
+    } else {
+      if (shouldPollChatOverview()) {
+        refreshOverview();
+      }
+      if (shouldPollCurrentSession()) {
+        refreshCurrentSession();
+      }
+      
+      // If we are actively generating or disconnected, poll faster. Otherwise relax the interval.
+      if (!state.isGenerating && state.isConnected) {
+        nextInterval = Math.min(POLL_INTERVAL_MS * 3, 5000); // 3-5 seconds when idle
+      }
     }
-    if (shouldPollChatOverview()) {
-      refreshOverview();
-    }
-    if (shouldPollCurrentSession()) {
-      refreshCurrentSession();
-    }
-  }, POLL_INTERVAL_MS);
+    
+    state.pollHandle = window.setTimeout(pollStep, nextInterval);
+  };
+  
+  state.pollHandle = window.setTimeout(pollStep, POLL_INTERVAL_MS);
 }
 
 function stopPolling() {
   if (state.pollHandle) {
-    window.clearInterval(state.pollHandle);
+    window.clearTimeout(state.pollHandle);
     state.pollHandle = null;
   }
 }
@@ -856,6 +900,9 @@ function patchChatSlot(node, key, html) {
   node.innerHTML = markup;
   node.hidden = markup === '';
   state.chatRenderCache[key] = markup;
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: node });
+  }
   return true;
 }
 
@@ -1248,43 +1295,6 @@ function renderPendingStageCard() {
   `;
 }
 
-function renderInspector() {
-  nodes.inspectorTabs.forEach((tab) => {
-    tab.classList.toggle('active', tab.getAttribute('data-inspector-tab') === state.activeInspectorTab);
-  });
-
-  if (!state.sessionDetail) {
-    nodes.inspectorStatusBadge.className = 'status-badge neutral';
-    nodes.inspectorStatusBadge.textContent = hasDurableSession() ? 'Loading' : 'Idle';
-    nodes.inspectorContent.innerHTML = `
-      <div class="empty-panel">
-        ${hasDurableSession()
-          ? 'Loading durable session detail, timeline events, tools, and child-agent state…'
-          : 'No durable session selected yet. Start a prompt or pick one from recent sessions.'}
-      </div>
-    `;
-    return;
-  }
-
-  nodes.inspectorStatusBadge.className = `status-badge ${toneForStatus(state.sessionDetail.state.status)}`;
-  nodes.inspectorStatusBadge.textContent = humanizeStatus(state.sessionDetail.state.status);
-
-  switch (state.activeInspectorTab) {
-    case 'timeline':
-      nodes.inspectorContent.innerHTML = renderTimelinePanel(state.sessionDetail);
-      break;
-    case 'agents':
-      nodes.inspectorContent.innerHTML = renderAgentsPanel(state.sessionDetail);
-      break;
-    case 'tasks':
-      nodes.inspectorContent.innerHTML = renderTasksPanel(state.sessionDetail);
-      break;
-    case 'summary':
-    default:
-      nodes.inspectorContent.innerHTML = renderSummaryPanel(state.sessionDetail);
-      break;
-  }
-}
 
 function renderSummaryPanel(detail) {
   const counters = summarizeCurrentSession();
@@ -2299,7 +2309,9 @@ function renderHistory(data) {
       </div>
     </section>
   `;
-  lucide.createIcons();
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: nodes.historyContainer });
+  }
 }
 
 function loadPersistedUIState() {
@@ -2405,35 +2417,6 @@ async function clearHistory() {
   }
 }
 
-function renderOverviewFeedItem(item) {
-  const descriptor = item.kind === 'session_summary'
-    ? {
-        icon: 'message-circle',
-        title: truncateText(item.text || 'Session update', 120),
-        copy: `${item.event_type || 'session'} · ${item.data?.model || item.data?.agent_name || 'n/a'}`,
-        tone: 'live'
-      }
-    : {
-        icon: 'play',
-        title: truncateText(item.text || 'Queue update', 120),
-        copy: `${item.event_type || 'event'} · ${item.data?.model || item.data?.agent_name || 'n/a'}`,
-        tone: item.event_type?.includes('failed') ? 'danger' : 'queued'
-      };
-  return `
-    <div class="timeline-card">
-      <div class="timeline-icon ${descriptor.tone === 'danger' ? 'danger' : descriptor.tone === 'queued' ? 'warning' : ''}">
-        <i data-lucide="${escapeAttr(descriptor.icon)}" style="width:16px;height:16px;"></i>
-      </div>
-      <div class="timeline-card-copy">
-        <div class="timeline-card-top">
-          <div class="timeline-card-title">${escapeHTML(descriptor.title)}</div>
-          <span class="timeline-card-meta">${escapeHTML(formatTimestamp(item.time))}</span>
-        </div>
-        <div class="timeline-card-text">${escapeHTML(descriptor.copy)}</div>
-      </div>
-    </div>
-  `;
-}
 
 async function fetchSkills() {
   try {
@@ -2468,13 +2451,15 @@ function renderSkills(skills) {
       <p class="skill-desc">${escapeHTML(skill.description)}</p>
       <div class="skill-footer">
         <span style="font-size:11px; color:var(--text-muted)">${escapeHTML((skill.downloads / 1000).toFixed(1))}k downloads</span>
-        <button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" onclick="handleSkillAction('${escapeAttr(skill.id)}', ${skill.installed}, this)">
+        <button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}">
           ${skill.installed ? 'Uninstall' : 'Install'}
         </button>
       </div>
     </div>
   `).join('');
-  lucide.createIcons();
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: nodes.skillsGrid });
+  }
 }
 
 async function handleSkillAction(id, isInstalled, button) {
@@ -2494,8 +2479,6 @@ async function handleSkillAction(id, isInstalled, button) {
     button.innerText = 'Uninstall';
   }
 }
-
-window.handleSkillAction = handleSkillAction;
 
 async function renderSettings() {
   const container = nodes.views.settings;
@@ -2548,7 +2531,9 @@ async function renderSettings() {
         </div>
       </div>
     `;
-    lucide.createIcons();
+    if (window.lucide && lucide.createIcons) {
+      lucide.createIcons({ root: nodes.settingsContainer });
+    }
 
     const providerSelect = document.getElementById('settings-provider');
     const guardrailsSelect = document.getElementById('settings-guardrails');
@@ -2664,7 +2649,9 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
       }
       childrenContainer.style.display = hidden ? 'block' : 'none';
       button.innerHTML = `<i data-lucide="${hidden ? 'folder-open' : 'folder'}" style="width:14px;height:14px;"></i><span>${escapeHTML(node.name)}</span>`;
-      lucide.createIcons();
+      if (window.lucide && lucide.createIcons) {
+        lucide.createIcons({ root: button });
+      }
     };
 
     itemWrapper.appendChild(button);
@@ -2675,8 +2662,8 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     }
   });
 
-  if (level === 0) {
-    lucide.createIcons();
+  if (level === 0 && window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: nodes.fileTree });
   }
 }
 
