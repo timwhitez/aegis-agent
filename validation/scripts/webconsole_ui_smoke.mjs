@@ -358,6 +358,12 @@ async function main() {
       15000,
       'chat view'
     );
+    results.interactions.chat_scrollbar_visible = await browserClient.evaluate(`(() => {
+      const el = document.getElementById('chat-container');
+      if (!el) return false;
+      const styles = window.getComputedStyle(el);
+      return !el.classList.contains('scrollbar-hide') && styles.overflowY === 'auto';
+    })()`);
 
     const initialSessionChip = await browserClient.evaluate(`document.getElementById('session-id-display')?.textContent || ''`);
     const initialEphemeralPrefix = normalizeWhitespace(initialSessionChip);
@@ -549,6 +555,22 @@ async function main() {
       15000,
       'chat return after history'
     );
+    const settledSessionResourceCountBefore = await browserClient.evaluate(`(() => {
+      const sessionId = ${JSON.stringify(activeSessionId)};
+      return performance
+        .getEntriesByType('resource')
+        .filter((entry) => String(entry.name || '').includes('/api/sessions/') && String(entry.name || '').includes(sessionId))
+        .length;
+    })()`);
+    await sleep(4200);
+    const settledSessionResourceCountAfter = await browserClient.evaluate(`(() => {
+      const sessionId = ${JSON.stringify(activeSessionId)};
+      return performance
+        .getEntriesByType('resource')
+        .filter((entry) => String(entry.name || '').includes('/api/sessions/') && String(entry.name || '').includes(sessionId))
+        .length;
+    })()`);
+    results.interactions.settled_session_stops_polling = settledSessionResourceCountAfter === settledSessionResourceCountBefore;
 
     const sessionDetail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(activeSessionId)}?limit=80`);
     const childDetail = childSessionId ? await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(childSessionId)}?limit=40`) : { state: {} };

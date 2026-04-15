@@ -29,6 +29,12 @@ const state = {
     copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
     tone: 'neutral'
   },
+  chatRenderCache: {
+    activity: '',
+    flow: '',
+    body: '',
+    pending: ''
+  },
   nextSendInterrupt: false,
   pollHandle: null,
   refreshingOverview: false,
@@ -372,8 +378,12 @@ function switchView(viewName, options = {}) {
 
   if (viewName === 'chat') {
     renderCurrentSession();
-    queueSessionRefresh(60);
-    queueOverviewRefresh(60);
+    if (shouldPollCurrentSession()) {
+      queueSessionRefresh(60);
+    }
+    if (shouldPollChatOverview()) {
+      queueOverviewRefresh(60);
+    }
   }
   if (viewName === 'history') {
     fetchHistory();
@@ -585,10 +595,10 @@ function startPolling() {
       fetchHistory(state.historyPage, { showLoading: false, silentError: true });
       return;
     }
-    if (state.currentView === 'chat') {
+    if (shouldPollChatOverview()) {
       refreshOverview();
     }
-    if (state.currentView === 'chat' && hasDurableSession()) {
+    if (shouldPollCurrentSession()) {
       refreshCurrentSession();
     }
   }, POLL_INTERVAL_MS);
@@ -618,6 +628,23 @@ function queueOverviewRefresh(delay = 180) {
   }, delay);
 }
 
+function shouldPollChatOverview() {
+  if (state.currentView !== 'chat') {
+    return false;
+  }
+  if (!state.overview) {
+    return true;
+  }
+  return state.isGenerating || !hasDurableSession();
+}
+
+function shouldPollCurrentSession() {
+  if (state.currentView !== 'chat' || !hasDurableSession()) {
+    return false;
+  }
+  return state.isGenerating || !state.sessionDetail;
+}
+
 async function refreshOverview() {
   if (state.refreshingOverview) {
     return;
@@ -625,7 +652,9 @@ async function refreshOverview() {
   state.refreshingOverview = true;
   try {
     state.overview = await requestJSON('/api/overview');
-    renderCurrentSession();
+    if (state.currentView === 'chat') {
+      renderCurrentSession();
+    }
   } catch (err) {
     console.error('overview error', err);
     if (state.currentView === 'history') {
@@ -675,8 +704,81 @@ async function refreshCurrentSession() {
 }
 
 function renderCurrentSession() {
-  renderMessageStream();
+  const slots = ensureChatSlots();
+  const previousScrollTop = nodes.chatContainer.scrollTop;
+  const previousScrollHeight = nodes.chatContainer.scrollHeight;
+  const shouldStick = isChatNearBottom(nodes.chatContainer) || !state.chatRenderCache.body;
+  const sections = renderMessageStream();
+  let mutated = false;
+
+  mutated = patchChatSlot(slots.activity, 'activity', sections.activity) || mutated;
+  mutated = patchChatSlot(slots.flow, 'flow', sections.flow) || mutated;
+  mutated = patchChatSlot(slots.body, 'body', sections.body) || mutated;
+  mutated = patchChatSlot(slots.pending, 'pending', sections.pending) || mutated;
+
+  if (!mutated) {
+    return;
+  }
+
   lucide.createIcons();
+  if (shouldStick) {
+    nodes.chatContainer.scrollTo({
+      top: nodes.chatContainer.scrollHeight,
+      behavior: prefersReducedMotion() || previousScrollHeight === 0 ? 'auto' : 'smooth'
+    });
+    return;
+  }
+  nodes.chatContainer.scrollTop = previousScrollTop;
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
+}
+
+function isChatNearBottom(container) {
+  if (!container) {
+    return true;
+  }
+  const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
+  return remaining <= 96;
+}
+
+function ensureChatSlots() {
+  let shell = nodes.chatMessages.querySelector('.chat-stream-shell');
+  if (!shell) {
+    nodes.chatMessages.innerHTML = `
+      <div class="chat-stream-shell">
+        <div class="chat-slot chat-slot-activity" data-chat-slot="activity"></div>
+        <div class="chat-slot chat-slot-flow" data-chat-slot="flow"></div>
+        <div class="chat-slot chat-slot-body" data-chat-slot="body"></div>
+        <div class="chat-slot chat-slot-pending" data-chat-slot="pending"></div>
+      </div>
+    `;
+    state.chatRenderCache = {
+      activity: '',
+      flow: '',
+      body: '',
+      pending: ''
+    };
+    shell = nodes.chatMessages.querySelector('.chat-stream-shell');
+  }
+  return {
+    activity: shell.querySelector('[data-chat-slot="activity"]'),
+    flow: shell.querySelector('[data-chat-slot="flow"]'),
+    body: shell.querySelector('[data-chat-slot="body"]'),
+    pending: shell.querySelector('[data-chat-slot="pending"]')
+  };
+}
+
+function patchChatSlot(node, key, html) {
+  const markup = html || '';
+  if (state.chatRenderCache[key] === markup) {
+    return false;
+  }
+  node.innerHTML = markup;
+  node.hidden = markup === '';
+  state.chatRenderCache[key] = markup;
+  return true;
 }
 
 function summarizeCurrentSession() {
@@ -716,34 +818,12 @@ function renderMessageStream() {
   const detailMessages = maybeArray(state.sessionDetail?.messages);
   const optimisticMessages = state.optimisticMessages.slice();
   const stream = detailMessages.length ? detailMessages.concat(optimisticMessages) : optimisticMessages;
-  const sections = [];
-
-  if (hasDurableSession() || state.isGenerating) {
-    sections.push(renderSessionActivityCard());
-  }
-
-  const flowLane = renderFlowLane();
-  if (flowLane) {
-    sections.push(flowLane);
-  }
-
-  if (!stream.length) {
-    nodes.chatMessages.innerHTML = `
-      ${sections.join('')}
-      ${renderEmptySessionState()}
-      ${state.isGenerating ? renderPendingStageCard() : ''}
-    `;
-    nodes.chatContainer.scrollTop = nodes.chatContainer.scrollHeight;
-    return;
-  }
-
-  const html = stream.map((message) => renderMessage(message)).join('');
-  sections.push(html);
-  if (state.isGenerating) {
-    sections.push(renderPendingStageCard());
-  }
-  nodes.chatMessages.innerHTML = sections.join('');
-  nodes.chatContainer.scrollTop = nodes.chatContainer.scrollHeight;
+  return {
+    activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
+    flow: renderFlowLane(),
+    body: stream.length ? stream.map((message) => renderMessage(message)).join('') : renderEmptySessionState(),
+    pending: state.isGenerating ? renderPendingStageCard() : ''
+  };
 }
 
 function renderEmptySessionState() {
@@ -1396,11 +1476,16 @@ async function openSession(sessionID, options = {}) {
   state.optimisticMessages = [];
   state.nextSendInterrupt = false;
   state.liveEvents = [];
+  state.isGenerating = false;
+  state.liveActivity = {
+    title: 'Loading session',
+    copy: 'Loading durable session detail and tool activity.',
+    tone: 'neutral'
+  };
   if (options.switchToChat !== false) {
     switchView('chat');
   }
   await refreshCurrentSession();
-  queueOverviewRefresh(60);
 }
 
 function collectRecentToolEntries(messages) {
