@@ -777,16 +777,6 @@ if [[ -z "$PRE_SMOKE_FAILED_JOB_ID" ]]; then
 fi
 wait_for_job_status "$WEB_B_BASE_URL" "$PRE_SMOKE_FAILED_JOB_ID" "${PRE_SMOKE_FAILED_JOB_DETAIL_JSON}" 180 '"status":"failed"'
 
-printf '== browser ui smoke ==\n'
-CURRENT_PHASE="browser ui smoke"
-node ./validation/scripts/webconsole_ui_smoke.mjs \
-	--base-url "$WEB_B_BASE_URL" \
-	--workdir "$DOCSET_DIR" \
-	--queue-workdir "$PLATFORM_PY_DIR" \
-	--output "$UI_SMOKE_JSON" \
-	--dom-output "$UI_SMOKE_DOM" \
-	--chrome "$CHROME_BIN_RESOLVED"
-
 printf '== queue workers and parent notification ==\n'
 CURRENT_PHASE="queue workers and parent notification"
 SCALE_STATUS="$(post_json "${WEB_B_BASE_URL}/api/workers" '{"desired_count":2}' "${RAW_DIR}/queue-workers-scale.json")"
@@ -864,6 +854,16 @@ if ! grep -Fq "\"queue_job_id\":\"${JOB2_ID}\"" "${RAW_DIR}/queue-background-aft
 fi
 
 copy_session_evidence "$PARENT_SESSION_ID" "${EVIDENCE_DIR}/parent-session-after-queue"
+
+printf '== browser ui smoke ==\n'
+CURRENT_PHASE="browser ui smoke"
+node ./validation/scripts/webconsole_ui_smoke.mjs \
+	--base-url "$WEB_B_BASE_URL" \
+	--workdir "$DOCSET_DIR" \
+	--queue-workdir "$PLATFORM_PY_DIR" \
+	--output "$UI_SMOKE_JSON" \
+	--dom-output "$UI_SMOKE_DOM" \
+	--chrome "$CHROME_BIN_RESOLVED"
 
 cat >"$SUMMARY_PATH" <<EOF
 # Focused Follow-Up Summary
