@@ -11,6 +11,7 @@ const state = {
   isGenerating: false,
   isConnected: false,
   ws: null,
+  meta: null,
   sessionId: nextEphemeralSessionId(),
   sessionBacked: false,
   sessionDetail: null,
@@ -61,6 +62,8 @@ const nodes = {
   toastRack: document.getElementById('toast-rack'),
   skillsGrid: document.getElementById('skills-grid'),
   fileTree: document.getElementById('file-tree'),
+  workspaceSubtitle: document.getElementById('workspace-subtitle'),
+  workspaceRootChip: document.getElementById('workspace-root-chip'),
   editorFilename: document.getElementById('editor-filename'),
   editorContent: document.getElementById('editor-content'),
   views: {
@@ -86,6 +89,7 @@ function init() {
   setupEventListeners();
   resetChatSession({ notifyBackend: false });
   startPolling();
+  refreshMeta().catch(() => {});
   refreshOverview();
   switchView(state.currentView, { skipPersist: true });
   renderCurrentSession();
@@ -98,6 +102,10 @@ function init() {
 
 function nextEphemeralSessionId() {
   return '0x' + Math.random().toString(16).slice(2, 8).toUpperCase();
+}
+
+function isEphemeralSessionId(sessionID) {
+  return /^0x[0-9a-f]+$/i.test(String(sessionID || '').trim());
 }
 
 function hasDurableSession() {
@@ -152,7 +160,11 @@ function handleServerEvent(data) {
         return;
       }
       if (data.payload?.sessionId) {
-        adoptSession(data.payload.sessionId, true);
+        const durable = !isEphemeralSessionId(data.payload.sessionId);
+        adoptSession(data.payload.sessionId, durable);
+        if (!durable) {
+          break;
+        }
         queueSessionRefresh(120);
         queueOverviewRefresh(240);
       }
@@ -782,16 +794,13 @@ async function refreshOverview() {
     }
   } catch (err) {
     console.error('overview error', err);
-    if (state.currentView === 'history') {
-      nodes.views.history.innerHTML = '<div class="empty-panel">Failed to load recent activity.</div>';
-    }
   } finally {
     state.refreshingOverview = false;
   }
 }
 
 async function refreshCurrentSession() {
-  if (!hasDurableSession() || state.refreshingSession) {
+  if (!hasDurableSession() || state.refreshingSession || isEphemeralSessionId(state.sessionId)) {
     return;
   }
   state.refreshingSession = true;
@@ -937,6 +946,67 @@ function summarizeCurrentSession() {
   };
 }
 
+function summarizeProviderFailure(detail) {
+  const raw = String(detail?.state?.last_error || '').trim();
+  if (!raw) {
+    return null;
+  }
+  const lower = raw.toLowerCase();
+  const retryCount = maybeArray(detail?.events).filter((event) => event.type === 'provider.retry').length;
+  if (lower.includes('auth_unavailable') || lower.includes('no auth available')) {
+    return {
+      label: 'Upstream auth routing',
+      hint: 'The gateway accepted earlier work, then later reported auth_unavailable. Credentials may still be valid; retry later or switch provider routing.',
+      activityCopy: 'Upstream auth routing failed after the session had already started. Credentials may still be valid; retry later or check provider routing.'
+    };
+  }
+  if (lower.includes('token_invalidated') || lower.includes('token_revoked') || lower.includes('invalid api key') || lower.includes('auth_error') || lower.includes('unauthorized') || lower.includes('forbidden')) {
+    return {
+      label: 'Credential failure',
+      hint: 'The provider rejected the current credentials. Refresh the API key or choose another configured provider.',
+      activityCopy: 'The provider rejected the current credentials. Refresh the API key or switch providers before continuing.'
+    };
+  }
+  if (lower.includes('rate_limit') || lower.includes('429')) {
+    return {
+      label: 'Rate limit',
+      hint: 'The provider throttled this request. Wait, reduce concurrency, or continue later.',
+      activityCopy: 'The provider throttled this session. Wait or reduce concurrency before continuing.'
+    };
+  }
+  if (lower.includes('invalid_request') || lower.includes('unprocessable') || lower.includes('unsupported parameter')) {
+    return {
+      label: 'Request contract',
+      hint: 'The provider rejected the request payload. Check the selected provider, model, and request options.',
+      activityCopy: 'The provider rejected the request payload. Review provider, model, and request options.'
+    };
+  }
+  if (
+    lower.includes('upstream_timeout') ||
+    lower.includes('transport timeout') ||
+    lower.includes('context deadline exceeded') ||
+    lower.includes('i/o timeout') ||
+    lower.includes('connection reset') ||
+    lower.includes('stream disconnected') ||
+    lower.includes('stream disconnect')
+  ) {
+    const retryNote = retryCount > 0 ? ` The session already emitted ${retryCount} provider.retry event${retryCount === 1 ? '' : 's'}.` : '';
+    return {
+      label: 'Retryable upstream transport',
+      hint: `The provider connection timed out or disconnected mid-run.${retryNote} Retry or continue later; credentials may still be valid.`,
+      activityCopy: `The provider connection timed out or disconnected mid-run.${retryNote} Retry or continue later; credentials may still be valid.`
+    };
+  }
+  if (lower.includes('server_error')) {
+    return {
+      label: 'Upstream provider error',
+      hint: 'The upstream provider returned a server-side error. Retry later and inspect the raw provider error below if it repeats.',
+      activityCopy: 'The upstream provider returned a server-side error. Retry later and inspect the raw provider error if it repeats.'
+    };
+  }
+  return null;
+}
+
 function renderMessageStream() {
   const detailMessages = maybeArray(state.sessionDetail?.messages);
   const optimisticMessages = state.optimisticMessages.slice();
@@ -981,7 +1051,8 @@ function renderSessionActivityCard() {
   const status = detail?.state?.status || (state.isGenerating ? 'running' : 'idle');
   const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : state.liveActivity.title;
   const tone = toneForStatus(status);
-  const copy = detail?.state?.last_error || state.liveActivity.copy;
+  const failureSummary = detail ? summarizeProviderFailure(detail) : null;
+  const copy = failureSummary?.activityCopy || detail?.state?.last_error || state.liveActivity.copy;
   const summary = summarizeLiveCounters(counters);
 
   return `
@@ -1298,6 +1369,7 @@ function renderSummaryPanel(detail) {
   const counters = summarizeCurrentSession();
   const recentTools = collectRecentToolEntries(detail.messages).slice(-6).reverse();
   const loadedSkills = maybeArray(detail.state?.loaded_skills);
+  const failureSummary = summarizeProviderFailure(detail);
   return `
     <section class="panel-section">
       <div class="summary-grid wide">
@@ -1323,6 +1395,8 @@ function renderSummaryPanel(detail) {
         ${detail.metadata.isolation?.mode ? renderKVRow('Isolation', `${detail.metadata.isolation.mode}${detail.metadata.isolation.requested_mode ? ` (requested ${detail.metadata.isolation.requested_mode})` : ''}`) : ''}
         ${loadedSkills.length ? renderKVRow('Loaded skills', loadedSkills.join(', ')) : ''}
         ${detail.active_handle ? renderKVRow('Webconsole handle', 'active') : ''}
+        ${failureSummary ? renderKVRow('Failure class', failureSummary.label) : ''}
+        ${failureSummary ? renderKVRow('Operator hint', failureSummary.hint) : ''}
         ${detail.state.last_error ? renderKVRow('Last error', detail.state.last_error) : ''}
       </div>
     </section>
@@ -2350,6 +2424,9 @@ function restoreUIState() {
 }
 
 function renderHistorySessionCard(item) {
+  const metaText = item.last_error
+    ? truncateText(item.last_error, 140)
+    : `${item.model || item.provider || 'n/a'} · ${phaseHeadline(item.phase || 'prepare')}`;
   return `
     <div class="history-session-row">
       <div class="history-session-main">
@@ -2359,7 +2436,7 @@ function renderHistorySessionCard(item) {
           <span class="history-session-time">${escapeHTML(formatTimestamp(item.updated_at || item.created_at))}</span>
         </div>
         <div class="history-session-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
-        <div class="history-session-meta">${escapeHTML(item.model || item.provider || 'n/a')} · ${escapeHTML(phaseHeadline(item.phase || 'prepare'))}</div>
+        <div class="history-session-meta">${escapeHTML(metaText)}</div>
       </div>
       <div class="history-row-actions">
         <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">Open session</button>
@@ -2400,16 +2477,12 @@ async function clearHistory() {
     await requestJSON('/api/sessions/clear', {
       method: 'POST'
     });
-    const wasHistoryView = state.currentView === 'history';
     resetChatSession({ notifyBackend: false });
     state.historyData = null;
     state.historyPage = 1;
     showToast('History cleared.', 'success');
     await fetchHistory(1);
     refreshOverview().catch(() => {});
-    if (wasHistoryView) {
-      switchView('chat');
-    }
   } catch (err) {
     showToast(err.message || 'Failed to clear history.', 'error');
   }
@@ -2582,9 +2655,13 @@ async function renderSettings() {
 
 async function fetchWorkspace() {
   try {
+    if (!state.meta) {
+      await refreshMeta().catch(() => {});
+    }
+    updateWorkspaceMeta();
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
     nodes.editorFilename.innerText = 'Workspace';
-    nodes.editorContent.innerText = 'Choose a file or directory to inspect.';
+    nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
     const tree = await requestJSON('/api/files?path=.');
     state.fileTree = tree;
     renderFileTree(tree);
@@ -2594,6 +2671,26 @@ async function fetchWorkspace() {
     nodes.editorFilename.innerText = 'Workspace';
     nodes.editorContent.innerText = 'Failed to load workspace.';
     showToast('Failed to load workspace.', 'error');
+  }
+}
+
+async function refreshMeta() {
+  state.meta = await requestJSON('/api/meta');
+  updateWorkspaceMeta();
+}
+
+function updateWorkspaceMeta() {
+  if (nodes.workspaceSubtitle) {
+    if (state.meta?.workspace_switch_supported) {
+      nodes.workspaceSubtitle.textContent = 'Browse the active workspace and switch roots when needed.';
+    } else {
+      nodes.workspaceSubtitle.textContent = 'Browsing the current server workspace only. Switching roots is not available in this experimental view.';
+    }
+  }
+  if (nodes.workspaceRootChip) {
+    const root = String(state.meta?.workspace_root || '').trim();
+    nodes.workspaceRootChip.textContent = root ? shortenPath(root) : 'current cwd';
+    nodes.workspaceRootChip.title = root || 'current cwd';
   }
 }
 

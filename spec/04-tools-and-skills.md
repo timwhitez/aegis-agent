@@ -30,6 +30,9 @@ v1 内置工具固定为：
 - `task_update`
 - `task_list`
 - `task_get`
+- `agent_spawn`
+- `agent_status`
+- `agent_list`
 
 当前仓库默认还会向 session 工具面暴露一组扩展 phase 兼容工具，让 master agent 自己决定是否需要派生 child：
 

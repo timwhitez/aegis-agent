@@ -76,13 +76,15 @@ type ProviderMeta struct {
 }
 
 type MetaResponse struct {
-	SessionRoot   string         `json:"session_root"`
-	DefaultMode   string         `json:"default_mode"`
-	QueuePollMS   int            `json:"queue_poll_ms"`
-	WorkerCount   int            `json:"worker_count"`
-	Capabilities  []string       `json:"capabilities"`
-	DefaultVendor string         `json:"default_provider"`
-	Providers     []ProviderMeta `json:"providers"`
+	SessionRoot              string         `json:"session_root"`
+	WorkspaceRoot            string         `json:"workspace_root"`
+	WorkspaceSwitchSupported bool           `json:"workspace_switch_supported"`
+	DefaultMode              string         `json:"default_mode"`
+	QueuePollMS              int            `json:"queue_poll_ms"`
+	WorkerCount              int            `json:"worker_count"`
+	Capabilities             []string       `json:"capabilities"`
+	DefaultVendor            string         `json:"default_provider"`
+	Providers                []ProviderMeta `json:"providers"`
 }
 
 type OverviewResponse struct {
@@ -273,14 +275,17 @@ func (s *Service) meta() MetaResponse {
 		})
 	}
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Name < providers[j].Name })
+	cwd, _ := os.Getwd()
 	return MetaResponse{
-		SessionRoot:   s.store.Root(),
-		DefaultMode:   s.cfg.Runtime.Isolation.DefaultMode,
-		QueuePollMS:   s.cfg.Runtime.Queue.PollIntervalMS,
-		WorkerCount:   s.workers.Snapshot().DesiredCount,
-		Capabilities:  []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks"},
-		DefaultVendor: s.cfg.DefaultProvider,
-		Providers:     providers,
+		SessionRoot:              s.store.Root(),
+		WorkspaceRoot:            cwd,
+		WorkspaceSwitchSupported: false,
+		DefaultMode:              s.cfg.Runtime.Isolation.DefaultMode,
+		QueuePollMS:              s.cfg.Runtime.Queue.PollIntervalMS,
+		WorkerCount:              s.workers.Snapshot().DesiredCount,
+		Capabilities:             []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks"},
+		DefaultVendor:            s.cfg.DefaultProvider,
+		Providers:                providers,
 	}
 }
 
@@ -320,7 +325,7 @@ func (s *Service) overview() (OverviewResponse, error) {
 				Kind:      "session",
 				ID:        item.ID,
 				Status:    item.Status,
-				Message:   item.Phase,
+				Message:   firstNonEmpty(item.LastError, item.Phase),
 				UpdatedAt: item.UpdatedAt,
 			})
 		}
@@ -966,16 +971,6 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	currentSessionID := ""
-	setSessionID := func(frontendSessionID, backendSessionID string) {
-		currentSessionID = backendSessionID
-		send(map[string]any{
-			"type": "session",
-			"payload": map[string]any{
-				"clientSessionId": frontendSessionID,
-				"sessionId":       backendSessionID,
-			},
-		})
-	}
 
 	processChat := func(frontendSessionID, text string) {
 		text = strings.TrimSpace(text)
@@ -1085,7 +1080,6 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			processChat(data.SessionID, data.Message)
 		case "reset_session":
 			currentSessionID = ""
-			setSessionID(data.SessionID, data.SessionID)
 		case "stop":
 			if currentSessionID == "" {
 				send(map[string]any{

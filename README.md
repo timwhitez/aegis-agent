@@ -240,6 +240,8 @@ providers:
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
 ```
 
+当前 Web 控制台里的 Workspace 面板只浏览服务进程当前 `cwd` 下的文件；它还不是一个可切换 workspace root 的文件管理器。
+
 默认 `go-cli-agent` 帮助文本只展示 core v1 命令；只有显式进入 `experimental` 子树时，才展示这些扩展入口。
 
 当前默认会向 session 工具面暴露 `agent_spawn` / `agent_status` / `agent_list`，让 master agent 自己决定是否需要新建 child agent；若部署方明确不希望暴露这些能力，可显式设置 `runtime.multi_agent.enabled=false`。

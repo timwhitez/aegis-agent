@@ -597,6 +597,34 @@ async function main() {
       todo_items: (sessionDetail.task_board?.todo || []).length,
     };
 
+    await click('[data-view="history"]', 'history nav before clear');
+    await waitFor(
+      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear history')`),
+      15000,
+      'history view before clear'
+    );
+    await browserClient.evaluate(`(() => {
+      window.__codexOriginalConfirm = window.confirm;
+      window.confirm = () => true;
+    })()`);
+    await click('[data-history-clear]', 'clear history');
+    await waitFor(
+      () => browserClient.evaluate(`(() => {
+        const active = document.querySelector('.nav-item.active[data-view="history"]');
+        const text = document.getElementById('history-view')?.textContent || '';
+        return Boolean(active) && (text.includes('No history yet.') || text.includes('No saved sessions yet.'));
+      })()`),
+      15000,
+      'history stays active after clear'
+    );
+    await browserClient.evaluate(`(() => {
+      if (window.__codexOriginalConfirm) {
+        window.confirm = window.__codexOriginalConfirm;
+        delete window.__codexOriginalConfirm;
+      }
+    })()`);
+    results.interactions.history_clear_keeps_view = true;
+
     if ((results.runtime_exceptions || []).length > 0) {
       throw new Error(`runtime exceptions detected: ${results.runtime_exceptions.join(' | ')}`);
     }

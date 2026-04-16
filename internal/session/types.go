@@ -177,6 +177,7 @@ type SessionSummary struct {
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 	Phase           string `json:"phase"`
+	LastError       string `json:"last_error,omitempty"`
 	Workdir         string `json:"workdir"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	RootSessionID   string `json:"root_session_id,omitempty"`

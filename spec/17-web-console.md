@@ -36,6 +36,7 @@ Web console 解决三类问题：
 - 不把 Web UI 变成权威状态源
 - 不要求 provider 流式 API、SSE 或 WebSocket 才能工作
 - 不在 v1 里引入浏览器端代码编辑器、文件树 IDE 或远程终端
+- 当前 workspace 面板只作为“服务进程当前 cwd”的只读浏览器存在，不承诺独立的 workspace-root 切换能力
 
 ## 3. 设计参考与交互取舍
 

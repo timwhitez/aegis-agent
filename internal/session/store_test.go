@@ -148,6 +148,41 @@ func TestStoreSaveStateRefreshesUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestStoreListIncludesLastErrorInSummaries(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{
+		Status:    StatusFailed,
+		Phase:     "provider_call",
+		LastError: "auth_unavailable: no auth available",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	items, err := store.List(10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one summary, got %#v", items)
+	}
+	if items[0].LastError != state.LastError {
+		t.Fatalf("expected last_error to be preserved, got %#v", items[0])
+	}
+}
+
 func TestStoreClaimNextQueuedJobIsAtomicAcrossStores(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)

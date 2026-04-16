@@ -22,8 +22,8 @@
   --error-soft: rgba(239, 68, 68, 0.1);
   --shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.03);
   --shadow-float: 0 10px 30px rgba(0, 0, 0, 0.05);
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Geist Mono', monospace;
+  --font-sans: 'Inter', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Noto Sans Mono', 'Noto Sans Mono CJK SC', 'Sarasa Mono SC', 'Cascadia Mono', 'SFMono-Regular', 'Consolas', 'Microsoft YaHei Mono', monospace;
 }
 
 * {
@@ -541,6 +541,14 @@ textarea {
 
 .view-header {
   margin-bottom: 24px;
+}
+
+.workspace-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .view-title {
