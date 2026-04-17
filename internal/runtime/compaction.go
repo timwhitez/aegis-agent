@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -53,6 +54,16 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 	}
 	artifactMemory := collectArtifactMemory(messages, workdir, 12)
 	highValueProofs := collectHighValueProofs(messages, workdir, 10)
+
+	var featureList *session.FeatureList
+	featureListPath := filepath.Join(c.store.SessionDir(sessionID), "feature_list.json")
+	if data, err := os.ReadFile(featureListPath); err == nil {
+		var fl session.FeatureList
+		if json.Unmarshal(data, &fl) == nil {
+			featureList = &fl
+		}
+	}
+
 	summary := map[string]any{
 		"completed_items":          collectCompletedItems(todo, tasks),
 		"artifact_memory":          artifactMemory,
@@ -60,6 +71,7 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 		"current_in_progress_todo": currentInProgressTodo(todo),
 		"current_in_progress_task": currentInProgressTask(tasks),
 		"high_value_proofs":        highValueProofs,
+		"feature_list":             featureList,
 		"key_paths":                collectKeyPaths(messages, workdir),
 		"next_step_guidance":       nextStepGuidance(),
 		"proof_read_budget":        proofBudget,

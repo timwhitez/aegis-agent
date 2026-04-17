@@ -71,10 +71,11 @@ type RuntimeConfig struct {
 	MultiAgent         MultiAgentConfig `yaml:"multi_agent"`
 	Isolation          IsolationConfig  `yaml:"isolation"`
 	Queue              QueueConfig      `yaml:"queue"`
-	ShellEnvAllowlist  []string         `yaml:"shell_env_allowlist"`
-	Compact            CompactConfig    `yaml:"compact"`
-	Ephemeral          EphemeralConfig  `yaml:"ephemeral"`
-	RalphLoop          RalphLoopConfig  `yaml:"ralph_loop"`
+	ShellEnvAllowlist  []string             `yaml:"shell_env_allowlist"`
+	Compact            CompactConfig        `yaml:"compact"`
+	Ephemeral          EphemeralConfig      `yaml:"ephemeral"`
+	RalphLoop          RalphLoopConfig      `yaml:"ralph_loop"`
+	PreCompletion      PreCompletionConfig  `yaml:"pre_completion"`
 }
 
 type SteerConfig struct {
@@ -110,6 +111,11 @@ type EphemeralConfig struct {
 type RalphLoopConfig struct {
 	Enabled       bool `yaml:"enabled"`
 	MaxIterations int  `yaml:"max_iterations"`
+}
+
+type PreCompletionConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	CheckFeatures bool `yaml:"check_features"`
 }
 
 type OutputConfig struct {
@@ -259,6 +265,10 @@ func Default() *Config {
 			RalphLoop: RalphLoopConfig{
 				Enabled:       false,
 				MaxIterations: 5,
+			},
+			PreCompletion: PreCompletionConfig{
+				Enabled:       true,
+				CheckFeatures: true,
 			},
 		},
 		Output: OutputConfig{
