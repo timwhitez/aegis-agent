@@ -29,7 +29,7 @@ func defFeatureListCreate() Definition {
 						"properties": map[string]any{
 							"description": map[string]any{"type": "string"},
 							"steps": map[string]any{
-								"type": "array",
+								"type":  "array",
 								"items": map[string]any{"type": "string"},
 							},
 						},
