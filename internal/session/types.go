@@ -194,6 +194,20 @@ type TaskBoard struct {
 	Groups   map[string][]Task `json:"groups,omitempty"`
 }
 
+type Feature struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	Steps       []string `json:"steps"`
+	Status      string   `json:"status"`
+	Passes      int      `json:"passes"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+}
+
+type FeatureList struct {
+	Features []Feature `json:"features"`
+}
+
 type QueueJob struct {
 	SchemaVersion    int      `json:"schema_version"`
 	ID               string   `json:"id"`

@@ -107,7 +107,7 @@ var reservedNames = map[string]struct{}{
 	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
 	"finish": {}, "load_skill": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
 	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_status": {},
-	"agent_list": {},
+	"agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
 }
 
 func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane) (*Registry, error) {
@@ -167,6 +167,9 @@ func builtinDefinitions(cfg *config.Config, control ControlPlane) []Definition {
 		defTaskUpdate(),
 		defTaskList(),
 		defTaskGet(),
+		defFeatureListCreate(),
+		defFeatureListUpdate(),
+		defFeatureListRead(),
 	}
 	if cfg != nil && cfg.Runtime.MultiAgent.Enabled {
 		defs = append(defs,

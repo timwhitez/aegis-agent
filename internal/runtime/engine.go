@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -274,6 +277,26 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if !e.guardrailsYolo() {
 					guardKind, guardText = toolGuard(meta.Workdir, currentMessages, call.Name, toolArgs)
 				}
+
+				if call.Name == "finish" && e.cfg.Runtime.PreCompletion.Enabled && e.cfg.Runtime.PreCompletion.CheckFeatures {
+					featureListPath := filepath.Join(e.store.SessionDir(meta.ID), "feature_list.json")
+					if data, err := os.ReadFile(featureListPath); err == nil {
+						var featureList session.FeatureList
+						if json.Unmarshal(data, &featureList) == nil {
+							var incomplete []string
+							for _, f := range featureList.Features {
+								if f.Status != "completed" {
+									incomplete = append(incomplete, fmt.Sprintf("- %s (status: %s)", f.ID, f.Status))
+								}
+							}
+							if len(incomplete) > 0 {
+								guardKind = "pre_completion_check"
+								guardText = fmt.Sprintf("Pre-completion check failed: %d feature(s) not completed:\n%s\n\nPlease complete all features before calling finish.", len(incomplete), strings.Join(incomplete, "\n"))
+							}
+						}
+					}
+				}
+
 				var toolResult session.ToolResult
 				var toolErr error
 				if guardText != "" {

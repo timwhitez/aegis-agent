@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,6 +53,16 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 	}
 	artifactMemory := collectArtifactMemory(messages, workdir, 12)
 	highValueProofs := collectHighValueProofs(messages, workdir, 6)
+
+	var featureList *session.FeatureList
+	featureListPath := filepath.Join(c.store.SessionDir(sessionID), "feature_list.json")
+	if data, err := os.ReadFile(featureListPath); err == nil {
+		var fl session.FeatureList
+		if json.Unmarshal(data, &fl) == nil {
+			featureList = &fl
+		}
+	}
+
 	summary := map[string]any{
 		"completed_items":          collectCompletedItems(todo, tasks),
 		"artifact_memory":          artifactMemory,
@@ -69,6 +80,9 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 		"unresolved_issues":        collectUnresolvedIssues(messages, state),
 		"recent_failure_or_pause":  recentFailureOrPause(state),
 		"transcript":               transcriptPath,
+	}
+	if featureList != nil {
+		summary["feature_list"] = featureList
 	}
 	summaryName := filepath.Join("compactions", fmt.Sprintf("summary-%s.json", time.Now().UTC().Format("20060102-150405")))
 	summaryPath, err := c.store.WriteArtifact(sessionID, summaryName, summary)

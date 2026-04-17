@@ -62,17 +62,23 @@ type SkillsConfig struct {
 }
 
 type RuntimeConfig struct {
-	ExecFinishRequired bool             `yaml:"exec_finish_required"`
-	MaxTurnsSoft       int              `yaml:"max_turns_soft"`
-	MaxTurnsHard       int              `yaml:"max_turns_hard"`
-	CommandTimeoutSec  int              `yaml:"command_timeout_sec"`
-	GuardrailsMode     string           `yaml:"guardrails_mode"`
-	Steer              SteerConfig      `yaml:"steer"`
-	MultiAgent         MultiAgentConfig `yaml:"multi_agent"`
-	Isolation          IsolationConfig  `yaml:"isolation"`
-	Queue              QueueConfig      `yaml:"queue"`
-	ShellEnvAllowlist  []string         `yaml:"shell_env_allowlist"`
-	Compact            CompactConfig    `yaml:"compact"`
+	ExecFinishRequired bool                 `yaml:"exec_finish_required"`
+	MaxTurnsSoft       int                  `yaml:"max_turns_soft"`
+	MaxTurnsHard       int                  `yaml:"max_turns_hard"`
+	CommandTimeoutSec  int                  `yaml:"command_timeout_sec"`
+	GuardrailsMode     string               `yaml:"guardrails_mode"`
+	Steer              SteerConfig          `yaml:"steer"`
+	MultiAgent         MultiAgentConfig     `yaml:"multi_agent"`
+	Isolation          IsolationConfig      `yaml:"isolation"`
+	Queue              QueueConfig          `yaml:"queue"`
+	ShellEnvAllowlist  []string             `yaml:"shell_env_allowlist"`
+	Compact            CompactConfig        `yaml:"compact"`
+	PreCompletion      PreCompletionConfig  `yaml:"pre_completion"`
+}
+
+type PreCompletionConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	CheckFeatures bool `yaml:"check_features"`
 }
 
 type SteerConfig struct {
@@ -239,6 +245,10 @@ func Default() *Config {
 			Compact: CompactConfig{
 				InputCharThreshold:    160000,
 				KeepRecentToolResults: 3,
+			},
+			PreCompletion: PreCompletionConfig{
+				Enabled:       true,
+				CheckFeatures: true,
 			},
 		},
 		Output: OutputConfig{
