@@ -100,6 +100,19 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	if len(view) == 0 || !strings.Contains(view[0].Text, "[Conversation compacted]") {
 		t.Fatalf("expected compacted lead message, got %#v", view)
 	}
+	if got, _ := view[0].Meta["source"].(string); got != "compaction_summary" {
+		t.Fatalf("expected compaction summary source metadata, got %#v", view[0].Meta)
+	}
+	foundLatestExternal := false
+	for _, msg := range view[1:] {
+		if msg.Role == "user" && msg.Text == "Continue the implementation." {
+			foundLatestExternal = true
+			break
+		}
+	}
+	if !foundLatestExternal {
+		t.Fatalf("expected compaction view to preserve the latest external user instruction, got %#v", view)
+	}
 
 	summaryFiles, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions"))
 	if err != nil {

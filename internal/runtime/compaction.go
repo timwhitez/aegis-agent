@@ -92,9 +92,11 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 		"high_value_proof_count": len(highValueProofs),
 		"proof_read_budget":      proofBudget,
 	}))
-	out := []session.Message{
-		session.NewMessage("user", "[Conversation compacted]\n"+string(compactText)),
+	compacted := session.NewMessage("user", "[Conversation compacted]\n"+string(compactText))
+	compacted.Meta = map[string]any{
+		"source": "compaction_summary",
 	}
+	out := []session.Message{compacted}
 	out = append(out, recent...)
 	return out, nil
 }
@@ -107,10 +109,13 @@ func recentMessagesForCompaction(messages []session.Message, minCount int) []ses
 	keep := make([]bool, len(messages))
 	pendingToolCalls := map[string]struct{}{}
 	recentKept := 0
+	if idx := latestExternalInstructionIndex(messages); idx >= 0 {
+		keep[idx] = true
+	}
 
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
-		mustKeep := recentKept < minCount || assistantMatchesPendingToolCall(msg, pendingToolCalls)
+		mustKeep := keep[i] || recentKept < minCount || assistantMatchesPendingToolCall(msg, pendingToolCalls)
 		if !mustKeep {
 			continue
 		}

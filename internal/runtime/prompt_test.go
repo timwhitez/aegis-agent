@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/skills"
 )
@@ -1188,6 +1189,76 @@ func TestToolGuardBlocksFinishUntilExactRequestedArtifactIsWritten(t *testing.T)
 		t.Fatalf("expected artifact_path finish guard, got %q", kind)
 	}
 	if !strings.Contains(text, "reports/final-audit.md") {
+		t.Fatalf("expected exact requested artifact path in finish guard text, got %q", text)
+	}
+}
+
+func TestToolGuardKeepsExactArtifactFinishGuardAfterCompactionSummary(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	compacted := session.NewMessage("user", "[Conversation compacted]\n{\"key_paths\":[\"README.md\"]}")
+	compacted.Meta = map[string]any{
+		"source": "compaction_summary",
+	}
+	kind, text := toolGuard(workdir, []session.Message{
+		session.NewMessage("user", "Write reports/rt04-forced-compaction-proof.md and finish."),
+		compacted,
+	}, "finish", json.RawMessage(`{"message":"done"}`))
+	if kind != "artifact_path" {
+		t.Fatalf("expected artifact_path finish guard after compaction summary, got %q", kind)
+	}
+	if !strings.Contains(text, "reports/rt04-forced-compaction-proof.md") {
+		t.Fatalf("expected exact requested artifact path in finish guard text, got %q", text)
+	}
+}
+
+func TestToolGuardKeepsExactArtifactWriteGuardAfterCompactionSummary(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	compacted := session.NewMessage("user", "[Conversation compacted]\n{\"key_paths\":[\"README.md\"]}")
+	compacted.Meta = map[string]any{
+		"source": "compaction_summary",
+	}
+	kind, text := toolGuard(workdir, []session.Message{
+		session.NewMessage("user", "Write reports/rt04-forced-compaction-proof.md and finish."),
+		compacted,
+	}, "write_file", json.RawMessage(`{"path":"reports/final-audit.md","content":"# audit"}`))
+	if kind != "artifact_path" {
+		t.Fatalf("expected artifact_path write guard after compaction summary, got %q", kind)
+	}
+	if !strings.Contains(text, "reports/rt04-forced-compaction-proof.md") {
+		t.Fatalf("expected exact requested artifact path in write guard text, got %q", text)
+	}
+}
+
+func TestToolGuardBlocksFinishAfterCompactionWhenPromptFallsOutOfRecentTail(t *testing.T) {
+	workdir := t.TempDir()
+	store := session.NewStore(filepath.Join(t.TempDir(), "sessions"))
+	state := session.State{}
+	messages := []session.Message{
+		session.NewMessage("user", "Write reports/rt04-forced-compaction-proof.md and finish."),
+		session.NewAssistantMessage(strings.Repeat("analysis ", 200), nil),
+		session.NewToolMessage([]session.ToolResult{{Name: "read_file", Metadata: map[string]any{"path": filepath.Join(workdir, "README.md")}, DisplayOutput: strings.Repeat("evidence ", 200)}}),
+		session.NewAssistantMessage(strings.Repeat("more analysis ", 200), nil),
+		session.NewToolMessage([]session.ToolResult{{Name: "grep", Metadata: map[string]any{"path": filepath.Join(workdir, "internal", "runtime", "prompt.go")}, DisplayOutput: strings.Repeat("match ", 200)}}),
+		session.NewAssistantMessage(strings.Repeat("proof ", 200), nil),
+		session.NewToolMessage([]session.ToolResult{{Name: "read_file", Metadata: map[string]any{"path": filepath.Join(workdir, "internal", "runtime", "compaction.go")}, DisplayOutput: strings.Repeat("proof ", 200)}}),
+		session.NewAssistantMessage(strings.Repeat("wrap up ", 200), nil),
+	}
+	compactor := newCompactor(store)
+	view, err := compactor.Build("sess-1", workdir, state, messages, nil, nil, 1, 1, func(events.Event) {})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	kind, text := toolGuard(workdir, view, "finish", json.RawMessage(`{"message":"done"}`))
+	if kind != "artifact_path" {
+		t.Fatalf("expected artifact_path finish guard after compaction view, got %q", kind)
+	}
+	if !strings.Contains(text, "reports/rt04-forced-compaction-proof.md") {
 		t.Fatalf("expected exact requested artifact path in finish guard text, got %q", text)
 	}
 }

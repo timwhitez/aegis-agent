@@ -311,7 +311,7 @@ func latestExternalInstructionIndex(messages []session.Message) int {
 			continue
 		}
 		source, _ := messages[i].Meta["source"].(string)
-		if source == "harness_reminder" {
+		if source == "harness_reminder" || source == "compaction_summary" {
 			continue
 		}
 		return i
