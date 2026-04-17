@@ -6,6 +6,16 @@ const POLL_INTERVAL_MS = 1600;
 const MAX_LIVE_EVENTS = 80;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
 
+const SHORTCUTS = {
+  'ctrl+enter': 'submit',
+  'escape': 'stop',
+  '/': 'command',
+  'ctrl+k': 'search',
+  'ctrl+n': 'new_session',
+  'ctrl+,': 'settings',
+  '?': 'help'
+};
+
 const state = {
   currentView: 'chat',
   isGenerating: false,
@@ -42,7 +52,8 @@ const state = {
   refreshingSession: false,
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
-  lastInputWasEmpty: true
+  lastInputWasEmpty: true,
+  showHelp: false
 };
 
 const nodes = {
@@ -389,6 +400,66 @@ function setupEventListeners() {
       showToast('Failed to upload skill zip.', 'error');
     }
     event.target.value = '';
+  });
+
+  document.addEventListener('keydown', (event) => {
+    const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
+    if (isInput && !(event.ctrlKey && event.key === 'Enter')) {
+      return;
+    }
+
+    const parts = [];
+    if (event.ctrlKey) parts.push('ctrl');
+    if (event.altKey) parts.push('alt');
+    if (event.shiftKey) parts.push('shift');
+    parts.push(event.key.toLowerCase());
+    const shortcut = parts.join('+');
+
+    const action = SHORTCUTS[shortcut];
+    if (!action) return;
+
+    event.preventDefault();
+
+    switch (action) {
+      case 'submit':
+        if (nodes.chatInput && nodes.chatInput.value.trim()) {
+          sendMessage();
+        }
+        break;
+      case 'stop':
+        if (state.isGenerating && hasDurableSession()) {
+          requestStop();
+        }
+        break;
+      case 'command':
+        if (nodes.chatInput) {
+          nodes.chatInput.focus();
+          if (!nodes.chatInput.value.startsWith('/')) {
+            nodes.chatInput.value = '/' + nodes.chatInput.value;
+            nodes.chatInput.dispatchEvent(new Event('input'));
+          }
+        }
+        break;
+      case 'search':
+        break;
+      case 'new_session':
+        const wasGenerating = state.isGenerating;
+        resetChatSession({ notifyBackend: true });
+        showToast(
+          wasGenerating
+            ? 'Started a new session. The previous run may still settle in the background.'
+            : 'Started a new session.',
+          'info'
+        );
+        break;
+      case 'settings':
+        switchView('settings');
+        break;
+      case 'help':
+        state.showHelp = !state.showHelp;
+        renderShortcutHelp();
+        break;
+    }
   });
 }
 
@@ -830,6 +901,65 @@ async function refreshCurrentSession() {
     console.error('session detail error', err);
   } finally {
     state.refreshingSession = false;
+  }
+}
+
+function renderShortcutHelp() {
+  let overlay = document.getElementById('shortcut-help-overlay');
+
+  if (!state.showHelp) {
+    if (overlay) {
+      overlay.remove();
+    }
+    return;
+  }
+
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'shortcut-help-overlay';
+    overlay.className = 'shortcut-help-overlay';
+    document.body.appendChild(overlay);
+  }
+
+  const shortcuts = [
+    ['Ctrl+Enter', 'Submit message'],
+    ['Escape', 'Stop execution'],
+    ['/', 'Command mode'],
+    ['Ctrl+K', 'Search'],
+    ['Ctrl+N', 'New session'],
+    ['Ctrl+,', 'Settings'],
+    ['?', 'Show this help']
+  ];
+
+  overlay.innerHTML = `
+    <div class="shortcut-help-panel">
+      <h3>Keyboard Shortcuts</h3>
+      <table class="shortcuts-table">
+        <tbody>
+          ${shortcuts.map(([key, desc]) => `
+            <tr>
+              <td class="shortcut-key">${key}</td>
+              <td class="shortcut-desc">${desc}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <button class="shortcut-close-btn">Close</button>
+    </div>
+  `;
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.classList.contains('shortcut-close-btn')) {
+      state.showHelp = false;
+      renderShortcutHelp();
+    }
+  });
+
+  const panel = overlay.querySelector('.shortcut-help-panel');
+  if (panel) {
+    panel.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
   }
 }
 
