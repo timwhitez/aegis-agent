@@ -450,7 +450,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		switch meta.Mode {
 		case session.ModeRun:
 			return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
-		case session.ModeExec:
+		case session.ModeExec, session.ModeInit:
 			if doneCandidates == 0 {
 				doneCandidates++
 				if _, err := e.appendHarnessReminder(meta, "turn_decide", "Harness reminder: if the task is complete, call the finish tool explicitly.", "finish_required"); err != nil {

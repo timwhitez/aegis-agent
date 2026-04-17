@@ -26,17 +26,8 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 
 	checks := []string{
 		"## Tool Use",
-		"Every tool in the tool list is already callable by name through the tool interface.",
+		"Tool names are capabilities, not workspace files or shell binaries.",
 		"Workspace boundary is the current workdir.",
-		"Parent-scope `AGENTS.md` instructions still apply",
-		"Prefer targeted retrieval",
-		"Do not use read-only shell commands like `cat`, `sed`, `grep`, or `rg` to bypass retrieval limits",
-		"Before any extra retrieval, ask whether it will materially change the answer",
-		"`write_file` directly once you have enough evidence",
-		"`glob` or `grep_files`",
-		"Requests above 120 lines will be capped.",
-		"After a compaction summary, rely on its `key_paths`",
-		"`high_value_proofs`",
 		"Use `load_skill` only for skill names",
 		"## Skills",
 		"### Available skills",
@@ -46,6 +37,27 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 	for _, needle := range checks {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("expected prompt to contain %q, got:\n%s", needle, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptUsesInitializerMode(t *testing.T) {
+	prompt := buildSystemPrompt(
+		"/tmp/work",
+		session.ModeInit,
+		"",
+		nil,
+		nil,
+		session.State{},
+		nil,
+	)
+	for _, needle := range []string{
+		"You are a project initializer agent",
+		"Use `feature_list_create` early",
+		"Do not implement product features yet",
+	} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected init prompt to contain %q, got:\n%s", needle, prompt)
 		}
 	}
 }
@@ -62,14 +74,12 @@ func TestBuildSystemPromptAddsAuditEvidenceNoteForReviewTasks(t *testing.T) {
 			session.NewMessage("user", "Audit whether the default runtime surface stays aligned with the docs."),
 		},
 	)
-	if !strings.Contains(prompt, "For audit or review tasks, keep validated findings evidence-scoped") {
-		t.Fatalf("expected audit evidence note, got:\n%s", prompt)
+	// After prompt simplification, audit tasks without explicit artifact path get a simpler note
+	if !strings.Contains(prompt, "For audit or review tasks, write a durable Markdown artifact before finishing") {
+		t.Fatalf("expected audit task note, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "verify the owning code path or downgrade the point to risk or inference") {
-		t.Fatalf("expected audit downgrade guidance, got:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Prefer the owning registration or gate in the same file before widening search") {
-		t.Fatalf("expected same-file proof guidance, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Keep findings first, and separate unresolved questions or inference-limited points from validated findings") {
+		t.Fatalf("expected findings structure guidance, got:\n%s", prompt)
 	}
 }
 
@@ -128,7 +138,8 @@ func TestBuildSystemPromptStillTreatsExplicitReviewOnlyTaskAsAuditTask(t *testin
 			session.NewMessage("user", "Review only README.md and handler.go, then write reports/api-review.md."),
 		},
 	)
-	if !strings.Contains(prompt, "For audit or review tasks") || !strings.Contains(prompt, "For audit or review deliverables") {
+	// After prompt simplification, explicit review tasks with artifact path get detailed guidance
+	if !strings.Contains(prompt, "For audit or review deliverables, write findings first") {
 		t.Fatalf("expected explicit review task to keep audit notes, got:\n%s", prompt)
 	}
 }

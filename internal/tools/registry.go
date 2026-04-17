@@ -220,7 +220,7 @@ func stringArraySchema() map[string]any {
 func defShell() Definition {
 	return Definition{
 		Name:            "shell",
-		Description:     "Execute a shell command in the current working directory.",
+		Description:     "Run shell command in workspace.",
 		Ephemeral:       true,
 		EphemeralWindow: 2,
 		InputSchema: map[string]any{
@@ -319,7 +319,7 @@ func defShell() Definition {
 func defReadFile() Definition {
 	return Definition{
 		Name:        "read_file",
-		Description: "Read a targeted slice of a text file from the current workspace. Prefer offset + limit over whole-file reads; each call is capped at 120 lines.",
+		Description: "Read file lines with offset/limit (max 120 lines per call).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -383,7 +383,7 @@ func defReadFile() Definition {
 func defWriteFile() Definition {
 	return Definition{
 		Name:        "write_file",
-		Description: "Create or overwrite a file in the current workspace. Parent directories are created automatically.",
+		Description: "Write file to workspace (creates parent dirs).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -423,7 +423,7 @@ func defWriteFile() Definition {
 func defEditFile() Definition {
 	return Definition{
 		Name:        "edit_file",
-		Description: "Replace exact text in a file.",
+		Description: "Replace exact text in file.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -474,7 +474,7 @@ func defEditFile() Definition {
 func defGlob() Definition {
 	return Definition{
 		Name:            "glob",
-		Description:     "Return workspace-relative paths that match a glob pattern.",
+		Description:     "Match files by glob pattern.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -512,7 +512,7 @@ func defGlob() Definition {
 func defGrep() Definition {
 	return Definition{
 		Name:        "grep",
-		Description: "Search recursively for a pattern in workspace text files while skipping common build and binary artifact paths.",
+		Description: "Search file contents recursively (skips build artifacts).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -588,7 +588,7 @@ func defGrep() Definition {
 func defGrepFiles() Definition {
 	return Definition{
 		Name:            "grep_files",
-		Description:     "Find workspace text files whose contents match a pattern. Returns file paths only; use this to narrow candidates before read_file.",
+		Description:     "Find files matching pattern (returns paths only).",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -772,7 +772,7 @@ func annotateReadWindow(workdir, path string, offset, end, totalLines, requested
 func defFinish() Definition {
 	return Definition{
 		Name:        "finish",
-		Description: "Explicitly mark the current task as complete as soon as the requested work is done.",
+		Description: "Mark task complete.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -800,7 +800,7 @@ func defFinish() Definition {
 func defLoadSkill() Definition {
 	return Definition{
 		Name:        "load_skill",
-		Description: "Load the full contents of a local SKILL.md file by skill name. Do not use this for tool names.",
+		Description: "Load skill definition by name.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -836,7 +836,7 @@ func defLoadSkill() Definition {
 func defTodoWrite() Definition {
 	return Definition{
 		Name:        "todo_write",
-		Description: "Replace the session todo list.",
+		Description: "Write session todo list.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -885,7 +885,7 @@ func defTodoWrite() Definition {
 func defTodoRead() Definition {
 	return Definition{
 		Name:        "todo_read",
-		Description: "Read the session todo list.",
+		Description: "Read session todo list.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
 			todo, err := execCtx.Store.LoadTodo(execCtx.SessionID)
@@ -909,7 +909,7 @@ func defTodoRead() Definition {
 func defTaskCreate() Definition {
 	return Definition{
 		Name:        "task_create",
-		Description: "Create a durable task graph node.",
+		Description: "Create task node.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -954,7 +954,7 @@ func defTaskCreate() Definition {
 func defTaskUpdate() Definition {
 	return Definition{
 		Name:        "task_update",
-		Description: "Update a durable task graph node.",
+		Description: "Update task node.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1005,7 +1005,7 @@ func defTaskUpdate() Definition {
 func defTaskList() Definition {
 	return Definition{
 		Name:        "task_list",
-		Description: "List the durable task graph with derived ready and blocked views.",
+		Description: "List task graph with ready/blocked views.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
@@ -1043,7 +1043,7 @@ func defTaskList() Definition {
 func defTaskGet() Definition {
 	return Definition{
 		Name:        "task_get",
-		Description: "Read a single durable task graph node by id.",
+		Description: "Read task node by ID.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1092,7 +1092,7 @@ func taskFilePath(execCtx ExecContext, taskID string) string {
 func defAgentSpawn(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_spawn",
-		Description: "Spawn a child agent session from the current session. Omit provider and model to inherit the current session settings. Prefer isolation_mode=auto for an isolated child or none/off to reuse the current workspace; only set isolation_root when you need a custom external root.",
+		Description: "Spawn child agent (use isolation_mode=auto for isolation).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1146,7 +1146,7 @@ func defAgentSpawn(control ControlPlane) Definition {
 func defAgentStatus(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_status",
-		Description: "Inspect a child agent session or queue job.",
+		Description: "Check agent status.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1178,7 +1178,7 @@ func defAgentStatus(control ControlPlane) Definition {
 func defAgentList(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_list",
-		Description: "List child sessions and queued jobs for the current session.",
+		Description: "List child agents and jobs.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},

@@ -30,13 +30,17 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 		builder.WriteString(override)
 		builder.WriteString("\n\n")
 	}
-	builder.WriteString(fmt.Sprintf("You are a general-purpose CLI agent working in %s.\n", workdir))
-	builder.WriteString("Use tools to gather context, edit files, run commands, and complete tasks.\n")
-	builder.WriteString("Be concise. Prefer acting over narrating.\n")
-	if mode == "exec" {
-		builder.WriteString("In exec mode, you must use the finish tool when the task is complete.\n")
+	if mode == session.ModeInit {
+		builder.WriteString(buildInitializerPrompt(workdir))
 	} else {
-		builder.WriteString("In run mode, natural pause is allowed, but use finish when the task is clearly complete.\n")
+		builder.WriteString(fmt.Sprintf("You are a general-purpose CLI agent working in %s.\n", workdir))
+		builder.WriteString("Use tools to gather context, edit files, run commands, and complete tasks.\n")
+		builder.WriteString("Be concise. Prefer acting over narrating.\n")
+		if mode == session.ModeExec {
+			builder.WriteString("In exec mode, you must use the finish tool when the task is complete.\n")
+		} else {
+			builder.WriteString("In run mode, natural pause is allowed, but use finish when the task is clearly complete.\n")
+		}
 	}
 	if role, guidance := roleGuidance(agentRole, agentName); role != "" {
 		builder.WriteString("\n## Session Role\n")
@@ -89,6 +93,16 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 		}
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func buildInitializerPrompt(workdir string) string {
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("You are a project initializer agent working in %s.\n", workdir))
+	builder.WriteString("Set up foundations quickly, keep scope crisp, and leave the workspace ready for follow-on implementation.\n")
+	builder.WriteString("Use `feature_list_create` early to capture the roadmap before writing scaffolding.\n")
+	builder.WriteString("Do not implement product features yet; focus on project shape, config, scripts, and handoff clarity.\n")
+	builder.WriteString("Use `finish` once the repository is initialized and the next implementation step is obvious.\n")
+	return builder.String()
 }
 
 func runtimeBehaviorNotes(workdir, mode string, messages []session.Message) []string {
@@ -230,7 +244,7 @@ func retrievalBudgetNote(messages []session.Message) string {
 		return ""
 	}
 	if stats.UniqueReadPaths > 0 && stats.RepeatedReadCount > 0 {
-		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths, including %d reread(s). Use current evidence unless one missing exact line would materially change the answer.", stats.RetrievalCount, stats.UniqueReadPaths, stats.RepeatedReadCount)
+		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths, including %d reread(s). Do not reread files just to reconfirm earlier evidence. Keep runtime-reserved final proof rereads for the smallest exact line window that still matters. Use current evidence unless one missing exact line would materially change the answer.", stats.RetrievalCount, stats.UniqueReadPaths, stats.RepeatedReadCount)
 	}
 	if stats.UniqueReadPaths > 0 {
 		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths. Use current evidence unless one missing exact line would materially change the answer, and prefer acting now over more exploration.", stats.RetrievalCount, stats.UniqueReadPaths)
@@ -394,6 +408,12 @@ func nextHarnessReminder(workdir, mode string, messages []session.Message) harne
 	if reminder := artifactCompletionReminder(workdir, mode, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
+	if reminder := auditEvidenceReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
+		return reminder
+	}
+	if reminder := largeProjectCoordinationReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
+		return reminder
+	}
 	if reminder := retrievalTailReminder(messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
@@ -440,6 +460,49 @@ func artifactCompletionReminder(workdir, mode string, messages []session.Message
 	return harnessReminder{
 		Kind: "artifact_written",
 		Text: "Harness reminder: " + note,
+	}
+}
+
+func auditEvidenceReminder(workdir string, messages []session.Message) harnessReminder {
+	idx := latestExternalInstructionIndex(messages)
+	if idx < 0 {
+		return harnessReminder{}
+	}
+	text := messages[idx].Text
+	if !looksAuditOrReviewTask(text) || !auditTaskNeedsBehaviorProof(text) {
+		return harnessReminder{}
+	}
+	target := auditProofTarget(messages)
+	if !target.Active || auditProofSatisfied(messages, target) {
+		return harnessReminder{}
+	}
+	followup := auditProofFollowupHint(messages)
+	if followup == "" {
+		return harnessReminder{}
+	}
+	return harnessReminder{
+		Kind: "audit_evidence",
+		Text: "Harness reminder: Reserved names and other declaration-level hints are not enough to prove runtime behavior. Before you finalize the audit, verify the owning registration or config gate. " + strings.ReplaceAll(followup, target.Path, displayPromptPath(workdir, target.Path)),
+	}
+}
+
+func largeProjectCoordinationReminder(workdir string, messages []session.Message) harnessReminder {
+	if !looksLargeProjectTask(messages) {
+		return harnessReminder{}
+	}
+	if hasProjectMemoryWriteActivity(messages) || hasTaskGraphWriteActivity(messages) {
+		return harnessReminder{}
+	}
+	if present := loadProjectMemoryStack(workdir).PresentPaths(); len(present) > 0 {
+		return harnessReminder{}
+	}
+	stats := collectRecentToolStats(messages)
+	if stats.RetrievalCount < 4 && stats.UniqueReadPaths < 2 && stats.DiscoveryCount < 2 {
+		return harnessReminder{}
+	}
+	return harnessReminder{
+		Kind: "large_project_coordination",
+		Text: "Harness reminder: this looks like a large project task. Before more repo-scale retrieval or implementation, externalize a durable project-memory stack at reports/spec.md, reports/plan.md, reports/progress.md, and reports/validation.md, then keep a durable task board aligned with the written plan via todo_write plus task_create/task_update.",
 	}
 }
 
@@ -505,7 +568,7 @@ func auditProofTarget(messages []session.Message) auditProofNeed {
 			if cleanPath == "" {
 				continue
 			}
-			if strings.HasSuffix(filepath.ToSlash(cleanPath), "internal/tools/registry.go") && strings.Contains(body, "reservedNames") {
+			if strings.HasSuffix(filepath.ToSlash(cleanPath), "internal/tools/registry.go") && looksRegistrySurfaceClue(body) {
 				return auditProofNeed{
 					Active:    true,
 					Path:      cleanPath,
@@ -516,6 +579,20 @@ func auditProofTarget(messages []session.Message) auditProofNeed {
 		}
 	}
 	return auditProofNeed{}
+}
+
+func looksRegistrySurfaceClue(body string) bool {
+	for _, token := range []string{
+		"reservedNames",
+		"builtinDefinitions(",
+		"cfg.Runtime.MultiAgent.Enabled",
+		"defAgentSpawn(",
+	} {
+		if strings.Contains(body, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func retrievalTailReminder(messages []session.Message) harnessReminder {
@@ -1617,7 +1694,6 @@ func auditProofSatisfied(messages []session.Message, target auditProofNeed) bool
 func containsAuditProofForTarget(text string, target auditProofNeed) bool {
 	if strings.HasSuffix(filepath.ToSlash(target.Path), "internal/tools/registry.go") {
 		for _, token := range []string{
-			"func builtinDefinitions(",
 			"cfg.Runtime.MultiAgent.Enabled",
 			"if cfg != nil && cfg.Runtime.MultiAgent.Enabled",
 			"defs = append(defs, defAgentSpawn",

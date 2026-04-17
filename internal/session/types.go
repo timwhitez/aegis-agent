@@ -11,6 +11,7 @@ const (
 
 	ModeRun  = "run"
 	ModeExec = "exec"
+	ModeInit = "init"
 
 	CompletionPolicyInteractive = "interactive"
 	CompletionPolicyAutonomous  = "autonomous"

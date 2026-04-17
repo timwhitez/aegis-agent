@@ -187,7 +187,7 @@ var experimentalRunnerLoader = loadExperimentalRunner
 var storeRunnerLoader = loadStoreRunner
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root"}, []string{"json"})
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root"}, []string{"json", "init"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -197,6 +197,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		workdir       = fs.String("workdir", "", "")
 		system        = fs.String("system", "", "")
 		jsonMode      = fs.Bool("json", false, "")
+		initMode      = fs.Bool("init", false, "")
 		timeoutSec    = fs.Int("timeout", 0, "")
 		isolationMode = fs.String("isolation", "", "")
 		isolationRoot = fs.String("isolation-root", "", "")
@@ -263,12 +264,16 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 			}
 		})
 	}
+	actualMode := mode
+	if *initMode {
+		actualMode = session.ModeInit
+	}
 	result, err := runner.Start(runCtx, runtime.StartRequest{
 		Prompt:         prompt,
 		Provider:       *providerName,
 		Model:          *model,
 		Workdir:        *workdir,
-		Mode:           mode,
+		Mode:           actualMode,
 		SystemOverride: *system,
 		IsolationMode:  *isolationMode,
 		IsolationRoot:  *isolationRoot,

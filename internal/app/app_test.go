@@ -173,6 +173,35 @@ func TestRunCommandAcceptsFlagsAfterPrompt(t *testing.T) {
 	}
 }
 
+func TestRunCommandSupportsInitFlag(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusCompleted,
+		FinalText: "initialized",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "bootstrap repo", "--json", "--init"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	if fake.startCalls[0].Mode != session.ModeInit {
+		t.Fatalf("expected init mode, got %#v", fake.startCalls[0].Mode)
+	}
+	if got := fake.startCalls[0].Prompt; got != "bootstrap repo" {
+		t.Fatalf("expected prompt %q, got %q", "bootstrap repo", got)
+	}
+}
+
 func TestRunCommandLoadsConfigRelativeToInvokeDirectoryNotTaskWorkdir(t *testing.T) {
 	fake := newFakeRunner()
 	fake.startResult = runtime.RunResult{

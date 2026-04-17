@@ -270,6 +270,8 @@ func normalizeRunMode(value, fallback string) string {
 		return session.ModeExec
 	case "interactive":
 		return session.ModeRun
+	case session.ModeInit:
+		return session.ModeInit
 	default:
 		return mode
 	}
@@ -755,7 +757,7 @@ func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.A
 }
 
 func completionPolicy(mode string) string {
-	if mode == session.ModeExec {
+	if mode == session.ModeExec || mode == session.ModeInit {
 		return session.CompletionPolicyAutonomous
 	}
 	return session.CompletionPolicyInteractive
