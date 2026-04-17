@@ -23,10 +23,12 @@ import (
 )
 
 type Definition struct {
-	Name        string
-	Description string
-	InputSchema map[string]any
-	Execute     func(context.Context, ExecContext, json.RawMessage) (session.ToolResult, error)
+	Name            string
+	Description     string
+	InputSchema     map[string]any
+	Execute         func(context.Context, ExecContext, json.RawMessage) (session.ToolResult, error)
+	Ephemeral       bool
+	EphemeralWindow int
 }
 
 type ExecContext struct {
@@ -134,6 +136,13 @@ func (r *Registry) Register(def Definition) {
 	r.defs[def.Name] = def
 }
 
+func (r *Registry) Get(name string) *Definition {
+	if def, ok := r.defs[name]; ok {
+		return &def
+	}
+	return nil
+}
+
 func (r *Registry) Definitions() []Definition {
 	var out []Definition
 	for _, name := range r.order {
@@ -207,8 +216,10 @@ func stringArraySchema() map[string]any {
 
 func defShell() Definition {
 	return Definition{
-		Name:        "shell",
-		Description: "Execute a shell command in the current working directory.",
+		Name:            "shell",
+		Description:     "Execute a shell command in the current working directory.",
+		Ephemeral:       true,
+		EphemeralWindow: 2,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -459,8 +470,10 @@ func defEditFile() Definition {
 
 func defGlob() Definition {
 	return Definition{
-		Name:        "glob",
-		Description: "Return workspace-relative paths that match a glob pattern.",
+		Name:            "glob",
+		Description:     "Return workspace-relative paths that match a glob pattern.",
+		Ephemeral:       true,
+		EphemeralWindow: 3,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -571,8 +584,10 @@ func defGrep() Definition {
 
 func defGrepFiles() Definition {
 	return Definition{
-		Name:        "grep_files",
-		Description: "Find workspace text files whose contents match a pattern. Returns file paths only; use this to narrow candidates before read_file.",
+		Name:            "grep_files",
+		Description:     "Find workspace text files whose contents match a pattern. Returns file paths only; use this to narrow candidates before read_file.",
+		Ephemeral:       true,
+		EphemeralWindow: 3,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

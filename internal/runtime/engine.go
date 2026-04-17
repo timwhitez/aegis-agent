@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -358,6 +361,34 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if value, ok := updatedPayload["display_output"].(string); ok {
 					toolResult.DisplayOutput = value
 				}
+
+				// Ephemeral message handling
+				if e.cfg.Runtime.Ephemeral.Enabled {
+					toolDef := registry.Get(call.Name)
+					if toolDef != nil && toolDef.Ephemeral {
+						count := countToolCalls(messages, call.Name)
+						if count > toolDef.EphemeralWindow {
+							artifactPath := filepath.Join(
+								e.cfg.Runtime.Ephemeral.ArtifactDir,
+								meta.ID,
+								fmt.Sprintf("%s-turn%d.txt", call.Name, turn),
+							)
+							if err := os.MkdirAll(filepath.Dir(artifactPath), 0755); err == nil {
+								if err := os.WriteFile(artifactPath, []byte(toolResult.LLMOutput), 0644); err == nil {
+									toolResult.LLMOutput = fmt.Sprintf(
+										"[Output saved to %s; use read_file to review if needed]",
+										artifactPath,
+									)
+									if toolResult.Metadata == nil {
+										toolResult.Metadata = make(map[string]any)
+									}
+									toolResult.Metadata["ephemeral_artifact"] = artifactPath
+								}
+							}
+						}
+					}
+				}
+
 				toolResults = append(toolResults, toolResult)
 				eventData := map[string]any{
 					"tool_name":      call.Name,
@@ -886,4 +917,18 @@ func taskCounts(tasks []session.Task) (ready, blocked, completed int) {
 func prettyJSON(value any) string {
 	data, _ := json.MarshalIndent(value, "", "  ")
 	return string(data)
+}
+
+func countToolCalls(messages []session.Message, toolName string) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				if tc.Name == toolName {
+					count++
+				}
+			}
+		}
+	}
+	return count
 }
