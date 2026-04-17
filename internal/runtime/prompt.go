@@ -46,18 +46,8 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 		}
 	}
 	builder.WriteString("\n## Tool Use\n")
-	builder.WriteString("- Every tool in the tool list is already callable by name through the tool interface.\n")
-	builder.WriteString("- Tool names are capabilities, not workspace files, shell binaries, or skill names.\n")
-	builder.WriteString("- Do not use shell, glob, grep, or filesystem reads just to confirm whether a named tool exists.\n")
+	builder.WriteString("- Tool names are capabilities, not workspace files or shell binaries.\n")
 	builder.WriteString("- Workspace boundary is the current workdir. Do not read `../` or absolute paths outside it unless the user explicitly expands scope.\n")
-	builder.WriteString("- Parent-scope `AGENTS.md` instructions still apply, but if they mention paths outside the workspace boundary, treat those references as intent guidance instead of retrying inaccessible reads.\n")
-	builder.WriteString("- Prefer targeted retrieval: narrow with `glob` or `grep_files`, use `grep` only for exact line evidence, then use `read_file` with small `offset`/`limit` slices on the minimum relevant files. Requests above 120 lines will be capped.\n")
-	builder.WriteString("- Do not use read-only shell commands like `cat`, `sed`, `grep`, or `rg` to bypass retrieval limits; shell-based file inspection is treated like retrieval and may be blocked late in the run.\n")
-	builder.WriteString("- Before any extra retrieval, ask whether it will materially change the answer, patch, or report. If not, act with the evidence you already have.\n")
-	builder.WriteString("- Avoid broad scans of generated or binary artifacts, and stop gathering files once you have enough evidence to answer or act.\n")
-	builder.WriteString("- If the user asked for a report or file artifact, use `write_file` directly once you have enough evidence; it creates parent directories automatically, so do not shell out to `mkdir` first.\n")
-	builder.WriteString("- After a compaction summary, rely on its `key_paths`, `artifact_memory`, `project_memory_stack`, and `high_value_proofs` hints before rereading the same files.\n")
-	builder.WriteString("- The runtime reserves two narrow `read_file` rereads on already inspected files for final snippet-backed proof checks; do not spend them on broad rediscovery.\n")
 	builder.WriteString("- Use `load_skill` only for skill names when you need the body of a `SKILL.md` file.\n")
 	if notes := runtimeBehaviorNotes(workdir, mode, messages); len(notes) > 0 {
 		builder.WriteString("\n## Runtime Notes\n")
@@ -93,9 +83,9 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	}
 	agentsChain := loadAgentsChain(workdir)
 	if len(agentsChain) > 0 {
-		builder.WriteString("\nProject instructions (outer to inner scope):\n")
+		builder.WriteString("\n## Project Instructions\n")
 		for _, item := range agentsChain {
-			builder.WriteString(fmt.Sprintf("\n[%s]\n%s\n", item.Path, item.Content))
+			builder.WriteString(fmt.Sprintf("%s\n", item.Content))
 		}
 	}
 	return strings.TrimSpace(builder.String())
@@ -103,10 +93,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 
 func runtimeBehaviorNotes(workdir, mode string, messages []session.Message) []string {
 	var notes []string
-	if note := auditEvidenceNote(messages); note != "" {
-		notes = append(notes, note)
-	}
-	if note := reviewArtifactStructureNote(messages); note != "" {
+	if note := deliveryNote(workdir, mode, messages); note != "" {
 		notes = append(notes, note)
 	}
 	if note := durableProjectMemoryNote(workdir, messages); note != "" {
@@ -118,49 +105,54 @@ func runtimeBehaviorNotes(workdir, mode string, messages []session.Message) []st
 	if note := exactRequestedArtifactPathNote(workdir, messages); note != "" {
 		notes = append(notes, note)
 	}
-	if note := recentArtifactWriteNote(workdir, mode, messages); note != "" {
-		notes = append(notes, note)
-	}
 	if note := exactArtifactTemplateNote(workdir, messages); note != "" {
 		notes = append(notes, note)
 	}
 	if note := exactArtifactLiteralNote(workdir, messages); note != "" {
 		notes = append(notes, note)
 	}
-	if note := retrievalPressureNote(messages); note != "" {
+	if note := retrievalBudgetNote(messages); note != "" {
 		notes = append(notes, note)
 	}
 	return notes
 }
 
-func auditEvidenceNote(messages []session.Message) string {
+func deliveryNote(workdir, mode string, messages []session.Message) string {
 	idx := latestExternalInstructionIndex(messages)
 	if idx < 0 {
 		return ""
 	}
 	text := messages[idx].Text
-	if !looksAuditOrReviewTask(text) || !requiresReviewArtifact(text) {
-		return ""
-	}
-	return "For audit or review tasks, keep validated findings evidence-scoped: declarations, reserved names, interfaces, docs mentions, enums, TODOs, file presence, or directory shape are not proof of runtime behavior by themselves. If a claim depends on default exposure, registration, config gating, or actual execution, verify the owning code path or downgrade the point to risk or inference. Prefer the owning registration or gate in the same file before widening search."
-}
+	isAudit := looksAuditOrReviewTask(text) && requiresReviewArtifact(text)
 
-func reviewArtifactStructureNote(messages []session.Message) string {
-	idx := latestExternalInstructionIndex(messages)
-	if idx < 0 {
-		return ""
+	stats := collectRecentToolStats(messages[idx+1:])
+	hasArtifact := strings.TrimSpace(stats.DeliverableWritePath) != ""
+
+	if hasArtifact {
+		path := displayPromptPath(workdir, stats.DeliverableWritePath)
+		if stats.CompletedTodoWrite {
+			if mode == session.ModeExec {
+				return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval. Call finish now unless one required side effect is still missing.", path)
+			}
+			return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval unless one required side effect is still missing.", path)
+		}
+		if mode == session.ModeExec {
+			return fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it. If bookkeeping is done, call finish now.", path)
+		}
+		return fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it; only do the minimum remaining side effects.", path)
 	}
-	text := messages[idx].Text
-	if !looksAuditOrReviewTask(text) || !requiresReviewArtifact(text) {
-		return ""
+
+	if isAudit {
+		if req := exactArtifactTemplateRequirement("", messages); req.Active {
+			return "This audit/review task includes an exact opening template or section-order requirement. Preserve the required title/setup block verbatim before findings, then keep the findings section evidence-scoped with Severity, Confidence, Evidence, Snippet, and Why it matters fields."
+		}
+		if !looksArtifactRequest(text) {
+			return "For audit or review tasks, write a durable Markdown artifact before finishing. If the user did not specify a path, prefer reports/final-audit.md. Keep findings first, and separate unresolved questions or inference-limited points from validated findings."
+		}
+		return "For audit or review deliverables, write findings first. Each finding should record severity, confidence, exact evidence path/line, and a short quoted snippet or identifier from the cited lines either inline in Evidence or in a separate Snippet field, plus why it matters. If you quote or name a snippet, make sure the cited line range literally contains that text; correct the line numbers or widen the range instead of citing a nearby heading or context line. When summarizing delegated, background, or subrun evidence in a parent artifact, inline at least one decisive assertion, event, or snippet from the child/subrun instead of only pointing to the downstream artifact path. Keep unresolved questions or inference-limited points in separate sections instead of mixing them into validated findings."
 	}
-	if req := exactArtifactTemplateRequirement("", messages); req.Active {
-		return "This audit/review task includes an exact opening template or section-order requirement. Preserve the required title/setup block verbatim before findings, then keep the findings section evidence-scoped with Severity, Confidence, Evidence, Snippet, and Why it matters fields."
-	}
-	if !looksArtifactRequest(text) {
-		return "For audit or review tasks, write a durable Markdown artifact before finishing. If the user did not specify a path, prefer reports/final-audit.md. Keep findings first, and separate unresolved questions or inference-limited points from validated findings."
-	}
-	return "For audit or review deliverables, write findings first. Each finding should record severity, confidence, exact evidence path/line, and a short quoted snippet or identifier from the cited lines either inline in Evidence or in a separate Snippet field, plus why it matters. If you quote or name a snippet, make sure the cited line range literally contains that text; correct the line numbers or widen the range instead of citing a nearby heading or context line. When summarizing delegated, background, or subrun evidence in a parent artifact, inline at least one decisive assertion, event, or snippet from the child/subrun instead of only pointing to the downstream artifact path. Keep unresolved questions or inference-limited points in separate sections instead of mixing them into validated findings."
+
+	return ""
 }
 
 func hasProjectMemoryWriteActivity(messages []session.Message) bool {
@@ -223,7 +215,7 @@ func recentSteerNote(messages []session.Message) string {
 	return fmt.Sprintf("A recent steer updated task priority: %s. Follow that steer first and do only the minimum extra retrieval required for it.", text)
 }
 
-func retrievalPressureNote(messages []session.Message) string {
+func retrievalBudgetNote(messages []session.Message) string {
 	start := latestExternalInstructionIndex(messages)
 	if start >= 0 {
 		start++
@@ -238,37 +230,12 @@ func retrievalPressureNote(messages []session.Message) string {
 		return ""
 	}
 	if stats.UniqueReadPaths > 0 && stats.RepeatedReadCount > 0 {
-		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths, including %d reread(s). Use current evidence unless one missing exact line would materially change the answer. Do not reread files just to reconfirm, and save the runtime-reserved final proof rereads for decisive snippet-backed verification.", stats.RetrievalCount, stats.UniqueReadPaths, stats.RepeatedReadCount)
+		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths, including %d reread(s). Use current evidence unless one missing exact line would materially change the answer.", stats.RetrievalCount, stats.UniqueReadPaths, stats.RepeatedReadCount)
 	}
 	if stats.UniqueReadPaths > 0 {
-		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths. Discovery/search calls already account for %d of them. Use current evidence unless one missing exact line would materially change the answer, save the runtime-reserved final proof rereads for decisive snippet-backed verification, and prefer acting now over more exploration.", stats.RetrievalCount, stats.UniqueReadPaths, stats.DiscoveryCount)
+		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths. Use current evidence unless one missing exact line would materially change the answer, and prefer acting now over more exploration.", stats.RetrievalCount, stats.UniqueReadPaths)
 	}
-	return fmt.Sprintf("Recent work already used %d read-only tool calls. Discovery/search calls already account for %d of them. Use current evidence unless one missing exact line would materially change the answer, save the runtime-reserved final proof rereads for decisive snippet-backed verification, and prefer acting now over more exploration.", stats.RetrievalCount, stats.DiscoveryCount)
-}
-
-func recentArtifactWriteNote(workdir, mode string, messages []session.Message) string {
-	idx := latestExternalInstructionIndex(messages)
-	if idx < 0 {
-		return ""
-	}
-	if !looksArtifactRequest(messages[idx].Text) {
-		return ""
-	}
-	stats := collectRecentToolStats(messages[idx+1:])
-	if strings.TrimSpace(stats.DeliverableWritePath) == "" {
-		return ""
-	}
-	path := displayPromptPath(workdir, stats.DeliverableWritePath)
-	if stats.CompletedTodoWrite {
-		if mode == session.ModeExec {
-			return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval. Call finish now unless one required side effect is still missing.", path)
-		}
-		return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval unless one required side effect is still missing.", path)
-	}
-	if mode == session.ModeExec {
-		return fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it. If bookkeeping is done, call finish now.", path)
-	}
-	return fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it; only do the minimum remaining side effects.", path)
+	return fmt.Sprintf("Recent work already used %d read-only tool calls. Use current evidence and prefer acting now over more exploration.", stats.RetrievalCount)
 }
 
 func exactRequestedArtifactPathNote(workdir string, messages []session.Message) string {
@@ -424,19 +391,13 @@ func nextHarnessReminder(workdir, mode string, messages []session.Message) harne
 	if reminder := steerCompletionReminder(workdir, mode, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
-	if reminder := auditEvidenceReminder(messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
-		return reminder
-	}
 	if reminder := artifactCompletionReminder(workdir, mode, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
-	if reminder := largeProjectCoordinationReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
+	if reminder := retrievalTailReminder(messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
 	if reminder := projectMemoryRefreshReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
-		return reminder
-	}
-	if reminder := retrievalTailReminder(messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
 	return harnessReminder{}
@@ -450,43 +411,35 @@ func shouldSuppressHarnessReminder(messages []session.Message, reminder harnessR
 }
 
 func artifactCompletionReminder(workdir, mode string, messages []session.Message) harnessReminder {
-	note := recentArtifactWriteNote(workdir, mode, messages)
-	if note == "" {
-		return harnessReminder{}
-	}
-	return harnessReminder{
-		Kind: "artifact_written",
-		Text: "Harness reminder: " + note,
-	}
-}
-
-func largeProjectCoordinationReminder(workdir string, messages []session.Message) harnessReminder {
-	if !looksLargeProjectTask(messages) {
-		return harnessReminder{}
-	}
 	idx := latestExternalInstructionIndex(messages)
 	if idx < 0 {
 		return harnessReminder{}
 	}
-	recent := messages[idx+1:]
-	stats := collectRecentToolStats(recent)
-	if stats.RetrievalCount < 4 {
+	if !looksArtifactRequest(messages[idx].Text) {
 		return harnessReminder{}
 	}
-	stack := loadProjectMemoryStack(workdir)
-	needs := []string{}
-	if len(stack.PresentPaths()) == 0 && !hasProjectMemoryWriteActivity(recent) {
-		needs = append(needs, "create the durable project-memory stack under reports/spec.md, reports/plan.md, reports/progress.md, and reports/validation.md")
-	}
-	if !hasTaskGraphWriteActivity(recent) {
-		needs = append(needs, "use todo_write plus task_create/task_update to keep a durable task board")
-	}
-	if len(needs) == 0 {
+	stats := collectRecentToolStats(messages[idx+1:])
+	if strings.TrimSpace(stats.DeliverableWritePath) == "" {
 		return harnessReminder{}
+	}
+	path := displayPromptPath(workdir, stats.DeliverableWritePath)
+	var note string
+	if stats.CompletedTodoWrite {
+		if mode == session.ModeExec {
+			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval. Call finish now unless one required side effect is still missing.", path)
+		} else {
+			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval unless one required side effect is still missing.", path)
+		}
+	} else {
+		if mode == session.ModeExec {
+			note = fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it. If bookkeeping is done, call finish now.", path)
+		} else {
+			note = fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it; only do the minimum remaining side effects.", path)
+		}
 	}
 	return harnessReminder{
-		Kind: "large_project_coordination",
-		Text: "Harness reminder: this is a large multi-step task. Before more repo-scale retrieval or implementation drift, " + joinPromptItems(needs) + ". Externalize plan, progress, and validation so compaction and later turns can recover cleanly.",
+		Kind: "artifact_written",
+		Text: "Harness reminder: " + note,
 	}
 }
 
@@ -520,37 +473,6 @@ func steerCompletionReminder(workdir, mode string, messages []session.Message) h
 	return harnessReminder{
 		Kind: "steer_completion",
 		Text: "Harness reminder: the latest interrupt steer explicitly redirected this run to " + goal + ". Do not do more retrieval, todo/task bookkeeping, or skill loading before delivery. Use current evidence and act now.",
-	}
-}
-
-func auditEvidenceReminder(messages []session.Message) harnessReminder {
-	idx := latestExternalInstructionIndex(messages)
-	if idx < 0 {
-		return harnessReminder{}
-	}
-	instruction := messages[idx].Text
-	if !looksAuditOrReviewTask(instruction) || !auditTaskNeedsBehaviorProof(instruction) {
-		return harnessReminder{}
-	}
-	recent := messages[idx+1:]
-	if !hasCodeRead(recent) {
-		return harnessReminder{}
-	}
-	target := auditProofTarget(recent)
-	if target.Active {
-		if auditProofSatisfied(recent, target) {
-			return harnessReminder{}
-		}
-	} else if hasBehaviorProof(recent) {
-		return harnessReminder{}
-	}
-	followup := auditProofFollowupHint(recent)
-	if followup != "" {
-		followup = " " + followup
-	}
-	return harnessReminder{
-		Kind: "audit_evidence",
-		Text: "Harness reminder: this audit task needs behavior-level proof, not just declaration-level hints. Reserved names, type declarations, docs mentions, or interface listings are not enough to validate default exposure or registration behavior. Before writing a validated finding, inspect the owning registration or config gate. If you cannot verify it within the remaining budget, move that point under risks or inference instead of validated findings." + followup,
 	}
 }
 
@@ -597,13 +519,13 @@ func auditProofTarget(messages []session.Message) auditProofNeed {
 }
 
 func retrievalTailReminder(messages []session.Message) harnessReminder {
-	note := retrievalPressureNote(messages)
+	note := retrievalBudgetNote(messages)
 	if note == "" {
 		return harnessReminder{}
 	}
 	return harnessReminder{
 		Kind: "retrieval_tail",
-		Text: "Harness reminder: " + note + " If one missing exact line still matters, use at most two narrowly targeted read_file calls on new or non-overlapping slices. The runtime separately reserves two narrow rereads on already inspected files for final snippet-backed proof checks. One additional targeted read_file is allowed for a durable guidance file such as reports/*.md or spec/*.md when it directly changes the answer. Broad discovery is no longer allowed. If the task is complete after acting, call finish.",
+		Text: "Harness reminder: " + note + " If one missing exact line still matters, use at most two narrowly targeted read_file calls. Broad discovery is no longer allowed. If the task is complete after acting, call finish.",
 	}
 }
 
