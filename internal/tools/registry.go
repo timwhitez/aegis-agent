@@ -815,12 +815,17 @@ func defLoadSkill() Definition {
 			if execCtx.Catalog == nil {
 				return errorResult("load_skill", errors.New("skill catalog not available")), nil
 			}
-			skill, err := execCtx.Catalog.Load(input.Name)
+			body, err := execCtx.Catalog.LoadBody(input.Name)
 			if err != nil {
 				return errorResult("load_skill", err), nil
 			}
-			body := fmt.Sprintf("<skill path=%q>\n%s\n</skill>", skill.Path, skill.Body)
-			return session.ToolResult{Name: "load_skill", LLMOutput: body, DisplayOutput: body}, nil
+			skill, _ := execCtx.Catalog.Load(input.Name)
+			output := fmt.Sprintf("<skill path=%q>\n%s\n</skill>", skill.Path, body)
+			return session.ToolResult{
+				Name:          "load_skill",
+				LLMOutput:     output,
+				DisplayOutput: fmt.Sprintf("Loaded skill: %s", input.Name),
+			}, nil
 		},
 	}
 }

@@ -64,7 +64,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 		}
 		builder.WriteString("### How to use skills\n")
 		builder.WriteString("- If the user explicitly names a skill, prefer using it for that turn.\n")
-		builder.WriteString("- Read a skill body with `load_skill` only when the skill is relevant.\n")
+		builder.WriteString("- Use `load_skill` tool to load the full skill content when needed.\n")
 	}
 	if len(skillTools) > 0 {
 		builder.WriteString("\n## Skill Command Tools\n")

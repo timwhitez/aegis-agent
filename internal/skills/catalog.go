@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -28,16 +29,17 @@ type CommandTool struct {
 }
 
 type Skill struct {
-	Name        string
-	Description string
-	Path        string
-	Body        string
-	Tools       []CommandTool
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Path        string        `json:"path"`
+	Body        string        `json:"body,omitempty"`
+	Tools       []CommandTool `json:"tools"`
 }
 
 type Catalog struct {
 	skills map[string]Skill
 	order  []string
+	mu     sync.Mutex
 }
 
 func Scan(dirs []string) (*Catalog, error) {
@@ -99,6 +101,35 @@ func (c *Catalog) Load(name string) (Skill, error) {
 	return skill, nil
 }
 
+func (c *Catalog) LoadBody(name string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	skill, ok := c.skills[name]
+	if !ok {
+		return "", fmt.Errorf("unknown skill %q", name)
+	}
+
+	if skill.Body != "" {
+		return skill.Body, nil
+	}
+
+	data, err := os.ReadFile(skill.Path)
+	if err != nil {
+		return "", err
+	}
+
+	_, body, err := parseFrontmatter(string(data))
+	if err != nil {
+		return "", err
+	}
+
+	skill.Body = body
+	c.skills[name] = skill
+
+	return body, nil
+}
+
 func (c *Catalog) CommandTools() []CommandTool {
 	var out []CommandTool
 	for _, name := range c.order {
@@ -113,7 +144,7 @@ func loadSkill(path string) (Skill, error) {
 		return Skill{}, err
 	}
 	text := string(data)
-	meta, body, err := parseFrontmatter(text)
+	meta, _, err := parseFrontmatter(text)
 	if err != nil {
 		return Skill{}, err
 	}
@@ -123,7 +154,7 @@ func loadSkill(path string) (Skill, error) {
 	}
 	description := strings.TrimSpace(meta["description"])
 	if description == "" {
-		description = firstParagraph(body)
+		description = "No description"
 	}
 	tools, err := loadTools(filepath.Join(filepath.Dir(path), "tools"), name, path)
 	if err != nil {
@@ -133,7 +164,7 @@ func loadSkill(path string) (Skill, error) {
 		Name:        name,
 		Description: description,
 		Path:        path,
-		Body:        body,
+		Body:        "",
 		Tools:       tools,
 	}, nil
 }
