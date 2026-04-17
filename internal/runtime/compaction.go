@@ -22,6 +22,7 @@ func newCompactor(store *session.Store) *compactor {
 
 func (c *compactor) Build(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent int, emit func(events.Event)) ([]session.Message, error) {
 	cloned := cloneMessages(messages)
+	cloned = deduplicateToolResults(cloned)
 	microCompact(cloned, keepRecent)
 	size := estimateChars(cloned)
 	if size <= threshold {
@@ -51,7 +52,7 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 		return nil, err
 	}
 	artifactMemory := collectArtifactMemory(messages, workdir, 12)
-	highValueProofs := collectHighValueProofs(messages, workdir, 6)
+	highValueProofs := collectHighValueProofs(messages, workdir, 10)
 	summary := map[string]any{
 		"completed_items":          collectCompletedItems(todo, tasks),
 		"artifact_memory":          artifactMemory,
@@ -177,10 +178,133 @@ func microCompact(messages []session.Message, keepRecent int) {
 	}
 	for _, index := range indices[:len(indices)-keepRecent] {
 		for i := range messages[index].ToolResults {
-			messages[index].ToolResults[i].LLMOutput = "[Previous tool result compacted; see transcript]"
-			messages[index].ToolResults[i].DisplayOutput = "[Previous tool result compacted; see transcript]"
+			if shouldCompressToolResult(messages[index].ToolResults[i]) {
+				messages[index].ToolResults[i].LLMOutput = "[Ephemeral tool result compacted; see artifact]"
+				messages[index].ToolResults[i].DisplayOutput = "[Ephemeral tool result compacted; see artifact]"
+			} else {
+				messages[index].ToolResults[i].LLMOutput = "[Previous tool result compacted; see transcript]"
+				messages[index].ToolResults[i].DisplayOutput = "[Previous tool result compacted; see transcript]"
+			}
 		}
 	}
+}
+
+func shouldCompressToolResult(toolResult session.ToolResult) bool {
+	if path, ok := toolResult.Metadata["ephemeral_artifact"].(string); ok && path != "" {
+		return true
+	}
+	return false
+}
+
+func detectDuplicateToolCalls(messages []session.Message) map[string][]int {
+	duplicates := make(map[string][]int)
+	for i, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			key := toolCallKey(call)
+			if key != "" {
+				duplicates[key] = append(duplicates[key], i)
+			}
+		}
+	}
+	result := make(map[string][]int)
+	for key, indices := range duplicates {
+		if len(indices) > 1 {
+			result[key] = indices
+		}
+	}
+	return result
+}
+
+func toolCallKey(call session.ToolCall) string {
+	switch call.Name {
+	case "read_file":
+		var args map[string]any
+		if err := json.Unmarshal(call.Arguments, &args); err == nil {
+			if path, ok := args["file_path"].(string); ok {
+				offset := ""
+				limit := ""
+				if o, ok := args["offset"].(float64); ok {
+					offset = fmt.Sprintf(":%d", int(o))
+				}
+				if l, ok := args["limit"].(float64); ok {
+					limit = fmt.Sprintf(":%d", int(l))
+				}
+				return fmt.Sprintf("read_file:%s%s%s", path, offset, limit)
+			}
+		}
+	case "grep":
+		var args map[string]any
+		if err := json.Unmarshal(call.Arguments, &args); err == nil {
+			pattern, _ := args["pattern"].(string)
+			path, _ := args["path"].(string)
+			return fmt.Sprintf("grep:%s:%s", pattern, path)
+		}
+	case "glob":
+		var args map[string]any
+		if err := json.Unmarshal(call.Arguments, &args); err == nil {
+			pattern, _ := args["pattern"].(string)
+			return fmt.Sprintf("glob:%s", pattern)
+		}
+	}
+	return ""
+}
+
+func deduplicateToolResults(messages []session.Message) []session.Message {
+	duplicates := detectDuplicateToolCalls(messages)
+	if len(duplicates) == 0 {
+		return messages
+	}
+
+	keep := make(map[int]bool)
+	for i := range messages {
+		keep[i] = true
+	}
+
+	for _, indices := range duplicates {
+		if len(indices) <= 1 {
+			continue
+		}
+		latestIndex := indices[len(indices)-1]
+		for _, idx := range indices[:len(indices)-1] {
+			if idx < len(messages) && messages[idx].Role == "assistant" {
+				for _, call := range messages[idx].ToolCalls {
+					toolResultIdx := findToolResultIndex(messages, call.ID, idx+1)
+					if toolResultIdx > 0 && toolResultIdx < latestIndex {
+						if messages[toolResultIdx].Role == "tool" {
+							for i := range messages[toolResultIdx].ToolResults {
+								messages[toolResultIdx].ToolResults[i].LLMOutput = "[Duplicate tool result removed; latest result retained]"
+								messages[toolResultIdx].ToolResults[i].DisplayOutput = "[Duplicate tool result removed; latest result retained]"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	out := make([]session.Message, 0, len(messages))
+	for i, msg := range messages {
+		if keep[i] {
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+func findToolResultIndex(messages []session.Message, toolCallID string, startFrom int) int {
+	for i := startFrom; i < len(messages); i++ {
+		if messages[i].Role == "tool" {
+			for _, result := range messages[i].ToolResults {
+				if result.ToolCallID == toolCallID {
+					return i
+				}
+			}
+		}
+	}
+	return -1
 }
 
 func estimateChars(messages []session.Message) int {
@@ -358,7 +482,12 @@ func collectHighValueProofs(messages []session.Message, workdir string, limit in
 		limit = 4
 	}
 	seen := map[string]struct{}{}
-	out := make([]map[string]any, 0, limit)
+	type proofCandidate struct {
+		data     map[string]any
+		priority int
+	}
+	candidates := make([]proofCandidate, 0, limit*2)
+
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
 		if msg.Role != "tool" {
@@ -387,18 +516,47 @@ func collectHighValueProofs(messages []session.Message, workdir string, limit in
 				continue
 			}
 			seen[key] = struct{}{}
-			out = append(out, map[string]any{
-				"path":        rel,
-				"line_window": startLine + "-" + endLine,
-				"kind":        proofKind(path),
-				"excerpt":     truncateText(excerpt, 320),
+
+			priority := proofPriority(excerpt)
+			candidates = append(candidates, proofCandidate{
+				data: map[string]any{
+					"path":        rel,
+					"line_window": startLine + "-" + endLine,
+					"kind":        proofKind(path),
+					"excerpt":     truncateText(excerpt, 320),
+				},
+				priority: priority,
 			})
-			if len(out) >= limit {
-				return out
+		}
+	}
+
+	for i := 0; i < len(candidates); i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].priority > candidates[i].priority {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
 			}
 		}
 	}
+
+	out := make([]map[string]any, 0, limit)
+	for _, candidate := range candidates {
+		out = append(out, candidate.data)
+		if len(out) >= limit {
+			break
+		}
+	}
 	return out
+}
+
+func proofPriority(excerpt string) int {
+	lower := strings.ToLower(excerpt)
+	if strings.Contains(lower, "error") || strings.Contains(lower, "exception") {
+		return 3
+	}
+	if strings.Contains(lower, "warning") || strings.Contains(lower, "failed") {
+		return 2
+	}
+	return 1
 }
 
 func proofLineWindow(meta map[string]any) (string, string) {

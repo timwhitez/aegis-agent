@@ -298,3 +298,106 @@ func TestCompactorPreservesAssistantToolCallsForRetainedToolResults(t *testing.T
 		t.Fatalf("expected assistant tool_call before tool result, got assistant=%d tool=%d", assistantIndex, toolIndex)
 	}
 }
+
+func TestDeduplicateToolResults(t *testing.T) {
+	messages := []session.Message{
+		session.NewMessage("user", "Read the file"),
+		session.NewAssistantMessage("", []session.ToolCall{{
+			ID:        "call_1",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"file_path":"/test/file.go"}`),
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID:    "call_1",
+			Name:          "read_file",
+			LLMOutput:     "first read content",
+			DisplayOutput: "first read content",
+		}}),
+		session.NewAssistantMessage("", []session.ToolCall{{
+			ID:        "call_2",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"file_path":"/test/file.go"}`),
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID:    "call_2",
+			Name:          "read_file",
+			LLMOutput:     "second read content",
+			DisplayOutput: "second read content",
+		}}),
+	}
+
+	result := deduplicateToolResults(messages)
+	if len(result) != len(messages) {
+		t.Fatalf("expected same message count, got %d", len(result))
+	}
+
+	if !strings.Contains(result[2].ToolResults[0].LLMOutput, "Duplicate") {
+		t.Fatalf("expected first duplicate to be marked, got %s", result[2].ToolResults[0].LLMOutput)
+	}
+	if result[4].ToolResults[0].LLMOutput != "second read content" {
+		t.Fatalf("expected latest result to be preserved, got %s", result[4].ToolResults[0].LLMOutput)
+	}
+}
+
+func TestProofPriority(t *testing.T) {
+	tests := []struct {
+		excerpt  string
+		priority int
+	}{
+		{"error: file not found", 3},
+		{"exception occurred", 3},
+		{"warning: deprecated function", 2},
+		{"test failed", 2},
+		{"normal code content", 1},
+	}
+
+	for _, tt := range tests {
+		got := proofPriority(tt.excerpt)
+		if got != tt.priority {
+			t.Errorf("proofPriority(%q) = %d, want %d", tt.excerpt, got, tt.priority)
+		}
+	}
+}
+
+func TestShouldCompressToolResult(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   session.ToolResult
+		expected bool
+	}{
+		{
+			name: "ephemeral artifact present",
+			result: session.ToolResult{
+				Metadata: map[string]any{
+					"ephemeral_artifact": "/path/to/artifact",
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "no ephemeral artifact",
+			result: session.ToolResult{
+				Metadata: map[string]any{},
+			},
+			expected: false,
+		},
+		{
+			name: "empty ephemeral artifact",
+			result: session.ToolResult{
+				Metadata: map[string]any{
+					"ephemeral_artifact": "",
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldCompressToolResult(tt.result)
+			if got != tt.expected {
+				t.Errorf("shouldCompressToolResult() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
