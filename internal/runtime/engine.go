@@ -25,6 +25,11 @@ type Engine struct {
 	bus       *events.Bus
 	control   *runControl
 	compactor *compactor
+	runner    RunnerInterface
+}
+
+type RunnerInterface interface {
+	AutoContinue(ctx context.Context, sessionID string) (RunResult, error)
 }
 
 func NewEngine(cfg *config.Config, store *session.Store, bus *events.Bus, control *runControl) *Engine {
@@ -34,7 +39,12 @@ func NewEngine(cfg *config.Config, store *session.Store, bus *events.Bus, contro
 		bus:       bus,
 		control:   control,
 		compactor: newCompactor(store),
+		runner:    nil,
 	}
+}
+
+func (e *Engine) SetRunner(runner RunnerInterface) {
+	e.runner = runner
 }
 
 type runDeps struct {
@@ -428,6 +438,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				continue
 			}
+			if doneCandidates == 1 {
+				doneCandidates++
+				continue
+			}
 			state.Status = session.StatusFailed
 			state.IncompleteReason = "incomplete_no_finish"
 			state.LastError = "incomplete_no_finish: task ended without explicit finish"
@@ -435,7 +449,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				return RunResult{}, err
 			}
 			e.emit(meta.ID, "session.failed", "turn_decide", map[string]any{"reason": state.IncompleteReason})
-			return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
+			result := RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}
+			if e.cfg.Runtime.RalphLoop.Enabled {
+				return e.runner.AutoContinue(ctx, meta.ID)
+			}
+			return result, nil
 		}
 	}
 }

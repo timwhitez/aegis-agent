@@ -9,6 +9,12 @@ import (
 
 const SchemaVersion = 1
 
+const (
+	EventRalphLoopTriggered = "ralph_loop.triggered"
+	EventRalphLoopCompleted = "ralph_loop.completed"
+	EventRalphLoopExhausted = "ralph_loop.exhausted"
+)
+
 type Event struct {
 	SchemaVersion int            `json:"schema_version"`
 	ID            string         `json:"id"`

@@ -74,6 +74,7 @@ type RuntimeConfig struct {
 	ShellEnvAllowlist  []string         `yaml:"shell_env_allowlist"`
 	Compact            CompactConfig    `yaml:"compact"`
 	Ephemeral          EphemeralConfig  `yaml:"ephemeral"`
+	RalphLoop          RalphLoopConfig  `yaml:"ralph_loop"`
 }
 
 type SteerConfig struct {
@@ -104,6 +105,11 @@ type CompactConfig struct {
 type EphemeralConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	ArtifactDir string `yaml:"artifact_dir"`
+}
+
+type RalphLoopConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	MaxIterations int  `yaml:"max_iterations"`
 }
 
 type OutputConfig struct {
@@ -250,6 +256,10 @@ func Default() *Config {
 				Enabled:     true,
 				ArtifactDir: ".artifacts/tool-outputs",
 			},
+			RalphLoop: RalphLoopConfig{
+				Enabled:       false,
+				MaxIterations: 5,
+			},
 		},
 		Output: OutputConfig{
 			Format:        "text",
@@ -339,6 +349,9 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	if cfg.Runtime.Compact.KeepRecentToolResults <= 0 {
 		cfg.Runtime.Compact.KeepRecentToolResults = 3
+	}
+	if cfg.Runtime.RalphLoop.MaxIterations <= 0 {
+		cfg.Runtime.RalphLoop.MaxIterations = 5
 	}
 	if len(cfg.Runtime.ShellEnvAllowlist) == 0 {
 		cfg.Runtime.ShellEnvAllowlist = []string{"PATH", "HOME", "LANG", "TERM"}
