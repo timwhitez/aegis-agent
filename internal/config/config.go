@@ -73,6 +73,7 @@ type RuntimeConfig struct {
 	Queue              QueueConfig      `yaml:"queue"`
 	ShellEnvAllowlist  []string         `yaml:"shell_env_allowlist"`
 	Compact            CompactConfig    `yaml:"compact"`
+	RalphLoop          RalphLoopConfig  `yaml:"ralph_loop"`
 }
 
 type SteerConfig struct {
@@ -98,6 +99,11 @@ type QueueConfig struct {
 type CompactConfig struct {
 	InputCharThreshold    int `yaml:"input_char_threshold"`
 	KeepRecentToolResults int `yaml:"keep_recent_tool_results"`
+}
+
+type RalphLoopConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	MaxIterations int  `yaml:"max_iterations"`
 }
 
 type OutputConfig struct {
@@ -240,6 +246,10 @@ func Default() *Config {
 				InputCharThreshold:    160000,
 				KeepRecentToolResults: 3,
 			},
+			RalphLoop: RalphLoopConfig{
+				Enabled:       false,
+				MaxIterations: 5,
+			},
 		},
 		Output: OutputConfig{
 			Format:        "text",
@@ -329,6 +339,9 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	if cfg.Runtime.Compact.KeepRecentToolResults <= 0 {
 		cfg.Runtime.Compact.KeepRecentToolResults = 3
+	}
+	if cfg.Runtime.RalphLoop.MaxIterations <= 0 {
+		cfg.Runtime.RalphLoop.MaxIterations = 5
 	}
 	if len(cfg.Runtime.ShellEnvAllowlist) == 0 {
 		cfg.Runtime.ShellEnvAllowlist = []string{"PATH", "HOME", "LANG", "TERM"}

@@ -91,6 +91,7 @@ type State struct {
 	PauseReason          string   `json:"pause_reason,omitempty"`
 	PendingSteerCount    int      `json:"pending_steer_count,omitempty"`
 	LoadedSkills         []string `json:"loaded_skills,omitempty"`
+	RalphLoopCount       int      `json:"ralph_loop_count,omitempty"`
 }
 
 type ToolCall struct {

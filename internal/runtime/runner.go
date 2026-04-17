@@ -54,13 +54,16 @@ func NewRunner(cfg *config.Config) *Runner {
 	store := newSessionStore(cfg)
 	bus := events.NewBus()
 	control := &runControl{}
-	return &Runner{
+	engine := NewEngine(cfg, store, bus, control)
+	r := &Runner{
 		cfg:     cfg,
 		store:   store,
 		bus:     bus,
 		control: control,
-		engine:  NewEngine(cfg, store, bus, control),
+		engine:  engine,
 	}
+	engine.SetRunner(r)
+	return r
 }
 
 func (r *Runner) Bus() *events.Bus { return r.bus }
@@ -546,6 +549,54 @@ func (r *Runner) List(limit int) ([]session.SessionSummary, error) {
 func (r *Runner) Store() *session.Store {
 	return r.store
 }
+
+func (r *Runner) AutoContinue(ctx context.Context, sessionID string) (RunResult, error) {
+	_, err := r.store.LoadMetadata(sessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	state, err := r.store.LoadState(sessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if state.Status != session.StatusFailed {
+		return RunResult{}, errors.New("auto-continue requires failed status")
+	}
+	if state.IncompleteReason != "incomplete_no_finish" {
+		return RunResult{}, errors.New("auto-continue requires incomplete_no_finish reason")
+	}
+	if state.RalphLoopCount >= r.cfg.Runtime.RalphLoop.MaxIterations {
+		r.emit(sessionID, events.EventRalphLoopExhausted, "ralph_loop", map[string]any{
+			"count":          state.RalphLoopCount,
+			"max_iterations": r.cfg.Runtime.RalphLoop.MaxIterations,
+		})
+		return RunResult{}, fmt.Errorf("ralph loop exhausted after %d iterations", state.RalphLoopCount)
+	}
+	messages, err := r.store.LoadMessages(sessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if len(messages) == 0 {
+		return RunResult{}, errors.New("no messages found for auto-continue")
+	}
+	originalPrompt := messages[0].Text
+	state.RalphLoopCount++
+	r.emit(sessionID, events.EventRalphLoopTriggered, "ralph_loop", map[string]any{
+		"count":          state.RalphLoopCount,
+		"max_iterations": r.cfg.Runtime.RalphLoop.MaxIterations,
+	})
+	result, err := r.Continue(ctx, ContinueRequest{
+		SessionID: sessionID,
+		Message:   originalPrompt,
+	})
+	if err == nil && result.Status == session.StatusCompleted {
+		r.emit(sessionID, events.EventRalphLoopCompleted, "ralph_loop", map[string]any{
+			"count": state.RalphLoopCount,
+		})
+	}
+	return result, err
+}
+
 
 func (r *Runner) watchSteer(ctx context.Context, sessionID string) {
 	interval := time.Duration(r.cfg.Runtime.Steer.PollIntervalMS) * time.Millisecond
