@@ -73,6 +73,7 @@ type RuntimeConfig struct {
 	Queue              QueueConfig      `yaml:"queue"`
 	ShellEnvAllowlist  []string         `yaml:"shell_env_allowlist"`
 	Compact            CompactConfig    `yaml:"compact"`
+	Ephemeral          EphemeralConfig  `yaml:"ephemeral"`
 }
 
 type SteerConfig struct {
@@ -98,6 +99,11 @@ type QueueConfig struct {
 type CompactConfig struct {
 	InputCharThreshold    int `yaml:"input_char_threshold"`
 	KeepRecentToolResults int `yaml:"keep_recent_tool_results"`
+}
+
+type EphemeralConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	ArtifactDir string `yaml:"artifact_dir"`
 }
 
 type OutputConfig struct {
@@ -239,6 +245,10 @@ func Default() *Config {
 			Compact: CompactConfig{
 				InputCharThreshold:    160000,
 				KeepRecentToolResults: 3,
+			},
+			Ephemeral: EphemeralConfig{
+				Enabled:     true,
+				ArtifactDir: ".artifacts/tool-outputs",
 			},
 		},
 		Output: OutputConfig{
