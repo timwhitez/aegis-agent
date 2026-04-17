@@ -28,8 +28,8 @@
 - ✅ Compaction 机制（`internal/runtime/compaction.go`）
 - ✅ Project memory stack
 - ✅ Session 持久化和恢复
-- ⚠️ 缺少 progressive disclosure（技能加载是全量的）
-- ⚠️ 缺少 ephemeral messages 机制（大型工具输出会污染 context）
+- ✅ Progressive disclosure（技能按需加载）**[2026-04-17 已实现]**
+- ✅ Ephemeral messages 机制（大型工具输出自动压缩）**[2026-04-17 已实现]**
 
 **最佳实践要求：**
 - Repository-first documentation（所有知识在 repo 内）
@@ -38,9 +38,9 @@
 - Context 优先级管理（重要信息优先保留）
 
 **差距分析：**
-- 需要实现类似 browser-use 的 ephemeral messages 机制
-- 需要优化 skill loading 为按需加载而非启动时全量加载
-- 需要增强 compaction 的智能性（保留关键证据，清理冗余）
+- ✅ Ephemeral messages 机制已实现（browser-use 模式）**[2026-04-17]**
+- ✅ Skill loading 已优化为按需加载**[2026-04-17]**
+- ✅ Compaction 智能性已增强（去重和保留策略）**[2026-04-17]**
 
 #### 2. Architectural Constraints（架构约束）
 
@@ -89,15 +89,15 @@
 
 | 组件类别 | 当前实现 | 完整度 | 优化方向 |
 |---------|---------|--------|---------|
-| **System Prompts** | ✅ `internal/runtime/prompt.go` | 90% | 需要精简和模块化 |
-| **Tools & Skills** | ✅ Registry + Catalog | 95% | 需要 progressive disclosure |
+| **System Prompts** | ✅ `internal/runtime/prompt.go` | 95% | ✅ 已精简 **[2026-04-17]** |
+| **Tools & Skills** | ✅ Registry + Catalog | 100% | ✅ Progressive disclosure 已实现 **[2026-04-17]** |
 | **Bundled Infrastructure** | ✅ Filesystem + Shell | 100% | 完整 |
 | **Orchestration Logic** | ✅ Delegation + Queue | 95% | 需要增强 handoff |
 | **Hooks/Middleware** | ✅ Hooks Manager | 85% | 需要更多内置 middleware |
 | **Memory & Search** | ✅ Project Memory | 80% | 需要增强检索能力 |
 | **Sandboxes** | ✅ Isolation mode | 90% | 完整 |
-| **Context Compaction** | ✅ Compactor | 85% | 需要更智能的策略 |
-| **Long-horizon Support** | ✅ Steer/Continue | 90% | 需要 Ralph Loop 模式 |
+| **Context Compaction** | ✅ Compactor | 95% | ✅ 智能策略已增强 **[2026-04-17]** |
+| **Long-horizon Support** | ✅ Steer/Continue | 100% | ✅ Ralph Loop 已实现 **[2026-04-17]** |
 | **Observability** | ✅ Event Bus + Timeline | 95% | 完整 |
 
 ### 核心设计原则验证
@@ -156,22 +156,22 @@
 - OpenAI 的 tool call offloading（大输出写入文件）
 
 **优化方向：**
-- [ ] **实现 ephemeral messages 机制**
+- [x] **实现 ephemeral messages 机制** ✅ **已完成 [2026-04-17]**
   - 为 `grep`、`glob`、`shell` 等工具添加 `ephemeral` 标记
   - 自动保留最近 N 次输出，旧输出写入 `.artifacts/` 并提供路径
   - 参考：browser-use 的 `@tool("Get browser state", ephemeral=3)` 模式
   
-- [ ] **优化 Skills 加载为 progressive disclosure**
+- [x] **优化 Skills 加载为 progressive disclosure** ✅ **已完成 [2026-04-17]**
   - 启动时只加载 skill summaries（name + description）
   - 使用 `load_skill` 时才加载完整 SKILL.md 内容
   - 减少初始 context 占用 50%+
   
-- [ ] **增强 Compaction 智能性**
+- [x] **增强 Compaction 智能性** ✅ **已完成 [2026-04-17]**
   - 保留 "key evidence"（用户明确要求的文件路径、关键错误信息）
   - 优先压缩重复的工具输出（多次 `read_file` 同一文件）
   - 保留最近的 steer/continue 输入完整性
 
-**实现优先级：** P0（ephemeral messages）> P1（progressive disclosure）> P1（compaction 增强）
+**实现优先级：** ✅ 全部完成
 
 ### 2. Prompt Engineering 精简
 
@@ -186,10 +186,23 @@
 - Anthropic：clear, concise instructions
 
 **优化方向：**
-- [ ] **精简 System Prompt 核心部分**
+- [x] **精简 System Prompt 核心部分** ✅ **已完成 [2026-04-17]**
   - 移除冗余的 "how to use tools" 说明（模型已经训练过）
   - 将部分说明移到工具的 description 中
   - 保留关键的 workspace boundary 和 mode 说明
+  - 目标：减少到 80 行以内 ✅ 已达成
+  
+- [x] **优化 Runtime Notes 注入策略** ✅ **已完成 [2026-04-17]**
+  - 只在真正需要时注入（如检测到 audit task 才注入 evidence note）
+  - 合并相似的 notes，避免重复
+  - 考虑将部分 notes 改为 tool result 中的提示
+  
+- [ ] **简化工具描述**
+  - 移除 "you can use this tool to..." 类的冗余前缀
+  - 使用更简洁的动词开头（"Read file", "Search code"）
+  - 参考 pi-coding-agent 的 minimal tool descriptions
+
+**实现优先级：** ✅ P0 已完成，P2 待优化
   - 目标：减少到 80 行以内
   
 - [ ] **优化 Runtime Notes 注入策略**
@@ -222,17 +235,18 @@
   - Initializer 负责：创建 feature list、设置 git repo、编写 init.sh
   - 后续 session 自动读取 feature list 和 progress notes
   
-- [ ] **增加 Ralph Loop 支持**
+- [x] **增加 Ralph Loop 支持** ✅ **已完成 [2026-04-17]**
   - 检测 exec mode 下的 incomplete_no_finish 状态
   - 自动 reinject 原始 prompt 并 continue
   - 可配置最大 loop 次数（防止无限循环）
   
-- [ ] **Feature List 管理工具**
-  - 新增 `feature_list_create` / `feature_list_update` 工具
+- [x] **Feature List 管理工具** ✅ **已完成 [2026-04-17]**
+  - 新增 `feature_list_create` / `feature_list_update` / `feature_list_read` 工具
   - JSON 格式存储，包含 description、steps、passes 字段
   - 引导模型逐个完成 feature 而非一次性完成所有
+  - Pre-completion checklist 集成
 
-**实现优先级：** P1（Ralph Loop）> P1（Feature List）> P2（Initializer Agent）
+**实现优先级：** ✅ P1 已完成，P2 待优化
 
 ---
 
@@ -247,22 +261,24 @@
 - 移动端适配缺失
 
 **优化方向：**
-- [ ] **性能优化**
+- [x] **性能优化** ✅ **已完成 [2026-04-17]**
   - 实现增量渲染（只更新变化的消息）
-  - 添加虚拟滚动（大型 session 支持）
+  - 添加虚拟滚动（大型 session 支持，50+ 消息自动启用）
   - 优化 WebSocket 事件处理（debounce/throttle）
   
-- [ ] **交互体验**
-  - 添加快捷键（Ctrl+Enter 发送、Esc 停止、/ 触发命令）
+- [x] **交互体验** ✅ **已完成 [2026-04-17]**
+  - 添加快捷键（Ctrl+Enter 发送、Esc 停止、/ 触发命令、Ctrl+K 搜索、Ctrl+N 新会话、Ctrl+, 设置、? 帮助）
   - 添加 loading skeleton 和乐观更新
   - 改进错误提示的可操作性（提供修复建议）
   
-- [ ] **视觉优化**
-  - 添加 dark mode 支持
+- [x] **视觉优化** ✅ **已完成 [2026-04-17]**
+  - 添加 dark mode 支持（跟随系统偏好，localStorage 持久化）
   - 优化移动端响应式布局
   - 改进 session rail 的筛选和排序 UI
 
-**实现优先级：** P1（性能优化）> P1（快捷键）> P2（视觉优化）
+**注：** 当前前端的留白风格是有意设计，保持宽松舒适的视觉体验。
+
+**实现优先级：** ✅ 全部完成
 
 ### 5. Cross-Provider Context Handoff
 
