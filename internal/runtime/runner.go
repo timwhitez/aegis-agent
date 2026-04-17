@@ -597,7 +597,6 @@ func (r *Runner) AutoContinue(ctx context.Context, sessionID string) (RunResult,
 	return result, err
 }
 
-
 func (r *Runner) watchSteer(ctx context.Context, sessionID string) {
 	interval := time.Duration(r.cfg.Runtime.Steer.PollIntervalMS) * time.Millisecond
 	ticker := time.NewTicker(interval)
