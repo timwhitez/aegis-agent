@@ -5,6 +5,8 @@
 const POLL_INTERVAL_MS = 1600;
 const MAX_LIVE_EVENTS = 80;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
+const VIRTUAL_SCROLL_ITEM_HEIGHT = 120;
+const VIRTUAL_SCROLL_BUFFER_SIZE = 5;
 
 const state = {
   currentView: 'chat',
@@ -42,7 +44,12 @@ const state = {
   refreshingSession: false,
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
-  lastInputWasEmpty: true
+  lastInputWasEmpty: true,
+  virtualScroll: {
+    scrollTop: 0,
+    containerHeight: 600,
+    enabled: false
+  }
 };
 
 const nodes = {
@@ -124,6 +131,10 @@ function init() {
   refreshOverview();
   switchView(state.currentView, { skipPersist: true });
   renderCurrentSession();
+
+  if (nodes.chatContainer) {
+    state.virtualScroll.containerHeight = nodes.chatContainer.clientHeight;
+  }
 
   if (state.currentView === 'chat' && nodes.chatInput) {
     state.lastInputWasEmpty = !nodes.chatInput.value.trim();
@@ -333,13 +344,30 @@ function setupEventListeners() {
       this.style.height = `${this.scrollHeight}px`;
       lastScrollHeight = this.scrollHeight;
     }
-    
+
     // Only update UI if we really need to (e.g. for empty vs non-empty state)
     const isNowEmpty = !this.value.trim();
     const wasEmpty = state.lastInputWasEmpty;
     if (isNowEmpty !== wasEmpty || state.nextSendInterrupt) {
       state.lastInputWasEmpty = isNowEmpty;
       updateUI();
+    }
+  });
+
+  let scrollThrottle = null;
+  nodes.chatContainer.addEventListener('scroll', function onScroll() {
+    if (scrollThrottle) {
+      return;
+    }
+    scrollThrottle = setTimeout(() => {
+      scrollThrottle = null;
+    }, 16);
+
+    state.virtualScroll.scrollTop = this.scrollTop;
+    state.virtualScroll.containerHeight = this.clientHeight;
+
+    if (state.virtualScroll.enabled) {
+      renderCurrentSession();
     }
   });
 
@@ -1042,14 +1070,63 @@ function summarizeProviderFailure(detail) {
   return null;
 }
 
+function calculateVirtualScrollWindow(messages) {
+  if (!state.virtualScroll.enabled || messages.length < 50) {
+    return { startIndex: 0, endIndex: messages.length, offsetY: 0, totalHeight: 0 };
+  }
+
+  const { scrollTop, containerHeight } = state.virtualScroll;
+  const itemHeight = VIRTUAL_SCROLL_ITEM_HEIGHT;
+  const bufferSize = VIRTUAL_SCROLL_BUFFER_SIZE;
+
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - bufferSize);
+  const endIndex = Math.min(
+    messages.length,
+    Math.ceil((scrollTop + containerHeight) / itemHeight) + bufferSize
+  );
+
+  const offsetY = startIndex * itemHeight;
+  const totalHeight = messages.length * itemHeight;
+
+  return { startIndex, endIndex, offsetY, totalHeight };
+}
+
 function renderMessageStream() {
   const detailMessages = maybeArray(state.sessionDetail?.messages);
   const optimisticMessages = state.optimisticMessages.slice();
   const stream = detailMessages.length ? detailMessages.concat(optimisticMessages) : optimisticMessages;
+
+  if (!stream.length) {
+    return {
+      activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
+      flow: renderFlowLane(),
+      body: renderEmptySessionState(),
+      pending: state.isGenerating ? renderPendingStageCard() : ''
+    };
+  }
+
+  state.virtualScroll.enabled = stream.length >= 50;
+
+  const { startIndex, endIndex, offsetY, totalHeight } = calculateVirtualScrollWindow(stream);
+  const visibleMessages = stream.slice(startIndex, endIndex);
+
+  let bodyHTML;
+  if (state.virtualScroll.enabled) {
+    bodyHTML = `
+      <div class="virtual-scroll-container" style="height: ${totalHeight}px; position: relative;">
+        <div class="virtual-scroll-content" style="transform: translateY(${offsetY}px);">
+          ${visibleMessages.map((message) => renderMessage(message)).join('')}
+        </div>
+      </div>
+    `;
+  } else {
+    bodyHTML = stream.map((message) => renderMessage(message)).join('');
+  }
+
   return {
     activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
     flow: renderFlowLane(),
-    body: stream.length ? stream.map((message) => renderMessage(message)).join('') : renderEmptySessionState(),
+    body: bodyHTML,
     pending: state.isGenerating ? renderPendingStageCard() : ''
   };
 }
