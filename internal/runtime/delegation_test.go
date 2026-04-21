@@ -85,6 +85,66 @@ func TestRunnerDelegateTreatsNoneIsolationModeAsOff(t *testing.T) {
 	}
 }
 
+func TestRunnerDelegateResolvesRelativeWorkdirAgainstParent(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		Workdir:         ".",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if result.Workdir != parentWorkdir {
+		t.Fatalf("expected result workdir to resolve under parent, got %q want %q", result.Workdir, parentWorkdir)
+	}
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.RequestedWorkdir != parentWorkdir || meta.Workdir != parentWorkdir {
+		t.Fatalf("expected relative child workdir to resolve to parent workspace, got %#v", meta)
+	}
+}
+
+func TestRunnerDelegateKeepsExistingCwdRelativeWorkdir(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	root := t.TempDir()
+	parentWorkdir := filepath.Join(root, "parent")
+	cwdRelativeWorkdir := filepath.Join(root, "child-workspace")
+	if err := os.MkdirAll(parentWorkdir, 0o755); err != nil {
+		t.Fatalf("create parent workdir: %v", err)
+	}
+	if err := os.MkdirAll(cwdRelativeWorkdir, 0o755); err != nil {
+		t.Fatalf("create cwd-relative workdir: %v", err)
+	}
+	t.Chdir(root)
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		Workdir:         "child-workspace",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if result.Workdir != cwdRelativeWorkdir {
+		t.Fatalf("expected existing cwd-relative workdir, got %q want %q", result.Workdir, cwdRelativeWorkdir)
+	}
+}
+
 func TestRunnerDelegateTreatsDefaultProviderAndModelAsInherited(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
@@ -249,6 +309,83 @@ func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	}
 	if notifications[0].AgentRole != "planner" {
 		t.Fatalf("expected planner role on background notification, got %#v", notifications[0].AgentRole)
+	}
+}
+
+func TestRunnerQueueSubmitResolvesRelativeWorkdirAgainstParent(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		AgentRole:       "planner",
+		Workdir:         ".",
+		IsolationMode:   "auto",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if job.RequestedWorkdir != parentWorkdir {
+		t.Fatalf("expected queued workdir to resolve under parent, got %q want %q", job.RequestedWorkdir, parentWorkdir)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil {
+		t.Fatalf("process next job: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a queued job to be processed")
+	}
+	if processed.RequestedWorkdir != parentWorkdir {
+		t.Fatalf("expected processed workdir to stay parent-relative, got %#v", processed)
+	}
+	if processed.EffectiveWorkdir == "" || processed.EffectiveWorkdir == parentWorkdir {
+		t.Fatalf("expected isolated effective workdir, got %#v", processed)
+	}
+	meta, err := runner.store.LoadMetadata(processed.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.RequestedWorkdir != parentWorkdir {
+		t.Fatalf("expected child requested workdir to be parent workspace, got %#v", meta)
+	}
+	if meta.Isolation == nil || meta.Isolation.ParentWorkdir != parentWorkdir {
+		t.Fatalf("expected isolation to copy from parent workspace, got %#v", meta.Isolation)
+	}
+}
+
+func TestRunnerQueueSubmitKeepsExistingCwdRelativeWorkdir(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	root := t.TempDir()
+	parentWorkdir := filepath.Join(root, "parent")
+	cwdRelativeWorkdir := filepath.Join(root, "child-workspace")
+	if err := os.MkdirAll(parentWorkdir, 0o755); err != nil {
+		t.Fatalf("create parent workdir: %v", err)
+	}
+	if err := os.MkdirAll(cwdRelativeWorkdir, 0o755); err != nil {
+		t.Fatalf("create cwd-relative workdir: %v", err)
+	}
+	t.Chdir(root)
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		AgentRole:       "planner",
+		Workdir:         "child-workspace",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if job.RequestedWorkdir != cwdRelativeWorkdir {
+		t.Fatalf("expected queued workdir to keep existing cwd-relative path, got %q want %q", job.RequestedWorkdir, cwdRelativeWorkdir)
 	}
 }
 

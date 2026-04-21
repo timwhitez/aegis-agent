@@ -256,6 +256,11 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 			t.Fatalf("expected %s to be registered by default", name)
 		}
 	}
+	for _, name := range []string{"feature_list_create", "feature_list_update", "feature_list_read"} {
+		if _, ok := registry.defs[name]; !ok {
+			t.Fatalf("expected %s to be registered as a built-in tool", name)
+		}
+	}
 
 	cfg.Runtime.MultiAgent.Enabled = false
 	registry, err = NewRegistry(cfg, nil, store, nil)
@@ -265,6 +270,11 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	for _, name := range []string{"agent_spawn", "agent_status", "agent_list"} {
 		if _, ok := registry.defs[name]; ok {
 			t.Fatalf("expected %s to be hidden when multi-agent is disabled", name)
+		}
+	}
+	for _, name := range []string{"feature_list_create", "feature_list_update", "feature_list_read"} {
+		if _, ok := registry.defs[name]; !ok {
+			t.Fatalf("expected %s to remain registered when multi-agent is disabled", name)
 		}
 	}
 }

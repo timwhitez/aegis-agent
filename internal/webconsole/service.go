@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go-cli-agent/internal/config"
@@ -940,18 +941,27 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	sendQueue := make(chan map[string]any, 128)
 	stop := make(chan struct{})
+	var stopped atomic.Bool
 	var writeWG sync.WaitGroup
 	writeWG.Add(1)
 	go func() {
 		defer writeWG.Done()
-		for msg := range sendQueue {
-			if err := conn.WriteJSON(msg); err != nil {
+		for {
+			select {
+			case msg := <-sendQueue:
+				if err := conn.WriteJSON(msg); err != nil {
+					return
+				}
+			case <-stop:
 				return
 			}
 		}
 	}()
 
 	send := func(msg map[string]any) {
+		if stopped.Load() {
+			return
+		}
 		select {
 		case sendQueue <- msg:
 		case <-stop:
@@ -1113,8 +1123,8 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	stopped.Store(true)
 	close(stop)
-	close(sendQueue)
 	writeWG.Wait()
 }
 

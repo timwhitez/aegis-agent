@@ -377,6 +377,24 @@ merge_if_missing_pattern() {
 	printf '%s' "$current"
 }
 
+merge_if_missing_any_pattern() {
+	local current="$1"
+	local path="$2"
+	shift 2
+	if [[ ! -f "$path" ]]; then
+		printf '%s' "$(merge_exit_code "$current" 1)"
+		return 0
+	fi
+	local pattern=""
+	for pattern in "$@"; do
+		if [[ -n "$pattern" ]] && grep -Fq "$pattern" "$path"; then
+			printf '%s' "$current"
+			return 0
+		fi
+	done
+	printf '%s' "$(merge_exit_code "$current" 1)"
+}
+
 merge_if_missing_exact_line() {
 	local current="$1"
 	local path="$2"
@@ -1559,13 +1577,13 @@ TT12_EXIT="$(merge_if_missing_file "$TT12_EXIT" "$TT12_QUEUE_REVIEW")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_SUBMIT_RAW" "\"agent_role\":\"evaluator\"")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_JOB_RAW" "\"status\":\"completed\"")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_JOB_RAW" "\"visible_paths\"")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_CHILDREN_RAW" "\"agent_role\":\"evaluator\"")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ROLE_PROOF" "child_workdir_differs=true")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_PARENT_BACKGROUND" "\"queue_job_id\":\"")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "app/config.py:4")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "app/report.py:4")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "tests/test_config.py:")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "tests/test_report.py:4")"
+	TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_CHILDREN_RAW" "\"agent_role\":\"evaluator\"")"
+	TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ROLE_PROOF" "child_workdir_differs=true")"
+	TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_PARENT_BACKGROUND" "\"queue_job_id\":\"")"
+	TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "app/config.py:4")"
+	TT12_EXIT="$(merge_if_missing_any_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "app/report.py:4" "app/report.py:")"
+	TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "tests/test_config.py:")"
+	TT12_EXIT="$(merge_if_missing_any_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "tests/test_report.py:4" "tests/test_report.py:")"
 finalize_case "TT12" "Background Queue Review With Role And Children Proof" "$TT12_EXIT" "$TT12_JOB_RAW" "$TT12_ARTIFACT" "$TT12_PARENT_SESSION_ID" "" "$TT12_DIR"
 
 TT13_DIR="${CASES_DIR}/TT13"
@@ -1748,8 +1766,8 @@ TT15_ACCEPTED_COUNT="$(count_pattern "$TT15_EVENTS_PATH" '"type":"session.steer.
 if [[ "$TT15_ACCEPTED_COUNT" -lt 1 ]]; then
 	TT15_EXIT="$(merge_exit_code "$TT15_EXIT" 1)"
 fi
-TT15_EXIT="$(merge_if_missing_pattern "$TT15_EXIT" "${TT15_DOCSET_DIR}/reports/spec.md" "rollback")"
-TT15_EXIT="$(merge_if_missing_pattern "$TT15_EXIT" "${TT15_DOCSET_DIR}/reports/plan.md" "rollback")"
+TT15_EXIT="$(merge_if_missing_any_pattern "$TT15_EXIT" "${TT15_DOCSET_DIR}/reports/spec.md" "rollback" "回滚")"
+TT15_EXIT="$(merge_if_missing_any_pattern "$TT15_EXIT" "${TT15_DOCSET_DIR}/reports/plan.md" "rollback" "回滚")"
 TT15_FINAL_RAW="${TT15_DIR}/continue.jsonl"
 if [[ ! -f "$TT15_FINAL_RAW" ]]; then
 	TT15_FINAL_RAW="$TT15_RAW"

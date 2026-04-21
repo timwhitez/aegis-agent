@@ -126,19 +126,6 @@ type ProbeResult struct {
 }
 
 func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error) {
-	workdir := req.Workdir
-	if workdir == "" {
-		var err error
-		workdir, err = os.Getwd()
-		if err != nil {
-			return RunResult{}, err
-		}
-	}
-	workdir, err := filepath.Abs(workdir)
-	if err != nil {
-		return RunResult{}, err
-	}
-	requestedWorkdir := workdir
 	agentRole, err := normalizeAgentRole(req.AgentRole, req.AgentName)
 	if err != nil {
 		return RunResult{}, err
@@ -163,13 +150,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		if depth > r.cfg.Runtime.MultiAgent.MaxDepth {
 			return RunResult{}, fmt.Errorf("max agent depth exceeded: %d", r.cfg.Runtime.MultiAgent.MaxDepth)
 		}
-		if req.Workdir == "" {
-			if parentMeta.RequestedWorkdir != "" {
-				requestedWorkdir = parentMeta.RequestedWorkdir
-			} else {
-				requestedWorkdir = parentMeta.Workdir
-			}
-		}
+	}
+	requestedWorkdir, err := resolveRequestedWorkdir(req.Workdir, parentMeta)
+	if err != nil {
+		return RunResult{}, err
 	}
 	providerName, model, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model)
 	if err != nil {
@@ -245,6 +229,41 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		}
 	}
 	return r.runExisting(ctx, meta, state, req.SystemOverride)
+}
+
+func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) (string, error) {
+	workdir := strings.TrimSpace(input)
+	if workdir == "" {
+		if parentMeta != nil {
+			workdir = firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir)
+		}
+		if workdir == "" {
+			current, err := os.Getwd()
+			if err != nil {
+				return "", err
+			}
+			workdir = current
+		}
+	} else if parentMeta != nil && !filepath.IsAbs(workdir) {
+		if parentBase := firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir); parentBase != "" {
+			parentRelative := filepath.Join(parentBase, workdir)
+			cwdRelative, err := filepath.Abs(workdir)
+			if err != nil {
+				return "", err
+			}
+			if directoryExists(parentRelative) || !directoryExists(cwdRelative) {
+				workdir = parentRelative
+			} else {
+				workdir = cwdRelative
+			}
+		}
+	}
+	return filepath.Abs(workdir)
+}
+
+func directoryExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func normalizeIsolationMode(value, fallback string) string {

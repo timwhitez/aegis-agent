@@ -30,6 +30,9 @@ v1 内置工具固定为：
 - `task_update`
 - `task_list`
 - `task_get`
+- `feature_list_create`
+- `feature_list_update`
+- `feature_list_read`
 - `agent_spawn`
 - `agent_status`
 - `agent_list`
@@ -156,7 +159,25 @@ v1 内置工具固定为：
 
 - 读取单个 task 的完整状态与依赖信息
 
-### 4.16 `agent_spawn`
+### 4.16 `feature_list_create`
+
+- 为当前 session 创建 durable 的 feature list 文件
+- 适合多 feature / 多 wave 长任务，把 feature 粒度状态从自由文本计划中外置出来
+- 每个 feature 至少包含 `description`，可选 `steps`
+- 创建后默认初始化为 `pending` 且 `passes=0`
+
+### 4.17 `feature_list_update`
+
+- 按 `id` 更新单个 feature 的 `status` / `passes`
+- 若目标 feature 不存在必须报错，而不是静默追加
+- 更新后需要刷新该 feature 的 `updated_at`
+
+### 4.18 `feature_list_read`
+
+- 读取当前 session 的 feature list 完整快照
+- 供模型在长任务中回看当前 feature 收敛状态
+
+### 4.19 `agent_spawn`
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
@@ -168,13 +189,13 @@ v1 内置工具固定为：
 - `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 - 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
 
-### 4.17 `agent_status`
+### 4.20 `agent_status`
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
 - 查询 child session 或后台 job 的状态
 
-### 4.18 `agent_list`
+### 4.21 `agent_list`
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
@@ -306,4 +327,5 @@ hook 可修改最终进入模型的内容，但必须留下 trace。
 - 越界路径被阻止
 - `todo_write` / `todo_read` 可稳定回放当前执行计划
 - `task_create` / `task_update` / `task_list` / `task_get` 可维护完整 task graph
+- `feature_list_create` / `feature_list_update` / `feature_list_read` 可维护 durable feature 状态
 - `finish` 能驱动 session 完成

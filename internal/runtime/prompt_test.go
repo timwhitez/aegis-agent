@@ -1586,6 +1586,9 @@ func TestNextHarnessReminderRefreshesSpecAndPlanAfterSteerScopeChange(t *testing
 	if !strings.Contains(reminder.Text, "refresh reports/spec.md") || !strings.Contains(reminder.Text, "refresh reports/plan.md") {
 		t.Fatalf("expected spec/plan refresh guidance after steer scope change, got %q", reminder.Text)
 	}
+	if !strings.Contains(reminder.Text, "API privacy") {
+		t.Fatalf("expected reminder to carry latest steer priority, got %q", reminder.Text)
+	}
 }
 
 func TestToolGuardBlocksFinalArtifactWriteThatViolatesExactTemplate(t *testing.T) {

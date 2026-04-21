@@ -87,13 +87,9 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
 	}
-	workdir := strings.TrimSpace(req.Workdir)
-	if workdir == "" {
-		if parentMeta.RequestedWorkdir != "" {
-			workdir = parentMeta.RequestedWorkdir
-		} else {
-			workdir = parentMeta.Workdir
-		}
+	workdir, err := resolveRequestedWorkdir(req.Workdir, &parentMeta)
+	if err != nil {
+		return tools.AgentSpawnResult{}, err
 	}
 	mode := strings.TrimSpace(req.Mode)
 	mode = normalizeRunMode(mode, session.ModeExec)
@@ -251,7 +247,6 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	req.AgentRole = agentRole
 	mode := strings.TrimSpace(req.Mode)
 	mode = normalizeRunMode(mode, session.ModeExec)
-	workdir := strings.TrimSpace(req.Workdir)
 	rootSessionID := req.ParentSessionID
 	var parentMeta *session.SessionMetadata
 	if req.ParentSessionID != "" {
@@ -265,9 +260,10 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		} else {
 			rootSessionID = parentMeta.ID
 		}
-		if workdir == "" {
-			workdir = firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir)
-		}
+	}
+	workdir, err := resolveRequestedWorkdir(req.Workdir, parentMeta)
+	if err != nil {
+		return session.QueueJob{}, err
 	}
 	providerName, modelName, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model)
 	if err != nil {

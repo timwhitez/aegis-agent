@@ -415,9 +415,10 @@ func durableProjectMemoryNote(workdir string, messages []session.Message) string
 }
 
 type projectMemoryRefreshState struct {
-	Active  bool
-	Reasons []string
-	Actions []string
+	Active         bool
+	Reasons        []string
+	Actions        []string
+	SteerDirective string
 }
 
 func projectMemoryRefreshNeed(workdir string, messages []session.Message) projectMemoryRefreshState {
@@ -463,6 +464,7 @@ func projectMemoryRefreshNeed(workdir string, messages []session.Message) projec
 		actions = append(actions, "write "+rel)
 	}
 	reasons := []string{}
+	steerDirective := ""
 	if lastSourceEdit > lastProjectMemory {
 		reasons = append(reasons, "recent source edits")
 	}
@@ -471,11 +473,13 @@ func projectMemoryRefreshNeed(workdir string, messages []session.Message) projec
 	}
 	if lastRequirementChange > lastSpecPlanWrite {
 		reasons = append(reasons, "recent steer or scope change")
+		steerDirective = latestRequirementChangeSummary(messages)
 	}
 	return projectMemoryRefreshState{
-		Active:  len(actions) > 0 && len(reasons) > 0,
-		Reasons: uniqueStrings(reasons),
-		Actions: uniqueStrings(actions),
+		Active:         len(actions) > 0 && len(reasons) > 0,
+		Reasons:        uniqueStrings(reasons),
+		Actions:        uniqueStrings(actions),
+		SteerDirective: steerDirective,
 	}
 }
 
@@ -483,7 +487,11 @@ func projectMemoryRefreshInstruction(state projectMemoryRefreshState) string {
 	if len(state.Actions) == 0 {
 		return "refresh reports/progress.md and reports/validation.md"
 	}
-	return joinPromptItems(state.Actions)
+	instruction := joinPromptItems(state.Actions)
+	if strings.TrimSpace(state.SteerDirective) == "" {
+		return instruction
+	}
+	return instruction + " so they reflect the latest steer priority: " + state.SteerDirective
 }
 
 func uniqueStrings(items []string) []string {
@@ -570,6 +578,14 @@ func latestRequirementChangeIndex(messages []session.Message) int {
 		}
 	}
 	return -1
+}
+
+func latestRequirementChangeSummary(messages []session.Message) string {
+	idx := latestRequirementChangeIndex(messages)
+	if idx < 0 {
+		return ""
+	}
+	return quoteForPrompt(messages[idx].Text, 220)
 }
 
 func latestSourceMutationIndex(messages []session.Message) int {
