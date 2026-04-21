@@ -1,7 +1,7 @@
 # P2 优化完成报告
 
 **日期：** 2026-04-17  
-**任务：** 完成 issues.md 中的 P2 优化项  
+**任务：** 完成当轮优化清单中的 P2 优化项
 **状态：** ✅ 全部完成
 
 ---
@@ -113,7 +113,7 @@ go-cli-agent exec --init "Set up a Python ML project with PyTorch"
 
 ## 下一步建议
 
-根据 issues.md，剩余的优化方向：
+根据当轮优化评审结论，剩余的优化方向：
 
 ### P1 优先级
 - Cross-Provider Context Handoff（跨 provider 切换）
