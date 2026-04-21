@@ -1458,6 +1458,56 @@ func TestNextHarnessReminderSkipsLargeProjectCoordinationForSimpleValidationFlow
 	}
 }
 
+func TestToolGuardBlocksBroadDiscoveryWhenInstructionEnumeratesExactFiles(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Inspect only README.md, AGENTS.md, and spec/00-product.md. Use targeted retrieval only."),
+	}
+	kind, text := toolGuard(workdir, messages, "glob", json.RawMessage(`{"pattern":"**/AGENTS.md"}`), false)
+	if kind != "explicit_scope" {
+		t.Fatalf("expected explicit_scope guard, got kind=%q text=%q", kind, text)
+	}
+	if !strings.Contains(text, "README.md") || !strings.Contains(text, "spec/00-product.md") {
+		t.Fatalf("expected explicit paths in guard text, got %q", text)
+	}
+}
+
+func TestToolGuardAllowsDirectReadWithinExplicitInspectionScope(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Inspect only README.md, AGENTS.md, and spec/00-product.md. Use targeted retrieval only."),
+	}
+	kind, text := toolGuard(workdir, messages, "read_file", json.RawMessage(`{"path":"README.md","offset":0,"limit":20}`), false)
+	if kind != "" || text != "" {
+		t.Fatalf("expected direct read within explicit scope to remain allowed, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardKeepsExplicitInspectionScopeInYolo(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Inspect only README.md and AGENTS.md in the current go-cli-agent repository. Use targeted retrieval only."),
+	}
+	kind, text := toolGuard(workdir, messages, "glob", json.RawMessage(`{"pattern":"**/README.md"}`), true)
+	if kind != "explicit_scope" {
+		t.Fatalf("expected explicit_scope guard in yolo, got kind=%q text=%q", kind, text)
+	}
+	if !strings.Contains(text, "README.md") || !strings.Contains(text, "AGENTS.md") {
+		t.Fatalf("expected explicit paths in guard text, got %q", text)
+	}
+}
+
+func TestToolGuardDoesNotTreatReadFirstInstructionsAsExactInspectionScope(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Read the local AGENTS.md and README.md first. Run the narrowest failing tests first, then diagnose all failing pytest cases across app/config.py, app/rules.py, and app/report.py."),
+	}
+	kind, text := toolGuard(workdir, messages, "glob", json.RawMessage(`{"pattern":"tests/test*.py"}`), false)
+	if kind != "" || text != "" {
+		t.Fatalf("expected read-first instructions to leave test discovery available, got kind=%q text=%q", kind, text)
+	}
+}
+
 func TestNextHarnessReminderSkipsLargeProjectCoordinationForExplicitSmallestFixOptOut(t *testing.T) {
 	workdir := t.TempDir()
 	reminder := nextHarnessReminder(workdir, session.ModeExec, []session.Message{

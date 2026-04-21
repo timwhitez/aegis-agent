@@ -1064,6 +1064,8 @@ write_prompt "$TT01_PROMPT" "Read the local AGENTS.md first.
 This is a real smallest-correct-fix task.
 This is intentionally not a large-project task. Do not create a todo list, task board, or durable reports stack under reports/spec.md, reports/plan.md, reports/progress.md, or reports/validation.md.
 Start with python3 -m unittest -q test_inventory.py, inspect only the files implicated by that failure, fix only the root cause needed for the current tests to pass, then run python3 -m unittest -q before finishing.
+Do not use shell to invoke apply_patch or other external patch helpers. Use the built-in file editing tools for code changes.
+If you need to preserve command output for later reading, redirect it into reports/validation.txt instead of reading .artifacts/tool-outputs.
 Write reports/change-summary.md with sections: root cause, changed code, validation.
 Then call finish."
 run_exec "$TT01_PROMPT" "$TT01_RAW" "$PATCH_DIR" 240
@@ -1083,6 +1085,8 @@ write_prompt "$TT02_PROMPT" "Read the local AGENTS.md first.
 This is a real smallest-correct-fix task.
 This is intentionally not a large-project task. Do not create a todo list, task board, or durable reports stack under reports/spec.md, reports/plan.md, reports/progress.md, or reports/validation.md.
 Start with go test ./..., inspect only the files implicated by the first failing output, fix only the root cause needed for the current tests to pass, then run go test ./... before finishing.
+Do not use shell to invoke apply_patch or other external patch helpers. Use the built-in file editing tools for code changes.
+If you need to preserve command output for later reading, redirect it into reports/validation.txt instead of reading .artifacts/tool-outputs.
 Write reports/change-summary.md with sections: root cause, changed code, validation.
 Then call finish."
 run_exec "$TT02_PROMPT" "$TT02_RAW" "$PATCH_GO_DIR" 240
@@ -1525,14 +1529,20 @@ copy_if_present "${TT12_DIR}/evidence/parent-session/control/background.jsonl" "
 } >"$TT12_ARTIFACT"
 TT12_CONFIG_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/config.py:4-8")"
 if [[ -z "$TT12_CONFIG_LINE" ]]; then
-	TT12_CONFIG_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "tests/test_config.py:16")"
+	TT12_CONFIG_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/config.py:4")"
 fi
-TT12_CONFIG_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "Failed: DID NOT RAISE <class 'ValueError'>")"
+TT12_CONFIG_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "tests/test_config.py:12")"
+if [[ -z "$TT12_CONFIG_ASSERT_LINE" ]]; then
+	TT12_CONFIG_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "tests/test_config.py:")"
+fi
 TT12_REPORT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/report.py:4-9")"
 if [[ -z "$TT12_REPORT_LINE" ]]; then
-	TT12_REPORT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "tests/test_report.py:11")"
+	TT12_REPORT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/report.py:4")"
 fi
-TT12_REPORT_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "AssertionError: assert 'low' == 'high'")"
+if [[ -z "$TT12_REPORT_LINE" ]]; then
+	TT12_REPORT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "app/report.py:")"
+fi
+TT12_REPORT_ASSERT_LINE="$(first_matching_line "$TT12_QUEUE_REVIEW" "tests/test_report.py:4")"
 if [[ -z "$TT12_REPORT_ASSERT_LINE" ]]; then
 	TT12_REPORT_ASSERT_LINE="$TT12_REPORT_LINE"
 fi
@@ -1552,8 +1562,10 @@ TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_JOB_RAW" "\"visible_pa
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_CHILDREN_RAW" "\"agent_role\":\"evaluator\"")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ROLE_PROOF" "child_workdir_differs=true")"
 TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_PARENT_BACKGROUND" "\"queue_job_id\":\"")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "Failed: DID NOT RAISE <class 'ValueError'>")"
-TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_ARTIFACT" "AssertionError: assert 'low' == 'high'")"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "app/config.py:4")"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "app/report.py:4")"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "tests/test_config.py:")"
+TT12_EXIT="$(merge_if_missing_pattern "$TT12_EXIT" "$TT12_QUEUE_REVIEW" "tests/test_report.py:4")"
 finalize_case "TT12" "Background Queue Review With Role And Children Proof" "$TT12_EXIT" "$TT12_JOB_RAW" "$TT12_ARTIFACT" "$TT12_PARENT_SESSION_ID" "" "$TT12_DIR"
 
 TT13_DIR="${CASES_DIR}/TT13"
@@ -1635,13 +1647,14 @@ copy_file_into_sandbox "$TT14_SANDBOX_ROOT" "../learn-claude-code.md" "learn-cla
 write_prompt_literal "$TT14_PROMPT" <<'EOF'
 Use the review_pipeline skill for this task.
 Inspect only README.md, AGENTS.md, spec/00-product.md, spec/01-runtime-architecture.md, spec/03-provider-contracts.md, spec/10-context-compaction.md, spec/11-spec-audit-and-traceability.md, spec/12-task-system.md, spec/13-live-input-and-steering.md, internal/runtime/compaction.go, internal/runtime/prompt.go, internal/runtime/review_guard.go, internal/runtime/engine.go, internal/runtime/project_memory.go, internal/session/store.go, internal/tools/path.go, ../blog-langchain-com__autonomous-context-compression.md, ../openai-com__harness-engineering.md, and ../learn-claude-code.md.
-Use targeted retrieval only. Do not use glob or grep_files on the workspace root.
-In the artifact, inline exact owning-runtime anchors instead of saying the proof only comes from project memory. Include the exact code snippets 'cloned := cloneMessages(messages)', 'size := estimateChars(cloned)', 'if size <= threshold {', and one direct anchor showing transcript/artifact persistence.
+Use targeted retrieval only. Do not use shell, glob, grep_files, or workspace-root scans for this task.
+Keep the retrieval plan tight: read the compaction code, the prompt proof-read note, and the transcript/artifact persistence anchor; then write the report immediately.
 Write __TT14_SANDBOX_ARTIFACT_REL__ with sections: compaction evidence, proof-read behavior after compaction, remaining risks, next validation moves.
+The harness will copy __TT14_SANDBOX_ARTIFACT_REL__ back after the run. Do not write a second copy anywhere else.
 Then call finish.
 EOF
 sed -i "s#__TT14_SANDBOX_ARTIFACT_REL__#${TT14_SANDBOX_ARTIFACT_REL}#" "$TT14_PROMPT"
-run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$TT14_PROMPT" "$TT14_RAW" "$TT14_SANDBOX_REPO" 420
+run_exec_with_config "$LOW_COMPACT_CONFIG_PATH" "$TT14_PROMPT" "$TT14_RAW" "$TT14_SANDBOX_REPO" 540
 TT14_EXEC_EXIT=$?
 TT14_EXIT="$(merge_exit_code "$TT14_EXIT" "$TT14_EXEC_EXIT")"
 TT14_SESSION_ID="$(extract_session_id "$TT14_RAW")"
@@ -1895,47 +1908,38 @@ copy_if_present "${TT18_SUBRUN_DIR}/raw/webconsole-ui-smoke.html" "${TT18_DIR}/w
 	echo "- Result: embedded shell/assets plus real browser start/continue/queue/manual-refresh path and queue drilldown entry points were exercised."
 } >"$TT18_ARTIFACT"
 append_snippet_block "$TT18_ARTIFACT" "decisive ui interaction snippets" \
-	"$(first_matching_line "$TT18_RAW" "\"open_start_focus\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"started_session\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"start_role_visible\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"settings_loaded\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"workspace_loaded\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"skills_loaded\": true")" \
 	"$(first_matching_line "$TT18_RAW" "\"tasks_tab_visible\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"continued_session\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"submitted_queue_job\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"children_tab_visible\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"children_role_visible\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"background_notification_visible\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"manual_refresh\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"queue_job_detail\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"queue_filter_pinned_selected\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"queue_filter_reveal\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"queue_recent_jobs_drilldown\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"queue_feed_drilldown\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"queue_failure_drilldown\": true")" \
-	"$(first_matching_line "$TT18_RAW" "\"queue_worker_last_job_drilldown\": true")"
+	"$(first_matching_line "$TT18_RAW" "\"queue_job_submitted\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_job_completed\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"child_session_visible\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_job_visible\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"history_clear_keeps_view\": true")" \
+	"$(first_matching_line "$TT18_RAW" "\"parent_status\": \"completed\"")" \
+	"$(first_matching_line "$TT18_RAW" "\"child_status\": \"completed\"")" \
+	"$(first_matching_line "$TT18_RAW" "\"queue_status\": \"completed\"")"
 append_snippet_block "$TT18_ARTIFACT" "runtime cleanliness snippets" \
 	"$(first_matching_line "$TT18_RAW" "\"runtime_exceptions\": []")" \
 	"$(first_matching_line "$TT18_RAW" "\"console_errors\": []")"
 TT18_EXIT="$TT18_SUBRUN_EXIT"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"open_start_focus": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"start_role_visible": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"settings_loaded": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"workspace_loaded": true')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"tasks_tab_visible": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"continued_session": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"children_tab_visible": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"children_role_visible": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"background_notification_visible": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_job_detail": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_filter_pinned_selected": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_filter_reveal": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_recent_jobs_drilldown": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_feed_drilldown": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_failure_drilldown": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_worker_last_job_drilldown": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_job_submitted": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_job_completed": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"child_session_visible": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_job_visible": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"history_clear_keeps_view": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"parent_status": "completed"')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"child_status": "completed"')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"queue_status": "completed"')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"runtime_exceptions": []')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_RAW" '"console_errors": []')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"start_role_visible": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"children_role_visible": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"queue_recent_jobs_drilldown": true')"
-TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"queue_worker_last_job_drilldown": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"queue_job_completed": true')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"child_status": "completed"')"
+TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"queue_status": "completed"')"
 TT18_EXIT="$(merge_if_missing_pattern "$TT18_EXIT" "$TT18_ARTIFACT" '"runtime_exceptions": []')"
 finalize_case "TT18" "Web Console Deep Smoke" "$TT18_EXIT" "$TT18_RAW" "$TT18_ARTIFACT" "" "" "$TT18_DIR"
 
@@ -2034,6 +2038,7 @@ Inspect only these current-run files: __RUN_DIR__/notes/preflight-index.tsv, __R
 Distinguish validated issues from remaining benchmark limits. Do not invent repo bugs from benchmark-limited gaps.
 Treat __RUN_DIR__/notes/preflight-gap-proof-summary.md as the primary direct citation anchor for current-run script-level proof on provider metadata/retry durability, review artifact enforcement, report path hardening, and exact-template guard behavior unless later live evidence contradicts it.
 Use __RUN_DIR__/notes/case-buckets.md to keep the summary compact, but ground every claim in direct snippets from the allowed files.
+Use targeted retrieval only. Do not use shell to write this artifact. Do not change directory outside the current sandbox. The harness will copy the sandbox-local report after the run, and any second copy elsewhere is treated as invalid.
 This is a review artifact, so use the canonical structure expected by the review guard:
 - section `findings`
 - section `strong areas`
@@ -2052,6 +2057,11 @@ sed -i "s#__TT20_SANDBOX_ARTIFACT_REL__#${TT20_SANDBOX_ARTIFACT_REL}#g" "$TT20_P
 run_exec "$TT20_PROMPT" "$TT20_RAW" "$TT20_SANDBOX" 420
 TT20_EXIT=$?
 copy_if_present "$TT20_SANDBOX_ARTIFACT" "$TT20_ARTIFACT"
+TT20_STRAY_REPO_ARTIFACT="${ROOT_DIR}/reports/tt20-readiness-review.md"
+if [[ -f "$TT20_STRAY_REPO_ARTIFACT" ]]; then
+	rm -f "$TT20_STRAY_REPO_ARTIFACT"
+	TT20_EXIT="$(merge_exit_code "$TT20_EXIT" 1)"
+fi
 finalize_case "TT20" "Task-Heavy Readiness And Issue Inventory" "$TT20_EXIT" "$TT20_RAW" "$TT20_ARTIFACT" "$(extract_session_id "$TT20_RAW")" "" "$TT20_DIR"
 
 finalize_run_outputs

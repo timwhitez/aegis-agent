@@ -9,8 +9,8 @@ providers:
     model: gpt-5.4
     timeout_sec: 240
     retry:
-      max_attempts: 2
-      base_delay_ms: 1000
+      max_attempts: 4
+      base_delay_ms: 1500
       retry_5xx: true
       retry_transport: true
     wire_api: responses

@@ -1,4 +1,5 @@
 .go-cli-agent/
+.artifacts/
 bin/
 tmp/
 .env

@@ -269,6 +269,134 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestShellTimeoutIsCappedByRuntimeCommandTimeout(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.CommandTimeoutSec = 1
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   meta.Workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+
+	start := time.Now()
+	result, err := registry.Execute(context.Background(), "shell", execCtx, json.RawMessage(`{
+		"command":"sleep 2",
+		"timeout":10000
+	}`))
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if got := result.Metadata["timeout"]; got != 1 {
+		t.Fatalf("expected capped timeout metadata, got %#v", result.Metadata)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("expected capped timeout to stop shell quickly, took %s", elapsed)
+	}
+}
+
+func TestGeneratedArtifactsAreHiddenFromFileDiscovery(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".artifacts", "tool-outputs"), 0o755); err != nil {
+		t.Fatalf("mkdir artifacts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, ".artifacts", "tool-outputs", "shell.txt"), []byte("secret artifact"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "visible.txt"), []byte("visible source"), 0o600); err != nil {
+		t.Fatalf("write visible: %v", err)
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   meta.Workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+
+	readResult, err := registry.Execute(context.Background(), "read_file", execCtx, json.RawMessage(`{
+		"path":".artifacts/tool-outputs/shell.txt"
+	}`))
+	if err != nil {
+		t.Fatalf("read_file: %v", err)
+	}
+	if !readResult.IsError || !strings.Contains(readResult.DisplayOutput, "internal generated artifact") {
+		t.Fatalf("expected internal artifact read to be blocked, got %#v", readResult)
+	}
+
+	globResult, err := registry.Execute(context.Background(), "glob", execCtx, json.RawMessage(`{
+		"pattern":"**/*.txt"
+	}`))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if strings.Contains(globResult.DisplayOutput, ".artifacts") || !strings.Contains(globResult.DisplayOutput, "visible.txt") {
+		t.Fatalf("expected glob to skip generated artifacts and keep source files, got %q", globResult.DisplayOutput)
+	}
+
+	grepFilesResult, err := registry.Execute(context.Background(), "grep_files", execCtx, json.RawMessage(`{
+		"pattern":"secret|visible"
+	}`))
+	if err != nil {
+		t.Fatalf("grep_files: %v", err)
+	}
+	if strings.Contains(grepFilesResult.DisplayOutput, ".artifacts") || !strings.Contains(grepFilesResult.DisplayOutput, "visible.txt") {
+		t.Fatalf("expected grep_files to skip generated artifacts and keep source files, got %q", grepFilesResult.DisplayOutput)
+	}
+}
+
 func TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

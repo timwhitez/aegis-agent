@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,10 +243,7 @@ func defShell() Definition {
 			if input.Command == "" {
 				return errorResult("shell", errors.New("command is required")), nil
 			}
-			timeout := execCtx.Config.Runtime.CommandTimeoutSec
-			if input.Timeout > 0 {
-				timeout = input.Timeout
-			}
+			timeout := effectiveToolTimeout(execCtx.Config.Runtime.CommandTimeoutSec, input.Timeout)
 			callCtx := ctx
 			var cancel context.CancelFunc
 			if timeout > 0 {
@@ -341,6 +339,9 @@ func defReadFile() Definition {
 			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
 			if err != nil {
 				return errorResult("read_file", err), nil
+			}
+			if isInternalGeneratedArtifactPath(execCtx.Workdir, path) {
+				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -493,7 +494,13 @@ func defGlob() Definition {
 			}
 			var matches []string
 			if err := doublestar.GlobWalk(os.DirFS(execCtx.Workdir), input.Pattern, func(path string, d os.DirEntry) error {
+				if d.IsDir() && path != "." && shouldSkipGrepDir(path) {
+					return fs.SkipDir
+				}
 				if !d.IsDir() {
+					if isInternalGeneratedArtifactPath(execCtx.Workdir, filepath.Join(execCtx.Workdir, path)) {
+						return nil
+					}
 					matches = append(matches, path)
 				}
 				return nil
@@ -644,6 +651,7 @@ func defGrepFiles() Definition {
 }
 
 var grepSkippedDirNames = map[string]struct{}{
+	".artifacts":    {},
 	".git":          {},
 	".go-cli-agent": {},
 	".next":         {},
@@ -684,6 +692,19 @@ func shouldSkipGrepBinary(data []byte) bool {
 		return true
 	}
 	return !utf8.Valid(data)
+}
+
+func isInternalGeneratedArtifactPath(workdir, path string) bool {
+	rel, err := filepath.Rel(workdir, path)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == ".artifacts" {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveGrepRoot(workdir, inputPath string) (string, error) {
@@ -1465,6 +1486,22 @@ func shellCommand() (string, string) {
 		return "cmd", "/C"
 	}
 	return "/bin/bash", "-lc"
+}
+
+func effectiveToolTimeout(defaultTimeout, requestedTimeout int) int {
+	if defaultTimeout > 0 {
+		if requestedTimeout <= 0 {
+			return defaultTimeout
+		}
+		if requestedTimeout > defaultTimeout {
+			return defaultTimeout
+		}
+		return requestedTimeout
+	}
+	if requestedTimeout > 0 {
+		return requestedTimeout
+	}
+	return 0
 }
 
 func writeAtomically(path string, data []byte, mode os.FileMode) error {

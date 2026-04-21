@@ -284,9 +284,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				guardKind := ""
 				guardText := ""
-				if !e.guardrailsYolo() {
-					guardKind, guardText = toolGuard(meta.Workdir, currentMessages, call.Name, toolArgs)
-				}
+				guardKind, guardText = toolGuard(meta.Workdir, currentMessages, call.Name, toolArgs, e.guardrailsYolo())
 
 				if call.Name == "finish" && e.cfg.Runtime.PreCompletion.Enabled && e.cfg.Runtime.PreCompletion.CheckFeatures {
 					featureListPath := filepath.Join(e.store.SessionDir(meta.ID), "feature_list.json")

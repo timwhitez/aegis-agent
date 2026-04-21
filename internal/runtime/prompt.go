@@ -13,6 +13,7 @@ import (
 )
 
 var artifactPathPattern = regexp.MustCompile(`(?i)(?:[a-z]:)?(?:/|\.?/)?[a-z0-9._/-]+\.md`)
+var explicitInspectionPathPattern = regexp.MustCompile(`(?i)(?:\./)?[a-z0-9._/-]+\.(?:md|go|ts|py|rs|txt|jsonl?|ya?ml|toml|sh)`)
 var literalAndSeparatorPattern = regexp.MustCompile(`(?i)\s*,?\s+and\s+`)
 
 func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []skills.Summary, skillTools []skills.CommandTool, state session.State, messages []session.Message, agentContext ...string) string {
@@ -606,11 +607,12 @@ func retrievalTailReminder(messages []session.Message) harnessReminder {
 	}
 }
 
-func toolGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
-	if auditProofFollowupAllowed(workdir, messages, toolName, rawArgs) {
+func toolGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage, yoloOpt ...bool) (string, string) {
+	yolo := len(yoloOpt) > 0 && yoloOpt[0]
+	if !yolo && auditProofFollowupAllowed(workdir, messages, toolName, rawArgs) {
 		return "", ""
 	}
-	if kind, text := auditProofGuard(workdir, messages, toolName, rawArgs); text != "" {
+	if kind, text := explicitInspectionScopeGuard(workdir, messages, toolName, rawArgs); text != "" {
 		return kind, text
 	}
 	if kind, text := exactArtifactPathGuard(workdir, messages, toolName, rawArgs); text != "" {
@@ -622,14 +624,22 @@ func toolGuard(workdir string, messages []session.Message, toolName string, rawA
 	if kind, text := exactArtifactLiteralGuard(workdir, messages, toolName, rawArgs); text != "" {
 		return kind, text
 	}
-	if kind, text := reviewArtifactGuard(workdir, messages, toolName, rawArgs); text != "" {
-		return kind, text
+	if !yolo {
+		if kind, text := auditProofGuard(workdir, messages, toolName, rawArgs); text != "" {
+			return kind, text
+		}
+		if kind, text := reviewArtifactGuard(workdir, messages, toolName, rawArgs); text != "" {
+			return kind, text
+		}
 	}
 	if kind, text := deferredInterruptFinishGuard(messages, toolName); text != "" {
 		return kind, text
 	}
 	if kind, text := steerCompletionGuard(messages, toolName, rawArgs); text != "" {
 		return kind, text
+	}
+	if yolo {
+		return "", ""
 	}
 	reminderIndex, reminderKind := latestHarnessReminderSinceLatestExternal(messages)
 	if reminderIndex < 0 {
@@ -648,6 +658,65 @@ func toolGuard(workdir string, messages []session.Message, toolName string, rawA
 	default:
 		return "", ""
 	}
+}
+
+type explicitInspectionScope struct {
+	Active bool
+	Paths  []string
+}
+
+func explicitInspectionScopeGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
+	scope := latestExplicitInspectionScope(messages)
+	if !scope.Active {
+		return "", ""
+	}
+	display := make([]string, 0, len(scope.Paths))
+	for _, path := range scope.Paths {
+		display = append(display, displayPromptPath(workdir, path))
+	}
+	switch toolName {
+	case "glob", "grep_files":
+		return "explicit_scope", fmt.Sprintf("Inspection-scope guard: the latest external instruction already enumerated exact files (%s). Do not use %s for directory discovery. Use read_file or grep directly on those paths instead.", joinPromptItems(display), toolName)
+	case "shell":
+		if requestedShellCommandIsReadOnly(rawArgs) {
+			return "explicit_scope", fmt.Sprintf("Inspection-scope guard: the latest external instruction already enumerated exact files (%s). Do not use read-only shell search here; use read_file or grep directly on those paths instead.", joinPromptItems(display))
+		}
+	}
+	return "", ""
+}
+
+func latestExplicitInspectionScope(messages []session.Message) explicitInspectionScope {
+	idx := latestExternalInstructionIndex(messages)
+	if idx < 0 {
+		return explicitInspectionScope{}
+	}
+	text := messages[idx].Text
+	lowered := strings.ToLower(text)
+	if !strings.Contains(lowered, "inspect only") &&
+		!strings.Contains(lowered, "only inspect") {
+		return explicitInspectionScope{}
+	}
+	seen := map[string]struct{}{}
+	var paths []string
+	for _, match := range explicitInspectionPathPattern.FindAllString(text, -1) {
+		candidate := strings.TrimSpace(strings.Trim(match, ".,;:()[]{}<>`'\""))
+		if candidate == "" {
+			continue
+		}
+		candidate = filepath.ToSlash(candidate)
+		if strings.HasPrefix(candidate, "./") {
+			candidate = strings.TrimPrefix(candidate, "./")
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		paths = append(paths, candidate)
+	}
+	if len(paths) == 0 {
+		return explicitInspectionScope{}
+	}
+	return explicitInspectionScope{Active: true, Paths: paths}
 }
 
 func deferredInterruptFinishGuard(messages []session.Message, toolName string) (string, string) {

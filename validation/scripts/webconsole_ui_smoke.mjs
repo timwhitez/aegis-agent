@@ -4,6 +4,26 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+
+function loadWebSocket() {
+  if (typeof globalThis.WebSocket === 'function') {
+    return globalThis.WebSocket;
+  }
+  try {
+    const { WebSocket } = require('undici');
+    if (typeof WebSocket === 'function') {
+      return WebSocket;
+    }
+  } catch {
+    // fall through to the explicit error below
+  }
+  throw new Error('WebSocket is not available; use Node 20+ or install/provide undici');
+}
+
+const WebSocketCtor = loadWebSocket();
 
 function parseArgs(argv) {
   const out = {};
@@ -45,7 +65,7 @@ async function fetchJSON(url, options = {}) {
 
 class CDPClient {
   constructor(wsUrl) {
-    this.ws = new WebSocket(wsUrl);
+    this.ws = new WebSocketCtor(wsUrl);
     this.nextID = 1;
     this.pending = new Map();
     this.eventWaiters = new Map();
@@ -56,7 +76,7 @@ class CDPClient {
       this.ws.addEventListener('error', reject, { once: true });
     });
     this.ws.addEventListener('message', (event) => {
-      const message = JSON.parse(event.data.toString());
+      const message = JSON.parse(decodeWebSocketMessage(event.data));
       if (message.id) {
         const pending = this.pending.get(message.id);
         if (!pending) {
@@ -106,7 +126,7 @@ class CDPClient {
   }
 
   async close() {
-    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+    if (this.ws.readyState === WebSocketCtor.OPEN || this.ws.readyState === WebSocketCtor.CONNECTING) {
       this.ws.close();
     }
   }
@@ -116,13 +136,12 @@ class CDPClient {
     const payload = JSON.stringify({ id, method, params });
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.ws.send(payload, (error) => {
-        if (!error) {
-          return;
-        }
+      try {
+        this.ws.send(payload);
+      } catch (error) {
         this.pending.delete(id);
         reject(error);
-      });
+      }
     });
   }
 
@@ -154,6 +173,22 @@ class CDPClient {
     }
     return result.result?.value;
   }
+}
+
+function decodeWebSocketMessage(data) {
+  if (typeof data === 'string') {
+    return data;
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.toString();
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString();
+  }
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString();
+  }
+  return String(data);
 }
 
 async function waitFor(check, timeoutMs, label) {
