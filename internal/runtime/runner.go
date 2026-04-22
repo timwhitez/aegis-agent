@@ -760,14 +760,14 @@ func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.A
 		if cfg.WireAPI != "" && cfg.WireAPI != "responses" {
 			return nil, WrapConfigError(errors.New("unsupported openai wire_api: " + cfg.WireAPI))
 		}
-		return provider.NewOpenAIWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), client, retryCfg), nil
+		return provider.NewOpenAIWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
 	case "anthropic":
-		return provider.NewAnthropicWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), cfg.AnthropicVersion, client, retryCfg), nil
+		return provider.NewAnthropicWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), cfg.AnthropicVersion, client, retryCfg), nil
 	case "google":
-		return provider.NewGoogleWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), client, retryCfg), nil
+		return provider.NewGoogleWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
 	case "openai-compatible":
 		if cfg.WireAPI == "" || cfg.WireAPI == "responses" {
-			return provider.NewOpenAIWithRetry(cfg.BaseURL, os.Getenv(cfg.APIKeyEnv), client, retryCfg), nil
+			return provider.NewOpenAIWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
 		}
 		return nil, WrapConfigError(errors.New("unsupported openai-compatible wire_api: " + cfg.WireAPI))
 	default:

@@ -241,6 +241,13 @@ next: go-cli-agent continue 20260319-101530-ab12cd --message "..."
 - 或当前工作目录 `.go-cli-agent/config.yaml`
 - 或 `GO_CLI_AGENT_CONFIG`
 
+环境变量文件：
+
+- 默认读取当前工作目录 `.env`
+- 若设置 `GO_CLI_AGENT_ENV_FILE`，则读取该文件
+- 进程启动时会先加载 env 文件，再解析 provider `api_key_env`
+- `experimental web` Settings 页面保存的 API key 会持久化到这个 env 文件中
+
 配置结构：
 
 ```yaml

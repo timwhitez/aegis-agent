@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -159,5 +160,57 @@ func TestNormalizeConfigExpandsHomeIsolationRoot(t *testing.T) {
 	want := filepath.Join(home, ".go-cli-agent", "_worktrees")
 	if cfg.Runtime.Isolation.RootDir != want {
 		t.Fatalf("expected expanded home isolation root %q, got %q", want, cfg.Runtime.Isolation.RootDir)
+	}
+}
+
+func TestLoadEnvFileSetsValuesWhenEnvIsEmpty(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=from-file\n# comment\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+
+	if err := LoadEnvFile(envPath); err != nil {
+		t.Fatalf("load env file: %v", err)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "from-file" {
+		t.Fatalf("expected OPENAI_API_KEY to load from file, got %q", got)
+	}
+}
+
+func TestLoadEnvFilePreservesExistingNonEmptyEnv(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=from-file\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	t.Setenv("OPENAI_API_KEY", "already-set")
+
+	if err := LoadEnvFile(envPath); err != nil {
+		t.Fatalf("load env file: %v", err)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "already-set" {
+		t.Fatalf("expected existing env to win, got %q", got)
+	}
+}
+
+func TestUpsertEnvFilePreservesOtherEntries(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("# keep\nANTHROPIC_API_KEY=anthropic\nOPENAI_API_KEY=old\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+
+	if err := UpsertEnvFile(envPath, "OPENAI_API_KEY", "new-secret"); err != nil {
+		t.Fatalf("upsert env file: %v", err)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "# keep") || !strings.Contains(text, "ANTHROPIC_API_KEY=anthropic") {
+		t.Fatalf("expected unrelated env entries to be preserved, got %q", text)
+	}
+	if !strings.Contains(text, "OPENAI_API_KEY=new-secret") {
+		t.Fatalf("expected updated OPENAI_API_KEY, got %q", text)
 	}
 }

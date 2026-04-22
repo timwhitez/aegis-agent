@@ -2773,7 +2773,7 @@ async function renderSettings() {
     container.innerHTML = `
       <div class="view-header">
         <h2 class="view-title">Settings</h2>
-        <p class="view-subtitle">Configure provider defaults, local API credentials, and guardrails mode.</p>
+        <p class="view-subtitle">Configure provider defaults, local API credentials, and guardrails mode. API keys are persisted to the local env file for future restarts.</p>
       </div>
       <div class="skill-card" style="max-width:680px;">
         <div style="display:flex; flex-direction:column; gap:20px;">
@@ -2803,7 +2803,7 @@ async function renderSettings() {
           </div>
           <div class="field">
             <label style="display:block; font-weight:600; margin-bottom:8px;">API Key</label>
-            <input id="settings-apikey" type="password" placeholder="Leave blank to keep existing…" style="width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--background);">
+            <input id="settings-apikey" type="password" placeholder="Leave blank to keep existing persisted key…" style="width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--background);">
           </div>
           <button id="settings-save-btn" class="skill-btn install" style="padding:12px;">Save Changes</button>
         </div>

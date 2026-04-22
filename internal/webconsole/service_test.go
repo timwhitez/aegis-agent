@@ -1096,6 +1096,8 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	provider := cfg.Providers["openai"]
 	provider.APIKeyEnv = "OPENAI_API_KEY"
 	cfg.Providers["openai"] = provider
+	envPath := filepath.Join(t.TempDir(), ".env")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
 	svc, err := New(cfg, Options{WorkerCount: 0})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
@@ -1140,6 +1142,13 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if got := os.Getenv("OPENAI_API_KEY"); got != "secret-key" {
 		t.Fatalf("expected OPENAI_API_KEY to update, got %q", got)
+	}
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read persisted env file: %v", err)
+	}
+	if !strings.Contains(string(envBytes), "OPENAI_API_KEY=secret-key") {
+		t.Fatalf("expected OPENAI_API_KEY to persist to env file, got %q", string(envBytes))
 	}
 }
 

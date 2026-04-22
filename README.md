@@ -21,7 +21,7 @@ Queue 主视图也已经从单列表推进成 list-detail 工作区：左侧过�
 - provider 目前原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - `openai-compatible` 作为 OpenAI Responses 形状的兼容部署模式提供
 - generation / reasoning / store 等 provider 选项会进入 runtime 和 session metadata，而不是只停留在 CLI
-- 大型项目 profile 额外验证了 `experimental delegate|children|queue|web` 与 `--isolation auto|copy`，用于 child 执行、后台队列、隔离编辑、parent-child 观测，以及本地 Web 控制台
+- 大型项目 profile 额外验证了 `experimental delegate|children|queue|tui|web` 与 `--isolation auto|copy`，用于 child 执行、后台队列、隔离编辑、parent-child 观测、终端 TUI，以及本地 Web 控制台
 
 以下能力仍保留在仓库里，但当前仍不是默认日常交互面：
 
@@ -136,7 +136,7 @@ export GEMINI_API_KEY=...
 
 ## Provider 配置
 
-默认配置文件是 `.go-cli-agent/config.yaml`。当前项目默认使用 `runtime.guardrails_mode: yolo`，也就是关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理；如果你要更保守的行为，可以改回 `standard`，或者直接在 `experimental web` 的 Settings 页面里切换。
+默认配置文件是 `.go-cli-agent/config.yaml`。当前项目默认使用 `runtime.guardrails_mode: yolo`，也就是关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理；如果你要更保守的行为，可以改回 `standard`，或者直接在 `experimental web` 的 Settings 页面里切换。CLI / Web 启动时还会自动读取仓库根目录 `.env`（或 `GO_CLI_AGENT_ENV_FILE` 指向的 env 文件），因此在 Settings 页面保存的 API key 会在后续重启时继续生效。
 
 OpenAI / `openai-compatible` 默认走 `Responses API`。为了保持本地 session 是唯一事实源，adapter 会默认发送 `store: false`，不依赖服务端持久化来续跑。
 

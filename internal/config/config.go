@@ -44,6 +44,13 @@ type Provider struct {
 	SendMetadata     *bool    `yaml:"send_metadata,omitempty"`
 }
 
+func (p Provider) ResolvedAPIKey() string {
+	if envValue := strings.TrimSpace(os.Getenv(p.APIKeyEnv)); envValue != "" {
+		return envValue
+	}
+	return ""
+}
+
 type Retry struct {
 	MaxAttempts    int  `yaml:"max_attempts,omitempty"`
 	BaseDelayMS    int  `yaml:"base_delay_ms,omitempty"`
@@ -445,7 +452,7 @@ func (c *Config) APIKey(providerName string) string {
 	if !ok {
 		return ""
 	}
-	return strings.TrimSpace(os.Getenv(provider.APIKeyEnv))
+	return provider.ResolvedAPIKey()
 }
 
 func ParseFileMode(value string, fallback fs.FileMode) (fs.FileMode, error) {

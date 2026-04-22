@@ -1230,7 +1230,15 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			p.Model = req.Model
 		}
 		if req.APIKey != "" && req.APIKey != "••••••••••••••••" {
-			os.Setenv(p.APIKeyEnv, req.APIKey)
+			if err := os.Setenv(p.APIKeyEnv, req.APIKey); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			cwd, _ := os.Getwd()
+			if err := config.UpsertEnvFile(config.DefaultEnvFilePath(cwd), p.APIKeyEnv, req.APIKey); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 		s.cfg.Providers[req.Provider] = p
 	}

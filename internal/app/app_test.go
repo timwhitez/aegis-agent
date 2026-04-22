@@ -825,6 +825,24 @@ func TestRunCommandPassesIsolationFlags(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAutoLoadsEnvFile(t *testing.T) {
+	cwd := t.TempDir()
+	envPath := filepath.Join(cwd, ".env")
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=from-env-file\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+
+	cfg, err := loadConfig("", cwd)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.APIKey("openai"); got != "from-env-file" {
+		t.Fatalf("expected openai api key from env file, got %q", got)
+	}
+}
+
 func TestDelegateCommandDispatchesStructuredRequest(t *testing.T) {
 	fake := newFakeRunner()
 	fake.delegateResult = runtime.DelegateResult{QueueJobID: "job_1", Status: session.QueueStatusQueued}

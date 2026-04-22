@@ -151,6 +151,9 @@ func (e ClassifiedError) Unwrap() error {
 }
 
 func loadConfig(configPath, workdir string) (*config.Config, error) {
+	if err := config.LoadEnvFile(config.DefaultEnvFilePath(workdir)); err != nil {
+		return nil, runtime.WrapConfigError(err)
+	}
 	cfg, err := config.Load(configPath, workdir)
 	if err != nil {
 		return nil, runtime.WrapConfigError(err)
@@ -726,7 +729,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		Details: doctorProviderConfigDetails(selectedProvider, providerCfg),
 	})
 
-	apiKey := strings.TrimSpace(os.Getenv(providerCfg.APIKeyEnv))
+	apiKey := cfg.APIKey(selectedProvider)
 	apiKeyStatus := "ok"
 	if apiKey == "" {
 		apiKeyStatus = "warn"
