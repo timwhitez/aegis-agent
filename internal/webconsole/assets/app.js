@@ -2728,7 +2728,6 @@ function renderSkills(skills) {
       <p class="skill-author">by ${escapeHTML(skill.author)}</p>
       <p class="skill-desc">${escapeHTML(skill.description)}</p>
       <div class="skill-footer">
-        <span style="font-size:11px; color:var(--text-muted)">${escapeHTML((skill.downloads / 1000).toFixed(1))}k downloads</span>
         <button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}">
           ${skill.installed ? 'Uninstall' : 'Install'}
         </button>

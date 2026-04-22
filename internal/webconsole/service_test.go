@@ -213,6 +213,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(jsBody, "toggleTheme") || strings.Contains(jsBody, "prefers-color-scheme") || strings.Contains(jsBody, "data-theme") {
 		t.Fatalf("expected dark mode script to be removed, got app.js body: %s", jsBody)
 	}
+	if strings.Contains(jsBody, "k downloads") || strings.Contains(jsBody, "skill.downloads") {
+		t.Fatalf("expected skills download badge to be removed, got app.js body: %s", jsBody)
+	}
 
 	cssBody := checkBody(server.URL + "/styles.css")
 	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") {
