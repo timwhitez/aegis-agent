@@ -224,6 +224,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(cssBody, "[data-theme=\"dark\"]") || strings.Contains(cssBody, ".theme-toggle") {
 		t.Fatalf("expected dark mode styles to be removed, got styles.css body: %s", cssBody)
 	}
+	if !strings.Contains(cssBody, "#settings-view.view") || !strings.Contains(cssBody, "overflow-y: auto") {
+		t.Fatalf("expected settings view to remain scrollable, got styles.css body: %s", cssBody)
+	}
 }
 
 func TestServiceWebSocketChatReusesSessionAndStreamsAssistantMessage(t *testing.T) {

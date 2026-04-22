@@ -543,6 +543,13 @@ textarea {
   padding: 20px 24px;
 }
 
+#settings-view.view {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-bottom: 32px;
+}
+
 .view-header {
   margin-bottom: 24px;
 }
@@ -1659,6 +1666,10 @@ textarea {
   .input-area {
     padding-left: 16px;
     padding-right: 16px;
+  }
+
+  #settings-view.view {
+    padding-bottom: 112px;
   }
 
   .chat-stage-header,
