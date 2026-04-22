@@ -543,6 +543,9 @@ textarea {
   padding: 20px 24px;
 }
 
+#skills-view.view,
+#workspace-view.view,
+#history-view.view,
 #settings-view.view {
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1668,6 +1671,9 @@ textarea {
     padding-right: 16px;
   }
 
+  #skills-view.view,
+  #workspace-view.view,
+  #history-view.view,
   #settings-view.view {
     padding-bottom: 112px;
   }
