@@ -91,42 +91,11 @@ const nodes = {
     history: document.getElementById('history-view'),
     settings: document.getElementById('settings-view')
   },
-  navItems: document.querySelectorAll('.nav-item[data-view]'),
-  themeToggle: document.getElementById('theme-toggle')
+  navItems: document.querySelectorAll('.nav-item[data-view]')
 };
-
-function initTheme() {
-  const saved = localStorage.getItem('theme');
-  if (saved) {
-    document.documentElement.setAttribute('data-theme', saved);
-    updateThemeIcon(saved);
-  } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-    document.documentElement.setAttribute('data-theme', 'dark');
-    localStorage.setItem('theme', 'dark');
-    updateThemeIcon('dark');
-  } else {
-    updateThemeIcon('light');
-  }
-}
-
-function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme') || 'light';
-  const next = current === 'light' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('theme', next);
-  updateThemeIcon(next);
-}
-
-function updateThemeIcon(theme) {
-  if (nodes.themeToggle) {
-    nodes.themeToggle.textContent = theme === 'light' ? '🌙' : '☀️';
-    nodes.themeToggle.title = `Switch to ${theme === 'light' ? 'dark' : 'light'} mode`;
-  }
-}
 
 function init() {
   restoreUIState();
-  initTheme();
   if (window.marked?.setOptions) {
     window.marked.setOptions({
       breaks: true,
@@ -321,10 +290,6 @@ function setupEventListeners() {
       switchView(view);
     });
   });
-
-  if (nodes.themeToggle) {
-    nodes.themeToggle.addEventListener('click', toggleTheme);
-  }
 
   nodes.sendBtn.addEventListener('click', sendMessage);
   nodes.stopSessionBtn?.addEventListener('click', requestStop);

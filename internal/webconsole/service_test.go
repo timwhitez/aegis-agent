@@ -202,15 +202,24 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
+	if strings.Contains(indexBody, "theme-toggle") || strings.Contains(indexBody, "Toggle theme") {
+		t.Fatalf("expected dark mode toggle to be removed, got shell body: %s", indexBody)
+	}
 
 	jsBody := checkBody(server.URL + "/app.js")
 	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "renderPendingStageCard") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
 	}
+	if strings.Contains(jsBody, "toggleTheme") || strings.Contains(jsBody, "prefers-color-scheme") || strings.Contains(jsBody, "data-theme") {
+		t.Fatalf("expected dark mode script to be removed, got app.js body: %s", jsBody)
+	}
 
 	cssBody := checkBody(server.URL + "/styles.css")
 	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") {
 		t.Fatalf("unexpected styles.css body: %s", cssBody)
+	}
+	if strings.Contains(cssBody, "[data-theme=\"dark\"]") || strings.Contains(cssBody, ".theme-toggle") {
+		t.Fatalf("expected dark mode styles to be removed, got styles.css body: %s", cssBody)
 	}
 }
 
