@@ -138,6 +138,14 @@ function currentClientSessionId() {
   return state.sessionId;
 }
 
+function shouldSubmitChatInput(event) {
+  return event.key === 'Enter' && !event.isComposing && (
+    event.ctrlKey ||
+    event.metaKey ||
+    (!event.shiftKey && !event.altKey)
+  );
+}
+
 function setupWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws`;
@@ -307,8 +315,9 @@ function setupEventListeners() {
   });
 
   nodes.chatInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && (!event.shiftKey || event.metaKey || event.ctrlKey)) {
+    if (shouldSubmitChatInput(event)) {
       event.preventDefault();
+      event.stopPropagation();
       sendMessage();
     }
   });
@@ -432,7 +441,7 @@ function setupEventListeners() {
 
   document.addEventListener('keydown', (event) => {
     const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
-    if (isInput && !(event.ctrlKey && event.key === 'Enter')) {
+    if (isInput) {
       return;
     }
 
@@ -751,7 +760,7 @@ function updateUI() {
       ? state.nextSendInterrupt
         ? 'Next send will request interrupt before merging your steer prompt.'
         : 'Session is running. Send again to queue steer input, or arm interrupt for the next send.'
-      : 'Enter to send, Shift+Enter for new line';
+      : 'Enter / Ctrl+Enter to send, Shift+Enter for new line';
 
   if (!state.isConnected) {
     nodes.connectionDot.className = 'dot';
