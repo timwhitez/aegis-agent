@@ -202,7 +202,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, "Enter / Ctrl+Enter to send, Shift+Enter for new line") {
+	if !strings.Contains(indexBody, "Enter to send, Shift+Enter / Ctrl+Enter for new line") {
 		t.Fatalf("expected updated input shortcut hint, got shell body: %s", indexBody)
 	}
 	if strings.Contains(indexBody, "theme-toggle") || strings.Contains(indexBody, "Toggle theme") {
@@ -215,6 +215,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "shouldSubmitChatInput") {
 		t.Fatalf("expected explicit chat input submit helper, got app.js body: %s", jsBody)
+	}
+	if strings.Contains(jsBody, "Ctrl+Enter', 'Submit message") || strings.Contains(jsBody, "'ctrl+enter': 'submit'") {
+		t.Fatalf("expected Ctrl+Enter submit shortcut to be removed, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "toggleTheme") || strings.Contains(jsBody, "prefers-color-scheme") || strings.Contains(jsBody, "data-theme") {
 		t.Fatalf("expected dark mode script to be removed, got app.js body: %s", jsBody)

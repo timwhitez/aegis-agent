@@ -9,7 +9,6 @@ const VIRTUAL_SCROLL_ITEM_HEIGHT = 120;
 const VIRTUAL_SCROLL_BUFFER_SIZE = 5;
 
 const SHORTCUTS = {
-  'ctrl+enter': 'submit',
   'escape': 'stop',
   '/': 'command',
   'ctrl+k': 'search',
@@ -139,11 +138,12 @@ function currentClientSessionId() {
 }
 
 function shouldSubmitChatInput(event) {
-  return event.key === 'Enter' && !event.isComposing && (
-    event.ctrlKey ||
-    event.metaKey ||
-    (!event.shiftKey && !event.altKey)
-  );
+  return event.key === 'Enter' &&
+    !event.isComposing &&
+    !event.shiftKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey;
 }
 
 function setupWebSocket() {
@@ -760,7 +760,7 @@ function updateUI() {
       ? state.nextSendInterrupt
         ? 'Next send will request interrupt before merging your steer prompt.'
         : 'Session is running. Send again to queue steer input, or arm interrupt for the next send.'
-      : 'Enter / Ctrl+Enter to send, Shift+Enter for new line';
+      : 'Enter to send, Shift+Enter / Ctrl+Enter for new line';
 
   if (!state.isConnected) {
     nodes.connectionDot.className = 'dot';
@@ -959,7 +959,6 @@ function renderShortcutHelp() {
   }
 
   const shortcuts = [
-    ['Ctrl+Enter', 'Submit message'],
     ['Escape', 'Stop execution'],
     ['/', 'Command mode'],
     ['Ctrl+K', 'Search'],
