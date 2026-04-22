@@ -216,6 +216,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "shouldSubmitChatInput") {
 		t.Fatalf("expected explicit chat input submit helper, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "shouldInsertChatNewline") || !strings.Contains(jsBody, "insertChatInputNewline") {
+		t.Fatalf("expected explicit Ctrl+Enter newline helpers, got app.js body: %s", jsBody)
+	}
 	if strings.Contains(jsBody, "Ctrl+Enter', 'Submit message") || strings.Contains(jsBody, "'ctrl+enter': 'submit'") {
 		t.Fatalf("expected Ctrl+Enter submit shortcut to be removed, got app.js body: %s", jsBody)
 	}

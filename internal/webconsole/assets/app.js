@@ -146,6 +146,23 @@ function shouldSubmitChatInput(event) {
     !event.altKey;
 }
 
+function shouldInsertChatNewline(event) {
+  return event.key === 'Enter' &&
+    !event.isComposing &&
+    event.ctrlKey &&
+    !event.altKey;
+}
+
+function insertChatInputNewline(textarea) {
+  if (!textarea) {
+    return;
+  }
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? textarea.value.length;
+  textarea.setRangeText('\n', start, end, 'end');
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 function setupWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws`;
@@ -315,6 +332,12 @@ function setupEventListeners() {
   });
 
   nodes.chatInput.addEventListener('keydown', (event) => {
+    if (shouldInsertChatNewline(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      insertChatInputNewline(nodes.chatInput);
+      return;
+    }
     if (shouldSubmitChatInput(event)) {
       event.preventDefault();
       event.stopPropagation();
