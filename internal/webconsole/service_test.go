@@ -236,6 +236,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(cssBody, "[data-theme=\"dark\"]") || strings.Contains(cssBody, ".theme-toggle") {
 		t.Fatalf("expected dark mode styles to be removed, got styles.css body: %s", cssBody)
 	}
+	if !strings.Contains(cssBody, "--chat-input-clearance") || !strings.Contains(cssBody, "margin-bottom: var(--chat-input-clearance)") {
+		t.Fatalf("expected session chat container to reserve visible scrollbar clearance, got styles.css body: %s", cssBody)
+	}
 	for _, selector := range []string{"#skills-view.view", "#workspace-view.view", "#history-view.view", "#settings-view.view"} {
 		if !strings.Contains(cssBody, selector) {
 			t.Fatalf("expected %s to remain scrollable, got styles.css body: %s", selector, cssBody)

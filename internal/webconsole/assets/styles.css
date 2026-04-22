@@ -1727,8 +1727,10 @@ textarea {
 }
 
 #chat-view .chat-container {
+  --chat-input-clearance: 124px;
   flex: 1;
-  padding: 28px 0 148px;
+  margin-bottom: var(--chat-input-clearance);
+  padding: 28px 0 24px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
@@ -2043,7 +2045,8 @@ textarea {
 
 @media (max-width: 720px) {
   #chat-view .chat-container {
-    padding: 22px 0 172px;
+    --chat-input-clearance: 146px;
+    padding: 22px 0 20px;
   }
 
   #chat-view .chat-inner {
