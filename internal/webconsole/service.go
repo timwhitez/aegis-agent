@@ -33,13 +33,15 @@ var upgrader = websocket.Upgrader{
 
 type Options struct {
 	WorkerCount int
+	ConfigPath  string
 }
 
 type Service struct {
-	cfg      *config.Config
-	store    *session.Store
-	staticFS fs.FS
-	workers  *workerPool
+	cfg        *config.Config
+	configPath string
+	store      *session.Store
+	staticFS   fs.FS
+	workers    *workerPool
 
 	mu      sync.RWMutex
 	handles map[string]*launchHandle
@@ -172,10 +174,11 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	}
 	store := runtime.NewStoreView(cfg).Store()
 	svc := &Service{
-		cfg:      cfg,
-		store:    store,
-		staticFS: staticFS,
-		handles:  map[string]*launchHandle{},
+		cfg:        cfg,
+		configPath: opts.ConfigPath,
+		store:      store,
+		staticFS:   staticFS,
+		handles:    map[string]*launchHandle{},
 	}
 	svc.workers = newWorkerPool(cfg, opts.WorkerCount)
 	return svc, nil
@@ -1189,23 +1192,27 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		provs[name] = map[string]any{
 			"base_url": p.BaseURL,
 			"model":    p.Model,
-			"has_key":  os.Getenv(p.APIKeyEnv) != "",
+			"has_key":  s.cfg.APIKey(name) != "",
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"default_provider": s.cfg.DefaultProvider,
-		"guardrails_mode":  s.cfg.Runtime.GuardrailsMode,
-		"providers":        provs,
+		"default_provider":        s.cfg.DefaultProvider,
+		"guardrails_mode":         s.cfg.Runtime.GuardrailsMode,
+		"max_turns_hard":          s.cfg.Runtime.MaxTurnsHard,
+		"disable_hard_turn_limit": s.cfg.Runtime.MaxTurnsHard <= 0,
+		"providers":               provs,
 	})
 }
 
 func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider       string `json:"provider"`
-		BaseURL        string `json:"base_url"`
-		Model          string `json:"model"`
-		APIKey         string `json:"api_key"`
-		GuardrailsMode string `json:"guardrails_mode"`
+		Provider             string `json:"provider"`
+		BaseURL              string `json:"base_url"`
+		Model                string `json:"model"`
+		APIKey               string `json:"api_key"`
+		GuardrailsMode       string `json:"guardrails_mode"`
+		MaxTurnsHard         *int   `json:"max_turns_hard"`
+		DisableHardTurnLimit bool   `json:"disable_hard_turn_limit"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1215,14 +1222,28 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	updatedCfg, err := config.Clone(s.cfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if req.Provider != "" {
-		s.cfg.DefaultProvider = req.Provider
+		updatedCfg.DefaultProvider = req.Provider
 	}
 	if strings.TrimSpace(req.GuardrailsMode) != "" {
-		s.cfg.Runtime.GuardrailsMode = configMode(req.GuardrailsMode)
+		updatedCfg.Runtime.GuardrailsMode = configMode(req.GuardrailsMode)
+	}
+	if req.DisableHardTurnLimit {
+		updatedCfg.Runtime.MaxTurnsHard = -1
+	} else if req.MaxTurnsHard != nil {
+		if *req.MaxTurnsHard <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("max_turns_hard must be positive unless hard turn limit is disabled"))
+			return
+		}
+		updatedCfg.Runtime.MaxTurnsHard = *req.MaxTurnsHard
 	}
 
-	if p, ok := s.cfg.Providers[req.Provider]; ok {
+	if p, ok := updatedCfg.Providers[req.Provider]; ok {
 		if req.BaseURL != "" {
 			p.BaseURL = req.BaseURL
 		}
@@ -1240,8 +1261,19 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		s.cfg.Providers[req.Provider] = p
+		updatedCfg.Providers[req.Provider] = p
 	}
+
+	cwd, _ := os.Getwd()
+	configPath := s.configPath
+	if strings.TrimSpace(configPath) == "" {
+		configPath = config.PersistPath("", cwd)
+	}
+	if err := config.WriteFile(configPath, updatedCfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	*s.cfg = *updatedCfg
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

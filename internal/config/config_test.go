@@ -163,6 +163,26 @@ func TestNormalizeConfigExpandsHomeIsolationRoot(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigAllowsDisabledHardTurnLimit(t *testing.T) {
+	cfg := &Config{
+		Runtime: RuntimeConfig{
+			MaxTurnsHard: -7,
+		},
+		Session: SessionConfig{
+			Dir: ".go-cli-agent/sessions",
+		},
+		Skills: SkillsConfig{
+			Dirs: []string{"./skills"},
+		},
+	}
+
+	normalizeConfig(cfg, "/tmp/project")
+
+	if cfg.Runtime.MaxTurnsHard != -1 {
+		t.Fatalf("expected disabled hard turn limit to normalize to -1, got %d", cfg.Runtime.MaxTurnsHard)
+	}
+}
+
 func TestLoadEnvFileSetsValuesWhenEnvIsEmpty(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=from-file\n# comment\n"), 0o600); err != nil {

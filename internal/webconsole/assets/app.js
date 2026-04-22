@@ -2765,6 +2765,8 @@ async function renderSettings() {
     const providers = configData.providers || {};
     const defaultProvider = configData.default_provider || '';
     const guardrailsMode = configData.guardrails_mode || 'yolo';
+    const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
+    const maxTurnsHard = Number(configData.max_turns_hard || 0);
     const options = Object.keys(providers).map((providerName) => `
       <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
     `).join('');
@@ -2784,6 +2786,17 @@ async function renderSettings() {
             </select>
             <p class="view-subtitle" style="margin-top:8px;">
               YOLO disables runtime retrieval, project-memory, and review-artifact guardrails for new or resumed turns.
+            </p>
+          </div>
+          <div class="field">
+            <label style="display:block; font-weight:600; margin-bottom:8px;">Hard Max Turns</label>
+            <input id="settings-max-turns-hard" type="number" min="1" step="1" style="width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--background);">
+            <label style="display:flex; align-items:center; gap:10px; margin-top:10px; color:var(--text-main);">
+              <input id="settings-disable-hard-turn-limit" type="checkbox">
+              <span>Disable hard turn limit</span>
+            </label>
+            <p class="view-subtitle" style="margin-top:8px;">
+              When disabled, the runtime will no longer fail a session with <code>max_turns_hard_exceeded</code>.
             </p>
           </div>
           <div class="field">
@@ -2814,6 +2827,8 @@ async function renderSettings() {
 
     const providerSelect = document.getElementById('settings-provider');
     const guardrailsSelect = document.getElementById('settings-guardrails');
+    const maxTurnsHardInput = document.getElementById('settings-max-turns-hard');
+    const disableHardTurnLimitInput = document.getElementById('settings-disable-hard-turn-limit');
     const baseURLInput = document.getElementById('settings-baseurl');
     const modelInput = document.getElementById('settings-model');
     const apiKeyInput = document.getElementById('settings-apikey');
@@ -2831,16 +2846,30 @@ async function renderSettings() {
 
     providerSelect.addEventListener('change', syncProviderFields);
     syncProviderFields();
+    maxTurnsHardInput.value = maxTurnsHard > 0 ? String(maxTurnsHard) : '40';
+    disableHardTurnLimitInput.checked = disableHardTurnLimit;
+    maxTurnsHardInput.disabled = disableHardTurnLimit;
+    disableHardTurnLimitInput.addEventListener('change', () => {
+      maxTurnsHardInput.disabled = disableHardTurnLimitInput.checked;
+    });
 
     saveButton.addEventListener('click', async () => {
       saveButton.innerText = 'Saving...';
       saveButton.disabled = true;
       try {
+        if (!disableHardTurnLimitInput.checked) {
+          const parsed = Number.parseInt(maxTurnsHardInput.value, 10);
+          if (!Number.isFinite(parsed) || parsed <= 0) {
+            throw new Error('Hard max turns must be a positive integer, or disable the hard limit.');
+          }
+        }
         await requestJSON('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             guardrails_mode: guardrailsSelect.value,
+            max_turns_hard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
+            disable_hard_turn_limit: disableHardTurnLimitInput.checked,
             provider: providerSelect.value,
             base_url: baseURLInput.value,
             model: modelInput.value,

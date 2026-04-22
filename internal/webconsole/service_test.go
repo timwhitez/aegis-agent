@@ -1101,7 +1101,8 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	cfg.Providers["openai"] = provider
 	envPath := filepath.Join(t.TempDir(), ".env")
 	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
-	svc, err := New(cfg, Options{WorkerCount: 0})
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -1120,11 +1121,12 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 
 	postJSON(t, ts.URL+"/api/config", map[string]any{
-		"provider":        "openai",
-		"base_url":        "http://example.invalid/v1",
-		"model":           "gpt-test",
-		"api_key":         "secret-key",
-		"guardrails_mode": "standard",
+		"provider":                "openai",
+		"base_url":                "http://example.invalid/v1",
+		"model":                   "gpt-test",
+		"api_key":                 "secret-key",
+		"guardrails_mode":         "standard",
+		"disable_hard_turn_limit": true,
 	}, http.StatusOK, nil)
 
 	var after map[string]any
@@ -1134,6 +1136,9 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if after["guardrails_mode"] != "standard" {
 		t.Fatalf("expected standard guardrails mode after update, got %#v", after["guardrails_mode"])
+	}
+	if after["disable_hard_turn_limit"] != true {
+		t.Fatalf("expected hard turn limit to be disabled, got %#v", after)
 	}
 	providers, _ := after["providers"].(map[string]any)
 	openaiProvider, _ := providers["openai"].(map[string]any)
@@ -1152,6 +1157,16 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(envBytes), "OPENAI_API_KEY=secret-key") {
 		t.Fatalf("expected OPENAI_API_KEY to persist to env file, got %q", string(envBytes))
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config file: %v", err)
+	}
+	if !strings.Contains(string(configBytes), "max_turns_hard: -1") {
+		t.Fatalf("expected disabled hard turn limit to persist to config, got %q", string(configBytes))
+	}
+	if !strings.Contains(string(configBytes), "guardrails_mode: standard") {
+		t.Fatalf("expected updated guardrails mode to persist to config, got %q", string(configBytes))
 	}
 }
 

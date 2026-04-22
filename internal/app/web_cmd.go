@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/webconsole"
 )
 
@@ -30,7 +31,10 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	service, err := webconsole.New(cfg, webconsole.Options{WorkerCount: *workers})
+	service, err := webconsole.New(cfg, webconsole.Options{
+		WorkerCount: *workers,
+		ConfigPath:  config.PersistPath(*configPath, cwd),
+	})
 	if err != nil {
 		return err
 	}

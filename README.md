@@ -136,7 +136,7 @@ export GEMINI_API_KEY=...
 
 ## Provider 配置
 
-默认配置文件是 `.go-cli-agent/config.yaml`。当前项目默认使用 `runtime.guardrails_mode: yolo`，也就是关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理；如果你要更保守的行为，可以改回 `standard`，或者直接在 `experimental web` 的 Settings 页面里切换。CLI / Web 启动时还会自动读取仓库根目录 `.env`（或 `GO_CLI_AGENT_ENV_FILE` 指向的 env 文件），因此在 Settings 页面保存的 API key 会在后续重启时继续生效。
+默认配置文件是 `.go-cli-agent/config.yaml`。当前项目默认使用 `runtime.guardrails_mode: yolo`，也就是关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理；如果你要更保守的行为，可以改回 `standard`，或者直接在 `experimental web` 的 Settings 页面里切换。CLI / Web 启动时还会自动读取仓库根目录 `.env`（或 `GO_CLI_AGENT_ENV_FILE` 指向的 env 文件），因此在 Settings 页面保存的 API key 会在后续重启时继续生效；同一个 Settings 页面还会把 `max_turns_hard` 等 runtime 设置持久化回当前生效的 config 文件。
 
 OpenAI / `openai-compatible` 默认走 `Responses API`。为了保持本地 session 是唯一事实源，adapter 会默认发送 `store: false`，不依赖服务端持久化来续跑。
 
@@ -188,6 +188,7 @@ providers:
 
 - OpenAI / `openai-compatible` 会把这些选项映射到 `reasoning`、`text`、`max_output_tokens`
 - `send_metadata=false` 可用于不兼容 `metadata` 字段的非官方 `openai-compatible` 网关；默认仍会发送 metadata，保持 runtime/session 到 adapter 的契约完整
+- `runtime.max_turns_hard: -1` 表示禁用硬性 turn 上限；在 Web Settings 里可直接勾选关闭
 - 当前 session metadata 还会持久化 effective provider retry policy，方便在 `session.json` 中直接追溯这次运行实际采用的 retry 预算，而不是只靠 HTTP adapter 的隐式默认值
 - provider HTTP 调用会按 `retry` 配置对 `429`、`5xx` 和 transport timeout 做有限重试，并写出 `provider.retry` 事件
 - `doctor --provider openai-compatible --json` 会直接暴露当前生效的 `store`、`send_metadata` 和 `retry_policy`，方便 operator 在连真实网关前先核对配置

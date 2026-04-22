@@ -510,6 +510,26 @@ func TestEngineExecModeRequiresFinish(t *testing.T) {
 	}
 }
 
+func TestEngineAllowsDisablingHardTurnLimit(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	engine.cfg.Runtime.MaxTurnsHard = -1
+	state.Turn = 50
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Continue working without a hard turn cap.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "still running", StopReason: "done_candidate"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input with disabled hard limit, got %#v", result)
+	}
+}
+
 func TestEngineAppendsRetrievalTailHarnessReminderBeforeProviderCall(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Inspect README.md and AGENTS.md and summarize the runtime surface.")); err != nil {

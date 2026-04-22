@@ -325,6 +325,16 @@ func Load(explicitPath, cwd string) (*Config, error) {
 	return cfg, nil
 }
 
+func PersistPath(explicitPath, cwd string) string {
+	if strings.TrimSpace(explicitPath) != "" {
+		return resolveMaybeRelative(cwd, explicitPath)
+	}
+	if envPath := strings.TrimSpace(os.Getenv("GO_CLI_AGENT_CONFIG")); envPath != "" {
+		return resolveMaybeRelative(cwd, envPath)
+	}
+	return filepath.Join(cwd, ".go-cli-agent", "config.yaml")
+}
+
 func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = "openai"
@@ -346,8 +356,10 @@ func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.Runtime.MaxTurnsSoft <= 0 {
 		cfg.Runtime.MaxTurnsSoft = 24
 	}
-	if cfg.Runtime.MaxTurnsHard <= 0 {
+	if cfg.Runtime.MaxTurnsHard == 0 {
 		cfg.Runtime.MaxTurnsHard = 40
+	} else if cfg.Runtime.MaxTurnsHard < 0 {
+		cfg.Runtime.MaxTurnsHard = -1
 	}
 	if cfg.Runtime.Steer.PollIntervalMS <= 0 {
 		cfg.Runtime.Steer.PollIntervalMS = 250
@@ -469,6 +481,32 @@ func ParseFileMode(value string, fallback fs.FileMode) (fs.FileMode, error) {
 
 func MarshalYAML(cfg *Config) ([]byte, error) {
 	return yaml.Marshal(cfg)
+}
+
+func WriteFile(path string, cfg *Config) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("config path is required")
+	}
+	data, err := MarshalYAML(cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+func Clone(cfg *Config) (*Config, error) {
+	data, err := MarshalYAML(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var out Config
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func boolPtr(value bool) *bool {

@@ -70,9 +70,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 	}
 	doneCandidates := 0
 	allowResolutionTurn := false
+	hardTurnLimit := e.cfg.Runtime.MaxTurnsHard
+	hardTurnLimitEnabled := hardTurnLimit > 0
 	for turn := state.Turn; ; turn++ {
 		usingResolutionTurn := false
-		if turn >= e.cfg.Runtime.MaxTurnsHard {
+		if hardTurnLimitEnabled && turn >= hardTurnLimit {
 			if !allowResolutionTurn {
 				state.Status = session.StatusFailed
 				state.LastError = "max_turns_hard_exceeded"
@@ -439,7 +441,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					return RunResult{}, err
 				}
 			}
-			allowResolutionTurn = !usingResolutionTurn && turn+1 >= e.cfg.Runtime.MaxTurnsHard
+			allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 		nextTurn:
 			continue
 		}
