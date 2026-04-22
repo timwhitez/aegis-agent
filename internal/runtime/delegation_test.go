@@ -145,6 +145,52 @@ func TestRunnerDelegateKeepsExistingCwdRelativeWorkdir(t *testing.T) {
 	}
 }
 
+func TestResolveRequestedWorkdirPrefersParentRequestedWorkdir(t *testing.T) {
+	root := t.TempDir()
+	parentRequested := filepath.Join(root, "parent-requested")
+	parentEffective := filepath.Join(root, "isolated-effective")
+	child := filepath.Join(parentRequested, "child")
+	for _, path := range []string{parentRequested, parentEffective, child} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("create %s: %v", path, err)
+		}
+	}
+	parent := &session.SessionMetadata{
+		RequestedWorkdir: parentRequested,
+		Workdir:          parentEffective,
+	}
+
+	got, err := resolveRequestedWorkdir("child", parent)
+	if err != nil {
+		t.Fatalf("resolve workdir: %v", err)
+	}
+	if got != child {
+		t.Fatalf("expected child under requested parent workdir, got %q want %q", got, child)
+	}
+}
+
+func TestResolveRequestedWorkdirUsesParentForMissingRelativePath(t *testing.T) {
+	root := t.TempDir()
+	parentWorkdir := filepath.Join(root, "parent")
+	if err := os.MkdirAll(parentWorkdir, 0o755); err != nil {
+		t.Fatalf("create parent workdir: %v", err)
+	}
+	t.Chdir(root)
+	parent := &session.SessionMetadata{
+		RequestedWorkdir: parentWorkdir,
+		Workdir:          parentWorkdir,
+	}
+
+	got, err := resolveRequestedWorkdir("missing-child", parent)
+	if err != nil {
+		t.Fatalf("resolve workdir: %v", err)
+	}
+	want := filepath.Join(parentWorkdir, "missing-child")
+	if got != want {
+		t.Fatalf("expected missing relative path under parent workdir, got %q want %q", got, want)
+	}
+}
+
 func TestRunnerDelegateTreatsDefaultProviderAndModelAsInherited(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

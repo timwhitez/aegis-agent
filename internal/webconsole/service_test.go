@@ -320,6 +320,74 @@ func TestServiceWebSocketChatReusesSessionAndStreamsAssistantMessage(t *testing.
 	}
 }
 
+func TestServiceWebSocketDisconnectDuringActiveRunDoesNotBreakSession(t *testing.T) {
+	server := newDelayedFinishServer(150 * time.Millisecond)
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type":      "chat",
+		"sessionId": "0xDISCONNECT",
+		"message":   "finish after the client disconnects",
+	}); err != nil {
+		_ = conn.Close()
+		t.Fatalf("write websocket message: %v", err)
+	}
+
+	backendSessionID := ""
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		_ = conn.Close()
+		t.Fatalf("set read deadline: %v", err)
+	}
+	for backendSessionID == "" {
+		var msg map[string]any
+		if err := conn.ReadJSON(&msg); err != nil {
+			_ = conn.Close()
+			t.Fatalf("read websocket message: %v", err)
+		}
+		if msg["type"] != "session" {
+			continue
+		}
+		payload, _ := msg["payload"].(map[string]any)
+		backendSessionID, _ = payload["sessionId"].(string)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close websocket: %v", err)
+	}
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(backendSessionID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string {
+		state, err := svc.store.LoadState(backendSessionID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+	if _, ok := svc.handleForSession(backendSessionID); ok {
+		t.Fatalf("expected disconnected session handle to be cleaned up for %s", backendSessionID)
+	}
+}
+
 func TestServiceQueueWorkersProcessJob(t *testing.T) {
 	server := newFinishServer()
 	defer server.Close()

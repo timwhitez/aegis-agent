@@ -279,6 +279,82 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestFeatureListToolsPersistUpdateAndReadSnapshot(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   meta.Workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+
+	createResult, err := registry.Execute(context.Background(), "feature_list_create", execCtx, json.RawMessage(`{
+		"features":[
+			{"description":"Audit current contract","steps":["read spec","read tests"]},
+			{"description":"Close verified drift","steps":["patch","validate"]}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("feature_list_create: %v", err)
+	}
+	if createResult.Name != "feature_list_create" || !strings.Contains(createResult.DisplayOutput, "2 features") {
+		t.Fatalf("unexpected create result: %#v", createResult)
+	}
+
+	updateResult, err := registry.Execute(context.Background(), "feature_list_update", execCtx, json.RawMessage(`{
+		"id":"feature_0002",
+		"status":"completed",
+		"passes":3
+	}`))
+	if err != nil {
+		t.Fatalf("feature_list_update: %v", err)
+	}
+	if updateResult.Name != "feature_list_update" || !strings.Contains(updateResult.DisplayOutput, "feature_0002") {
+		t.Fatalf("unexpected update result: %#v", updateResult)
+	}
+
+	readResult, err := registry.Execute(context.Background(), "feature_list_read", execCtx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("feature_list_read: %v", err)
+	}
+	var snapshot session.FeatureList
+	if err := json.Unmarshal([]byte(readResult.LLMOutput), &snapshot); err != nil {
+		t.Fatalf("unmarshal feature list snapshot: %v\n%s", err, readResult.LLMOutput)
+	}
+	if len(snapshot.Features) != 2 {
+		t.Fatalf("expected two features, got %#v", snapshot.Features)
+	}
+	if snapshot.Features[0].ID != "feature_0001" || snapshot.Features[0].Status != "pending" {
+		t.Fatalf("unexpected first feature: %#v", snapshot.Features[0])
+	}
+	if snapshot.Features[1].ID != "feature_0002" || snapshot.Features[1].Status != "completed" || snapshot.Features[1].Passes != 3 {
+		t.Fatalf("unexpected updated feature: %#v", snapshot.Features[1])
+	}
+}
+
 func TestShellTimeoutIsCappedByRuntimeCommandTimeout(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.CommandTimeoutSec = 1
