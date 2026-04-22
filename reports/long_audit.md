@@ -1,73 +1,107 @@
-# Long Consistency Audit
+# Long Audit
 
-## Scope
-- Audited spec, README, implementation, and tests for the requested focus areas.
-- Focus areas: built-in tool surface vs registry, `experimental web` positioning, multi-agent default semantics, and web frontend `history` / `refresh` / `clear` actions against backend contracts.
-- Result: no blocking drift found. One previously repaired frontend interaction remains aligned: after clearing history from the history view, the UI resets chat state and returns to chat.
+## Scope and method
 
-## Finding 1: Tool Surface Matches The Registry
-Severity: pass  
-Confidence: high
+This audit compares the required specs against `README.md`, the current Go implementation, and focused tests. The review emphasizes:
 
-Evidence:
-- `internal/tools/registry.go:153` registers the core built-in tool surface: shell, file read/write/edit, glob/grep, finish, skill loading, todo tools, and task graph tools.
-- `internal/tools/registry.go:171` appends multi-agent tools only when `cfg.Runtime.MultiAgent.Enabled` is true.
-- `internal/tools/registry_test.go:245` verifies `agent_spawn`, `agent_status`, and `agent_list` are registered by default and hidden when `runtime.multi_agent.enabled=false`.
-- `internal/tools/registry_test.go:120` covers shell/file tool metadata behavior, including compaction-relevant metadata.
-- `README.md:245` documents default exposure of `agent_spawn` / `agent_status` / `agent_list` and the explicit disable switch.
+- tool surface vs registry alignment
+- whether `experimental web` still presents as experimental
+- whether multi-agent is enabled by default but delegation remains master-directed
+- whether recent frontend behaviors (`history`, `refresh`, `clear`) have backend contracts
 
-Assessment:
-- The implementation, tests, and README agree that built-in tools are registry-owned and multi-agent tools are default-visible but configurable.
-- No spec correction is required.
+Reviewed sources include `AGENTS.md`, `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/12-task-system.md`, `spec/13-live-input-and-steering.md`, `README.md`, `internal/tools/registry.go`, `internal/config/config.go`, `internal/runtime/delegation.go`, `internal/webconsole/service.go`, and targeted tests.
 
-## Finding 2: `experimental web` Remains Explicitly Experimental
-Severity: pass  
-Confidence: high
+## Summary
+
+Overall alignment is good. The repo currently matches the major spec claims in the audited areas. I found one small documentation drift and corrected it directly in `README.md`.
+
+## Findings
+
+### 1. Tool surface and registry alignment
+
+Status: largely aligned.
 
 Evidence:
-- `README.md:233` exposes experimental commands only under `./bin/go-cli-agent experimental <delegate|children|queue|tui|web> ...`.
-- `README.md:241` states default `go-cli-agent` help shows only core v1 commands and experimental entries appear only under the explicit `experimental` subtree.
-- `README.md:258` keeps `internal/webconsole` described as a local Web console service/API/frontend, not a stable public SDK surface.
-- `README.md:259` states `pkg/agent` remains core-only and experimental/store-only surfaces stay internal until stabilized.
-- `spec/17-web-console.md` positions the web console as an explicit experimental extension surface.
+
+- The built-in tool registry in `internal/tools/registry.go` includes the expected durable and multi-agent-oriented tools, including `todo_write`, `todo_read`, `task_create`, `task_update`, `task_list`, `task_get`, `feature_list_create`, `feature_list_update`, `feature_list_read`, `agent_spawn`, `agent_status`, and `agent_list`.
+- Registry gating respects multi-agent enablement; agent tools are exposed only when multi-agent is enabled, which matches the runtime model described in spec.
+- Tests in `internal/tools/registry_test.go` cover reserved names and the conditional presence of multi-agent tools.
+- README references the experimental and core surfaces separately, which is consistent with the CLI behavior tested in `internal/app/app_test.go`.
 
 Assessment:
-- Docs preserve the CLI-first/core-first story and keep the web console out of the default command surface.
-- No drift found between README positioning and the web console implementation location.
 
-## Finding 3: Multi-Agent Default Semantics Are Consistent
-Severity: pass  
-Confidence: high
+- No implementation drift found in the tool registry itself.
+- The task system and durable task graph concepts from `spec/12-task-system.md` are reflected in exposed tooling.
+
+### 2. `experimental web` remains experimental
+
+Status: aligned.
 
 Evidence:
-- `internal/config/config.go:225` sets `Runtime.MultiAgent.Enabled` to true by default with `MaxDepth: 4`.
-- `internal/config/config_test.go:76` asserts multi-agent is enabled by default.
-- `internal/tools/registry.go:171` makes default enablement mean tool exposure, not automatic child creation.
-- `internal/tools/registry_test.go:245` verifies tools are visible by default and hidden when disabled.
-- `README.md:245` states default exposure lets the master agent decide whether to create child agents, and operators can disable exposure with `runtime.multi_agent.enabled=false`.
+
+- CLI routing exposes web console under `experimental web`, not as a top-level stable command.
+- `internal/app/app_test.go` verifies default usage does not advertise experimental commands, while explicit `experimental` invocation shows `delegate|children|queue|tui|web`.
+- README documents web console under the experimental surface rather than the stable core command list.
+- `internal/webconsole/service.go` implements the feature as a separate experimental service rather than merging it into the stable CLI path.
 
 Assessment:
-- The intended semantics are correctly represented: default-enabled multi-agent means available tools, while actual delegation remains a master/agent decision.
-- No code or doc change is required.
 
-## Finding 4: Web `history` / `refresh` / `clear` Actions Match Backend Contracts
-Severity: pass  
-Confidence: high
+- Experimental positioning is preserved across docs, code, and tests.
+
+### 3. Multi-agent default enabled, but delegation remains master-directed
+
+Status: aligned.
 
 Evidence:
-- `internal/webconsole/service.go:210` exposes `GET /api/history`.
-- `internal/webconsole/service.go:214` exposes `POST /api/sessions/clear`.
-- `internal/webconsole/service.go:500` deletes a single session tree and maps missing sessions to 404.
-- `internal/webconsole/service.go:510` rejects clear-history while this web console has active session handles.
-- `internal/webconsole/service.go:518` rejects clear-history while queue jobs are running.
-- `internal/webconsole/assets/app.js:2215` fetches paginated history from `/api/history`.
-- `internal/webconsole/assets/app.js:2361` deletes one history session via `DELETE /api/sessions/{id}` and refreshes history/overview afterward.
-- `internal/webconsole/assets/app.js:2385` clears all history via `POST /api/sessions/clear`, resets chat/session UI state, refetches history, refreshes overview, and returns from history to chat when appropriate.
+
+- `internal/config/config.go` defaults `MultiAgent.Enabled` to true, consistent with current spec direction.
+- Registry exposure for `agent_spawn` / `agent_status` / `agent_list` depends on that config, confirming the default-on tool surface.
+- Delegation logic remains explicit and orchestrator-controlled rather than automatic fan-out. The runtime model in `internal/runtime/delegation.go` reflects a parent/master choosing whether to delegate.
+- README language describes child agents as an available capability, not something that always triggers automatically.
+- Tests cover presence of experimental child-management surfaces and queue handling without asserting automatic delegation.
 
 Assessment:
-- Frontend calls use the backend routes and respect the destructive-action contract through user confirmation and backend conflict handling.
-- The clear-history UX no longer leaves the user stranded on an empty history view after the backing store is removed.
 
-## Minor Notes
-- No additional small drift was identified during this audit, so no new code change was necessary in this pass.
-- Existing targeted coverage already exercises the key risky seams: default multi-agent exposure, tool registry registration, web service routes, and session/history deletion behavior.
+- The important distinction holds: multi-agent capability is on by default, but task delegation remains a master decision.
+- I did not find contradicting tests or docs that claim unconditional automatic delegation.
+
+### 4. Frontend behaviors vs backend contracts: `history`, `refresh`, `clear`
+
+Status: mostly aligned, with contract coverage present.
+
+Evidence:
+
+- `internal/webconsole/service.go` exposes backend routes and handlers for session history/timeline retrieval, continue/steer flows, and clear/reset-related UI support paths.
+- Service tests in `internal/webconsole/service_test.go` cover timeline/history-oriented responses, queue state, worker views, and continuation behavior.
+- `refresh` is implemented as client re-fetch against existing read endpoints rather than a dedicated mutation contract, which is acceptable if docs describe it as a UI action rather than a standalone backend primitive.
+- `clear` behavior is backed by server-side routes/handlers rather than being purely cosmetic frontend state.
+
+Assessment:
+
+- Recent frontend behaviors do map to backend contracts.
+- No missing server contract was found for the audited actions.
+- The main caution is terminology: some UI behavior names are UX labels over existing API reads/writes rather than standalone named backend concepts. That is acceptable, but docs should continue describing them at the right abstraction level.
+
+## Confirmed drift fixed
+
+### README experimental surface list
+
+I found a small README drift in the large-project profile bullet: it listed `experimental delegate|children|queue|web` and omitted `tui`, while the actual explicit experimental usage and tests include `tui`.
+
+Fix applied:
+
+- Updated `README.md` to list `experimental delegate|children|queue|tui|web` in the affected bullet.
+
+Why this is safe:
+
+- It aligns the README with the implemented CLI surface and existing tests.
+- It does not change runtime behavior.
+
+## Residual notes
+
+- The `reports/` directory currently appears to have several deleted tracked files in the working tree unrelated to this audit. I did not restore or modify them because that would exceed the requested scope.
+- I did not find a second deterministic drift that was both small and clearly safe to patch without broadening the change set.
+
+## Conclusion
+
+The audited areas are in good shape. The implementation and tests match the current spec direction on tool registry shape, experimental web positioning, default-on multi-agent capability with master-directed delegation, and web UI behavior contracts. One minor README drift was corrected.
