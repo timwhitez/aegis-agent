@@ -33,8 +33,8 @@ func TestNormalizeConfigSetsProviderRetryDefaults(t *testing.T) {
 	if provider.WireAPI != "responses" {
 		t.Fatalf("expected wire_api responses, got %q", provider.WireAPI)
 	}
-	if provider.Retry.MaxAttempts != 2 {
-		t.Fatalf("expected retry max_attempts 2, got %d", provider.Retry.MaxAttempts)
+	if provider.Retry.MaxAttempts != 5 {
+		t.Fatalf("expected retry max_attempts 5, got %d", provider.Retry.MaxAttempts)
 	}
 	if provider.Retry.BaseDelayMS != 1000 {
 		t.Fatalf("expected retry base_delay_ms 1000, got %d", provider.Retry.BaseDelayMS)

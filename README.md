@@ -174,7 +174,7 @@ providers:
     model: gpt-5.4
     timeout_sec: 120
     retry:
-      max_attempts: 2
+      max_attempts: 5
       base_delay_ms: 1000
       retry_5xx: true
       retry_transport: true

@@ -12,7 +12,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const legacyIsolationRootDir = ".go-cli-agent/_worktrees"
+const (
+	legacyIsolationRootDir  = ".go-cli-agent/_worktrees"
+	defaultRetryMaxAttempts = 5
+	defaultRetryBaseDelayMS = 1000
+)
 
 type Config struct {
 	SchemaVersion   int                 `yaml:"schema_version"`
@@ -183,8 +187,8 @@ func Default() *Config {
 				Model:      "gpt-5.4",
 				TimeoutSec: 120,
 				Retry: Retry{
-					MaxAttempts:    2,
-					BaseDelayMS:    1000,
+					MaxAttempts:    defaultRetryMaxAttempts,
+					BaseDelayMS:    defaultRetryBaseDelayMS,
 					Retry5xx:       true,
 					RetryTransport: true,
 				},
@@ -197,8 +201,8 @@ func Default() *Config {
 				Model:      "claude-sonnet-4-6",
 				TimeoutSec: 120,
 				Retry: Retry{
-					MaxAttempts:    2,
-					BaseDelayMS:    1000,
+					MaxAttempts:    defaultRetryMaxAttempts,
+					BaseDelayMS:    defaultRetryBaseDelayMS,
 					Retry5xx:       true,
 					RetryTransport: true,
 				},
@@ -210,8 +214,8 @@ func Default() *Config {
 				Model:      "gemini-2.5-flash",
 				TimeoutSec: 120,
 				Retry: Retry{
-					MaxAttempts:    2,
-					BaseDelayMS:    1000,
+					MaxAttempts:    defaultRetryMaxAttempts,
+					BaseDelayMS:    defaultRetryBaseDelayMS,
 					Retry5xx:       true,
 					RetryTransport: true,
 				},
@@ -222,8 +226,8 @@ func Default() *Config {
 				Model:      "gpt-5.4",
 				TimeoutSec: 120,
 				Retry: Retry{
-					MaxAttempts:    2,
-					BaseDelayMS:    1000,
+					MaxAttempts:    defaultRetryMaxAttempts,
+					BaseDelayMS:    defaultRetryBaseDelayMS,
 					Retry5xx:       true,
 					RetryTransport: true,
 				},
@@ -519,17 +523,17 @@ func normalizeProviderRetry(retryProvider *Provider) {
 	}
 	if retryProvider.Retry == (Retry{}) {
 		retryProvider.Retry = Retry{
-			MaxAttempts:    2,
-			BaseDelayMS:    1000,
+			MaxAttempts:    defaultRetryMaxAttempts,
+			BaseDelayMS:    defaultRetryBaseDelayMS,
 			Retry5xx:       true,
 			RetryTransport: true,
 		}
 		return
 	}
 	if retryProvider.Retry.MaxAttempts <= 0 {
-		retryProvider.Retry.MaxAttempts = 2
+		retryProvider.Retry.MaxAttempts = defaultRetryMaxAttempts
 	}
 	if retryProvider.Retry.BaseDelayMS <= 0 {
-		retryProvider.Retry.BaseDelayMS = 1000
+		retryProvider.Retry.BaseDelayMS = defaultRetryBaseDelayMS
 	}
 }
