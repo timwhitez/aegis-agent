@@ -5,6 +5,7 @@
 const POLL_INTERVAL_MS = 1600;
 const MAX_LIVE_EVENTS = 80;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
+const SIMPLE_VIRTUAL_SCROLL_MIN_MESSAGES = 120;
 const VIRTUAL_SCROLL_ITEM_HEIGHT = 120;
 const VIRTUAL_SCROLL_BUFFER_SIZE = 5;
 
@@ -104,10 +105,29 @@ function init() {
   lucide.createIcons();
   setupWebSocket();
   setupEventListeners();
-  resetChatSession({ notifyBackend: false });
+  if (hasDurableSession()) {
+    state.sessionDetail = null;
+    state.optimisticMessages = [];
+    state.liveEvents = [];
+    state.nextSendInterrupt = false;
+    state.isGenerating = false;
+    state.liveActivity = {
+      title: 'Restoring session',
+      copy: 'Loading the previously selected durable session.',
+      tone: 'neutral'
+    };
+    updateSessionId();
+  } else {
+    resetChatSession({ notifyBackend: false });
+  }
   startPolling();
   refreshMeta().catch(() => {});
   refreshOverview();
+  if (hasDurableSession()) {
+    refreshCurrentSession().catch((err) => {
+      console.error('session restore error', err);
+    });
+  }
   switchView(state.currentView, { skipPersist: true });
   renderCurrentSession();
 
@@ -708,6 +728,7 @@ function adoptSession(sessionID, backed) {
   state.sessionId = sessionID;
   state.sessionBacked = backed;
   updateSessionId();
+  persistUIState();
 }
 
 function resetChatSession({ notifyBackend }) {
@@ -725,6 +746,7 @@ function resetChatSession({ notifyBackend }) {
   state.isGenerating = false;
   state.lastInputWasEmpty = !nodes.chatInput.value.trim();
   updateSessionId();
+  persistUIState();
   if (notifyBackend && state.ws && state.ws.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify({
       type: 'reset_session',
@@ -1231,7 +1253,7 @@ function renderMessageStream() {
     };
   }
 
-  state.virtualScroll.enabled = stream.length >= 50;
+  state.virtualScroll.enabled = supportsFixedHeightVirtualization(stream);
 
   const { startIndex, endIndex, offsetY, totalHeight } = calculateVirtualScrollWindow(stream);
   const visibleMessages = stream.slice(startIndex, endIndex);
@@ -1255,6 +1277,27 @@ function renderMessageStream() {
     body: bodyHTML,
     pending: state.isGenerating ? renderPendingStageCard() : ''
   };
+}
+
+function supportsFixedHeightVirtualization(messages) {
+  if (messages.length < SIMPLE_VIRTUAL_SCROLL_MIN_MESSAGES) {
+    return false;
+  }
+  return maybeArray(messages).every((message) => isSimpleVirtualScrollCandidate(message));
+}
+
+function isSimpleVirtualScrollCandidate(message) {
+  const text = String(message?.text || '');
+  if (maybeArray(message?.tool_calls).length || maybeArray(message?.tool_results).length) {
+    return false;
+  }
+  if (message?.pending) {
+    return false;
+  }
+  if (text.length > 500) {
+    return false;
+  }
+  return text.split('\n').length <= 6;
 }
 
 function renderEmptySessionState() {
@@ -2644,9 +2687,13 @@ function loadPersistedUIState() {
 
 function persistUIState() {
   try {
+    const selectedSessionId = state.sessionBacked && !isEphemeralSessionId(state.sessionId)
+      ? state.sessionId
+      : '';
     window.localStorage?.setItem(UI_STATE_STORAGE_KEY, JSON.stringify({
       currentView: state.currentView,
-      historyPage: state.historyPage
+      historyPage: state.historyPage,
+      selectedSessionId
     }));
   } catch {
     // Ignore storage failures and continue with in-memory state.
@@ -2662,6 +2709,10 @@ function restoreUIState() {
   state.currentView = nextView;
   if (Number.isFinite(nextHistoryPage) && nextHistoryPage >= 1) {
     state.historyPage = Math.floor(nextHistoryPage);
+  }
+  if (typeof persisted.selectedSessionId === 'string' && persisted.selectedSessionId.trim()) {
+    state.sessionId = persisted.selectedSessionId.trim();
+    state.sessionBacked = true;
   }
   applyViewVisibility(state.currentView);
 }
