@@ -31,6 +31,7 @@ type Runner struct {
 }
 
 const defaultSteerMaxMessageChars = 12000
+const defaultWorkspaceDirName = "workspace"
 
 type SteerValidationError struct {
 	Code        string
@@ -233,6 +234,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 
 func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) (string, error) {
 	workdir := strings.TrimSpace(input)
+	usedDefaultWorkspace := false
 	if workdir == "" {
 		if parentMeta != nil {
 			workdir = firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir)
@@ -242,7 +244,8 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 			if err != nil {
 				return "", err
 			}
-			workdir = current
+			workdir = filepath.Join(current, defaultWorkspaceDirName)
+			usedDefaultWorkspace = true
 		}
 	} else if parentMeta != nil && !filepath.IsAbs(workdir) {
 		if parentBase := firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir); parentBase != "" {
@@ -258,7 +261,16 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 			}
 		}
 	}
-	return filepath.Abs(workdir)
+	resolved, err := filepath.Abs(workdir)
+	if err != nil {
+		return "", err
+	}
+	if usedDefaultWorkspace {
+		if err := os.MkdirAll(resolved, 0o700); err != nil {
+			return "", err
+		}
+	}
+	return resolved, nil
 }
 
 func directoryExists(path string) bool {

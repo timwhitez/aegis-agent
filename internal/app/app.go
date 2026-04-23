@@ -212,9 +212,6 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
-	if *workdir == "" {
-		*workdir = invokeCWD
-	}
 	runner, _, err := runnerLoader(*configPath, invokeCWD)
 	if err != nil {
 		return err
@@ -1151,6 +1148,9 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(cwd, ".env.example"), []byte("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\nGEMINI_API_KEY=\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(cwd, "workspace"), 0o700); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(cwd, effectiveSkillDir, "example"), 0o700); err != nil {

@@ -248,6 +248,32 @@ func TestRunCommandLoadsConfigRelativeToInvokeDirectoryNotTaskWorkdir(t *testing
 	}
 }
 
+func TestRunCommandLeavesEmptyWorkdirForRuntimeDefaultWorkspace(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusCompleted,
+		FinalText: "done",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "--json", "ping"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	if fake.startCalls[0].Workdir != "" {
+		t.Fatalf("expected empty workdir for runtime defaulting, got %#v", fake.startCalls[0])
+	}
+}
+
 func TestSessionsCommandRendersSummary(t *testing.T) {
 	fake := newFakeRunner()
 	fake.listResult = []session.SessionSummary{
@@ -746,6 +772,7 @@ func TestInitGeneratesConfigSkillAndHookAssets(t *testing.T) {
 	for _, relative := range []string{
 		".go-cli-agent/config.yaml",
 		".env.example",
+		"workspace",
 		"skills/example/SKILL.md",
 		"skills/example/tools/echo.yaml",
 		".go-cli-agent/hooks/session-complete.sh",

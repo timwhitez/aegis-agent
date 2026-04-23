@@ -40,6 +40,8 @@ Queue 主视图也已经从单列表推进成 list-detail 工作区：左侧过�
 ./bin/go-cli-agent sessions
 ```
 
+若未显式传 `--workdir`，新的 root session 默认会使用当前目录下的 `workspace/` 作为工作目录；目录不存在时会自动创建。
+
 如果要连真实 provider，需要先准备环境变量：
 
 ```sh

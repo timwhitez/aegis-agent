@@ -96,6 +96,11 @@ core v1 的默认命令面固定为：
 - `--json`
 - `--timeout`
 
+默认规则：
+
+- 未显式提供 `--workdir` 时，root session 的 `requested_workdir` 默认取当前目录下的 `workspace/`
+- 若该 `workspace/` 目录不存在，runtime 在 session 启动前自动创建
+
 ### 5.3 `exec`
 
 作用：
@@ -113,6 +118,11 @@ core v1 的默认命令面固定为：
 - `--system`
 - `--json`
 - `--timeout`
+
+默认规则与 `run` 一致：
+
+- 未显式提供 `--workdir` 时，root session 默认使用当前目录下的 `workspace/`
+- 若该目录不存在，runtime 在启动前自动创建
 
 ### 5.4 `steer`
 

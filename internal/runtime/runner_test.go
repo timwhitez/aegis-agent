@@ -367,6 +367,34 @@ func TestRunnerContinueUsesDurableRetryPolicyFromSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestResolveRequestedWorkdirDefaultsToWorkspaceSubdirAndCreatesIt(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	root := t.TempDir()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(originalWD) }()
+
+	got, err := resolveRequestedWorkdir("", nil)
+	if err != nil {
+		t.Fatalf("resolveRequestedWorkdir: %v", err)
+	}
+	want := filepath.Join(root, "workspace")
+	if got != want {
+		t.Fatalf("expected default workspace %q, got %q", want, got)
+	}
+	info, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("expected workspace dir to be created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected %q to be a directory", want)
+	}
+}
+
 func TestRunnerAppendUserMessageAppliesUserHook(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
