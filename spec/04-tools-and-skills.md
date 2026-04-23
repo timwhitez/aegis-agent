@@ -74,6 +74,7 @@ v1 内置工具固定为：
 ### 4.1 `shell`
 
 - 在 `workdir` 中运行
+- 可选接受 `workdir` 覆盖；相对路径按当前 workspace 解析，解析后仍必须位于 workspace 内且是目录
 - 必须接受 timeout
 - stdout/stderr 合并截断
 - 返回码与摘要写入 metadata
@@ -125,6 +126,7 @@ v1 内置工具固定为：
 
 - 接受 `name`
 - 返回目标 `SKILL.md` 的完整内容与路径信息
+- 当 skill 依赖相对 shell 路径时，返回值还应给出可直接复用的 skill 根目录执行提示，避免把 skill 内相对脚本误当成 workspace 根相对路径
 
 ### 4.10 `task_update`
 

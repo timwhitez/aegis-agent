@@ -219,6 +219,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "shouldInsertChatNewline") || !strings.Contains(jsBody, "insertChatInputNewline") {
 		t.Fatalf("expected explicit Ctrl+Enter newline helpers, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "renderMessageText") || !strings.Contains(jsBody, "message-bubble-plaintext") {
+		t.Fatalf("expected explicit plaintext user-message renderer, got app.js body: %s", jsBody)
+	}
 	if strings.Contains(jsBody, "Ctrl+Enter', 'Submit message") || strings.Contains(jsBody, "'ctrl+enter': 'submit'") {
 		t.Fatalf("expected Ctrl+Enter submit shortcut to be removed, got app.js body: %s", jsBody)
 	}
@@ -235,6 +238,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if strings.Contains(cssBody, "[data-theme=\"dark\"]") || strings.Contains(cssBody, ".theme-toggle") {
 		t.Fatalf("expected dark mode styles to be removed, got styles.css body: %s", cssBody)
+	}
+	if !strings.Contains(cssBody, ".message-bubble-plaintext") {
+		t.Fatalf("expected plaintext user-message styles, got styles.css body: %s", cssBody)
 	}
 	if !strings.Contains(cssBody, "--chat-input-clearance") || !strings.Contains(cssBody, "margin-bottom: var(--chat-input-clearance)") {
 		t.Fatalf("expected session chat container to reserve visible scrollbar clearance, got styles.css body: %s", cssBody)

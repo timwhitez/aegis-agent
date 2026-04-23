@@ -229,6 +229,7 @@ func defShell() Definition {
 			"properties": map[string]any{
 				"command": map[string]any{"type": "string"},
 				"timeout": map[string]any{"type": "integer"},
+				"workdir": map[string]any{"type": "string"},
 			},
 			"required": []string{"command"},
 		},
@@ -236,12 +237,28 @@ func defShell() Definition {
 			var input struct {
 				Command string `json:"command"`
 				Timeout int    `json:"timeout"`
+				Workdir string `json:"workdir"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("shell", err), nil
 			}
 			if input.Command == "" {
 				return errorResult("shell", errors.New("command is required")), nil
+			}
+			workdir := execCtx.Workdir
+			if strings.TrimSpace(input.Workdir) != "" {
+				resolvedWorkdir, err := ResolveWorkspacePath(execCtx.Workdir, input.Workdir)
+				if err != nil {
+					return errorResult("shell", err), nil
+				}
+				info, err := os.Stat(resolvedWorkdir)
+				if err != nil {
+					return errorResult("shell", err), nil
+				}
+				if !info.IsDir() {
+					return errorResult("shell", fmt.Errorf("workdir is not a directory: %s", relativeOrAbsolute(execCtx.Workdir, resolvedWorkdir))), nil
+				}
+				workdir = resolvedWorkdir
 			}
 			timeout := effectiveToolTimeout(execCtx.Config.Runtime.CommandTimeoutSec, input.Timeout)
 			callCtx := ctx
@@ -252,7 +269,7 @@ func defShell() Definition {
 			}
 			command, shellArg := shellCommand()
 			cmd := exec.CommandContext(callCtx, command, shellArg, input.Command)
-			cmd.Dir = execCtx.Workdir
+			cmd.Dir = workdir
 			cmd.Env = filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist)
 			output, err := cmd.CombinedOutput()
 			exitCode := 0
@@ -279,6 +296,7 @@ func defShell() Definition {
 							"command":    input.Command,
 							"exit_code":  exitCode,
 							"timeout":    timeout,
+							"workdir":    workdir,
 							"raw_length": rawLength,
 							"truncated":  truncated,
 						},
@@ -293,6 +311,7 @@ func defShell() Definition {
 						"command":    input.Command,
 						"exit_code":  exitCode,
 						"timeout":    timeout,
+						"workdir":    workdir,
 						"raw_length": rawLength,
 						"truncated":  truncated,
 					},
@@ -306,6 +325,7 @@ func defShell() Definition {
 					"command":    input.Command,
 					"exit_code":  exitCode,
 					"timeout":    timeout,
+					"workdir":    workdir,
 					"raw_length": rawLength,
 					"truncated":  truncated,
 				},
@@ -844,11 +864,17 @@ func defLoadSkill() Definition {
 				return errorResult("load_skill", err), nil
 			}
 			skill, _ := execCtx.Catalog.Load(input.Name)
-			output := fmt.Sprintf("<skill path=%q>\n%s\n</skill>", skill.Path, body)
+			skillDir := filepath.Dir(skill.Path)
+			shellWorkdir := relativeOrAbsolute(execCtx.Workdir, skillDir)
+			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, body)
 			return session.ToolResult{
 				Name:          "load_skill",
 				LLMOutput:     output,
 				DisplayOutput: fmt.Sprintf("Loaded skill: %s", input.Name),
+				Metadata: map[string]any{
+					"path":          skill.Path,
+					"shell_workdir": shellWorkdir,
+				},
 			}, nil
 		},
 	}
@@ -1224,9 +1250,10 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 	if description == "" {
 		description = fmt.Sprintf("Skill command tool from skill %s.", tool.SkillName)
 	}
+	skillDir := filepath.Dir(tool.SkillPath)
 	return Definition{
 		Name:        tool.Name,
-		Description: fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. %s", tool.SkillName, description),
+		Description: fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. This tool executes from the skill directory. %s", tool.SkillName, description),
 		InputSchema: tool.InputSchema,
 		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			args, err := decodeCommandToolArgs(raw)
@@ -1251,8 +1278,13 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				defer cancel()
 			}
 			cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
-			cmd.Dir = execCtx.Workdir
-			cmd.Env = append(filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist), "GO_CLI_AGENT_ARGS_JSON="+string(raw))
+			cmd.Dir = skillDir
+			cmd.Env = append(
+				filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist),
+				"GO_CLI_AGENT_ARGS_JSON="+string(raw),
+				"GO_CLI_AGENT_SKILL_DIR="+skillDir,
+				"GO_CLI_AGENT_SKILL_NAME="+tool.SkillName,
+			)
 			cmd.Stdin = bytes.NewReader(raw)
 			output, err := cmd.CombinedOutput()
 			text, rawLength, truncated := truncateOutput(string(output), 12000)
@@ -1267,6 +1299,9 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 						DisplayOutput: "[Tool execution was interrupted]",
 						IsError:       true,
 						Metadata: map[string]any{
+							"skill_name": tool.SkillName,
+							"skill_path": tool.SkillPath,
+							"workdir":    skillDir,
 							"raw_length": rawLength,
 							"truncated":  truncated,
 						},
@@ -1278,6 +1313,9 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 					DisplayOutput: text,
 					IsError:       true,
 					Metadata: map[string]any{
+						"skill_name": tool.SkillName,
+						"skill_path": tool.SkillPath,
+						"workdir":    skillDir,
 						"raw_length": rawLength,
 						"truncated":  truncated,
 					},
@@ -1288,6 +1326,9 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				LLMOutput:     text,
 				DisplayOutput: text,
 				Metadata: map[string]any{
+					"skill_name": tool.SkillName,
+					"skill_path": tool.SkillPath,
+					"workdir":    skillDir,
 					"raw_length": rawLength,
 					"truncated":  truncated,
 				},

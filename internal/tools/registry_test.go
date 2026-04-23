@@ -243,6 +243,61 @@ func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	}
 }
 
+func TestShellToolSupportsRelativeWorkdirOverride(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	skillDir := filepath.Join(workdir, "skills", "bundle")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+
+	result, err := registry.Execute(context.Background(), "shell", execCtx, json.RawMessage(`{
+		"command":"pwd",
+		"workdir":"skills/bundle"
+	}`))
+	if err != nil {
+		t.Fatalf("execute shell: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got %#v", result)
+	}
+	if result.Metadata["workdir"] != skillDir {
+		t.Fatalf("expected shell metadata workdir %q, got %#v", skillDir, result.Metadata)
+	}
+	if !strings.Contains(result.DisplayOutput, skillDir) {
+		t.Fatalf("expected pwd output to include %q, got %q", skillDir, result.DisplayOutput)
+	}
+}
+
 func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -863,5 +918,94 @@ func TestSkillCommandToolExecutesWithValidRequiredPayload(t *testing.T) {
 	}
 	if !strings.Contains(result.DisplayOutput, `"payload": {`) || !strings.Contains(result.DisplayOutput, `"ok": true`) {
 		t.Fatalf("expected pretty-printed payload, got %q", result.DisplayOutput)
+	}
+}
+
+func TestSkillCommandToolExecutesFromSkillDirectory(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "pwd.sh"), []byte("#!/usr/bin/env bash\npwd\n"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "pwd.yaml"), []byte("name: skill_pwd\ndescription: Print skill cwd\ncommand: [\"bash\", \"scripts/pwd.sh\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "skill_pwd", ExecContext{
+		Workdir: root,
+		Config:  cfg,
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected skill command to succeed, got %#v", result)
+	}
+	if result.Metadata["workdir"] != skillDir {
+		t.Fatalf("expected skill command metadata workdir %q, got %#v", skillDir, result.Metadata)
+	}
+	if !strings.Contains(result.DisplayOutput, skillDir) {
+		t.Fatalf("expected skill command output to include %q, got %q", skillDir, result.DisplayOutput)
+	}
+}
+
+func TestLoadSkillIncludesShellWorkdirHint(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nRun `bash scripts/demo.sh` from the skill root.\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "load_skill", ExecContext{
+		Workdir: root,
+		Config:  cfg,
+		Catalog: catalog,
+	}, json.RawMessage(`{"name":"helpers"}`))
+	if err != nil {
+		t.Fatalf("execute load_skill: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected load_skill to succeed, got %#v", result)
+	}
+	if result.Metadata["shell_workdir"] != "skills/helpers" {
+		t.Fatalf("expected shell workdir hint, got %#v", result.Metadata)
+	}
+	for _, needle := range []string{
+		`shell_workdir="skills/helpers"`,
+		"`workdir=\"skills/helpers\"`",
+	} {
+		if !strings.Contains(result.LLMOutput, needle) {
+			t.Fatalf("expected load_skill output to contain %q, got %q", needle, result.LLMOutput)
+		}
 	}
 }

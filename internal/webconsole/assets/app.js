@@ -1333,9 +1333,7 @@ function renderMessage(message) {
   const visualRole = role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
   const actor = actorNameForMessage(message);
   const icon = iconForRole(role);
-  const textHTML = message.text
-    ? `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`
-    : '';
+  const textHTML = message.text ? renderMessageText(message) : '';
   const toolCallHTML = maybeArray(message.tool_calls).length
     ? `<div class="tool-cluster">${maybeArray(message.tool_calls).map((call) => renderToolCall(call)).join('')}</div>`
     : '';
@@ -1361,6 +1359,13 @@ function renderMessage(message) {
       </div>
     </article>
   `;
+}
+
+function renderMessageText(message) {
+  if (message.role === 'user') {
+    return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
+  }
+  return `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`;
 }
 
 function renderMessageMetaChips(message) {
