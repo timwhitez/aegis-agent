@@ -618,6 +618,80 @@ func TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall(t *tes
 	}
 }
 
+func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	writeEvidenceFile(t, meta.Workdir, "visible.txt", "visible\n")
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Keep checking the same glob output until you finish.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_2", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_3", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_4", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got status=%s last_error=%q", result.Status, result.LastError)
+	}
+
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	found := false
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		for _, toolResult := range msg.ToolResults {
+			if toolResult.Name != "glob" {
+				continue
+			}
+			artifactPath, _ := toolResult.Metadata["ephemeral_artifact"].(string)
+			if artifactPath == "" {
+				continue
+			}
+			found = true
+			if !strings.Contains(toolResult.LLMOutput, "not readable via read_file") {
+				t.Fatalf("expected explicit read_file warning, got %q", toolResult.LLMOutput)
+			}
+			if !strings.Contains(toolResult.LLMOutput, "reports/validation.txt") {
+				t.Fatalf("expected workspace redirect guidance, got %q", toolResult.LLMOutput)
+			}
+			if strings.Contains(toolResult.LLMOutput, "use read_file to review if needed") {
+				t.Fatalf("expected old misleading guidance to be removed, got %q", toolResult.LLMOutput)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected ephemeral artifact guidance to be recorded")
+	}
+}
+
 func TestEngineAppendsAuditEvidenceHarnessReminderBeforeProviderCall(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	registryPath := filepath.Join(meta.Workdir, "internal", "tools", "registry.go")

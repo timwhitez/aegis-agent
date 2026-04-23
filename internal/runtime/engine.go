@@ -406,7 +406,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 							if err := os.MkdirAll(filepath.Dir(artifactPath), 0755); err == nil {
 								if err := os.WriteFile(artifactPath, []byte(toolResult.LLMOutput), 0644); err == nil {
 									toolResult.LLMOutput = fmt.Sprintf(
-										"[Output saved to %s; use read_file to review if needed]",
+										"[Output saved to %s; this internal artifact is not readable via read_file. If you need to inspect it later, rerun the command and redirect output to a normal workspace file such as reports/validation.txt.]",
 										artifactPath,
 									)
 									if toolResult.Metadata == nil {
