@@ -531,6 +531,130 @@ function setupEventListeners() {
     event.target.value = '';
   });
 
+  document.addEventListener('click', async (event) => {
+    const historyPageButton = event.target.closest('[data-history-page]');
+    if (historyPageButton) {
+      const direction = historyPageButton.getAttribute('data-history-page');
+      if (direction === 'prev') {
+        await fetchHistory(Math.max(1, state.historyPage - 1));
+      } else if (direction === 'next') {
+        const nextPage = state.historyData?.total_pages
+          ? Math.min(state.historyData.total_pages, state.historyPage + 1)
+          : state.historyPage + 1;
+        await fetchHistory(nextPage);
+      }
+      return;
+    }
+
+    const clearHistoryButton = event.target.closest('[data-history-clear]');
+    if (clearHistoryButton) {
+      await clearHistory();
+      return;
+    }
+
+    const viewShortcut = event.target.closest('[data-view-shortcut]');
+    if (viewShortcut) {
+      switchView(viewShortcut.getAttribute('data-view-shortcut'));
+      return;
+    }
+
+    const deleteHistoryButton = event.target.closest('[data-delete-session]');
+    if (deleteHistoryButton) {
+      const sessionID = deleteHistoryButton.getAttribute('data-delete-session');
+      if (sessionID) {
+        await deleteHistorySession(sessionID);
+      }
+      return;
+    }
+
+    const openSessionButton = event.target.closest('[data-open-session]');
+    if (openSessionButton) {
+      const sessionID = openSessionButton.getAttribute('data-open-session');
+      if (sessionID) {
+        await openSession(sessionID, { switchToChat: true });
+      }
+      return;
+    }
+
+    const openParentButton = event.target.closest('[data-open-parent-session]');
+    if (openParentButton) {
+      const parentSessionID = openParentButton.getAttribute('data-open-parent-session');
+      if (parentSessionID) {
+        await openSession(parentSessionID, { switchToChat: true });
+      }
+      return;
+    }
+
+    const inspectorTab = event.target.closest('[data-inspector-tab], [data-focus-inspector-tab]');
+    if (inspectorTab) {
+      state.inspectorTab = inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks';
+      renderCurrentSession();
+      return;
+    }
+
+    const queueJobButton = event.target.closest('[data-open-job]');
+    if (queueJobButton) {
+      state.selectedQueueJobId = queueJobButton.getAttribute('data-open-job') || '';
+      switchView('queue');
+      return;
+    }
+
+    const queueRefresh = event.target.closest('[data-queue-refresh]');
+    if (queueRefresh) {
+      await fetchQueue();
+      return;
+    }
+
+    const continueBtn = event.target.closest('[data-continue-session]');
+    if (continueBtn) {
+      const sessionID = continueBtn.getAttribute('data-continue-session');
+      if (sessionID) {
+        continueBtn.disabled = true;
+        try {
+          await requestContinueSession(sessionID);
+        } finally {
+          if (document.body.contains(continueBtn)) {
+            continueBtn.disabled = false;
+          }
+        }
+      }
+      return;
+    }
+
+    const skillActionBtn = event.target.closest('[data-skill-action]');
+    if (skillActionBtn) {
+      const id = skillActionBtn.getAttribute('data-skill-action');
+      const isInstalled = skillActionBtn.getAttribute('data-skill-installed') === '1';
+      handleSkillAction(id, isInstalled, skillActionBtn);
+      return;
+    }
+
+  });
+
+  document.addEventListener('change', async (event) => {
+    if (!event.target || event.target.id !== 'skill-upload') {
+      return;
+    }
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      await requestFormJSON('/api/skills/upload', formData, {
+        method: 'POST',
+      });
+      showToast('Skill uploaded and extracted successfully.', 'success');
+      if (state.currentView === 'skills') {
+        await fetchSkills();
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to upload skill zip.', 'error');
+    }
+    event.target.value = '';
+  });
+
   document.addEventListener('keydown', (event) => {
     const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
     
@@ -2741,9 +2865,69 @@ function renderQueueView() {
         <div class="panel-card-body">${selected ? renderQueueDetail(selected) : '<div class="empty-panel">Select a queue job to inspect detail.</div>'}</div>
       </section>
     </div>
+    <section class="panel-card queue-submit-panel">
+      <div class="panel-card-header"><h3 class="view-title compact-title">Submit New Job</h3></div>
+      <div class="panel-card-body">
+        <div class="settings-form">
+          <div class="field">
+            <label class="field-label">Prompt</label>
+            <textarea id="queue-prompt-input" class="settings-input" placeholder="Task description..." rows="2"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label">Parent Session ID (optional)</label>
+            <input id="queue-parent-input" class="settings-input" type="text" placeholder="Session ID to link as child...">
+          </div>
+          <div class="field">
+            <label class="field-label">Agent Role (optional)</label>
+            <input id="queue-agent-input" class="settings-input" type="text" placeholder="e.g. planner, coder...">
+          </div>
+          <button id="queue-submit-btn" class="skill-btn install queue-submit-btn">Submit Job</button>
+        </div>
+      </div>
+    </section>
   `;
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: container });
+  }
+
+  const submitBtn = document.getElementById('queue-submit-btn');
+  if (submitBtn) {
+    submitBtn.addEventListener('click', async () => {
+      const promptInput = document.getElementById('queue-prompt-input');
+      const parentInput = document.getElementById('queue-parent-input');
+      const agentInput = document.getElementById('queue-agent-input');
+      const prompt = promptInput.value.trim();
+      
+      if (!prompt) {
+        showToast('Prompt is required to submit a job.', 'error');
+        return;
+      }
+      
+      submitBtn.disabled = true;
+      submitBtn.innerText = 'Submitting...';
+      
+      try {
+        await requestJSON('/api/queue/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: prompt,
+            parent_session_id: parentInput.value.trim(),
+            agent_role: agentInput.value.trim()
+          })
+        });
+        showToast('Job submitted successfully.', 'success');
+        promptInput.value = '';
+        await fetchQueue();
+      } catch (err) {
+        showToast(err.message || 'Failed to submit job.', 'error');
+      } finally {
+        if (document.body.contains(submitBtn)) {
+          submitBtn.disabled = false;
+          submitBtn.innerText = 'Submit Job';
+        }
+      }
+    });
   }
 }
 
