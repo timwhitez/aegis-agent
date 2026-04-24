@@ -136,9 +136,26 @@ start_background() {
 		cmd+=(-config "$CONFIG_PATH")
 	fi
 	: >"$LOG_FILE"
-	nohup "${cmd[@]}" >>"$LOG_FILE" 2>&1 < /dev/null &
-	local pid=$!
-	printf '%s\n' "$pid" >"$PID_FILE"
+	if command -v setsid >/dev/null 2>&1; then
+		setsid bash -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' bash "$PID_FILE" "${cmd[@]}" >>"$LOG_FILE" 2>&1 < /dev/null &
+	else
+		nohup "${cmd[@]}" >>"$LOG_FILE" 2>&1 < /dev/null &
+		local pid=$!
+		printf '%s\n' "$pid" >"$PID_FILE"
+	fi
+
+	local pid
+	for _ in {1..20}; do
+		if [[ -s "$PID_FILE" ]]; then
+			pid="$(<"$PID_FILE")"
+			break
+		fi
+		sleep 0.05
+	done
+	if [[ -z "${pid:-}" ]]; then
+		echo "webconsole failed to write pid file" >&2
+		exit 1
+	fi
 
 	for _ in {1..40}; do
 		if ! kill -0 "$pid" 2>/dev/null; then

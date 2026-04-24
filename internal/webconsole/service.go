@@ -284,10 +284,10 @@ func (s *Service) meta() MetaResponse {
 		})
 	}
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Name < providers[j].Name })
-	cwd, _ := os.Getwd()
+	workspaceRoot, _ := currentServerWorkspaceRoot()
 	return MetaResponse{
 		SessionRoot:              s.store.Root(),
-		WorkspaceRoot:            cwd,
+		WorkspaceRoot:            workspaceRoot,
 		WorkspaceSwitchSupported: false,
 		DefaultMode:              s.cfg.Runtime.Isolation.DefaultMode,
 		QueuePollMS:              s.cfg.Runtime.Queue.PollIntervalMS,
@@ -709,10 +709,23 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		IsolationRoot:  req.IsolationRoot,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		status := http.StatusInternalServerError
+		if isClientStartError(err) {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func isClientStartError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "unsupported agent role") ||
+		strings.Contains(message, "isolation target must not be inside source workdir")
 }
 
 func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error) {
@@ -1159,8 +1172,7 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
-	cwd, _ := os.Getwd()
-	root, err := tools.ResolveWorkspacePath(cwd, ".")
+	root, err := currentServerWorkspaceRoot()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1197,8 +1209,12 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("path is required"))
 		return
 	}
-	cwd, _ := os.Getwd()
-	fullPath, err := tools.ResolveWorkspacePath(cwd, path)
+	root, err := currentServerWorkspaceRoot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	fullPath, err := tools.ResolveWorkspacePath(root, path)
 	if err != nil {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
@@ -1209,6 +1225,18 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": string(content)})
+}
+
+func currentServerWorkspaceRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(cwd, "workspace")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return tools.ResolveWorkspacePath(root, ".")
 }
 
 func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {

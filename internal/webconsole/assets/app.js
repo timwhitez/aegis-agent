@@ -743,9 +743,7 @@ async function sendMessage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: text,
-          agent_name: 'core',
-          agent_role: 'assistant'
+          prompt: text
         })
       });
       adoptSession(resp.session_id, true);
@@ -2790,7 +2788,12 @@ function renderQueueView() {
           </div>
           <div class="field">
             <label class="field-label">Agent Role (optional)</label>
-            <input id="queue-agent-input" class="settings-input" type="text" placeholder="e.g. planner, coder...">
+            <select id="queue-agent-input" class="settings-input">
+              <option value="">Auto / none</option>
+              <option value="planner">planner</option>
+              <option value="generator">generator</option>
+              <option value="evaluator">evaluator</option>
+            </select>
           </div>
           <button id="queue-submit-btn" class="skill-btn install queue-submit-btn">Submit Job</button>
         </div>

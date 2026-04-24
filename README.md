@@ -247,7 +247,7 @@ providers:
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
 ```
 
-当前 Web 控制台里的 Workspace 面板只浏览服务进程当前 `cwd` 下的文件；它还不是一个可切换 workspace root 的文件管理器。
+当前 Web 控制台里的 Workspace 面板默认只浏览服务进程当前 `cwd` 下的 `workspace/` 子目录；它还不是一个可切换 workspace root 的文件管理器。
 
 默认 `go-cli-agent` 帮助文本只展示 core v1 命令；只有显式进入 `experimental` 子树时，才展示这些扩展入口。
 

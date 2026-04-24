@@ -114,9 +114,37 @@ func TestServiceStartSessionReturnsSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load messages: %v", err)
 	}
+	meta, err := svc.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if meta.AgentRole != "" {
+		t.Fatalf("expected default web start to leave agent role empty, got %#v", meta.AgentRole)
+	}
 	if len(messages) == 0 || messages[0].Role != "user" {
 		t.Fatalf("expected user message to be persisted, got %#v", messages)
 	}
+}
+
+func TestServiceStartSessionRejectsUnsupportedAgentRole(t *testing.T) {
+	server := newFinishServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt":     "Write a short completion summary and call finish.",
+		"mode":       "exec",
+		"agent_role": "assistant",
+	}, http.StatusBadRequest, nil)
 }
 
 func TestServiceStartSessionPersistsAgentIdentity(t *testing.T) {
@@ -1221,6 +1249,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 
 func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
 	previousWD, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -1232,11 +1261,14 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		_ = os.Chdir(previousWD)
 	})
 
-	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "nested"), 0o755); err != nil {
 		t.Fatalf("mkdir nested: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "nested", "hello.txt"), []byte("hello workspace"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "nested", "hello.txt"), []byte("hello workspace"), 0o644); err != nil {
 		t.Fatalf("write nested file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("server cwd file"), 0o644); err != nil {
+		t.Fatalf("write root-only file: %v", err)
 	}
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
 	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
@@ -1257,6 +1289,11 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	postGetJSON(t, ts.URL+"/api/files", &tree)
 	if len(tree) == 0 {
 		t.Fatal("expected file tree entries")
+	}
+	for _, item := range tree {
+		if item["name"] == "root-only.txt" {
+			t.Fatalf("workspace listing leaked server cwd file: %#v", tree)
+		}
 	}
 	if firstType, _ := tree[0]["type"].(string); firstType != "directory" {
 		t.Fatalf("expected directories to sort first, got %#v", tree[0])
@@ -1284,7 +1321,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		t.Fatalf("expected forbidden for escape read, got %d body=%s", resp.StatusCode, string(body))
 	}
 
-	resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape("../"))
+	resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape("../root-only.txt"))
 	if err != nil {
 		t.Fatalf("escape list request: %v", err)
 	}
@@ -1295,8 +1332,9 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	}
 }
 
-func TestServiceMetaReportsCurrentWorkspaceOnly(t *testing.T) {
+func TestServiceMetaReportsDefaultWorkspaceSubdirOnly(t *testing.T) {
 	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
 	previousWD, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -1320,8 +1358,11 @@ func TestServiceMetaReportsCurrentWorkspaceOnly(t *testing.T) {
 
 	var meta MetaResponse
 	postGetJSON(t, ts.URL+"/api/meta", &meta)
-	if meta.WorkspaceRoot != root {
-		t.Fatalf("expected workspace root %q, got %#v", root, meta)
+	if meta.WorkspaceRoot != workspaceRoot {
+		t.Fatalf("expected workspace root %q, got %#v", workspaceRoot, meta)
+	}
+	if info, err := os.Stat(workspaceRoot); err != nil || !info.IsDir() {
+		t.Fatalf("expected workspace root to be created, info=%#v err=%v", info, err)
 	}
 	if meta.WorkspaceSwitchSupported {
 		t.Fatalf("expected workspace switching to be disabled, got %#v", meta)
