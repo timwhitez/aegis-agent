@@ -853,6 +853,35 @@ async function sendMessage() {
     return;
   }
 
+  // Use POST /api/sessions/start for new sessions instead of ws 'chat'
+  if (!hasDurableSession()) {
+    try {
+      const resp = await requestJSON('/api/sessions/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: text,
+          agent_name: 'core',
+          agent_role: 'assistant'
+        })
+      });
+      adoptSession(resp.session_id, true);
+      setGenerating(true, {
+        title: 'Launching session',
+        copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
+        tone: 'live'
+      });
+      queueSessionRefresh(60);
+      queueOverviewRefresh(220);
+    } catch (err) {
+      removeOptimisticMessage(optimisticID);
+      showToast(err.message || 'Failed to start session.', 'error');
+      updateUI();
+      renderCurrentSession();
+    }
+    return;
+  }
+
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     removeOptimisticMessage(optimisticID);
     showToast('The agent connection is offline. Wait for reconnection and try again.', 'error');
@@ -867,7 +896,7 @@ async function sendMessage() {
     sessionId: state.sessionId
   }));
   setGenerating(true, {
-    title: 'Launching session',
+    title: 'Continuing session',
     copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
     tone: 'live'
   });
