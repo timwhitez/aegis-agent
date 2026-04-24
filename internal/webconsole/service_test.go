@@ -208,12 +208,16 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, "theme-toggle") || strings.Contains(indexBody, "Toggle theme") {
 		t.Fatalf("expected dark mode toggle to be removed, got shell body: %s", indexBody)
 	}
-	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "icons.js") {
+	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "utils.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
 	iconsBody := checkBody(server.URL + "/icons.js")
 	if !strings.Contains(iconsBody, "window.lucide") || !strings.Contains(iconsBody, "createIcons") {
 		t.Fatalf("unexpected icons.js body: %s", iconsBody)
+	}
+	utilsBody := checkBody(server.URL + "/utils.js")
+	if !strings.Contains(utilsBody, "safeMarkdown") || !strings.Contains(utilsBody, "escapeHTML") || strings.Contains(utilsBody, "unpkg.com") || strings.Contains(utilsBody, "cdn.jsdelivr.net") {
+		t.Fatalf("unexpected utils.js body: %s", utilsBody)
 	}
 
 	jsBody := checkBody(server.URL + "/app.js")

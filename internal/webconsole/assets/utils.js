@@ -1,0 +1,184 @@
+function maybeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeText(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function safeMarkdown(text) {
+  const source = String(text || '').replace(/\r\n/g, '\n');
+  const lines = source.split('\n');
+  const blocks = [];
+  let inCode = false;
+  let codeLines = [];
+  let listLines = [];
+  const flushList = () => {
+    if (!listLines.length) return;
+    blocks.push(`<ul>${listLines.map((line) => `<li>${inlineMarkdown(line)}</li>`).join('')}</ul>`);
+    listLines = [];
+  };
+  const flushCode = () => {
+    blocks.push(`<pre><code>${escapeHTML(codeLines.join('\n'))}</code></pre>`);
+    codeLines = [];
+  };
+  lines.forEach((line) => {
+    if (line.trim().startsWith('```')) {
+      if (inCode) {
+        flushCode();
+      } else {
+        flushList();
+      }
+      inCode = !inCode;
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      listLines.push(line.replace(/^\s*[-*]\s+/, ''));
+      return;
+    }
+    flushList();
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      const level = heading[1].length;
+      blocks.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      return;
+    }
+    blocks.push(`<p>${inlineMarkdown(trimmed)}</p>`);
+  });
+  if (inCode) {
+    flushCode();
+  }
+  flushList();
+  return blocks.join('') || '<p></p>';
+}
+
+function inlineMarkdown(value) {
+  let html = escapeHTML(value);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+    const safeHref = sanitizeHref(href);
+    if (!safeHref) {
+      return label;
+    }
+    return `<a href="${escapeAttr(safeHref)}" target="_blank" rel="noreferrer">${label}</a>`;
+  });
+  return html;
+}
+
+function sanitizeHref(value) {
+  const href = String(value || '').trim();
+  if (!href) return '';
+  if (/^(https?:|mailto:)/i.test(href)) return href;
+  if (/^[./#][A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]*$/.test(href)) return href;
+  return '';
+}
+
+function escapeHTML(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function escapeAttr(value) {
+  return escapeHTML(value);
+}
+
+function shortId(value) {
+  const text = String(value || '');
+  if (!text) {
+    return 'n/a';
+  }
+  if (text.length <= 14) {
+    return text;
+  }
+  return `${text.slice(0, 6)}…${text.slice(-4)}`;
+}
+
+function truncateText(value, limit = 160) {
+  const text = String(value || '').trim();
+  if (text.length <= limit) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(limit - 1, 0))}…`;
+}
+
+function prettyJSON(value) {
+  if (value === undefined || value === null || value === '') {
+    return '{}';
+  }
+  try {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return '{}';
+      }
+      return JSON.stringify(JSON.parse(trimmed), null, 2);
+    }
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function parseMaybeJSON(value) {
+  if (typeof value !== 'string') {
+    return value && typeof value === 'object' ? value : null;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function metadataValue(value) {
+  if (value === undefined || value === null) {
+    return 'null';
+  }
+  if (typeof value === 'object') {
+    return truncateText(prettyJSON(value), 80);
+  }
+  return truncateText(String(value), 80);
+}
+
+function shortenPath(path) {
+  const text = String(path || '');
+  if (text.length <= 42) {
+    return text;
+  }
+  return `…${text.slice(-41)}`;
+}
+
+function formatTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value || '');
+  }
+  return date.toLocaleString();
+}
+
+function formatClock(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value || '');
+  }
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
