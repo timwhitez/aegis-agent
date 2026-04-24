@@ -66,6 +66,17 @@ function inlineMarkdown(value) {
   let html = escapeHTML(value);
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  
+  // Replace images first so they aren't matched as regular links
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
+    const safeSrc = sanitizeHref(src);
+    if (!safeSrc) {
+      return `![${alt}](${src})`;
+    }
+    return `<img src="${escapeAttr(safeSrc)}" alt="${escapeAttr(alt)}" style="max-width: 100%; height: auto;" />`;
+  });
+
+  // Replace links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
     const safeHref = sanitizeHref(href);
     if (!safeHref) {

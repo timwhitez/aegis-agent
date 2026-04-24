@@ -377,11 +377,13 @@ function setupEventListeners() {
 
   let lastScrollHeight = 0;
   nodes.chatInput.addEventListener('input', function onInput() {
+    this.style.height = 'auto';
     if (this.scrollHeight !== lastScrollHeight) {
-      this.style.height = 'auto';
       this.style.height = `${this.scrollHeight}px`;
       lastScrollHeight = this.scrollHeight;
       updateDynamicLayoutMetrics();
+    } else {
+      this.style.height = `${lastScrollHeight}px`;
     }
 
     // Only update UI if we really need to (e.g. for empty vs non-empty state)
@@ -531,6 +533,16 @@ function setupEventListeners() {
 
   document.addEventListener('keydown', (event) => {
     const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
+    
+    // Always handle Escape even if we are in an input field (to stop generating)
+    if (event.key === 'Escape' || event.key === 'Esc') {
+      if (state.isGenerating && hasDurableSession()) {
+        event.preventDefault();
+        requestStop();
+      }
+      return;
+    }
+    
     if (isInput) {
       return;
     }
@@ -2199,7 +2211,18 @@ async function openSession(sessionID, options = {}) {
   if (options.switchToChat !== false) {
     switchView('chat');
   }
-  await refreshCurrentSession();
+  try {
+    await refreshCurrentSession();
+  } catch (err) {
+    console.error('Failed to open session:', err);
+    state.liveActivity = {
+      title: 'Error loading session',
+      copy: err.message || 'The session data could not be loaded.',
+      tone: 'danger'
+    };
+    showToast('Error loading session.', 'error');
+    renderCurrentSession();
+  }
 }
 
 function collectRecentToolEntries(messages) {
@@ -3094,6 +3117,7 @@ async function renderSettings() {
       baseURLInput.value = provider.base_url || '';
       modelInput.value = provider.model || '';
       apiKeyInput.value = provider.has_key ? '••••••••••••••••' : '';
+      apiKeyInput.dataset.originalHasKey = provider.has_key ? 'true' : 'false';
     };
 
     providerSelect.addEventListener('change', syncProviderFields);
@@ -3125,7 +3149,7 @@ async function renderSettings() {
             provider: providerSelect.value,
             base_url: baseURLInput.value,
             model: modelInput.value,
-            api_key: apiKeyInput.value
+            api_key: apiKeyInput.value === '••••••••••••••••' && apiKeyInput.dataset.originalHasKey === 'true' ? '' : apiKeyInput.value
           })
         });
         showToast('Settings saved.', 'success');
