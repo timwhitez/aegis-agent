@@ -63,27 +63,48 @@ function safeMarkdown(text) {
 }
 
 function inlineMarkdown(value) {
-  let html = escapeHTML(value);
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  
-  // Replace images first so they aren't matched as regular links
-  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
+  // Process markdown tokens on the raw value FIRST, then escape the remaining text.
+  // This avoids double-escaping and ensures sanitizeHref receives unescaped URLs.
+  const tokens = [];
+  let remaining = String(value || '');
+
+  // Extract images ![alt](src) before links so they aren't matched as [text](href)
+  remaining = remaining.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
+    const placeholder = `\x01T${tokens.length}\x01`;
     const safeSrc = sanitizeHref(src);
     if (!safeSrc) {
-      return `![${alt}](${src})`;
+      tokens.push(`![${escapeHTML(alt)}](${escapeHTML(src)})`);
+    } else {
+      tokens.push(`<img src="${escapeAttr(safeSrc)}" alt="${escapeAttr(alt)}" style="max-width: 100%; height: auto;" />`);
     }
-    return `<img src="${escapeAttr(safeSrc)}" alt="${escapeAttr(alt)}" style="max-width: 100%; height: auto;" />`;
+    return placeholder;
   });
 
-  // Replace links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+  // Extract links [label](href)
+  remaining = remaining.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, href) => {
+    const placeholder = `\x01T${tokens.length}\x01`;
     const safeHref = sanitizeHref(href);
     if (!safeHref) {
-      return label;
+      tokens.push(escapeHTML(label));
+    } else {
+      tokens.push(`<a href="${escapeAttr(safeHref)}" target="_blank" rel="noreferrer">${escapeHTML(label)}</a>`);
     }
-    return `<a href="${escapeAttr(safeHref)}" target="_blank" rel="noreferrer">${label}</a>`;
+    return placeholder;
   });
+
+  // Now escape the remaining (non-markdown) text
+  let html = escapeHTML(remaining);
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Restore tokens (\x01 is not touched by escapeHTML, and the index is deterministic)
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const placeholderEscaped = `\x01T${i}\x01`;
+    html = html.split(placeholderEscaped).join(tokens[i]);
+  }
+
   return html;
 }
 

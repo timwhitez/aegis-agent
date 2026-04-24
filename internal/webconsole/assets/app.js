@@ -102,7 +102,7 @@ const nodes = {
   navItems: document.querySelectorAll('.nav-item[data-view]')
 };
 
-function init() {
+async function init() {
   restoreUIState();
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons();
@@ -129,9 +129,16 @@ function init() {
   refreshMeta().catch(() => {});
   refreshOverview();
   if (hasDurableSession()) {
-    refreshCurrentSession().catch((err) => {
+    try {
+      await refreshCurrentSession();
+    } catch (err) {
       console.error('session restore error', err);
-    });
+      state.liveActivity = {
+        title: 'Error restoring session',
+        copy: err.message || 'The session data could not be loaded.',
+        tone: 'danger'
+      };
+    }
   }
   switchView(state.currentView, { skipPersist: true });
   renderCurrentSession();
@@ -405,130 +412,6 @@ function setupEventListeners() {
     }, 16);
 
     updateDynamicLayoutMetrics();
-  });
-
-  document.addEventListener('click', async (event) => {
-    const historyPageButton = event.target.closest('[data-history-page]');
-    if (historyPageButton) {
-      const direction = historyPageButton.getAttribute('data-history-page');
-      if (direction === 'prev') {
-        await fetchHistory(Math.max(1, state.historyPage - 1));
-      } else if (direction === 'next') {
-        const nextPage = state.historyData?.total_pages
-          ? Math.min(state.historyData.total_pages, state.historyPage + 1)
-          : state.historyPage + 1;
-        await fetchHistory(nextPage);
-      }
-      return;
-    }
-
-    const clearHistoryButton = event.target.closest('[data-history-clear]');
-    if (clearHistoryButton) {
-      await clearHistory();
-      return;
-    }
-
-    const viewShortcut = event.target.closest('[data-view-shortcut]');
-    if (viewShortcut) {
-      switchView(viewShortcut.getAttribute('data-view-shortcut'));
-      return;
-    }
-
-    const deleteHistoryButton = event.target.closest('[data-delete-session]');
-    if (deleteHistoryButton) {
-      const sessionID = deleteHistoryButton.getAttribute('data-delete-session');
-      if (sessionID) {
-        await deleteHistorySession(sessionID);
-      }
-      return;
-    }
-
-    const openSessionButton = event.target.closest('[data-open-session]');
-    if (openSessionButton) {
-      const sessionID = openSessionButton.getAttribute('data-open-session');
-      if (sessionID) {
-        await openSession(sessionID, { switchToChat: true });
-      }
-      return;
-    }
-
-    const openParentButton = event.target.closest('[data-open-parent-session]');
-    if (openParentButton) {
-      const parentSessionID = openParentButton.getAttribute('data-open-parent-session');
-      if (parentSessionID) {
-        await openSession(parentSessionID, { switchToChat: true });
-      }
-      return;
-    }
-
-    const inspectorTab = event.target.closest('[data-inspector-tab], [data-focus-inspector-tab]');
-    if (inspectorTab) {
-      state.inspectorTab = inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks';
-      renderCurrentSession();
-      return;
-    }
-
-    const queueJobButton = event.target.closest('[data-open-job]');
-    if (queueJobButton) {
-      state.selectedQueueJobId = queueJobButton.getAttribute('data-open-job') || '';
-      switchView('queue');
-      return;
-    }
-
-    const queueRefresh = event.target.closest('[data-queue-refresh]');
-    if (queueRefresh) {
-      await fetchQueue();
-      return;
-    }
-
-    const continueBtn = event.target.closest('[data-continue-session]');
-    if (continueBtn) {
-      const sessionID = continueBtn.getAttribute('data-continue-session');
-      if (sessionID) {
-        continueBtn.disabled = true;
-        try {
-          await requestContinueSession(sessionID);
-        } finally {
-          if (document.body.contains(continueBtn)) {
-            continueBtn.disabled = false;
-          }
-        }
-      }
-      return;
-    }
-
-    const skillActionBtn = event.target.closest('[data-skill-action]');
-    if (skillActionBtn) {
-      const id = skillActionBtn.getAttribute('data-skill-action');
-      const isInstalled = skillActionBtn.getAttribute('data-skill-installed') === '1';
-      handleSkillAction(id, isInstalled, skillActionBtn);
-      return;
-    }
-
-  });
-
-  document.addEventListener('change', async (event) => {
-    if (!event.target || event.target.id !== 'skill-upload') {
-      return;
-    }
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-    const formData = new FormData();
-    formData.append('file', file);
-    try {
-      await requestFormJSON('/api/skills/upload', formData, {
-        method: 'POST',
-      });
-      showToast('Skill uploaded and extracted successfully.', 'success');
-      if (state.currentView === 'skills') {
-        await fetchSkills();
-      }
-    } catch (err) {
-      showToast(err.message || 'Failed to upload skill zip.', 'error');
-    }
-    event.target.value = '';
   });
 
   document.addEventListener('click', async (event) => {
@@ -1282,6 +1165,7 @@ async function refreshCurrentSession() {
 
 function renderShortcutHelp() {
   let overlay = document.getElementById('shortcut-help-overlay');
+  const isNew = !overlay;
 
   if (!state.showHelp) {
     if (overlay) {
@@ -1290,11 +1174,23 @@ function renderShortcutHelp() {
     return;
   }
 
-  if (!overlay) {
+  if (isNew) {
     overlay = document.createElement('div');
     overlay.id = 'shortcut-help-overlay';
     overlay.className = 'shortcut-help-overlay';
     document.body.appendChild(overlay);
+    // Bind delegated listeners once — they survive innerHTML changes on children
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target.classList.contains('shortcut-close-btn')) {
+        state.showHelp = false;
+        renderShortcutHelp();
+      }
+    });
+    overlay.addEventListener('click', (e) => {
+      if (e.target.closest('.shortcut-help-panel')) {
+        e.stopPropagation();
+      }
+    });
   }
 
   const shortcuts = [
@@ -1322,20 +1218,6 @@ function renderShortcutHelp() {
       <button class="shortcut-close-btn">Close</button>
     </div>
   `;
-
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay || e.target.classList.contains('shortcut-close-btn')) {
-      state.showHelp = false;
-      renderShortcutHelp();
-    }
-  });
-
-  const panel = overlay.querySelector('.shortcut-help-panel');
-  if (panel) {
-    panel.addEventListener('click', (e) => {
-      e.stopPropagation();
-    });
-  }
 }
 
 function renderCurrentSession() {
@@ -2685,7 +2567,7 @@ function shouldRefreshAfterEvent(type) {
 }
 
 function needsOverviewRefresh(type) {
-  return type.startsWith('session.child') || type.startsWith('queue.');
+  return typeof type === 'string' && (type.startsWith('session.child') || type.startsWith('queue.'));
 }
 
 function phaseHeadline(phase) {
