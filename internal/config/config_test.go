@@ -27,8 +27,14 @@ func TestNormalizeConfigSetsProviderRetryDefaults(t *testing.T) {
 	normalizeConfig(cfg, "/tmp/work")
 
 	provider := cfg.Providers["openai-compatible"]
-	if provider.TimeoutSec != 120 {
-		t.Fatalf("expected timeout default 120, got %d", provider.TimeoutSec)
+	if provider.TimeoutSec != 300 {
+		t.Fatalf("expected timeout default 300, got %d", provider.TimeoutSec)
+	}
+	if provider.RequestTimeoutSec != 300 {
+		t.Fatalf("expected request_timeout_sec default 300, got %d", provider.RequestTimeoutSec)
+	}
+	if provider.StreamIdleTimeoutMS != 300000 {
+		t.Fatalf("expected stream_idle_timeout_ms default 300000, got %d", provider.StreamIdleTimeoutMS)
 	}
 	if provider.WireAPI != "responses" {
 		t.Fatalf("expected wire_api responses, got %q", provider.WireAPI)

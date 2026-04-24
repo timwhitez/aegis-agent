@@ -853,13 +853,15 @@ func renderDoctorReport(stdout io.Writer, report doctorReport, jsonMode, failed 
 
 func doctorProviderConfigDetails(providerName string, providerCfg config.Provider) map[string]any {
 	details := map[string]any{
-		"provider":     providerName,
-		"model":        providerCfg.Model,
-		"base_url":     providerCfg.BaseURL,
-		"api_key_env":  providerCfg.APIKeyEnv,
-		"wire_api":     providerCfg.WireAPI,
-		"timeout_sec":  providerCfg.TimeoutSec,
-		"retry_policy": doctorRetryPolicyDetails(providerCfg),
+		"provider":               providerName,
+		"model":                  providerCfg.Model,
+		"base_url":               providerCfg.BaseURL,
+		"api_key_env":            providerCfg.APIKeyEnv,
+		"wire_api":               providerCfg.WireAPI,
+		"timeout_sec":            providerCfg.TimeoutSec,
+		"request_timeout_sec":    doctorRequestTimeoutSec(providerCfg),
+		"stream_idle_timeout_ms": doctorStreamIdleTimeoutMS(providerCfg),
+		"retry_policy":           doctorRetryPolicyDetails(providerCfg),
 	}
 	if isOpenAIResponsesLikeProvider(providerName) {
 		storeValue, storeSource := doctorStoreDetails(providerName, providerCfg.Store)
@@ -870,6 +872,23 @@ func doctorProviderConfigDetails(providerName string, providerCfg config.Provide
 		details["send_metadata_source"] = sendMetadataSource
 	}
 	return details
+}
+
+func doctorRequestTimeoutSec(providerCfg config.Provider) int {
+	if providerCfg.RequestTimeoutSec > 0 {
+		return providerCfg.RequestTimeoutSec
+	}
+	if providerCfg.TimeoutSec > 0 {
+		return providerCfg.TimeoutSec
+	}
+	return 300
+}
+
+func doctorStreamIdleTimeoutMS(providerCfg config.Provider) int {
+	if providerCfg.StreamIdleTimeoutMS > 0 {
+		return providerCfg.StreamIdleTimeoutMS
+	}
+	return 300000
 }
 
 func doctorRetryPolicyDetails(providerCfg config.Provider) map[string]any {

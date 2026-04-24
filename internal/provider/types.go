@@ -91,18 +91,21 @@ type Adapter interface {
 }
 
 type RetryConfig struct {
-	MaxAttempts    int
-	BaseDelay      time.Duration
-	Retry429       bool
-	Retry5xx       bool
-	RetryTransport bool
+	MaxAttempts       int
+	BaseDelay         time.Duration
+	Retry429          bool
+	Retry5xx          bool
+	RetryTransport    bool
+	RequestTimeout    time.Duration
+	StreamIdleTimeout time.Duration
 }
 
 type HTTPError struct {
-	Provider   string
-	Class      string
-	Message    string
-	StatusCode int
+	Provider    string
+	Class       string
+	Message     string
+	StatusCode  int
+	TimeoutKind string
 }
 
 func (e *HTTPError) Error() string {
@@ -121,12 +124,16 @@ func classifyHTTPError(provider string, status int, message string) error {
 	case http.StatusGatewayTimeout, http.StatusRequestTimeout:
 		class = "upstream_timeout"
 	}
-	return &HTTPError{
+	out := &HTTPError{
 		Provider:   provider,
 		Class:      class,
 		Message:    strings.TrimSpace(message),
 		StatusCode: status,
 	}
+	if class == "upstream_timeout" {
+		out.TimeoutKind = "http_timeout_status"
+	}
+	return out
 }
 
 func classifyTransportError(ctx context.Context, provider string, err error) error {
@@ -134,16 +141,29 @@ func classifyTransportError(ctx context.Context, provider string, err error) err
 		return nil
 	}
 	if ctx != nil && ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return &HTTPError{
+				Provider:    provider,
+				Class:       "upstream_timeout",
+				Message:     strings.TrimSpace(ctx.Err().Error()),
+				TimeoutKind: "request_timeout",
+			}
+		}
 		return ctx.Err()
 	}
 	if errors.Is(err, context.Canceled) {
 		return context.Canceled
 	}
 	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		timeoutKind := "transport_timeout"
+		if strings.Contains(strings.ToLower(err.Error()), "awaiting headers") {
+			timeoutKind = "awaiting_headers_timeout"
+		}
 		return &HTTPError{
-			Provider: provider,
-			Class:    "upstream_timeout",
-			Message:  strings.TrimSpace(err.Error()),
+			Provider:    provider,
+			Class:       "upstream_timeout",
+			Message:     strings.TrimSpace(err.Error()),
+			TimeoutKind: timeoutKind,
 		}
 	}
 	var netErr net.Error
@@ -152,11 +172,15 @@ func classifyTransportError(ctx context.Context, provider string, err error) err
 		if netErr.Timeout() {
 			class = "upstream_timeout"
 		}
-		return &HTTPError{
+		out := &HTTPError{
 			Provider: provider,
 			Class:    class,
 			Message:  strings.TrimSpace(err.Error()),
 		}
+		if class == "upstream_timeout" {
+			out.TimeoutKind = "transport_timeout"
+		}
+		return out
 	}
 	return &HTTPError{
 		Provider: provider,

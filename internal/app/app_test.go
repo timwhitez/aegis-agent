@@ -651,6 +651,12 @@ func TestDoctorCommandJSONIncludesEffectiveOpenAICompatibleSettings(t *testing.T
 	if got := providerCheck.Details["send_metadata_source"]; got != "config" {
 		t.Fatalf("expected send_metadata_source=config, got %#v", got)
 	}
+	if got := providerCheck.Details["request_timeout_sec"]; got != float64(240) {
+		t.Fatalf("expected request_timeout_sec=240 from legacy timeout fallback, got %#v", got)
+	}
+	if got := providerCheck.Details["stream_idle_timeout_ms"]; got != float64(300000) {
+		t.Fatalf("expected default stream_idle_timeout_ms=300000, got %#v", got)
+	}
 	retryPolicy, ok := providerCheck.Details["retry_policy"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected retry_policy object, got %#v", providerCheck.Details["retry_policy"])

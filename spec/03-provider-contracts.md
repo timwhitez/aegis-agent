@@ -18,8 +18,8 @@
 - 只统一 runtime 真正需要的最小接口
 - replay、tool 格式、generation 选项、错误分类由 adapter 负责
 - provider 级 transport retry 属于 adapter 责任，不要把重试逻辑散落到 CLI 或 tool 层
-- effective retry policy 需要保留在 session metadata 中，方便后续 validation 直接从 durable session 事实追溯本次运行的 retry 契约
-- continue / resume 重新构造 adapter 时，transport retry 预算必须优先按 session metadata 中的 effective retry policy 恢复，而不是被进程当前配置漂移覆盖
+- effective timeout/retry policy 需要保留在 session metadata 中，方便后续 validation 直接从 durable session 事实追溯本次运行的请求超时、stream idle 超时与 retry 契约
+- continue / resume 重新构造 adapter 时，transport timeout/retry 预算必须优先按 session metadata 中的 effective policy 恢复，而不是被进程当前配置漂移覆盖
 
 ## 2. 统一接口
 
@@ -99,6 +99,7 @@ v1 允许 adapter 采用“单次响应 + 事件回放”的伪流式模式。
 - `completed` 只留给显式完成语义
 - provider 自然结束通常先映射为 `done_candidate`
 - 若 provider 因 `429` / `5xx` / transport timeout 发生有限重试，必须在事件流里留下 `provider.retry` 证据
+- 若 provider 在没有新工具副作用前因 `upstream_timeout` 失败，runtime 可以按有界策略自动续跑，并必须留下 `provider.auto_resume` 证据
 
 ## 4. Replay 规则
 
@@ -314,11 +315,16 @@ adapter 至少要把 provider 错误归类为：
 - `class`
 - `message`
 - `status_code`
+- `timeout_kind`
 
 ## 10. 超时与取消
 
-- 每个 provider 独立 `timeout_sec`
+- 每个 provider 独立 `request_timeout_sec` 与 `stream_idle_timeout_ms`
+- `timeout_sec` 只作为旧配置兼容字段，不能继续作为唯一 provider timeout 模型
+- effective timeout policy 必须写入 session metadata，并在 continue / resume 时恢复
 - 所有请求必须接受 `context.Context`
+- 请求超时、等待响应头超时、stream idle 超时应归类为 `upstream_timeout`，并尽量填充 `timeout_kind`
+- provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，runtime 可按 `runtime.provider_auto_resume.max_attempts` 做有界自动续跑；超过预算后必须正常 failed
 - cancel 后必须尽快返回，不能伪装成普通失败
 
 ## 11. Contract Tests

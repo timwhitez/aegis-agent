@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -406,6 +407,71 @@ func TestOpenAIAdapterRetriesTransportTimeout(t *testing.T) {
 	}
 	if retryClass != "upstream_timeout" {
 		t.Fatalf("expected upstream_timeout retry class, got %q", retryClass)
+	}
+}
+
+func TestJSONClientUsesPerAttemptRequestTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := JSONClient{
+		Client:   server.Client(),
+		BaseURL:  server.URL,
+		Provider: "test-provider",
+		Retry: RetryConfig{
+			MaxAttempts:    1,
+			RequestTimeout: 20 * time.Millisecond,
+		},
+	}
+	var out map[string]any
+	err := client.DoJSON(context.Background(), http.MethodPost, "/", nil, map[string]any{"hello": "world"}, &out, nil)
+	if err == nil {
+		t.Fatal("expected request timeout")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T %v", err, err)
+	}
+	if httpErr.Class != "upstream_timeout" || httpErr.TimeoutKind != "request_timeout" {
+		t.Fatalf("unexpected timeout classification: %#v", httpErr)
+	}
+}
+
+func TestJSONClientClassifiesStreamIdleTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(60 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := JSONClient{
+		Client:   server.Client(),
+		BaseURL:  server.URL,
+		Provider: "test-provider",
+		Retry: RetryConfig{
+			MaxAttempts:       1,
+			StreamIdleTimeout: 20 * time.Millisecond,
+		},
+	}
+	var out map[string]any
+	err := client.DoJSON(context.Background(), http.MethodPost, "/", nil, map[string]any{"hello": "world"}, &out, nil)
+	if err == nil {
+		t.Fatal("expected stream idle timeout")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T %v", err, err)
+	}
+	if httpErr.Class != "upstream_timeout" || httpErr.TimeoutKind != "stream_idle_timeout" {
+		t.Fatalf("unexpected stream timeout classification: %#v", httpErr)
 	}
 }
 

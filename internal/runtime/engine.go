@@ -138,12 +138,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if e.guardrailsYolo() {
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Runtime retrieval, project-memory, and review-artifact guardrails are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
-		view, err := e.compactor.Build(meta.ID, meta.Workdir, state, messages, todo, tasks, e.cfg.Runtime.Compact.InputCharThreshold, e.cfg.Runtime.Compact.KeepRecentToolResults, func(evt events.Event) {
+		view, compactionInputChars, didCompact, err := e.compactor.BuildWithPolicy(meta.ID, meta.Workdir, state, messages, todo, tasks, e.cfg.Runtime.Compact.InputCharThreshold, e.cfg.Runtime.Compact.KeepRecentToolResults, state.LastCompactionInputChars, e.cfg.Runtime.Compact.HysteresisDeltaChars, func(evt events.Event) {
 			_ = e.store.AppendEvent(meta.ID, evt)
 			e.bus.Publish(evt)
 		})
 		if err != nil {
 			return RunResult{}, err
+		}
+		if didCompact {
+			state.LastCompactionInputChars = compactionInputChars
+			if err := e.store.SaveState(meta.ID, state); err != nil {
+				return RunResult{}, err
+			}
 		}
 
 		state.Phase = "provider_call"
@@ -189,12 +195,31 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					continue
 				}
 			}
+			if e.shouldAutoResumeProviderError(err, state) {
+				state.ProviderAutoResumeCount++
+				state.LastError = err.Error()
+				state.Phase = "provider_call"
+				if err := e.store.SaveState(meta.ID, state); err != nil {
+					return RunResult{}, err
+				}
+				e.emitProviderAutoResume(meta.ID, err, state.ProviderAutoResumeCount)
+				if _, appendErr := e.appendHarnessReminder(meta, "provider_call", providerAutoResumePrompt(err, state.ProviderAutoResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts), "provider_auto_resume"); appendErr != nil {
+					return RunResult{}, appendErr
+				}
+				continue
+			}
 			state.Status = session.StatusFailed
 			state.LastError = err.Error()
 			state.Phase = "provider_call"
 			_ = e.store.SaveState(meta.ID, state)
 			e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"error": err.Error()})
 			return RunResult{SessionID: meta.ID, Status: state.Status, LastError: err.Error()}, WrapProviderError(err)
+		}
+		if state.ProviderAutoResumeCount != 0 {
+			state.ProviderAutoResumeCount = 0
+			if err := e.store.SaveState(meta.ID, state); err != nil {
+				return RunResult{}, err
+			}
 		}
 
 		e.emit(meta.ID, "turn.stopped", "provider_call", providerTurnEventData(result))
@@ -340,6 +365,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					e.control.clearCancel(cancel)
 					annotateExactArtifactTemplateResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateExactArtifactLiteralResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
+					annotateTargetConsistencyResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateReviewArtifactResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 				}
 				toolResult.ToolCallID = call.ID
@@ -544,6 +570,44 @@ func (e *Engine) emit(sessionID, eventType, phase string, data map[string]any) {
 
 func (e *Engine) guardrailsYolo() bool {
 	return strings.EqualFold(strings.TrimSpace(e.cfg.Runtime.GuardrailsMode), "yolo")
+}
+
+func (e *Engine) shouldAutoResumeProviderError(err error, state session.State) bool {
+	if err == nil || !e.cfg.Runtime.ProviderAutoResume.Enabled {
+		return false
+	}
+	maxAttempts := e.cfg.Runtime.ProviderAutoResume.MaxAttempts
+	if maxAttempts <= 0 || state.ProviderAutoResumeCount >= maxAttempts {
+		return false
+	}
+	var httpErr *provider.HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.Class == "upstream_timeout"
+}
+
+func (e *Engine) emitProviderAutoResume(sessionID string, err error, attempt int) {
+	data := map[string]any{
+		"attempt":      attempt,
+		"max_attempts": e.cfg.Runtime.ProviderAutoResume.MaxAttempts,
+		"error":        err.Error(),
+	}
+	var httpErr *provider.HTTPError
+	if errors.As(err, &httpErr) {
+		data["class"] = httpErr.Class
+		if strings.TrimSpace(httpErr.TimeoutKind) != "" {
+			data["timeout_kind"] = httpErr.TimeoutKind
+		}
+		if httpErr.StatusCode > 0 {
+			data["status_code"] = httpErr.StatusCode
+		}
+	}
+	e.emit(sessionID, "provider.auto_resume", "provider_call", data)
+}
+
+func providerAutoResumePrompt(err error, attempt, maxAttempts int) string {
+	return fmt.Sprintf("Harness reminder: the provider request timed out (%s). The runtime is retrying automatically (%d/%d) before failing the session. Continue from the existing durable evidence; do not restart broad exploration just because the provider timed out. If the current task is report finalization, repair the report or call finish with the current evidence.", err.Error(), attempt, maxAttempts)
 }
 
 func (e *Engine) maybeAppendHarnessReminder(meta session.SessionMetadata, messages []session.Message) ([]session.Message, error) {
@@ -839,6 +903,13 @@ func providerRequestPreparedEventData(meta session.SessionMetadata, requestMetad
 			"retry_429":       meta.ProviderOptions.RetryPolicy.Retry429,
 			"retry_5xx":       meta.ProviderOptions.RetryPolicy.Retry5xx,
 			"retry_transport": meta.ProviderOptions.RetryPolicy.RetryTransport,
+		}
+	}
+	if meta.ProviderOptions.TimeoutPolicy != nil {
+		data["timeout_policy"] = map[string]any{
+			"timeout_sec":            meta.ProviderOptions.TimeoutPolicy.TimeoutSec,
+			"request_timeout_sec":    meta.ProviderOptions.TimeoutPolicy.RequestTimeoutSec,
+			"stream_idle_timeout_ms": meta.ProviderOptions.TimeoutPolicy.StreamIdleTimeoutMS,
 		}
 	}
 	return data

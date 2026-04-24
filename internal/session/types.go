@@ -47,17 +47,24 @@ type ProviderRetryPolicy struct {
 	RetryTransport bool `json:"retry_transport,omitempty"`
 }
 
+type ProviderTimeoutPolicy struct {
+	TimeoutSec          int `json:"timeout_sec,omitempty"`
+	RequestTimeoutSec   int `json:"request_timeout_sec,omitempty"`
+	StreamIdleTimeoutMS int `json:"stream_idle_timeout_ms,omitempty"`
+}
+
 type ProviderOptions struct {
-	Temperature     *float64             `json:"temperature,omitempty"`
-	TopP            *float64             `json:"top_p,omitempty"`
-	MaxOutputTokens int                  `json:"max_output_tokens,omitempty"`
-	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
-	TextVerbosity   string               `json:"text_verbosity,omitempty"`
-	ThinkingBudget  int                  `json:"thinking_budget,omitempty"`
-	IncludeThoughts *bool                `json:"include_thoughts,omitempty"`
-	Store           *bool                `json:"store,omitempty"`
-	SendMetadata    *bool                `json:"send_metadata,omitempty"`
-	RetryPolicy     *ProviderRetryPolicy `json:"retry_policy,omitempty"`
+	Temperature     *float64               `json:"temperature,omitempty"`
+	TopP            *float64               `json:"top_p,omitempty"`
+	MaxOutputTokens int                    `json:"max_output_tokens,omitempty"`
+	ReasoningEffort string                 `json:"reasoning_effort,omitempty"`
+	TextVerbosity   string                 `json:"text_verbosity,omitempty"`
+	ThinkingBudget  int                    `json:"thinking_budget,omitempty"`
+	IncludeThoughts *bool                  `json:"include_thoughts,omitempty"`
+	Store           *bool                  `json:"store,omitempty"`
+	SendMetadata    *bool                  `json:"send_metadata,omitempty"`
+	RetryPolicy     *ProviderRetryPolicy   `json:"retry_policy,omitempty"`
+	TimeoutPolicy   *ProviderTimeoutPolicy `json:"timeout_policy,omitempty"`
 }
 
 type SessionMetadata struct {
@@ -81,18 +88,20 @@ type SessionMetadata struct {
 }
 
 type State struct {
-	Status               string   `json:"status"`
-	Phase                string   `json:"phase"`
-	Turn                 int      `json:"turn"`
-	UpdatedAt            string   `json:"updated_at"`
-	CurrentTask          string   `json:"current_task,omitempty"`
-	LastError            string   `json:"last_error,omitempty"`
-	IncompleteReason     string   `json:"incomplete_reason,omitempty"`
-	LastAssistantExcerpt string   `json:"last_assistant_excerpt,omitempty"`
-	PauseReason          string   `json:"pause_reason,omitempty"`
-	PendingSteerCount    int      `json:"pending_steer_count,omitempty"`
-	LoadedSkills         []string `json:"loaded_skills,omitempty"`
-	RalphLoopCount       int      `json:"ralph_loop_count,omitempty"`
+	Status                   string   `json:"status"`
+	Phase                    string   `json:"phase"`
+	Turn                     int      `json:"turn"`
+	UpdatedAt                string   `json:"updated_at"`
+	CurrentTask              string   `json:"current_task,omitempty"`
+	LastError                string   `json:"last_error,omitempty"`
+	IncompleteReason         string   `json:"incomplete_reason,omitempty"`
+	LastAssistantExcerpt     string   `json:"last_assistant_excerpt,omitempty"`
+	PauseReason              string   `json:"pause_reason,omitempty"`
+	PendingSteerCount        int      `json:"pending_steer_count,omitempty"`
+	LoadedSkills             []string `json:"loaded_skills,omitempty"`
+	RalphLoopCount           int      `json:"ralph_loop_count,omitempty"`
+	ProviderAutoResumeCount  int      `json:"provider_auto_resume_count,omitempty"`
+	LastCompactionInputChars int      `json:"last_compaction_input_chars,omitempty"`
 }
 
 type ToolCall struct {

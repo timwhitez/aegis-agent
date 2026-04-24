@@ -334,6 +334,127 @@ func TestBuildSystemPromptWarnsOnRetrievalHeavyTail(t *testing.T) {
 	}
 }
 
+func TestToolGuardBlocksStaleTargetReportEvenInYolo(t *testing.T) {
+	workdir := t.TempDir()
+	steer := session.NewMessage("user", "你已经发散了，原始目标是https://it-infra-dev.bytedance.net/sys/ikvm-net?ikvm-net=%2Fikvm-net%2Fikvm%2Fsim；进行中文报告产出")
+	steer.Meta = map[string]any{"source": "steer", "interrupt": true}
+	messages := []session.Message{
+		session.NewMessage("user", "Audit the target and write reports/assessment-report.md."),
+		steer,
+	}
+
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{
+		"path":"reports/assessment-report.md",
+		"content":"# Assessment\n\n目标: /ikvm-net/ikvm/list\n\n结论: 高风险。"
+	}`), true)
+	if kind != "target_consistency" {
+		t.Fatalf("expected target_consistency guard, got kind=%q text=%q", kind, text)
+	}
+	if !strings.Contains(text, "/ikvm-net/ikvm/sim") {
+		t.Fatalf("expected latest target in guard text, got %q", text)
+	}
+
+	kind, text = toolGuard(workdir, messages, "write_file", json.RawMessage(`{
+		"path":"reports/assessment-report.md",
+		"content":"# Assessment\n\n目标: /ikvm-net/ikvm/sim\n\n结论: validated."
+	}`), true)
+	if kind != "" || text != "" {
+		t.Fatalf("expected corrected target report to pass, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardBlocksFinishWhenLatestTargetNotInFinalArtifact(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	reportPath := filepath.Join(workdir, "reports", "assessment-report.md")
+	if err := os.WriteFile(reportPath, []byte("# Assessment\n\n目标: /ikvm-net/ikvm/list\n"), 0o600); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	steer := session.NewMessage("user", "原始目标是https://it-infra-dev.bytedance.net/sys/ikvm-net?ikvm-net=%2Fikvm-net%2Fikvm%2Fsim")
+	steer.Meta = map[string]any{"source": "steer", "interrupt": true}
+	messages := []session.Message{
+		session.NewMessage("user", "Write reports/assessment-report.md and finish."),
+		steer,
+		session.NewToolMessage([]session.ToolResult{{
+			Name:     "write_file",
+			Metadata: map[string]any{"path": reportPath},
+		}}),
+	}
+
+	kind, text := toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`), true)
+	if kind != "target_consistency" {
+		t.Fatalf("expected target_consistency finish guard, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardBlocksReportContradictingValidation(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "reports", "validation.md"), []byte("去掉 Authorization 后返回业务 401，至少受 bearer token 保护。\n"), 0o600); err != nil {
+		t.Fatalf("write validation: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", "Write reports/assessment-report.md and finish."),
+	}
+
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{
+		"path":"reports/assessment-report.md",
+		"content":"# Assessment\n\n## Findings\n- 无认证匿名访问 code=0，可访问敏感数据。"
+	}`), true)
+	if kind != "report_consistency" {
+		t.Fatalf("expected report_consistency guard, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardBlocksFinishWhenSupportingDocsChangedAfterFinalReport(t *testing.T) {
+	workdir := t.TempDir()
+	finalPath := filepath.Join(workdir, "reports", "assessment-report.md")
+	validationPath := filepath.Join(workdir, "reports", "validation.md")
+	messages := []session.Message{
+		session.NewMessage("user", "Write reports/assessment-report.md and finish."),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:     "write_file",
+			Metadata: map[string]any{"path": finalPath},
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:     "write_file",
+			Metadata: map[string]any{"path": validationPath},
+		}}),
+	}
+
+	kind, text := toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`), true)
+	if kind != "report_consistency" {
+		t.Fatalf("expected report_consistency finish guard, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardBlocksLongRunFinishWithoutTaskboardEvenInYolo(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Run the full repository audit and finish."),
+	}
+	var results []session.ToolResult
+	for i := 0; i < 80; i++ {
+		results = append(results, session.ToolResult{Name: "read_file"})
+	}
+	messages = append(messages, session.NewToolMessage(results))
+
+	kind, text := toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`), true)
+	if kind != "long_run_taskboard" {
+		t.Fatalf("expected long_run_taskboard guard, got kind=%q text=%q", kind, text)
+	}
+
+	messages = append(messages, session.NewToolMessage([]session.ToolResult{{Name: "todo_write"}}))
+	kind, text = toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`), true)
+	if kind != "" || text != "" {
+		t.Fatalf("expected finish to pass once taskboard exists, got kind=%q text=%q", kind, text)
+	}
+}
+
 func TestBuildSystemPromptCountsReadOnlyShellInspectionAsRetrieval(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",

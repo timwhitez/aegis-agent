@@ -388,6 +388,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	state.PauseReason = ""
 	state.IncompleteReason = ""
 	state.LastError = ""
+	state.ProviderAutoResumeCount = 0
 	state.Status = session.StatusRunning
 	return r.runExisting(ctx, meta, state, req.SystemOverride)
 }
@@ -765,7 +766,7 @@ func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, wireAPI, model string)
 }
 
 func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.Adapter, error) {
-	client := &http.Client{Timeout: time.Duration(providerTimeout(cfg.TimeoutSec)) * time.Second}
+	client := &http.Client{}
 	retryCfg := providerRetryConfig(cfg)
 	switch name {
 	case "openai":
@@ -794,13 +795,6 @@ func completionPolicy(mode string) string {
 	return session.CompletionPolicyInteractive
 }
 
-func providerTimeout(timeoutSec int) int {
-	if timeoutSec <= 0 {
-		return 120
-	}
-	return timeoutSec
-}
-
 func providerRetryConfig(cfg config.Provider) provider.RetryConfig {
 	baseDelay := time.Second
 	if cfg.Retry.BaseDelayMS > 0 {
@@ -811,12 +805,31 @@ func providerRetryConfig(cfg config.Provider) provider.RetryConfig {
 		maxAttempts = 1
 	}
 	return provider.RetryConfig{
-		MaxAttempts:    maxAttempts,
-		BaseDelay:      baseDelay,
-		Retry429:       cfg.Retry.Retry429,
-		Retry5xx:       cfg.Retry.Retry5xx,
-		RetryTransport: cfg.Retry.RetryTransport,
+		MaxAttempts:       maxAttempts,
+		BaseDelay:         baseDelay,
+		Retry429:          cfg.Retry.Retry429,
+		Retry5xx:          cfg.Retry.Retry5xx,
+		RetryTransport:    cfg.Retry.RetryTransport,
+		RequestTimeout:    time.Duration(providerRequestTimeout(cfg)) * time.Second,
+		StreamIdleTimeout: time.Duration(providerStreamIdleTimeoutMS(cfg)) * time.Millisecond,
 	}
+}
+
+func providerRequestTimeout(cfg config.Provider) int {
+	if cfg.RequestTimeoutSec > 0 {
+		return cfg.RequestTimeoutSec
+	}
+	if cfg.TimeoutSec > 0 {
+		return cfg.TimeoutSec
+	}
+	return 300
+}
+
+func providerStreamIdleTimeoutMS(cfg config.Provider) int {
+	if cfg.StreamIdleTimeoutMS > 0 {
+		return cfg.StreamIdleTimeoutMS
+	}
+	return 300000
 }
 
 func providerRetryPolicy(cfg config.Provider) *session.ProviderRetryPolicy {
@@ -830,6 +843,14 @@ func providerRetryPolicy(cfg config.Provider) *session.ProviderRetryPolicy {
 	}
 }
 
+func providerTimeoutPolicy(cfg config.Provider) *session.ProviderTimeoutPolicy {
+	return &session.ProviderTimeoutPolicy{
+		TimeoutSec:          cfg.TimeoutSec,
+		RequestTimeoutSec:   providerRequestTimeout(cfg),
+		StreamIdleTimeoutMS: providerStreamIdleTimeoutMS(cfg),
+	}
+}
+
 func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptions) config.Provider {
 	if opts.RetryPolicy != nil {
 		cfg.Retry = config.Retry{
@@ -839,6 +860,11 @@ func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptio
 			Retry5xx:       opts.RetryPolicy.Retry5xx,
 			RetryTransport: opts.RetryPolicy.RetryTransport,
 		}
+	}
+	if opts.TimeoutPolicy != nil {
+		cfg.TimeoutSec = opts.TimeoutPolicy.TimeoutSec
+		cfg.RequestTimeoutSec = opts.TimeoutPolicy.RequestTimeoutSec
+		cfg.StreamIdleTimeoutMS = opts.TimeoutPolicy.StreamIdleTimeoutMS
 	}
 	return cfg
 }
@@ -859,6 +885,7 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 		Store:           defaultStoreForProvider(name, cfg.Store),
 		SendMetadata:    cfg.SendMetadata,
 		RetryPolicy:     providerRetryPolicy(cfg),
+		TimeoutPolicy:   providerTimeoutPolicy(cfg),
 	}
 }
 

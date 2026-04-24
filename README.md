@@ -156,8 +156,10 @@ provider 可选 generation 字段目前支持：
 - `store`
 - `send_metadata`
 
-provider 还支持一个可选的 transport retry 配置块，用来吸收长任务里的暂时性 `429` / `5xx` / header timeout：
+provider 还支持可持久化的 timeout 与 transport retry 配置，用来吸收长任务里的暂时性 `429` / `5xx` / header timeout，并避免长文本生成被单一短总超时截断：
 
+- `request_timeout_sec`
+- `stream_idle_timeout_ms`
 - `retry.max_attempts`
 - `retry.base_delay_ms`
 - `retry.retry_429`
@@ -174,7 +176,8 @@ providers:
     api_key_env: OPENAI_API_KEY
     base_url: https://api.openai.com/v1
     model: gpt-5.4
-    timeout_sec: 120
+    request_timeout_sec: 300
+    stream_idle_timeout_ms: 300000
     retry:
       max_attempts: 5
       base_delay_ms: 1000
@@ -191,9 +194,11 @@ providers:
 - OpenAI / `openai-compatible` 会把这些选项映射到 `reasoning`、`text`、`max_output_tokens`
 - `send_metadata=false` 可用于不兼容 `metadata` 字段的非官方 `openai-compatible` 网关；默认仍会发送 metadata，保持 runtime/session 到 adapter 的契约完整
 - `runtime.max_turns_hard: -1` 表示禁用硬性 turn 上限；在 Web Settings 里可直接勾选关闭
-- 当前 session metadata 还会持久化 effective provider retry policy，方便在 `session.json` 中直接追溯这次运行实际采用的 retry 预算，而不是只靠 HTTP adapter 的隐式默认值
+- `timeout_sec` 仍作为旧配置兼容字段保留；新配置优先使用 `request_timeout_sec` 和 `stream_idle_timeout_ms`
+- 当前 session metadata 还会持久化 effective provider timeout/retry policy，方便在 `session.json` 中直接追溯这次运行实际采用的请求超时、stream idle 超时和 retry 预算，而不是只靠 HTTP adapter 的隐式默认值
 - provider HTTP 调用会按 `retry` 配置对 `429`、`5xx` 和 transport timeout 做有限重试，并写出 `provider.retry` 事件
-- `doctor --provider openai-compatible --json` 会直接暴露当前生效的 `store`、`send_metadata` 和 `retry_policy`，方便 operator 在连真实网关前先核对配置
+- provider call 如果在没有新工具副作用前遇到 `upstream_timeout`，runtime 会按 `runtime.provider_auto_resume` 做有界自动续跑，并写出 `provider.auto_resume` 事件
+- `doctor --provider openai-compatible --json` 会直接暴露当前生效的 `store`、`send_metadata`、`request_timeout_sec`、`stream_idle_timeout_ms` 和 `retry_policy`，方便 operator 在连真实网关前先核对配置
 - Anthropic 当前支持 `temperature`、`top_p`、`max_tokens`，以及基于 `thinking_budget` 的 `thinking`
 - Google 当前支持 `generationConfig`，以及基于 `thinking_budget` / `include_thoughts` 的 `thinkingConfig`
 - v1 仍不持久化 OpenAI reasoning items 和 Gemini thought signatures，所以 provider-native reasoning/思维产物 replay 不是当前主路径能力
@@ -205,7 +210,7 @@ providers:
 - core / experimental / store 入口在 app-facing 边界上保持独立 facade，不再复用同一个 concrete runner type
 - session / state / messages / events 是文件事实源
 - compaction 只压缩发给模型的上下文视图，不覆盖原始日志
-- compaction summary 会尽量保留 `artifact_memory`、`project_memory_stack`、`high_value_proofs` 和保留给最终证据复核的 targeted read 预算
+- compaction summary 会尽量保留 `artifact_memory`、`project_memory_stack`、`high_value_proofs` 和保留给最终证据复核的 targeted read 预算；同一次 compaction 后增长未超过 hysteresis delta 时会复用 compacted view，避免每轮重写 summary artifact
 - review/audit 产物不只校验 Markdown 结构；runtime validator 还会核对 cited path:line 是否可读，并要求 snippet-level evidence support
 - 当任务对交付文件要求固定开头、精确标题或 section 顺序时，runtime 会把这些 exact-template 约束当成一等 guard，而不是继续被默认 findings-first 习惯带偏
 - 大任务优先把 durable memory 外置到文件。推荐在工作目录下维护 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md`

@@ -212,6 +212,11 @@ func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 			Retry5xx:       true,
 			RetryTransport: true,
 		},
+		TimeoutPolicy: &session.ProviderTimeoutPolicy{
+			TimeoutSec:          30,
+			RequestTimeoutSec:   240,
+			StreamIdleTimeoutMS: 300000,
+		},
 	}
 	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
 		t.Fatalf("save metadata: %v", err)
@@ -271,6 +276,75 @@ func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 	}
 	if retryPolicy["max_attempts"] != float64(3) || retryPolicy["base_delay_ms"] != float64(250) {
 		t.Fatalf("unexpected retry policy event payload: %#v", retryPolicy)
+	}
+	timeoutPolicy, ok := evt.Data["timeout_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected timeout_policy object, got %#v", evt.Data["timeout_policy"])
+	}
+	if timeoutPolicy["request_timeout_sec"] != float64(240) || timeoutPolicy["stream_idle_timeout_ms"] != float64(300000) {
+		t.Fatalf("unexpected timeout policy event payload: %#v", timeoutPolicy)
+	}
+}
+
+func TestEngineAutoResumesProviderTimeoutBeforeFailing(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
+	engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 2
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Return a finish tool call.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{}, &provider.HTTPError{
+				Provider:    "fake",
+				Class:       "upstream_timeout",
+				Message:     "context deadline exceeded",
+				TimeoutKind: "request_timeout",
+			}
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "provider_auto_resume" {
+				t.Fatalf("expected provider auto-resume reminder, got %#v", last)
+			}
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed after auto-resume, got %#v", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", callCount)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.ProviderAutoResumeCount != 0 {
+		t.Fatalf("expected auto-resume counter reset after success, got %#v", loaded)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	evt, ok := findEventByType(events, "provider.auto_resume")
+	if !ok {
+		t.Fatalf("expected provider.auto_resume event, got %#v", events)
+	}
+	if evt.Data["class"] != "upstream_timeout" || evt.Data["timeout_kind"] != "request_timeout" {
+		t.Fatalf("unexpected auto-resume event data: %#v", evt.Data)
 	}
 }
 

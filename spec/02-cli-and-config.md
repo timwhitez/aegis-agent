@@ -205,7 +205,7 @@ core v1 的默认命令面固定为：
 - 检查配置、session root、skills、hooks、provider 配置
 - 默认可附带一次最小 probe
 - 可 `--skip-probe`
-- 对 OpenAI / `openai-compatible`，诊断输出还应明确当前生效的 `store`、`send_metadata` 与 retry policy，方便 operator 在真实接线前核对 transport 契约
+- 对 OpenAI / `openai-compatible`，诊断输出还应明确当前生效的 `store`、`send_metadata`、timeout policy 与 retry policy，方便 operator 在真实接线前核对 transport 契约
 
 高频参数：
 
@@ -270,7 +270,8 @@ providers:
     api_key_env: OPENAI_API_KEY
     base_url: https://api.openai.com/v1
     model: gpt-5.4
-    timeout_sec: 120
+    request_timeout_sec: 300
+    stream_idle_timeout_ms: 300000
     retry:
       max_attempts: 5
       base_delay_ms: 1000
@@ -295,6 +296,9 @@ runtime:
   max_turns_soft: 24
   max_turns_hard: 40
   command_timeout_sec: 120
+  provider_auto_resume:
+    enabled: true
+    max_attempts: 2
   steer:
     poll_interval_ms: 250
     default_behavior: queue
@@ -306,6 +310,7 @@ runtime:
   compact:
     input_char_threshold: 160000
     keep_recent_tool_results: 3
+    hysteresis_delta_chars: 40000
   multi_agent:
     enabled: true
     max_depth: 4
@@ -333,6 +338,8 @@ hooks:
 - `base_url`
 - `model`
 - `timeout_sec`
+- `request_timeout_sec`
+- `stream_idle_timeout_ms`
 - `retry.max_attempts`
 - `retry.base_delay_ms`
 - `retry.retry_429`
@@ -370,11 +377,13 @@ hooks:
 约束：
 
 - provider 选项必须进入 runtime，并写入 session metadata
-- effective retry policy 也必须写入 session metadata，便于从 durable session 事实中追溯本次运行采用的 retry 预算与开关
+- `timeout_sec` 是旧配置兼容字段；新实现优先使用 `request_timeout_sec` 与 `stream_idle_timeout_ms`
+- effective timeout/retry policy 也必须写入 session metadata，便于从 durable session 事实中追溯本次运行采用的请求超时、stream idle 超时、retry 预算与开关
 - `continue` 不能因为配置漂移而丢失已选择的 generation 语义
 - OpenAI / `openai-compatible` 默认 `store: false`，保持本地 session 是唯一事实源
 - `send_metadata` 默认为主契约路径；只有某个非官方 `openai-compatible` 部署明确不兼容 `metadata` 字段时，才应显式设置 `send_metadata: false`
 - provider retry 只允许有限次数的 transport / rate-limit / upstream 重试；认证错误、请求格式错误、响应解析错误不能被自动吞掉
+- provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，可以按 `runtime.provider_auto_resume` 做有界自动续跑；每次自动续跑必须写入 durable event
 
 ## 9. 验收标准
 

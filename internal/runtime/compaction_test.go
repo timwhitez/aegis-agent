@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,6 +207,60 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	present, _ := emitted[1].Data["project_memory_present"].([]string)
 	if len(present) != 0 {
 		t.Fatalf("expected no project-memory files in compact event, got %#v", emitted[1].Data)
+	}
+}
+
+func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", "Continue the large audit."),
+		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+	}
+
+	var emitted []events.Event
+	view, inputChars, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 520, 1000, func(evt events.Event) {
+		emitted = append(emitted, evt)
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if didCompact {
+		t.Fatalf("expected hysteresis reuse, got didCompact=true input=%d", inputChars)
+	}
+	if len(view) == 0 || !strings.Contains(view[0].Text, "[Conversation compacted]") {
+		t.Fatalf("expected compacted provider view, got %#v", view)
+	}
+	if len(emitted) != 1 || emitted[0].Type != "compact.reused" {
+		t.Fatalf("expected compact.reused event only, got %#v", emitted)
+	}
+	if emitted[0].Data["last_compaction_input_chars"] != 520 {
+		t.Fatalf("expected watermark in compact.reused event, got %#v", emitted[0].Data)
+	}
+	files, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read compactions dir: %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("expected no new compaction artifacts, got %#v", files)
 	}
 }
 

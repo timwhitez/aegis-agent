@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -25,7 +26,7 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 	}
 	client := c.Client
 	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+		client = &http.Client{}
 	}
 	endpoint := strings.TrimRight(c.BaseURL, "/") + path
 	providerName := c.providerName("")
@@ -34,8 +35,14 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 		maxAttempts = 1
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
+		attemptCtx := ctx
+		cancelAttempt := func() {}
+		if c.Retry.RequestTimeout > 0 {
+			attemptCtx, cancelAttempt = context.WithTimeout(ctx, c.Retry.RequestTimeout)
+		}
+		req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, bytes.NewReader(payload))
 		if err != nil {
+			cancelAttempt()
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -47,10 +54,11 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 		}
 		resp, err := client.Do(req)
 		if err == nil {
-			err = c.decodeResponse(resp, out, providerName)
+			err = c.decodeResponse(attemptCtx, resp, out, providerName)
 		} else {
-			err = classifyTransportError(ctx, providerName, err)
+			err = classifyTransportError(attemptCtx, providerName, err)
 		}
+		cancelAttempt()
 		if err == nil {
 			return nil
 		}
@@ -73,6 +81,9 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 				if httpErr.StatusCode > 0 {
 					data["status_code"] = httpErr.StatusCode
 				}
+				if strings.TrimSpace(httpErr.TimeoutKind) != "" {
+					data["timeout_kind"] = httpErr.TimeoutKind
+				}
 			}
 			emit("provider.retry", data)
 		}
@@ -94,10 +105,28 @@ func (c JSONClient) providerName(fallback string) string {
 	return fallback
 }
 
-func (c JSONClient) decodeResponse(resp *http.Response, out any, providerName string) error {
+func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out any, providerName string) error {
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readAllWithIdleTimeout(ctx, resp.Body, c.Retry.StreamIdleTimeout)
 	if err != nil {
+		if errors.Is(err, errStreamIdleTimeout) {
+			return &HTTPError{
+				Provider:    providerName,
+				Class:       "upstream_timeout",
+				Message:     err.Error(),
+				StatusCode:  resp.StatusCode,
+				TimeoutKind: "stream_idle_timeout",
+			}
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return &HTTPError{
+				Provider:    providerName,
+				Class:       "upstream_timeout",
+				Message:     strings.TrimSpace(err.Error()),
+				StatusCode:  resp.StatusCode,
+				TimeoutKind: "request_timeout",
+			}
+		}
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -115,4 +144,56 @@ func (c JSONClient) decodeResponse(resp *http.Response, out any, providerName st
 		}
 	}
 	return nil
+}
+
+var errStreamIdleTimeout = errors.New("stream idle timeout")
+
+func readAllWithIdleTimeout(ctx context.Context, body io.ReadCloser, idle time.Duration) ([]byte, error) {
+	if idle <= 0 {
+		return io.ReadAll(body)
+	}
+	var out bytes.Buffer
+	buf := make([]byte, 32*1024)
+	for {
+		type readResult struct {
+			n   int
+			err error
+		}
+		readDone := make(chan readResult, 1)
+		go func() {
+			n, err := body.Read(buf)
+			readDone <- readResult{n: n, err: err}
+		}()
+		timer := time.NewTimer(idle)
+		select {
+		case result := <-readDone:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			if result.n > 0 {
+				out.Write(buf[:result.n])
+			}
+			if errors.Is(result.err, io.EOF) {
+				return out.Bytes(), nil
+			}
+			if result.err != nil {
+				return nil, result.err
+			}
+		case <-timer.C:
+			_ = body.Close()
+			return nil, fmt.Errorf("%w after %s without response bytes", errStreamIdleTimeout, idle)
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			_ = body.Close()
+			return nil, ctx.Err()
+		}
+	}
 }

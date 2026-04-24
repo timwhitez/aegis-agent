@@ -13,9 +13,12 @@ import (
 )
 
 const (
-	legacyIsolationRootDir  = ".go-cli-agent/_worktrees"
-	defaultRetryMaxAttempts = 5
-	defaultRetryBaseDelayMS = 1000
+	legacyIsolationRootDir              = ".go-cli-agent/_worktrees"
+	defaultProviderRequestTimeoutSec    = 300
+	defaultProviderStreamIdleTimeoutMS  = 300000
+	defaultRetryMaxAttempts             = 5
+	defaultRetryBaseDelayMS             = 1000
+	defaultProviderAutoResumeMaxAttempt = 2
 )
 
 type Config struct {
@@ -30,22 +33,24 @@ type Config struct {
 }
 
 type Provider struct {
-	APIKeyEnv        string   `yaml:"api_key_env"`
-	BaseURL          string   `yaml:"base_url"`
-	Model            string   `yaml:"model"`
-	TimeoutSec       int      `yaml:"timeout_sec"`
-	Retry            Retry    `yaml:"retry,omitempty"`
-	AnthropicVersion string   `yaml:"anthropic_version,omitempty"`
-	WireAPI          string   `yaml:"wire_api,omitempty"`
-	Temperature      *float64 `yaml:"temperature,omitempty"`
-	TopP             *float64 `yaml:"top_p,omitempty"`
-	MaxOutputTokens  int      `yaml:"max_output_tokens,omitempty"`
-	ReasoningEffort  string   `yaml:"reasoning_effort,omitempty"`
-	TextVerbosity    string   `yaml:"text_verbosity,omitempty"`
-	ThinkingBudget   int      `yaml:"thinking_budget,omitempty"`
-	IncludeThoughts  *bool    `yaml:"include_thoughts,omitempty"`
-	Store            *bool    `yaml:"store,omitempty"`
-	SendMetadata     *bool    `yaml:"send_metadata,omitempty"`
+	APIKeyEnv           string   `yaml:"api_key_env"`
+	BaseURL             string   `yaml:"base_url"`
+	Model               string   `yaml:"model"`
+	TimeoutSec          int      `yaml:"timeout_sec"`
+	RequestTimeoutSec   int      `yaml:"request_timeout_sec,omitempty"`
+	StreamIdleTimeoutMS int      `yaml:"stream_idle_timeout_ms,omitempty"`
+	Retry               Retry    `yaml:"retry,omitempty"`
+	AnthropicVersion    string   `yaml:"anthropic_version,omitempty"`
+	WireAPI             string   `yaml:"wire_api,omitempty"`
+	Temperature         *float64 `yaml:"temperature,omitempty"`
+	TopP                *float64 `yaml:"top_p,omitempty"`
+	MaxOutputTokens     int      `yaml:"max_output_tokens,omitempty"`
+	ReasoningEffort     string   `yaml:"reasoning_effort,omitempty"`
+	TextVerbosity       string   `yaml:"text_verbosity,omitempty"`
+	ThinkingBudget      int      `yaml:"thinking_budget,omitempty"`
+	IncludeThoughts     *bool    `yaml:"include_thoughts,omitempty"`
+	Store               *bool    `yaml:"store,omitempty"`
+	SendMetadata        *bool    `yaml:"send_metadata,omitempty"`
 }
 
 func (p Provider) ResolvedAPIKey() string {
@@ -73,20 +78,21 @@ type SkillsConfig struct {
 }
 
 type RuntimeConfig struct {
-	ExecFinishRequired bool                `yaml:"exec_finish_required"`
-	MaxTurnsSoft       int                 `yaml:"max_turns_soft"`
-	MaxTurnsHard       int                 `yaml:"max_turns_hard"`
-	CommandTimeoutSec  int                 `yaml:"command_timeout_sec"`
-	GuardrailsMode     string              `yaml:"guardrails_mode"`
-	Steer              SteerConfig         `yaml:"steer"`
-	MultiAgent         MultiAgentConfig    `yaml:"multi_agent"`
-	Isolation          IsolationConfig     `yaml:"isolation"`
-	Queue              QueueConfig         `yaml:"queue"`
-	ShellEnvAllowlist  []string            `yaml:"shell_env_allowlist"`
-	Compact            CompactConfig       `yaml:"compact"`
-	Ephemeral          EphemeralConfig     `yaml:"ephemeral"`
-	RalphLoop          RalphLoopConfig     `yaml:"ralph_loop"`
-	PreCompletion      PreCompletionConfig `yaml:"pre_completion"`
+	ExecFinishRequired bool                     `yaml:"exec_finish_required"`
+	MaxTurnsSoft       int                      `yaml:"max_turns_soft"`
+	MaxTurnsHard       int                      `yaml:"max_turns_hard"`
+	CommandTimeoutSec  int                      `yaml:"command_timeout_sec"`
+	GuardrailsMode     string                   `yaml:"guardrails_mode"`
+	ProviderAutoResume ProviderAutoResumeConfig `yaml:"provider_auto_resume"`
+	Steer              SteerConfig              `yaml:"steer"`
+	MultiAgent         MultiAgentConfig         `yaml:"multi_agent"`
+	Isolation          IsolationConfig          `yaml:"isolation"`
+	Queue              QueueConfig              `yaml:"queue"`
+	ShellEnvAllowlist  []string                 `yaml:"shell_env_allowlist"`
+	Compact            CompactConfig            `yaml:"compact"`
+	Ephemeral          EphemeralConfig          `yaml:"ephemeral"`
+	RalphLoop          RalphLoopConfig          `yaml:"ralph_loop"`
+	PreCompletion      PreCompletionConfig      `yaml:"pre_completion"`
 }
 
 type SteerConfig struct {
@@ -112,6 +118,12 @@ type QueueConfig struct {
 type CompactConfig struct {
 	InputCharThreshold    int `yaml:"input_char_threshold"`
 	KeepRecentToolResults int `yaml:"keep_recent_tool_results"`
+	HysteresisDeltaChars  int `yaml:"hysteresis_delta_chars,omitempty"`
+}
+
+type ProviderAutoResumeConfig struct {
+	Enabled     bool `yaml:"enabled"`
+	MaxAttempts int  `yaml:"max_attempts"`
 }
 
 type EphemeralConfig struct {
@@ -182,10 +194,12 @@ func Default() *Config {
 		DefaultProvider: "openai",
 		Providers: map[string]Provider{
 			"openai": {
-				APIKeyEnv:  "OPENAI_API_KEY",
-				BaseURL:    "https://api.openai.com/v1",
-				Model:      "gpt-5.4",
-				TimeoutSec: 120,
+				APIKeyEnv:           "OPENAI_API_KEY",
+				BaseURL:             "https://api.openai.com/v1",
+				Model:               "gpt-5.4",
+				TimeoutSec:          defaultProviderRequestTimeoutSec,
+				RequestTimeoutSec:   defaultProviderRequestTimeoutSec,
+				StreamIdleTimeoutMS: defaultProviderStreamIdleTimeoutMS,
 				Retry: Retry{
 					MaxAttempts:    defaultRetryMaxAttempts,
 					BaseDelayMS:    defaultRetryBaseDelayMS,
@@ -196,10 +210,12 @@ func Default() *Config {
 				Store:   boolPtr(false),
 			},
 			"anthropic": {
-				APIKeyEnv:  "ANTHROPIC_API_KEY",
-				BaseURL:    "https://api.anthropic.com",
-				Model:      "claude-sonnet-4-6",
-				TimeoutSec: 120,
+				APIKeyEnv:           "ANTHROPIC_API_KEY",
+				BaseURL:             "https://api.anthropic.com",
+				Model:               "claude-sonnet-4-6",
+				TimeoutSec:          defaultProviderRequestTimeoutSec,
+				RequestTimeoutSec:   defaultProviderRequestTimeoutSec,
+				StreamIdleTimeoutMS: defaultProviderStreamIdleTimeoutMS,
 				Retry: Retry{
 					MaxAttempts:    defaultRetryMaxAttempts,
 					BaseDelayMS:    defaultRetryBaseDelayMS,
@@ -209,10 +225,12 @@ func Default() *Config {
 				AnthropicVersion: "2023-06-01",
 			},
 			"google": {
-				APIKeyEnv:  "GEMINI_API_KEY",
-				BaseURL:    "https://generativelanguage.googleapis.com",
-				Model:      "gemini-2.5-flash",
-				TimeoutSec: 120,
+				APIKeyEnv:           "GEMINI_API_KEY",
+				BaseURL:             "https://generativelanguage.googleapis.com",
+				Model:               "gemini-2.5-flash",
+				TimeoutSec:          defaultProviderRequestTimeoutSec,
+				RequestTimeoutSec:   defaultProviderRequestTimeoutSec,
+				StreamIdleTimeoutMS: defaultProviderStreamIdleTimeoutMS,
 				Retry: Retry{
 					MaxAttempts:    defaultRetryMaxAttempts,
 					BaseDelayMS:    defaultRetryBaseDelayMS,
@@ -221,10 +239,12 @@ func Default() *Config {
 				},
 			},
 			"openai-compatible": {
-				APIKeyEnv:  "OPENAI_API_KEY",
-				BaseURL:    "http://localhost:3000/v1",
-				Model:      "gpt-5.4",
-				TimeoutSec: 120,
+				APIKeyEnv:           "OPENAI_API_KEY",
+				BaseURL:             "http://localhost:3000/v1",
+				Model:               "gpt-5.4",
+				TimeoutSec:          defaultProviderRequestTimeoutSec,
+				RequestTimeoutSec:   defaultProviderRequestTimeoutSec,
+				StreamIdleTimeoutMS: defaultProviderStreamIdleTimeoutMS,
 				Retry: Retry{
 					MaxAttempts:    defaultRetryMaxAttempts,
 					BaseDelayMS:    defaultRetryBaseDelayMS,
@@ -248,6 +268,10 @@ func Default() *Config {
 			MaxTurnsHard:       40,
 			CommandTimeoutSec:  120,
 			GuardrailsMode:     "yolo",
+			ProviderAutoResume: ProviderAutoResumeConfig{
+				Enabled:     true,
+				MaxAttempts: defaultProviderAutoResumeMaxAttempt,
+			},
 			Steer: SteerConfig{
 				PollIntervalMS:  250,
 				DefaultBehavior: "queue",
@@ -268,6 +292,7 @@ func Default() *Config {
 			Compact: CompactConfig{
 				InputCharThreshold:    160000,
 				KeepRecentToolResults: 3,
+				HysteresisDeltaChars:  40000,
 			},
 			Ephemeral: EphemeralConfig{
 				Enabled:     true,
@@ -348,9 +373,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	cfg.Runtime.GuardrailsMode = normalizeGuardrailsMode(cfg.Runtime.GuardrailsMode)
 	for name, provider := range cfg.Providers {
-		if provider.TimeoutSec <= 0 {
-			provider.TimeoutSec = 120
-		}
+		normalizeProviderTimeouts(&provider)
 		normalizeProviderRetry(&provider)
 		if provider.WireAPI == "" && (name == "openai" || name == "openai-compatible") {
 			provider.WireAPI = "responses"
@@ -382,6 +405,12 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	if cfg.Runtime.Compact.KeepRecentToolResults <= 0 {
 		cfg.Runtime.Compact.KeepRecentToolResults = 3
+	}
+	if cfg.Runtime.Compact.HysteresisDeltaChars <= 0 {
+		cfg.Runtime.Compact.HysteresisDeltaChars = 40000
+	}
+	if cfg.Runtime.ProviderAutoResume.MaxAttempts <= 0 {
+		cfg.Runtime.ProviderAutoResume.MaxAttempts = defaultProviderAutoResumeMaxAttempt
 	}
 	if cfg.Runtime.RalphLoop.MaxIterations <= 0 {
 		cfg.Runtime.RalphLoop.MaxIterations = 5
@@ -535,5 +564,25 @@ func normalizeProviderRetry(retryProvider *Provider) {
 	}
 	if retryProvider.Retry.BaseDelayMS <= 0 {
 		retryProvider.Retry.BaseDelayMS = defaultRetryBaseDelayMS
+	}
+}
+
+func normalizeProviderTimeouts(provider *Provider) {
+	if provider == nil {
+		return
+	}
+	switch {
+	case provider.RequestTimeoutSec > 0:
+		if provider.TimeoutSec <= 0 {
+			provider.TimeoutSec = provider.RequestTimeoutSec
+		}
+	case provider.TimeoutSec > 0:
+		provider.RequestTimeoutSec = provider.TimeoutSec
+	default:
+		provider.TimeoutSec = defaultProviderRequestTimeoutSec
+		provider.RequestTimeoutSec = defaultProviderRequestTimeoutSec
+	}
+	if provider.StreamIdleTimeoutMS <= 0 {
+		provider.StreamIdleTimeoutMS = defaultProviderStreamIdleTimeoutMS
 	}
 }

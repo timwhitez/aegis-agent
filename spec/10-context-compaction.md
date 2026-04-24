@@ -117,6 +117,7 @@ compaction 只影响：
 
 - `compact.started`
 - `compact.finished`
+- `compact.reused`
 
 并记录：
 
@@ -124,6 +125,7 @@ compaction 只影响：
 - 估算输入规模
 - 保留的 recent messages 数量
 - 生成的 artifact 路径
+- 是否复用了上一次 compaction 水位
 - 当前 project-memory present / missing 状态
 - 当前 todo / ready-task / blocked-task / completed-task 计数
 - 当前 `proof_read_budget` 摘要，以及 artifact/proof 摘要数量等足以支持 proof-at-boundary 复核的上下文指标
@@ -134,8 +136,9 @@ compaction 只影响：
 
 - `runtime.compact.input_char_threshold`
 - `runtime.compact.keep_recent_tool_results`
+- `runtime.compact.hysteresis_delta_chars`
 
-v1 先用字符数做近似估算，不做 provider 精确 token 计数。
+v1 先用字符数做近似估算，不做 provider 精确 token 计数。超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 可以复用 compacted provider view 并只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact。
 
 ## 7. 与 Session Store 的关系
 

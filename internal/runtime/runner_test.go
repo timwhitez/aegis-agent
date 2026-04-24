@@ -41,7 +41,10 @@ func TestRunnerSupportsOpenAICompatibleResponses(t *testing.T) {
 
 func TestProviderOptionsFromConfigIncludesRetryPolicy(t *testing.T) {
 	opts := providerOptionsFromConfig("openai-compatible", config.Provider{
-		ReasoningEffort: "medium",
+		ReasoningEffort:     "medium",
+		TimeoutSec:          90,
+		RequestTimeoutSec:   180,
+		StreamIdleTimeoutMS: 45000,
 		Retry: config.Retry{
 			MaxAttempts:    3,
 			BaseDelayMS:    250,
@@ -62,6 +65,32 @@ func TestProviderOptionsFromConfigIncludesRetryPolicy(t *testing.T) {
 	}
 	if !reflect.DeepEqual(opts.RetryPolicy, want) {
 		t.Fatalf("unexpected retry policy: %#v", opts.RetryPolicy)
+	}
+	wantTimeout := &session.ProviderTimeoutPolicy{
+		TimeoutSec:          90,
+		RequestTimeoutSec:   180,
+		StreamIdleTimeoutMS: 45000,
+	}
+	if !reflect.DeepEqual(opts.TimeoutPolicy, wantTimeout) {
+		t.Fatalf("unexpected timeout policy: %#v", opts.TimeoutPolicy)
+	}
+}
+
+func TestApplySessionProviderOptionsRestoresTimeoutPolicy(t *testing.T) {
+	cfg := config.Provider{
+		TimeoutSec:          10,
+		RequestTimeoutSec:   10,
+		StreamIdleTimeoutMS: 10000,
+	}
+	restored := applySessionProviderOptions(cfg, session.ProviderOptions{
+		TimeoutPolicy: &session.ProviderTimeoutPolicy{
+			TimeoutSec:          30,
+			RequestTimeoutSec:   240,
+			StreamIdleTimeoutMS: 300000,
+		},
+	})
+	if restored.TimeoutSec != 30 || restored.RequestTimeoutSec != 240 || restored.StreamIdleTimeoutMS != 300000 {
+		t.Fatalf("expected durable timeout policy to be restored, got %#v", restored)
 	}
 }
 
@@ -93,14 +122,16 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 	store := false
 	sendMetadata := false
 	cfg.Providers["openai-compatible"] = config.Provider{
-		APIKeyEnv:       "OPENAI_API_KEY",
-		BaseURL:         server.URL + "/v1",
-		Model:           "gpt-5.4",
-		TimeoutSec:      30,
-		WireAPI:         "responses",
-		Store:           &store,
-		SendMetadata:    &sendMetadata,
-		ReasoningEffort: "medium",
+		APIKeyEnv:           "OPENAI_API_KEY",
+		BaseURL:             server.URL + "/v1",
+		Model:               "gpt-5.4",
+		TimeoutSec:          30,
+		RequestTimeoutSec:   45,
+		StreamIdleTimeoutMS: 60000,
+		WireAPI:             "responses",
+		Store:               &store,
+		SendMetadata:        &sendMetadata,
+		ReasoningEffort:     "medium",
 		Retry: config.Retry{
 			MaxAttempts:    3,
 			BaseDelayMS:    250,
@@ -148,6 +179,14 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 	}
 	if !reflect.DeepEqual(meta.ProviderOptions.RetryPolicy, wantRetry) {
 		t.Fatalf("unexpected retry policy in session metadata: %#v", meta.ProviderOptions.RetryPolicy)
+	}
+	wantTimeout := &session.ProviderTimeoutPolicy{
+		TimeoutSec:          30,
+		RequestTimeoutSec:   45,
+		StreamIdleTimeoutMS: 60000,
+	}
+	if !reflect.DeepEqual(meta.ProviderOptions.TimeoutPolicy, wantTimeout) {
+		t.Fatalf("unexpected timeout policy in session metadata: %#v", meta.ProviderOptions.TimeoutPolicy)
 	}
 }
 

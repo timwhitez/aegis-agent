@@ -22,12 +22,66 @@ func newCompactor(store *session.Store) *compactor {
 }
 
 func (c *compactor) Build(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent int, emit func(events.Event)) ([]session.Message, error) {
+	view, _, _, err := c.BuildWithPolicy(sessionID, workdir, state, messages, todo, tasks, threshold, keepRecent, 0, 0, emit)
+	return view, err
+}
+
+func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent, lastCompactionInputChars, hysteresisDeltaChars int, emit func(events.Event)) ([]session.Message, int, bool, error) {
 	cloned := cloneMessages(messages)
 	cloned = deduplicateToolResults(cloned)
 	microCompact(cloned, keepRecent)
 	size := estimateChars(cloned)
 	if size <= threshold {
-		return cloned, nil
+		return cloned, size, false, nil
+	}
+	if lastCompactionInputChars > 0 && hysteresisDeltaChars > 0 && size < lastCompactionInputChars+hysteresisDeltaChars {
+		projectMemory := loadProjectMemoryStack(workdir)
+		readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
+		blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
+		_, _, completedTaskCount := taskCounts(tasks)
+		proofBudget := proofReadBudget()
+		if emit != nil {
+			emit(events.New(sessionID, "compact.reused", "compact", map[string]any{
+				"input_chars":                 size,
+				"last_compaction_input_chars": lastCompactionInputChars,
+				"hysteresis_delta_chars":      hysteresisDeltaChars,
+				"reason":                      "within_compaction_hysteresis",
+				"project_memory_present":      projectMemory.PresentPaths(),
+				"project_memory_missing":      projectMemory.MissingPaths(),
+				"todo_count":                  len(todo),
+				"ready_task_count":            len(readyTasks),
+				"blocked_task_count":          len(blockedTasks),
+				"completed_task_count":        completedTaskCount,
+				"proof_read_budget":           proofBudget,
+			}))
+		}
+		summary := map[string]any{
+			"completed_items":          collectCompletedItems(todo, tasks),
+			"artifact_memory":          collectArtifactMemory(messages, workdir, 12),
+			"current_status":           summarizeLatestMessages(messages),
+			"current_in_progress_todo": currentInProgressTodo(todo),
+			"current_in_progress_task": currentInProgressTask(tasks),
+			"high_value_proofs":        collectHighValueProofs(messages, workdir, 10),
+			"key_paths":                collectKeyPaths(messages, workdir),
+			"next_step_guidance":       nextStepGuidance(),
+			"proof_read_budget":        proofBudget,
+			"project_memory_stack":     projectMemory.Summary(),
+			"todo":                     todo,
+			"ready_tasks":              readyTasks,
+			"blocked_tasks":            blockedTasks,
+			"unresolved_issues":        collectUnresolvedIssues(messages, state),
+			"recent_failure_or_pause":  recentFailureOrPause(state),
+			"transcript":               "[previous compaction transcript reused; no new artifact written within hysteresis window]",
+		}
+		compactText, _ := json.MarshalIndent(summary, "", "  ")
+		recent := recentMessagesForCompaction(cloned, 6)
+		compacted := session.NewMessage("user", "[Conversation compacted]\n"+string(compactText))
+		compacted.Meta = map[string]any{
+			"source": "compaction_summary",
+		}
+		out := []session.Message{compacted}
+		out = append(out, recent...)
+		return out, size, false, nil
 	}
 
 	projectMemory := loadProjectMemoryStack(workdir)
@@ -50,7 +104,7 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 	transcriptName := fmt.Sprintf("transcript-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
 	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, messages)
 	if err != nil {
-		return nil, err
+		return nil, size, false, err
 	}
 	artifactMemory := collectArtifactMemory(messages, workdir, 12)
 	highValueProofs := collectHighValueProofs(messages, workdir, 10)
@@ -86,7 +140,7 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 	summaryName := filepath.Join("compactions", fmt.Sprintf("summary-%s.json", time.Now().UTC().Format("20060102-150405")))
 	summaryPath, err := c.store.WriteArtifact(sessionID, summaryName, summary)
 	if err != nil {
-		return nil, err
+		return nil, size, false, err
 	}
 	compactText, _ := json.MarshalIndent(summary, "", "  ")
 	recent := recentMessagesForCompaction(cloned, 6)
@@ -111,7 +165,7 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 	}
 	out := []session.Message{compacted}
 	out = append(out, recent...)
-	return out, nil
+	return out, size, true, nil
 }
 
 func recentMessagesForCompaction(messages []session.Message, minCount int) []session.Message {

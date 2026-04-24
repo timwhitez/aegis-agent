@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,10 @@ import (
 var artifactPathPattern = regexp.MustCompile(`(?i)(?:[a-z]:)?(?:/|\.?/)?[a-z0-9._/-]+\.md`)
 var explicitInspectionPathPattern = regexp.MustCompile(`(?i)(?:\./)?[a-z0-9._/-]+\.(?:md|go|ts|py|rs|txt|jsonl?|ya?ml|toml|sh)`)
 var literalAndSeparatorPattern = regexp.MustCompile(`(?i)\s*,?\s+and\s+`)
+var explicitTargetPhrasePattern = regexp.MustCompile(`(?i)(?:原始目标是|目标是|最新目标是|target(?:\s+url)?\s*(?:is|=)|scope\s*(?:is|=))\s*([^\s，。；;]+)`)
+var pathLikeTargetPattern = regexp.MustCompile(`/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+`)
+var noAuth401Pattern = regexp.MustCompile(`(?is)(去掉\s*authorization|without\s+authorization|no\s+authorization|no\s+auth).{0,120}(401|unauthorized|未授权)`)
+var noClearUnauthorizedPattern = regexp.MustCompile(`(?is)(暂未发现.{0,40}未授权|至少受\s*bearer\s*token\s*保护|protected by bearer|bearer token protected)`)
 
 func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []skills.Summary, skillTools []skills.CommandTool, state session.State, messages []session.Message, agentContext ...string) string {
 	var builder strings.Builder
@@ -115,6 +120,9 @@ func runtimeBehaviorNotes(workdir, mode string, messages []session.Message) []st
 		notes = append(notes, note)
 	}
 	if note := recentSteerNote(messages); note != "" {
+		notes = append(notes, note)
+	}
+	if note := targetConsistencyNote(messages); note != "" {
 		notes = append(notes, note)
 	}
 	if note := exactRequestedArtifactPathNote(workdir, messages); note != "" {
@@ -228,6 +236,504 @@ func recentSteerNote(messages []session.Message) string {
 		return fmt.Sprintf("A recent interrupt steer is now the active priority: %s. Stop following the pre-steer exploration plan. If that steer says to use current evidence, write an artifact, or finish, do that before any extra retrieval.", text)
 	}
 	return fmt.Sprintf("A recent steer updated task priority: %s. Follow that steer first and do only the minimum extra retrieval required for it.", text)
+}
+
+type targetConsistencyRequirement struct {
+	Active           bool
+	Index            int
+	Display          string
+	TargetLiterals   []string
+	ConflictLiterals []string
+}
+
+func targetConsistencyNote(messages []session.Message) string {
+	req := latestTargetConsistencyRequirement(messages)
+	if !req.Active {
+		return ""
+	}
+	return fmt.Sprintf("The latest explicit target anchor is %s. Final reports and durable spec/plan updates must reflect that target before finish.", req.Display)
+}
+
+func latestTargetConsistencyRequirement(messages []session.Message) targetConsistencyRequirement {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		source, _ := msg.Meta["source"].(string)
+		if source == "harness_reminder" || source == "compaction_summary" {
+			continue
+		}
+		req := targetConsistencyRequirementFromText(msg.Text)
+		if req.Active {
+			req.Index = i
+			return req
+		}
+	}
+	return targetConsistencyRequirement{}
+}
+
+func targetConsistencyRequirementFromText(text string) targetConsistencyRequirement {
+	var seeds []string
+	for _, match := range explicitTargetPhrasePattern.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			seeds = append(seeds, trimTargetToken(match[1]))
+		}
+	}
+	if len(seeds) == 0 {
+		return targetConsistencyRequirement{}
+	}
+	var literals []string
+	var display string
+	for _, seed := range seeds {
+		if strings.TrimSpace(seed) == "" {
+			continue
+		}
+		extracted := targetLiteralsFromSeed(seed)
+		if len(extracted) == 0 {
+			continue
+		}
+		if display == "" {
+			display = extracted[0]
+		}
+		literals = append(literals, extracted...)
+	}
+	literals = uniqueTargetLiterals(literals)
+	if len(literals) == 0 {
+		return targetConsistencyRequirement{}
+	}
+	if display == "" {
+		display = literals[0]
+	}
+	return targetConsistencyRequirement{
+		Active:           true,
+		Display:          display,
+		TargetLiterals:   literals,
+		ConflictLiterals: conflictTargetLiterals(literals),
+	}
+}
+
+func targetLiteralsFromSeed(seed string) []string {
+	seed = trimTargetToken(seed)
+	if seed == "" {
+		return nil
+	}
+	var out []string
+	decoded := decodeTargetToken(seed)
+	if decoded != "" {
+		out = append(out, decoded)
+	}
+	if strings.Contains(seed, "://") {
+		if parsed, err := url.Parse(seed); err == nil {
+			for _, values := range parsed.Query() {
+				for _, value := range values {
+					value = decodeTargetToken(value)
+					if strings.HasPrefix(value, "/") {
+						out = append(out, value)
+					}
+				}
+			}
+			if parsed.Path != "" {
+				out = append(out, decodeTargetToken(parsed.Path))
+			}
+		}
+	}
+	for _, match := range pathLikeTargetPattern.FindAllString(seed, -1) {
+		out = append(out, decodeTargetToken(match))
+	}
+	if decoded != seed {
+		for _, match := range pathLikeTargetPattern.FindAllString(decoded, -1) {
+			out = append(out, decodeTargetToken(match))
+		}
+	}
+	return uniqueTargetLiterals(preferSpecificTargetLiterals(out))
+}
+
+func trimTargetToken(value string) string {
+	return strings.Trim(strings.TrimSpace(value), " \t\r\n`\"'<>()[]{}，。；;,")
+}
+
+func decodeTargetToken(value string) string {
+	value = trimTargetToken(value)
+	if value == "" {
+		return ""
+	}
+	if decoded, err := url.QueryUnescape(value); err == nil {
+		value = decoded
+	}
+	return trimTargetToken(strings.ReplaceAll(value, "\\u002f", "/"))
+}
+
+func preferSpecificTargetLiterals(items []string) []string {
+	var paths []string
+	for _, item := range items {
+		cleaned := trimTargetToken(item)
+		if strings.HasPrefix(cleaned, "/") && !strings.HasPrefix(cleaned, "//") {
+			paths = append(paths, cleaned)
+		}
+	}
+	if len(paths) == 0 {
+		return items
+	}
+	longest := 0
+	for _, path := range paths {
+		if len(path) > longest {
+			longest = len(path)
+		}
+	}
+	var out []string
+	for _, path := range paths {
+		if len(path) == longest {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func uniqueTargetLiterals(items []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, item := range items {
+		cleaned := trimTargetToken(item)
+		if cleaned == "" {
+			continue
+		}
+		key := strings.ToLower(cleaned)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
+}
+
+func conflictTargetLiterals(items []string) []string {
+	var out []string
+	for _, item := range items {
+		lowered := strings.ToLower(item)
+		for _, pair := range [][2]string{{"/sim", "/list"}, {"/list", "/sim"}} {
+			if strings.Contains(lowered, pair[0]) {
+				out = append(out, strings.Replace(item, pair[0], pair[1], 1))
+			}
+		}
+	}
+	return uniqueTargetLiterals(out)
+}
+
+func targetContentSatisfiesRequirement(content string, req targetConsistencyRequirement) bool {
+	if !req.Active {
+		return true
+	}
+	haystack := normalizedTargetHaystack(content)
+	for _, literal := range req.TargetLiterals {
+		if strings.Contains(haystack, strings.ToLower(decodeTargetToken(literal))) {
+			return true
+		}
+	}
+	return false
+}
+
+func contentHasTargetScopeConflict(content string, req targetConsistencyRequirement) bool {
+	if !req.Active || len(req.ConflictLiterals) == 0 {
+		return false
+	}
+	prefix := content
+	if len(prefix) > 4000 {
+		prefix = prefix[:4000]
+	}
+	haystack := normalizedTargetHaystack(prefix)
+	if targetContentSatisfiesRequirement(content, req) {
+		for _, correction := range []string{"旧", "修正", "纠偏", "stale", "wrong", "previous", "corrected"} {
+			if strings.Contains(haystack, correction) {
+				return false
+			}
+		}
+	}
+	for _, conflict := range req.ConflictLiterals {
+		conflict = strings.ToLower(decodeTargetToken(conflict))
+		if conflict == "" || !strings.Contains(haystack, conflict) {
+			continue
+		}
+		if strings.Contains(haystack, "目标") || strings.Contains(haystack, "target") || strings.Contains(haystack, "scope") || strings.Contains(haystack, "endpoint") {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedTargetHaystack(content string) string {
+	lowered := strings.ToLower(strings.ReplaceAll(content, "\\u002f", "/"))
+	if decoded, err := url.QueryUnescape(lowered); err == nil && decoded != lowered {
+		return lowered + "\n" + decoded
+	}
+	return lowered
+}
+
+func targetConsistencyReminder(workdir string, messages []session.Message) harnessReminder {
+	req := latestTargetConsistencyRequirement(messages)
+	if !req.Active || targetConsistencySatisfiedByMessages(workdir, messages, req) {
+		return harnessReminder{}
+	}
+	return harnessReminder{
+		Kind: "target_consistency",
+		Text: fmt.Sprintf("Harness reminder: the latest explicit target anchor is %s. Refresh any stale reports/spec.md or reports/plan.md target notes and make the final deliverable use that target before finish.", req.Display),
+	}
+}
+
+func targetConsistencyGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
+	req := latestTargetConsistencyRequirement(messages)
+	if !req.Active {
+		return "", ""
+	}
+	switch toolName {
+	case "write_file", "edit_file":
+		target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
+		if !ok || (!looksFinalArtifactPath(target.Path) && !isTargetAnchorProjectMemoryPath(target.Path)) {
+			return "", ""
+		}
+		if targetContentSatisfiesRequirement(target.Content, req) && !contentHasTargetScopeConflict(target.Content, req) {
+			return "", ""
+		}
+		return "target_consistency", fmt.Sprintf("Target-consistency guard: the latest explicit target anchor is %s. This artifact still appears to use a stale or missing target. Update the artifact content to reflect %s before writing it.", req.Display, req.Display)
+	case "finish":
+		if targetConsistencySatisfiedByMessages(workdir, messages, req) {
+			return "", ""
+		}
+		return "target_consistency", fmt.Sprintf("Target-consistency guard: before finishing, write or update the final deliverable so it reflects the latest explicit target anchor %s.", req.Display)
+	default:
+		return "", ""
+	}
+}
+
+func targetConsistencySatisfiedByMessages(workdir string, messages []session.Message, req targetConsistencyRequirement) bool {
+	pos := latestFinalArtifactWritePosition(messages)
+	if !pos.Valid {
+		return false
+	}
+	if valid, ok := pos.Result.Metadata["target_consistency_valid"].(bool); ok && valid {
+		return true
+	}
+	if strings.TrimSpace(pos.Path) != "" {
+		if data, err := os.ReadFile(pos.Path); err == nil {
+			return targetContentSatisfiesRequirement(string(data), req) && !contentHasTargetScopeConflict(string(data), req)
+		}
+	}
+	_ = workdir
+	return false
+}
+
+func annotateTargetConsistencyResult(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage, result *session.ToolResult) {
+	if result == nil || result.IsError {
+		return
+	}
+	req := latestTargetConsistencyRequirement(messages)
+	if !req.Active {
+		return
+	}
+	target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
+	if !ok || (!looksFinalArtifactPath(target.Path) && !isTargetAnchorProjectMemoryPath(target.Path)) {
+		return
+	}
+	if !targetContentSatisfiesRequirement(target.Content, req) || contentHasTargetScopeConflict(target.Content, req) {
+		return
+	}
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	}
+	result.Metadata["target_consistency_valid"] = true
+	result.Metadata["target_consistency_target"] = req.Display
+}
+
+func isTargetAnchorProjectMemoryPath(path string) bool {
+	lowered := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	for _, suffix := range []string{"reports/spec.md", "reports/plan.md"} {
+		if lowered == suffix || strings.HasSuffix(lowered, "/"+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+type writePosition struct {
+	Valid        bool
+	MessageIndex int
+	ResultIndex  int
+	Path         string
+	Result       session.ToolResult
+}
+
+func reportConsistencyReminder(workdir string, messages []session.Message) harnessReminder {
+	if !finalArtifactStaleAfterSupportingDocs(messages) {
+		return harnessReminder{}
+	}
+	path := latestFinalArtifactWritePosition(messages).Path
+	return harnessReminder{
+		Kind: "report_consistency",
+		Text: fmt.Sprintf("Harness reminder: supporting docs under reports/progress.md or reports/validation.md changed after the final report %s. Reconcile and rewrite the final report before finish.", displayPromptPath(workdir, path)),
+	}
+}
+
+func reportConsistencyGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
+	switch toolName {
+	case "write_file", "edit_file":
+		target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
+		if !ok || !looksFinalArtifactPath(target.Path) {
+			return "", ""
+		}
+		if reportContradictsSupportingDocs(workdir, target.Content) {
+			return "report_consistency", "Report-consistency guard: the final report claims unauthenticated or anonymous success, but current reports/progress.md or reports/validation.md record no-Authorization 401 / bearer-token protection. Reconcile the conclusion before writing the report."
+		}
+		return "", ""
+	case "finish":
+		if finalArtifactStaleAfterSupportingDocs(messages) {
+			return "report_consistency", "Report-consistency guard: reports/progress.md or reports/validation.md changed after the final deliverable. Rewrite or edit the final report so the conclusion matches the latest supporting docs before finishing."
+		}
+		final := latestFinalArtifactWritePosition(messages)
+		if !final.Valid || strings.TrimSpace(final.Path) == "" {
+			return "", ""
+		}
+		if data, err := os.ReadFile(final.Path); err == nil && reportContradictsSupportingDocs(workdir, string(data)) {
+			return "report_consistency", "Report-consistency guard: the final report contradicts the current validation/progress conclusion about unauthenticated access. Fix the final report before finishing."
+		}
+		return "", ""
+	default:
+		return "", ""
+	}
+}
+
+func finalArtifactStaleAfterSupportingDocs(messages []session.Message) bool {
+	final := latestFinalArtifactWritePosition(messages)
+	support := latestSupportingDocWritePosition(messages)
+	return final.Valid && support.Valid && positionAfter(support, final)
+}
+
+func latestFinalArtifactWritePosition(messages []session.Message) writePosition {
+	return latestWritePosition(messages, func(path string, _ session.ToolResult) bool {
+		return looksFinalArtifactPath(path)
+	})
+}
+
+func latestSupportingDocWritePosition(messages []session.Message) writePosition {
+	return latestWritePosition(messages, func(path string, _ session.ToolResult) bool {
+		return isProjectMemoryPath(path) && !strings.HasSuffix(strings.ToLower(filepath.ToSlash(path)), "/reports/spec.md") && !strings.HasSuffix(strings.ToLower(filepath.ToSlash(path)), "/reports/plan.md")
+	})
+}
+
+func latestWritePosition(messages []session.Message, predicate func(string, session.ToolResult) bool) writePosition {
+	var out writePosition
+	for i, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		for j, result := range msg.ToolResults {
+			if result.Name != "write_file" && result.Name != "edit_file" {
+				continue
+			}
+			path, _ := result.Metadata["path"].(string)
+			if strings.TrimSpace(path) == "" || !predicate(path, result) {
+				continue
+			}
+			out = writePosition{
+				Valid:        true,
+				MessageIndex: i,
+				ResultIndex:  j,
+				Path:         path,
+				Result:       result,
+			}
+		}
+	}
+	return out
+}
+
+func positionAfter(left, right writePosition) bool {
+	if !left.Valid || !right.Valid {
+		return false
+	}
+	if left.MessageIndex != right.MessageIndex {
+		return left.MessageIndex > right.MessageIndex
+	}
+	return left.ResultIndex > right.ResultIndex
+}
+
+func reportContradictsSupportingDocs(workdir, reportContent string) bool {
+	if !containsUnauthorizedSuccessClaim(reportContent) {
+		return false
+	}
+	support := readSupportingDocs(workdir)
+	if strings.TrimSpace(support) == "" {
+		return false
+	}
+	return supportingDocsDenyUnauthorized(support)
+}
+
+func readSupportingDocs(workdir string) string {
+	var builder strings.Builder
+	for _, rel := range []string{filepath.Join("reports", "progress.md"), filepath.Join("reports", "validation.md")} {
+		data, err := os.ReadFile(filepath.Join(workdir, rel))
+		if err == nil {
+			builder.WriteString("\n")
+			builder.Write(data)
+		}
+	}
+	return builder.String()
+}
+
+func containsUnauthorizedSuccessClaim(content string) bool {
+	lowered := strings.ToLower(content)
+	authClaim := strings.Contains(lowered, "无认证") ||
+		strings.Contains(lowered, "匿名") ||
+		strings.Contains(lowered, "未授权") ||
+		strings.Contains(lowered, "no authorization") ||
+		strings.Contains(lowered, "no auth") ||
+		strings.Contains(lowered, "anonymous")
+	success := strings.Contains(lowered, "code=0") ||
+		strings.Contains(lowered, `"code":0`) ||
+		strings.Contains(lowered, `"code": 0`) ||
+		strings.Contains(lowered, "200") ||
+		strings.Contains(lowered, "成功") ||
+		strings.Contains(lowered, "可访问")
+	return authClaim && success
+}
+
+func supportingDocsDenyUnauthorized(content string) bool {
+	lowered := strings.ToLower(content)
+	return noAuth401Pattern.MatchString(lowered) || noClearUnauthorizedPattern.MatchString(lowered)
+}
+
+func longRunTaskboardGuard(messages []session.Message, toolName string) (string, string) {
+	if toolName != "finish" || !longRunNeedsTaskboard(messages) || hasTaskGraphWriteActivity(messages) {
+		return "", ""
+	}
+	toolResults := countToolResults(messages)
+	compactions := countCompactionSummaries(messages)
+	return "long_run_taskboard", fmt.Sprintf("Taskboard guard: this long run has %d recorded tool result(s) and %d compaction summary turn(s), but no todo/task state. Before finishing, write a concise durable task state with todo_write or task_create/task_update so the session has a recoverable handoff.", toolResults, compactions)
+}
+
+func longRunNeedsTaskboard(messages []session.Message) bool {
+	stats := collectRecentToolStats(messages)
+	return countToolResults(messages) >= 80 || stats.RetrievalCount >= 60 || countCompactionSummaries(messages) >= 10
+}
+
+func countToolResults(messages []session.Message) int {
+	total := 0
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			total += len(msg.ToolResults)
+		}
+	}
+	return total
+}
+
+func countCompactionSummaries(messages []session.Message) int {
+	total := 0
+	for _, msg := range messages {
+		source, _ := msg.Meta["source"].(string)
+		if msg.Role == "user" && source == "compaction_summary" {
+			total++
+		}
+	}
+	return total
 }
 
 func retrievalBudgetNote(messages []session.Message) string {
@@ -404,6 +910,12 @@ type harnessReminder struct {
 
 func nextHarnessReminder(workdir, mode string, messages []session.Message) harnessReminder {
 	if reminder := steerCompletionReminder(workdir, mode, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
+		return reminder
+	}
+	if reminder := targetConsistencyReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
+		return reminder
+	}
+	if reminder := reportConsistencyReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
 	if reminder := artifactCompletionReminder(workdir, mode, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
@@ -622,6 +1134,15 @@ func toolGuard(workdir string, messages []session.Message, toolName string, rawA
 		return kind, text
 	}
 	if kind, text := exactArtifactLiteralGuard(workdir, messages, toolName, rawArgs); text != "" {
+		return kind, text
+	}
+	if kind, text := targetConsistencyGuard(workdir, messages, toolName, rawArgs); text != "" {
+		return kind, text
+	}
+	if kind, text := reportConsistencyGuard(workdir, messages, toolName, rawArgs); text != "" {
+		return kind, text
+	}
+	if kind, text := longRunTaskboardGuard(messages, toolName); text != "" {
 		return kind, text
 	}
 	if !yolo {

@@ -191,6 +191,89 @@ func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	}
 }
 
+func TestReportWritesRedactSecrets(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	var eventTypes []string
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   meta.Workdir,
+		Store:     store,
+		Config:    cfg,
+		Emit: func(eventType string, _ map[string]any) {
+			eventTypes = append(eventTypes, eventType)
+		},
+	}
+
+	result, err := registry.Execute(context.Background(), "write_file", execCtx, json.RawMessage(`{
+		"path":"reports/raw.md",
+		"content":"Authorization: Bearer sk-secret\nCookie: sid=abc\nOPENAI_API_KEY=sk-env\n{\"token\":\"abc\"}\n"
+	}`))
+	if err != nil {
+		t.Fatalf("write_file: %v", err)
+	}
+	if result.Metadata["redacted_secrets"] != true {
+		t.Fatalf("expected redaction metadata, got %#v", result.Metadata)
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, "reports", "raw.md"))
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	content := string(data)
+	for _, leaked := range []string{"sk-secret", "sid=abc", "sk-env", `"token":"abc"`} {
+		if strings.Contains(content, leaked) {
+			t.Fatalf("expected %q to be redacted, got %q", leaked, content)
+		}
+	}
+	if !strings.Contains(content, "Authorization: [REDACTED]") || !strings.Contains(content, "Cookie: [REDACTED]") {
+		t.Fatalf("expected redacted headers, got %q", content)
+	}
+	if len(eventTypes) != 1 || eventTypes[0] != "secret.redacted" {
+		t.Fatalf("expected secret.redacted event, got %#v", eventTypes)
+	}
+
+	plainResult, err := registry.Execute(context.Background(), "write_file", execCtx, json.RawMessage(`{
+		"path":"notes.txt",
+		"content":"Authorization: Bearer keep-me"
+	}`))
+	if err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	if plainResult.Metadata["redacted_secrets"] == true {
+		t.Fatalf("expected non-report file not to be redacted, got %#v", plainResult.Metadata)
+	}
+	plain, err := os.ReadFile(filepath.Join(workdir, "notes.txt"))
+	if err != nil {
+		t.Fatalf("read notes: %v", err)
+	}
+	if !strings.Contains(string(plain), "keep-me") {
+		t.Fatalf("expected non-report content to stay unchanged, got %q", string(plain))
+	}
+}
+
 func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
