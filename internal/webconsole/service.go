@@ -288,7 +288,7 @@ func (s *Service) meta() MetaResponse {
 	return MetaResponse{
 		SessionRoot:              s.store.Root(),
 		WorkspaceRoot:            workspaceRoot,
-		WorkspaceSwitchSupported: false,
+		WorkspaceSwitchSupported: true,
 		DefaultMode:              s.cfg.Runtime.Isolation.DefaultMode,
 		QueuePollMS:              s.cfg.Runtime.Queue.PollIntervalMS,
 		WorkerCount:              s.workers.Snapshot().DesiredCount,
@@ -1177,10 +1177,15 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	browseRoot, err := currentServerBrowseRoot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	target := root
 	requestedPath := strings.TrimSpace(r.URL.Query().Get("path"))
 	if requestedPath != "" && requestedPath != "." {
-		target, err = tools.ResolveWorkspacePath(root, requestedPath)
+		target, err = resolveWorkspaceBrowserPath(root, browseRoot, requestedPath)
 		if err != nil {
 			writeError(w, http.StatusForbidden, errors.New("access denied"))
 			return
@@ -1195,7 +1200,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("path is not a directory"))
 		return
 	}
-	tree, err := s.listDirectory(root, target)
+	tree, err := s.listDirectory(root, browseRoot, target)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1214,7 +1219,12 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	fullPath, err := tools.ResolveWorkspacePath(root, path)
+	browseRoot, err := currentServerBrowseRoot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	fullPath, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
 	if err != nil {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
@@ -1237,6 +1247,22 @@ func currentServerWorkspaceRoot() (string, error) {
 		return "", err
 	}
 	return tools.ResolveWorkspacePath(root, ".")
+}
+
+func currentServerBrowseRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return tools.ResolveWorkspacePath(cwd, ".")
+}
+
+func resolveWorkspaceBrowserPath(workspaceRoot, browseRoot, requestedPath string) (string, error) {
+	workspaceRel, err := filepath.Rel(browseRoot, workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	return tools.ResolveWorkspacePath(browseRoot, filepath.Join(workspaceRel, requestedPath))
 }
 
 func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -1617,7 +1643,7 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
-func (s *Service) listDirectory(root, current string) ([]any, error) {
+func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error) {
 	entries, err := os.ReadDir(current)
 	if err != nil {
 		return nil, err
@@ -1628,13 +1654,29 @@ func (s *Service) listDirectory(root, current string) ([]any, error) {
 		}
 		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
 	})
-	var tree []any
+	tree := []any{}
+	if current != browseRoot {
+		parent := filepath.Dir(current)
+		parentRel, _ := filepath.Rel(root, parent)
+		if parentRel == "." {
+			parentRel = ""
+		}
+		tree = append(tree, map[string]any{
+			"name":       "..",
+			"path":       parentRel,
+			"type":       "directory",
+			"navigation": "parent",
+		})
+	}
 	for _, entry := range entries {
 		if entry.Name() == "node_modules" || entry.Name() == ".git" || entry.Name() == ".go-cli-agent" {
 			continue
 		}
 		fullPath := filepath.Join(current, entry.Name())
 		relPath, _ := filepath.Rel(root, fullPath)
+		if relPath == "." {
+			relPath = ""
+		}
 		node := map[string]any{
 			"name": entry.Name(),
 			"path": relPath,

@@ -116,7 +116,7 @@ var reservedNames = map[string]struct{}{
 
 func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane) (*Registry, error) {
 	registry := &Registry{defs: map[string]Definition{}, control: control}
-	for _, def := range builtinDefinitions(cfg, control) {
+	for _, def := range builtinDefinitions(cfg, catalog, control) {
 		registry.Register(def)
 	}
 	if catalog != nil {
@@ -161,7 +161,7 @@ func (r *Registry) Execute(ctx context.Context, name string, execCtx ExecContext
 	return def.Execute(ctx, execCtx, args)
 }
 
-func builtinDefinitions(cfg *config.Config, control ControlPlane) []Definition {
+func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control ControlPlane) []Definition {
 	defs := []Definition{
 		defShell(),
 		defReadFile(),
@@ -171,7 +171,7 @@ func builtinDefinitions(cfg *config.Config, control ControlPlane) []Definition {
 		defGrepFiles(),
 		defGrep(),
 		defFinish(),
-		defLoadSkill(),
+		defLoadSkill(catalog),
 		defTodoWrite(),
 		defTodoRead(),
 		defTaskCreate(),
@@ -847,16 +847,24 @@ func defFinish() Definition {
 	}
 }
 
-func defLoadSkill() Definition {
+func defLoadSkill(catalog *skills.Catalog) Definition {
+	availableSkills := catalog.Names()
+	nameSchema := map[string]any{"type": "string"}
+	description := "Load a registered skill definition by exact name."
+	if len(availableSkills) > 0 {
+		nameSchema["enum"] = availableSkills
+		description = fmt.Sprintf("Load a registered skill definition by exact name. Available skills: %s.", strings.Join(availableSkills, ", "))
+	}
 	return Definition{
 		Name:        "load_skill",
-		Description: "Load skill definition by name.",
+		Description: description,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string"},
+				"name": nameSchema,
 			},
-			"required": []string{"name"},
+			"required":             []string{"name"},
+			"additionalProperties": false,
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
@@ -870,6 +878,9 @@ func defLoadSkill() Definition {
 			}
 			body, err := execCtx.Catalog.LoadBody(input.Name)
 			if err != nil {
+				if available := execCtx.Catalog.Names(); len(available) > 0 {
+					err = fmt.Errorf("%w; available skills: %s", err, strings.Join(available, ", "))
+				}
 				return errorResult("load_skill", err), nil
 			}
 			skill, _ := execCtx.Catalog.Load(input.Name)

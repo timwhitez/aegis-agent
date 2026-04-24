@@ -36,6 +36,7 @@ const state = {
   toastCounter: 0,
   skills: [],
   fileTree: [],
+  workspacePath: '',
   optimisticMessages: [],
   liveEvents: [],
   liveActivity: {
@@ -199,7 +200,7 @@ function setupWebSocket() {
 
   ws.onopen = () => {
     state.isConnected = true;
-    nodes.connectionStatus.innerText = 'Agent Connected';
+    updateConnectionStatus();
     updateUI();
     queueOverviewRefresh(120);
   };
@@ -217,7 +218,7 @@ function setupWebSocket() {
   ws.onclose = () => {
     state.isConnected = false;
     state.ws = null;
-    nodes.connectionStatus.innerText = 'Disconnected';
+    updateConnectionStatus();
     if (state.isGenerating) {
       state.isGenerating = false;
       state.liveActivity = {
@@ -743,7 +744,8 @@ async function sendMessage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: text
+          prompt: text,
+          workdir: selectedWorkspaceWorkdir()
         })
       });
       adoptSession(resp.session_id, true);
@@ -924,13 +926,25 @@ function setGenerating(value, activity) {
   renderCurrentSession();
 }
 
+function updateConnectionStatus() {
+  if (!nodes.connectionStatus) {
+    return;
+  }
+  if (!state.isConnected) {
+    nodes.connectionStatus.innerText = 'Disconnected';
+    return;
+  }
+  nodes.connectionStatus.innerText = 'Agent Connected';
+}
+
 function updateSessionId() {
   const detail = state.sessionDetail;
   if (detail?.metadata) {
-    nodes.sessionIdDisplay.innerText = `${humanizeStatus(detail.state?.status || 'loaded')} · ${shortId(detail.metadata.id)} · ${detail.metadata.provider || 'provider'}/${detail.metadata.model || 'model'} · ${workdirBase(detail.metadata.workdir)}`;
-    return;
+    nodes.sessionIdDisplay.innerText = `${humanizeStatus(detail.state?.status || 'loaded')} · ${detail.metadata.id} · ${detail.metadata.provider || 'provider'}/${detail.metadata.model || 'model'} · ${workdirBase(detail.metadata.workdir)}`;
+  } else {
+    nodes.sessionIdDisplay.innerText = `ID: ${state.sessionId}`;
   }
-  nodes.sessionIdDisplay.innerText = `ID: ${state.sessionId}`;
+  updateConnectionStatus();
 }
 
 function updateUI() {
@@ -2827,7 +2841,8 @@ function renderQueueView() {
           body: JSON.stringify({
             prompt: prompt,
             parent_session_id: parentInput.value.trim(),
-            agent_role: agentInput.value.trim()
+            agent_role: agentInput.value.trim(),
+            workdir: selectedWorkspaceWorkdir()
           })
         });
         showToast('Job submitted successfully.', 'success');
@@ -3274,11 +3289,9 @@ async function fetchWorkspace() {
     }
     updateWorkspaceMeta();
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
-    nodes.editorFilename.innerText = 'Workspace';
+    nodes.editorFilename.innerText = workspaceDisplayName();
     nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
-    const tree = await requestJSON('/api/files?path=.');
-    state.fileTree = tree;
-    renderFileTree(tree);
+    await loadWorkspaceDirectory(state.workspacePath || '');
   } catch (err) {
     console.error('workspace error', err);
     nodes.fileTree.innerHTML = '<div class="empty-panel">Failed to load workspace.</div>';
@@ -3298,14 +3311,49 @@ function updateWorkspaceMeta() {
     if (state.meta?.workspace_switch_supported) {
       nodes.workspaceSubtitle.textContent = 'Browse the active workspace and switch roots when needed.';
     } else {
-      nodes.workspaceSubtitle.textContent = 'Browsing the current server workspace only. Switching roots is not available in this experimental view.';
+      nodes.workspaceSubtitle.textContent = 'Browsing the selected workspace path. Use .. to move to the parent directory.';
     }
   }
   if (nodes.workspaceRootChip) {
     const root = String(state.meta?.workspace_root || '').trim();
-    nodes.workspaceRootChip.textContent = root ? shortenPath(root) : 'current cwd';
-    nodes.workspaceRootChip.title = root || 'current cwd';
+    const selected = selectedWorkspaceWorkdir();
+    nodes.workspaceRootChip.textContent = selected || root || 'current cwd';
+    nodes.workspaceRootChip.title = selected || root || 'current cwd';
   }
+}
+
+async function loadWorkspaceDirectory(path = '') {
+  const normalized = normalizeWorkspacePath(path);
+  const queryPath = normalized || '.';
+  nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
+  const tree = await requestJSON(`/api/files?path=${encodeURIComponent(queryPath)}`);
+  state.workspacePath = normalized;
+  state.fileTree = tree;
+  renderFileTree(tree);
+  updateWorkspaceMeta();
+  nodes.editorFilename.innerText = workspaceDisplayName();
+  nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
+}
+
+function normalizeWorkspacePath(path = '') {
+  const normalized = String(path || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+|\/+$/g, '');
+  return normalized === '.' ? '' : normalized;
+}
+
+function workspaceDisplayName() {
+  return state.workspacePath ? `Workspace / ${state.workspacePath}` : 'Workspace';
+}
+
+function selectedWorkspaceWorkdir() {
+  const root = String(state.meta?.workspace_root || '').trim();
+  if (!root) {
+    return '';
+  }
+  const rel = normalizeWorkspacePath(state.workspacePath);
+  return rel ? `${root.replace(/\/+$/g, '')}/${rel}` : root;
 }
 
 function renderFileTree(tree, container = nodes.fileTree, level = 0) {
@@ -3316,7 +3364,9 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     return;
   }
   if (level === 0 && tree.length === 0) {
-    container.innerHTML = '<div class="empty-panel">This workspace is empty.</div>';
+    container.innerHTML = state.workspacePath
+      ? '<div class="empty-panel">This directory is empty.</div>'
+      : '<div class="empty-panel">This workspace is empty.</div>';
     return;
   }
 
@@ -3324,7 +3374,7 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     const itemWrapper = document.createElement('div');
     const button = document.createElement('button');
     button.className = `tree-node tree-level-${Math.min(level, 8)}`;
-    const icon = node.type === 'directory' ? 'folder' : 'file-code';
+    const icon = node.navigation === 'parent' ? 'corner-up-left' : node.type === 'directory' ? 'folder' : 'file-code';
     button.innerHTML = `<i data-lucide="${icon}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
     const childrenContainer = document.createElement('div');
     childrenContainer.className = 'tree-node-children';
@@ -3333,20 +3383,30 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     }
 
     button.addEventListener('click', async () => {
+      if (node.navigation === 'parent') {
+        button.disabled = true;
+        button.classList.add('is-loading');
+        try {
+          await loadWorkspaceDirectory(node.path || '');
+        } catch (err) {
+          showToast('Failed to load parent directory.', 'error');
+        } finally {
+          button.disabled = false;
+          button.classList.remove('is-loading');
+        }
+        return;
+      }
       if (node.type === 'file') {
         await loadFile(node.path);
         document.querySelectorAll('.tree-node').forEach((treeNode) => treeNode.classList.remove('active'));
         button.classList.add('active');
         return;
       }
-      const hidden = childrenContainer.classList.contains('is-collapsed');
-      if (hidden && !node.childrenLoaded) {
+      if (node.type === 'directory') {
         button.disabled = true;
         button.classList.add('is-loading');
         try {
-          node.children = await requestJSON(`/api/files?path=${encodeURIComponent(node.path)}`);
-          node.childrenLoaded = true;
-          renderFileTree(node.children, childrenContainer, level + 1);
+          await loadWorkspaceDirectory(node.path);
         } catch (err) {
           nodes.editorFilename.innerText = node.path;
           nodes.editorContent.innerText = 'Error loading directory.';
@@ -3355,11 +3415,6 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
           button.disabled = false;
           button.classList.remove('is-loading');
         }
-      }
-      childrenContainer.classList.toggle('is-collapsed', !hidden);
-      button.innerHTML = `<i data-lucide="${hidden ? 'folder-open' : 'folder'}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
-      if (window.lucide && lucide.createIcons) {
-        lucide.createIcons({ root: button });
       }
     });
 

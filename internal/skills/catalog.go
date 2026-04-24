@@ -93,6 +93,15 @@ func (c *Catalog) Summaries() []Summary {
 	return out
 }
 
+func (c *Catalog) Names() []string {
+	if c == nil {
+		return nil
+	}
+	out := make([]string, len(c.order))
+	copy(out, c.order)
+	return out
+}
+
 func (c *Catalog) Load(name string) (Skill, error) {
 	skill, ok := c.skills[name]
 	if !ok {

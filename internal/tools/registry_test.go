@@ -967,6 +967,60 @@ func TestSkillCommandToolExecutesFromSkillDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadSkillSchemaRestrictsNamesAndReportsAvailableSkills(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "timwhite-security-review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: timwhite-security-review\ndescription: Security review workflow\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	def := registry.Get("load_skill")
+	if def == nil {
+		t.Fatal("load_skill definition missing")
+	}
+	properties, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties schema, got %#v", def.InputSchema["properties"])
+	}
+	nameSchema, ok := properties["name"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected name schema, got %#v", properties["name"])
+	}
+	if got := fmt.Sprint(nameSchema["enum"]); !strings.Contains(got, "timwhite-security-review") {
+		t.Fatalf("expected load_skill name enum to include registered skill, got %#v", nameSchema["enum"])
+	}
+	if !strings.Contains(def.Description, "timwhite-security-review") {
+		t.Fatalf("expected description to list registered skills, got %q", def.Description)
+	}
+
+	result, err := registry.Execute(context.Background(), "load_skill", ExecContext{
+		Workdir: root,
+		Config:  cfg,
+		Catalog: catalog,
+	}, json.RawMessage(`{"name":"code-audit"}`))
+	if err != nil {
+		t.Fatalf("execute load_skill: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected unknown skill to return tool error, got %#v", result)
+	}
+	if !strings.Contains(result.DisplayOutput, `unknown skill "code-audit"`) || !strings.Contains(result.DisplayOutput, "available skills: timwhite-security-review") {
+		t.Fatalf("expected available skill hint in error, got %q", result.DisplayOutput)
+	}
+}
+
 func TestLoadSkillIncludesShellWorkdirHint(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()

@@ -290,7 +290,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(cssBody, ".message-bubble-plaintext") {
 		t.Fatalf("expected plaintext user-message styles, got styles.css body: %s", cssBody)
 	}
-	if !strings.Contains(cssBody, "--chat-input-clearance") || !strings.Contains(cssBody, "margin-bottom: var(--chat-input-clearance)") {
+	if !strings.Contains(cssBody, "--chat-input-clearance") || !strings.Contains(cssBody, "padding: 24px 0 var(--chat-input-clearance)") || !strings.Contains(cssBody, "#chat-view .chat-container") || !strings.Contains(cssBody, "overflow-y: auto") {
 		t.Fatalf("expected session chat container to reserve visible scrollbar clearance, got styles.css body: %s", cssBody)
 	}
 	for _, selector := range []string{"#skills-view.view", "#workspace-view.view", "#history-view.view", "#settings-view.view"} {
@@ -1301,7 +1301,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 
 	var nested []map[string]any
 	postGetJSON(t, ts.URL+"/api/files?path="+url.QueryEscape("nested"), &nested)
-	if len(nested) != 1 || nested[0]["name"] != "hello.txt" {
+	if len(nested) != 2 || nested[0]["name"] != ".." || nested[0]["navigation"] != "parent" || nested[1]["name"] != "hello.txt" {
 		t.Fatalf("unexpected nested directory listing: %#v", nested)
 	}
 
@@ -1311,7 +1311,12 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		t.Fatalf("unexpected file content: %#v", readResp)
 	}
 
-	resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../outside.txt"))
+	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("../root-only.txt"), &readResp)
+	if readResp["content"] != "server cwd file" {
+		t.Fatalf("expected browser parent read to stay within server cwd, got %#v", readResp)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../../outside.txt"))
 	if err != nil {
 		t.Fatalf("escape read request: %v", err)
 	}
@@ -1321,7 +1326,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		t.Fatalf("expected forbidden for escape read, got %d body=%s", resp.StatusCode, string(body))
 	}
 
-	resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape("../root-only.txt"))
+	resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape("../../"))
 	if err != nil {
 		t.Fatalf("escape list request: %v", err)
 	}
@@ -1329,6 +1334,36 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected forbidden for escape list, got %d body=%s", resp.StatusCode, string(body))
+	}
+}
+
+func TestServiceWorkspaceRootIncludesParentNavigationWhenEmpty(t *testing.T) {
+	root := t.TempDir()
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var tree []map[string]any
+	postGetJSON(t, ts.URL+"/api/files", &tree)
+	if len(tree) != 1 || tree[0]["name"] != ".." || tree[0]["path"] != ".." || tree[0]["navigation"] != "parent" {
+		t.Fatalf("expected empty workspace to expose parent navigation, got %#v", tree)
 	}
 }
 
@@ -1364,8 +1399,8 @@ func TestServiceMetaReportsDefaultWorkspaceSubdirOnly(t *testing.T) {
 	if info, err := os.Stat(workspaceRoot); err != nil || !info.IsDir() {
 		t.Fatalf("expected workspace root to be created, info=%#v err=%v", info, err)
 	}
-	if meta.WorkspaceSwitchSupported {
-		t.Fatalf("expected workspace switching to be disabled, got %#v", meta)
+	if !meta.WorkspaceSwitchSupported {
+		t.Fatalf("expected workspace parent navigation to be enabled, got %#v", meta)
 	}
 }
 

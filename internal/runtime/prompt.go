@@ -58,7 +58,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("\n## Tool Use\n")
 	builder.WriteString("- Tool names are capabilities, not workspace files or shell binaries.\n")
 	builder.WriteString("- Workspace boundary is the current workdir. Do not read `../` or absolute paths outside it unless the user explicitly expands scope.\n")
-	builder.WriteString("- Use `load_skill` only for skill names when you need the body of a `SKILL.md` file.\n")
+	builder.WriteString("- Use `load_skill` only with exact names listed under Available skills; never invent aliases or legacy skill names.\n")
 	if notes := runtimeBehaviorNotes(workdir, mode, messages); len(notes) > 0 {
 		builder.WriteString("\n## Runtime Notes\n")
 		for _, note := range notes {
@@ -74,7 +74,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 		}
 		builder.WriteString("### How to use skills\n")
 		builder.WriteString("- If the user explicitly names a skill, prefer using it for that turn.\n")
-		builder.WriteString("- Use `load_skill` tool to load the full skill content when needed.\n")
+		builder.WriteString("- Use `load_skill` tool to load the full skill content when needed, passing the exact listed skill name.\n")
 	}
 	if len(skillTools) > 0 {
 		builder.WriteString("\n## Skill Command Tools\n")

@@ -28,9 +28,10 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 		"## Tool Use",
 		"Tool names are capabilities, not workspace files or shell binaries.",
 		"Workspace boundary is the current workdir.",
-		"Use `load_skill` only for skill names",
+		"Use `load_skill` only with exact names listed under Available skills",
 		"## Skills",
 		"### Available skills",
+		"- repo_audit: Repository audit workflow",
 		"## Skill Command Tools",
 		"- markdown_inventory: List Markdown files",
 	}
