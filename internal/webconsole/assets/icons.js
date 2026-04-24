@@ -21,7 +21,8 @@
     'check-check': 'M3 12l4 4 7-8 M13 15l2 2 6-7',
     user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0',
     bot: 'M7 8h10v8H7z M9 12h.01 M15 12h.01 M12 4v4 M8 20h8',
-    terminal: 'M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5'
+    terminal: 'M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5',
+    'panel-right': 'M4 5h16v14H4z M14 5v14'
   };
 
   function svgFor(name) {

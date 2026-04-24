@@ -72,6 +72,9 @@ const nodes = {
   sessionIdDisplay: document.getElementById('session-id-display'),
   sessionRail: document.getElementById('session-rail'),
   inspectorPanel: document.getElementById('inspector-panel'),
+  inspectorToggleBtn: document.getElementById('inspector-toggle-btn'),
+  inspectorSlideOut: document.getElementById('inspector-slide-out'),
+  inspectorBackdrop: document.getElementById('inspector-backdrop'),
   newSessionBtn: document.getElementById('new-session-btn'),
   stopSessionBtn: document.getElementById('stop-session-btn'),
   interruptSessionBtn: document.getElementById('interrupt-session-btn'),
@@ -355,6 +358,9 @@ function setupEventListeners() {
     );
   });
 
+  nodes.inspectorToggleBtn?.addEventListener('click', toggleInspectorSlideOut);
+  nodes.inspectorBackdrop?.addEventListener('click', closeInspectorSlideOut);
+
   nodes.chatInput.addEventListener('keydown', (event) => {
     if (shouldInsertChatNewline(event)) {
       event.preventDefault();
@@ -473,32 +479,18 @@ function setupEventListeners() {
       return;
     }
 
-    const queueSubmit = event.target.closest('[data-queue-submit]');
-    if (queueSubmit) {
-      const prompt = document.getElementById('queue-submit-prompt')?.value?.trim() || '';
-      if (!prompt) {
-        showToast('Queue prompt is required.', 'error');
-        return;
-      }
-      queueSubmit.disabled = true;
-      try {
-        const job = await requestJSON('/api/queue/jobs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            parent_session_id: hasDurableSession() ? state.sessionId : '',
-            mode: 'exec'
-          })
-        });
-        state.selectedQueueJobId = job.id;
-        showToast('Queue job submitted.', 'success');
-        await fetchQueue();
-        queueOverviewRefresh(120);
-      } catch (err) {
-        showToast(err.message || 'Failed to submit queue job.', 'error');
-      } finally {
-        queueSubmit.disabled = false;
+    const continueBtn = event.target.closest('[data-continue-session]');
+    if (continueBtn) {
+      const sessionID = continueBtn.getAttribute('data-continue-session');
+      if (sessionID) {
+        continueBtn.disabled = true;
+        try {
+          await requestContinueSession(sessionID);
+        } finally {
+          if (document.body.contains(continueBtn)) {
+            continueBtn.disabled = false;
+          }
+        }
       }
       return;
     }
@@ -796,6 +788,46 @@ async function requestStop() {
     showToast(err.message || 'Failed to stop the session.', 'error');
   }
   renderCurrentSession();
+}
+
+async function requestContinueSession(sessionID) {
+  try {
+    await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: '' })
+    });
+    showToast('Session continued.', 'success');
+    queueSessionRefresh(120);
+    queueOverviewRefresh(180);
+    if (state.currentView === 'queue') {
+      await fetchQueue();
+    }
+  } catch (err) {
+    showToast(err.message || 'Failed to continue session.', 'error');
+  }
+}
+
+function isCompactLayout() {
+  return window.innerWidth < 1100;
+}
+
+function toggleInspectorSlideOut() {
+  const slideOut = nodes.inspectorSlideOut;
+  const backdrop = nodes.inspectorBackdrop;
+  if (!slideOut || !backdrop) return;
+  const isOpen = slideOut.classList.contains('is-open');
+  if (isOpen) {
+    closeInspectorSlideOut();
+  } else {
+    slideOut.classList.add('is-open');
+    backdrop.classList.add('is-open');
+  }
+}
+
+function closeInspectorSlideOut() {
+  nodes.inspectorSlideOut?.classList.remove('is-open');
+  nodes.inspectorBackdrop?.classList.remove('is-open');
 }
 
 function adoptSession(sessionID, backed) {
@@ -1157,7 +1189,11 @@ function renderCurrentSession() {
     mutated = patchAuxSlot(nodes.sessionRail, 'rail', renderSessionRail()) || mutated;
   }
   if (nodes.inspectorPanel) {
-    mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', renderInspectorPanel()) || mutated;
+    const inspectorHTML = renderInspectorPanel();
+    mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', inspectorHTML) || mutated;
+    if (isCompactLayout() && nodes.inspectorSlideOut) {
+      patchAuxSlot(nodes.inspectorSlideOut, 'inspector', inspectorHTML);
+    }
   }
 
   if (!mutated) {
@@ -1395,6 +1431,8 @@ function renderSessionActivityCard() {
   const failureSummary = detail ? summarizeProviderFailure(detail) : null;
   const copy = failureSummary?.activityCopy || detail?.state?.last_error || state.liveActivity.copy;
   const summary = summarizeLiveCounters(counters);
+  const canContinue = hasDurableSession() &&
+    ['paused', 'awaiting_input', 'failed'].includes(status);
 
   return `
     <section class="session-flow-card">
@@ -1409,6 +1447,7 @@ function renderSessionActivityCard() {
         </div>
       </div>
       <div class="session-flow-copy">${escapeHTML(copy || 'Waiting for the next update.')}</div>
+      ${canContinue ? `<div class="session-flow-actions"><button class="inline-action-btn" type="button" data-continue-session="${escapeAttr(state.sessionId)}">Continue session</button></div>` : ''}
     </section>
   `;
 }
@@ -2658,8 +2697,8 @@ function renderQueueView() {
   container.innerHTML = `
     <div class="view-header history-header">
       <div>
-        <h2 class="view-title">Queue monitor</h2>
-        <p class="view-subtitle">Optional background jobs. Normal work starts from Session; this view only shows durable queued runs and their child session links.</p>
+        <h2 class="view-title">Queue</h2>
+        <p class="view-subtitle">Background jobs and their child session links.</p>
       </div>
       <button class="ghost-action-btn" type="button" data-queue-refresh>Refresh</button>
     </div>
@@ -2674,26 +2713,10 @@ function renderQueueView() {
         <div class="panel-card-header"><h3 class="view-title compact-title">Jobs</h3></div>
         <div class="panel-card-body">${jobs.length ? jobs.map((job) => renderQueueJobCard(job)).join('') : '<div class="empty-panel">No queue jobs yet.</div>'}</div>
       </section>
-      <aside class="queue-side-stack">
-        <section class="panel-card">
-          <div class="panel-card-header"><h3 class="view-title compact-title">Selected job</h3></div>
-          <div class="panel-card-body">${selected ? renderQueueDetail(selected) : '<div class="empty-panel">Select a queue job to inspect detail.</div>'}</div>
-        </section>
-        <section class="panel-card queue-submit-panel">
-          <div class="panel-card-header">
-            <div>
-              <h3 class="view-title compact-title">Start background job</h3>
-              <p class="view-subtitle">Advanced: use this only when you intentionally want a child session to run outside the main chat.</p>
-            </div>
-          </div>
-          <div class="panel-card-body">
-            <textarea id="queue-submit-prompt" class="queue-submit-input" rows="4" placeholder="Prompt for the background child session"></textarea>
-            <div class="card-actions">
-              <button class="skill-btn install" type="button" data-queue-submit>Submit job</button>
-            </div>
-          </div>
-        </section>
-      </aside>
+      <section class="panel-card">
+        <div class="panel-card-header"><h3 class="view-title compact-title">Job detail</h3></div>
+        <div class="panel-card-body">${selected ? renderQueueDetail(selected) : '<div class="empty-panel">Select a queue job to inspect detail.</div>'}</div>
+      </section>
     </div>
   `;
   if (window.lucide && lucide.createIcons) {
@@ -2702,6 +2725,8 @@ function renderQueueView() {
 }
 
 function renderQueueDetail(job) {
+  const canContinue = job.session_id &&
+    ['paused', 'awaiting_input', 'failed'].includes(job.session_status || job.status);
   return `
     <div class="kv-list" data-testid="queue-job-detail" data-queue-job-id="${escapeAttr(job.id)}">
       ${renderKVRow('Job', job.id)}
@@ -2712,6 +2737,7 @@ function renderQueueDetail(job) {
       ${job.final_text ? renderKVRow('Final text', truncateText(job.final_text, 220)) : ''}
       ${job.prompt ? renderKVRow('Prompt', truncateText(job.prompt, 280)) : ''}
       <div class="card-actions">
+        ${canContinue ? `<button class="skill-btn install" type="button" data-continue-session="${escapeAttr(job.session_id)}">Continue session</button>` : ''}
         ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
         ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
       </div>
