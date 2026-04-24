@@ -1,13 +1,48 @@
-# `go-cli-agent` 与 `compare` agent 框架对比分析
+# `go-cli-agent` 与 `compare` Agent 框架对比分析
 
-## 1. 范围与方法
+## 1. 本轮结论
 
-本文对比的两个对象是：
+### 1.1 一句话结论
 
-- 当前主代码库 `go-cli-agent/`
-- 仓库内对照实现 `compare/`（下文提到的 `compare` 均指这个目录）
+`go-cli-agent` 当前更适合作为 **session-first、provider-rich、交互可恢复** 的通用 CLI agent harness。
 
-本次分析先读取了当前仓库要求优先阅读的 spec：
+`compare` 当前更适合作为 **run-first、contract-driven、长任务交付纪律强** 的 CLI agent framework。
+
+这不是“谁完全胜出”的关系。两者解决的是同一大类问题里的不同重心：
+
+- `go-cli-agent` 的优势在于把 provider 差异、session 持久化、`steer`、`continue`、task graph、review guard、queue / child session / web observability 都放进同一套本地 session 事实源。
+- `compare` 的优势在于把 command contract、required artifact、todo progress、parent/sub-agent checkpoint、callback resume、operator trace 做成一次 run 的硬约束。
+
+当前项目最应该吸收的是 `compare` 的 **contract layer、completion controller、long-run checkpoint、workspace extension trust gate、operator summary**，而不是照搬它的 command-first 产品叙事。
+
+### 1.2 最重要的修正文档点
+
+上一版文档的大方向基本正确，但粒度还不够硬。本轮需要更明确地区分：
+
+- `go-cli-agent` 的 child 是 **child session / queue job / background notification** 模型。
+- `compare` 的 child 是 **child run + parent callback + checkpoint orchestration** 模型。
+- `go-cli-agent` 的 `continue` 是 session resume；`compare` 的 `resume` 是 checkpoint resume，并且会验证 provider / model / workspace / trust flags。
+- `go-cli-agent` 的 review/report guard 是 runtime quality gate；`compare` 的 required-artifact gate 是 run contract gate。两者都能阻断“模型自认为完成”，但阻断依据不同。
+- `compare` 有更强的 command contract 和 parent-side orchestration；`go-cli-agent` 有更完整的 provider adapter、live steering、task graph 和 session store。
+
+### 1.3 当前快照
+
+本轮分析基于当前工作区真实代码，而不是 README 级别判断：
+
+- 主项目：`go-cli-agent/`
+- 对照项目：`compare/`
+- 根仓库将 `compare` 记录为 gitlink：`160000 831c2ff7cd02ba8d2cf2a33ef4bcdd41f26c4f2a compare`
+- `compare` 嵌套仓库当前 HEAD：`831c2ff`
+
+说明：本文只比较当前可见实现。若后续 `compare/` 嵌套仓库移动 HEAD，本结论需要重新核对。
+
+---
+
+## 2. 分析范围与方法
+
+### 2.1 先读当前项目 spec
+
+本轮按仓库要求先阅读以下 spec，再进入代码对比：
 
 - `spec/00-product.md`
 - `spec/01-runtime-architecture.md`
@@ -17,615 +52,1240 @@
 - `spec/12-task-system.md`
 - `spec/13-live-input-and-steering.md`
 
-随后重点阅读了两边的以下实现：
+这些 spec 给当前项目划定了几个硬边界：
 
-- `go-cli-agent`：
-  - `internal/runtime/facade.go`
-  - `internal/runtime/runner.go`
-  - `internal/runtime/engine.go`
-  - `internal/runtime/delegation.go`
-  - `internal/runtime/compaction.go`
-  - `internal/runtime/project_memory.go`
-  - `internal/runtime/review_guard.go`
-  - `internal/provider/*.go`
-  - `internal/session/store.go`
-  - `internal/session/taskboard.go`
-  - `internal/session/types.go`
-  - `internal/tools/registry.go`
-  - `internal/tools/path.go`
-  - `internal/skills/catalog.go`
-  - `internal/webconsole/service.go`
-  - `internal/app/app.go`
-- `compare`：
-  - `compare/internal/runtime/run.go`
-  - `compare/internal/runtime/command_runner.go`
-  - `compare/internal/runtime/resume.go`
-  - `compare/internal/runtime/parent_controller.go`
-  - `compare/internal/runtime/runtime_tools.go`
-  - `compare/internal/runtime/provider.go`
-  - `compare/internal/runtime/openai_response.go`
-  - `compare/internal/context/compaction.go`
-  - `compare/internal/session/schema.go`
-  - `compare/internal/session/longrun.go`
-  - `compare/internal/delegation/manager.go`
-  - `compare/internal/delegation/delegation.go`
-  - `compare/internal/extensions/extensions.go`
-  - `compare/internal/tools/builtins.go`
-  - `compare/internal/tools/workspace.go`
-  - `compare/internal/tasks/todo.go`
-  - `compare/cmd/opsx/main.go`
+- 默认主路径是 `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`。
+- `delegate` / `children` / `queue` / `tui` / `web` 是显式扩展或 experimental surface。
+- core runtime、sdk facade、cli adapter 必须分离。
+- provider 差异必须留在 adapter 层。
+- session / state / messages / events 必须是事实源。
+- compaction 只能改变 provider context view，不能覆盖原始日志。
+- 当前默认产品叙事仍是 CLI-only harness，不是 Web-first 或 TUI-first。
 
-本文会明确区分三类内容：
+### 2.2 核对的主项目代码
 
-- **已验证事实**：能直接从代码/结构中看到
-- **设计判断**：根据实现形态得出的架构取向判断
-- **借鉴建议**：在不破坏当前产品边界前提下的迁移建议
+`go-cli-agent` 重点核对了：
+
+- `internal/app/app.go`
+- `internal/runtime/facade.go`
+- `internal/runtime/runner.go`
+- `internal/runtime/engine.go`
+- `internal/runtime/delegation.go`
+- `internal/runtime/compaction.go`
+- `internal/runtime/prompt.go`
+- `internal/runtime/review_guard.go`
+- `internal/provider/types.go`
+- `internal/provider/http.go`
+- `internal/provider/openai.go`
+- `internal/provider/anthropic.go`
+- `internal/provider/google.go`
+- `internal/session/types.go`
+- `internal/session/store.go`
+- `internal/session/taskboard.go`
+- `internal/tools/path.go`
+- `internal/tools/registry.go`
+- `internal/skills/catalog.go`
+- `internal/webconsole/service.go`
+
+### 2.3 核对的 `compare` 代码
+
+`compare` 重点核对了：
+
+- `compare/cmd/opsx/main.go`
+- `compare/internal/runtime/run.go`
+- `compare/internal/runtime/command_runner.go`
+- `compare/internal/runtime/resume.go`
+- `compare/internal/runtime/parent_controller.go`
+- `compare/internal/runtime/runtime_tools.go`
+- `compare/internal/runtime/provider.go`
+- `compare/internal/runtime/openai_response.go`
+- `compare/internal/runtime/config.go`
+- `compare/internal/delegation/manager.go`
+- `compare/internal/delegation/delegation.go`
+- `compare/internal/session/schema.go`
+- `compare/internal/session/longrun.go`
+- `compare/internal/extensions/extensions.go`
+- `compare/internal/tools/workspace.go`
+- `compare/internal/tools/builtins.go`
+- `compare/internal/tools/shell_sandbox_linux.go`
+- `compare/internal/context/compaction.go`
+- `compare/internal/logs/summary.go`
+- `compare/docs/acceptance-matrix.md`
+- `compare/docs/run-artifact-layout.md`
+- `compare/docs/quickstart.md`
+
+### 2.4 术语约定
+
+本文使用三种结论标签：
+
+- **已验证事实**：能从当前代码结构或测试中直接看到。
+- **设计判断**：基于代码形态得出的架构取向判断。
+- **借鉴建议**：在当前项目 phase 边界内建议吸收的机制。
 
 ---
 
-## 2. 结论先行
+## 3. 顶层对比矩阵
 
-### 2.1 一句话结论
-
-- `go-cli-agent` 更像一个 **session-first、provider-rich、交互/恢复语义相对更完整** 的通用 agent harness。
-- `compare` 更像一个 **run-first、contract-driven、长任务执行纪律更强** 的 CLI agent framework。
-
-### 2.2 不是“谁全面胜出”，而是“优化目标不同”
-
-从代码看，这两个框架并不是简单的“新旧版本关系”，而是两种不同的产品判断：
-
-- `go-cli-agent` 把 **交互式 session、实时 steer、provider 抽象、任务图、review guard、实验性扩展面** 放在更重要的位置。
-- `compare` 把 **长任务交付纪律、required artifact、todo 推进、sub-agent park/resume、checkpoint resume、可信扩展资产** 放在更核心的位置。
-
-因此，两边最值得借鉴的不是“照搬目录结构”，而是：
-
-- `go-cli-agent` 借鉴 `compare` 的 **contract / checkpoint / completion gate**
-- `compare` 借鉴 `go-cli-agent` 的 **provider / steer / task graph / evidence-aware compaction**
+| 维度 | `go-cli-agent` | `compare` | 判断 |
+| --- | --- | --- | --- |
+| durable unit | session | run | 当前项目更适合交互恢复；`compare` 更适合批任务交付审计 |
+| 默认 CLI surface | `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor` | `opsx run/command/resume/smoke` | 当前项目主路径更通用；`compare` 更收敛 |
+| provider | OpenAI / Anthropic / Google / openai-compatible | fake / openai-response | 当前项目明显更强 |
+| provider option durability | session metadata 持久化 generation / retry / timeout | state 记录 provider/model/attempts，但 option 面更窄 | 当前项目更适合多 provider 平台化 |
+| live steer | 一等能力，`control/steer.jsonl` | 未看到同级 live steer | 当前项目明显更强 |
+| resume | session `continue` | long-run checkpoint `resume` | 两者强项不同；`compare` checkpoint 更硬 |
+| completion gate | `finish` + review/target/report/taskboard/pre-completion guards | `ParentController.CanComplete()` + artifact/todo/child gate | `compare` 更统一；当前项目更丰富但分散 |
+| task model | todo + persistent task graph | todo | 当前项目表达力更强；`compare` 执行纪律更强 |
+| sub-agent | child session / queue job / background notification | child run / detached manager / callback / checkpoint | 不可混同；`compare` parent-side orchestration 更强 |
+| extension assets | skills + command tools | `.agent/skills/commands/agents/plugins` + trust gate | `compare` 的 workspace extension contract 更完整 |
+| shell/tool boundary | workspace path + symlink safety + env allowlist + timeout | workspace boundary + symlink safety + `.git` write deny + Linux bwrap sandbox | 各有优势，`compare` shell sandbox 更硬 |
+| operator trace | session events/messages/state/tasks/artifacts，Web 读模型丰富 | `run.md` + `events.jsonl` + `state.json` + checkpoints 很直接 | `compare` 人读摘要更直接 |
+| product risk | 功能面多，completion rules 容易分散 | provider/steer/task graph 相对薄 | 当前项目要防止扩展面污染 core；`compare` 要防止 contract-first 牺牲交互性 |
 
 ---
 
-## 3. 顶层架构差异
+## 4. Durable Truth：session-first vs run-first
 
-### 3.1 durable truth 的基本单位不同
+### 4.1 `go-cli-agent` 的 durable unit 是 session
 
 **已验证事实**
 
-- `go-cli-agent` 的 durable truth 是 **session 目录**，由 `session.json`、`state.json`、`messages.jsonl`、`events.jsonl`、`control/`、`tasks/`、`artifacts/` 组成，见 `internal/session/store.go` 与 `internal/session/types.go`。
-- `compare` 的 durable truth 是 **run 目录**，核心是 `.opsx/runs/<run-id>/` 下的 `state.json`、`events.jsonl`、`run.md`、`checkpoints/`，见 `compare/internal/runtime/run.go`、`compare/internal/session/schema.go`、`compare/internal/session/longrun.go`、`compare/internal/logs/summary.go`。
+`go-cli-agent` 的 `session.Store.Create()` 会创建：
+
+- `session.json`
+- `state.json`
+- `messages.jsonl`
+- `events.jsonl`
+- `todo.json`
+- `control/steer.jsonl`
+- `control/background.jsonl`
+- `tasks/`
+- `artifacts/`
+- `artifacts/compactions/`
+- `artifacts/transcripts/`
+
+`SessionMetadata` 持久化：
+
+- provider / model
+- mode / completion policy
+- parent / root / depth
+- agent name / role
+- queue job id
+- isolation
+- provider options
+
+`State` 持久化：
+
+- status / phase / turn
+- pause / awaiting input / failure information
+- pending steer count
+- loaded skills
+- provider auto-resume count
+- last compaction watermark
 
 **设计判断**
 
-- `go-cli-agent` 的主心骨是“一个会话如何持续演进”。
-- `compare` 的主心骨是“一次长任务如何被可靠执行并留下 operator trace”。
+当前项目的事实源围绕“一个 agent session 如何长期演进”展开，因此天然适配：
 
-这会直接影响后续几乎所有设计：继续执行、补充输入、子任务、artifact gate、扩展系统、compaction 方式都围绕这个 durable unit 展开。
+- 交互式 `run`
+- autonomous `exec`
+- `continue`
+- live `steer`
+- child session
+- queue notification
+- Web console read model
 
-### 3.2 CLI surface 的组织方式不同
+这套模型比 `compare` 更适合“用户中途纠偏、暂停、恢复、继续投入上下文”的使用方式。
+
+### 4.2 `compare` 的 durable unit 是 run
 
 **已验证事实**
 
-- `go-cli-agent` 通过 `internal/runtime/facade.go` 明确拆成 `CoreRunner`、`ExperimentalRunner`、`StoreView`，CLI 命令在 `internal/app/app.go` 里按 `run/exec/continue/steer/sessions/tasks/probe-provider/doctor` 和 `experimental` 入口分开。
-- `compare` 的 CLI 更薄，`compare/cmd/opsx/main.go` 直接暴露 `run`、`command`、`resume`、`smoke` 四个主命令，runtime 逻辑主要集中在 `compare/internal/runtime/*`。
+`compare` 的 `Runner.Run()` 为每次执行创建 `.opsx/runs/<run-id>/`，核心包括：
+
+- `state.json`
+- `events.jsonl`
+- `run.md`
+- `checkpoints/000-startup.json`
+- `checkpoints/longrun-latest.json`
+- `artifacts/`
+
+`RunState` 持久化：
+
+- task
+- command name
+- instructions
+- provider / model
+- workspace root / artifacts root
+- trust-workspace-assets
+- agent / active skills / allowed tools
+- required artifacts
+- max turns
+- loaded extensions
+- continuation context
+- provider attempts
+- resume count
+
+`LongRunCheckpoint` 持久化：
+
+- parent status
+- todo
+- required artifacts
+- children
+- continuation context
+- wait mode / waiting children / resolved children / child summaries / callback sequence
 
 **设计判断**
 
-- `go-cli-agent` 更强调“核心面”和“扩展面”隔离，明显在维护 Phase 0-10 与 Phase 11+ 的叙事边界。
-- `compare` 更强调“实际 operator 会用什么命令”，因此把 command / resume / smoke 直接做成第一层产品面。
+`compare` 的事实源围绕“一次长任务 run 是否按 contract 完成”展开，因此天然适配：
 
-### 3.3 provider 设计目标不同
-
-**已验证事实**
-
-- `go-cli-agent` 有完整 adapter 层：`OpenAI`、`Anthropic`、`Google`，并把 `temperature`、`top_p`、`reasoning_effort`、`text_verbosity`、`thinking_budget`、`store`、`metadata`、`retry_policy` 等一路传到 session metadata，见 `internal/provider/*.go`、`internal/runtime/engine.go`、`internal/session/types.go`。
-- `compare` 当前 provider 非常聚焦：`fake` + `openai-response`，接口集中在 `compare/internal/runtime/provider.go` 和 `compare/internal/runtime/openai_response.go`。
-
-**设计判断**
-
-- `go-cli-agent` 把 “provider 差异隔离” 当成核心架构要求。
-- `compare` 把 “一个足够稳定的 Responses 形状 provider 跑通” 当成更高优先级，因此故意避免过早泛化。
-
-这个选择不是优劣问题，而是“平台化”与“收敛执行面”的取舍。
-
----
-
-## 4. `go-cli-agent` 更优秀、值得 `compare` 借鉴的设计
-
-### 4.1 三层 facade 边界更清晰
-
-**已验证事实**
-
-- `internal/runtime/facade.go` 把 core、experimental、store-only 三类能力分开。
-- `internal/app/app.go` 明确要求默认 usage 只展示 core surface，实验能力放到 `experimental` 子命令下。
-
-**为什么这点优秀**
-
-- 它直接服务于“CLI-only core v1 收敛”的产品纪律。
-- 这避免了 queue / delegate / web / tui 反过来污染默认叙事。
-- 对后续做 SDK、嵌入式调用、Web service 也更友好，因为 app-facing construct 没有坍缩成一个大 Runner。
-
-**对 `compare` 的借鉴建议**
-
-- 保持当前 `opsx` CLI 极简，但建议内部补一个类似的 facade 分层：
-  - `core runtime`
-  - `command/longrun facade`
-  - `store/logs facade`
-- 这样未来即使加新的 operator surface，也不会把 `run.go` 继续做大。
-
-### 4.2 session metadata 设计更完整，provider 选项真正 durable
-
-**已验证事实**
-
-- `SessionMetadata` 里持久化了：
-  - `provider`
-  - `model`
-  - `completion_policy`
-  - `parent/root/depth`
-  - `agent_name` / `agent_role`
-  - `queue_job_id`
-  - `isolation`
-  - `provider_options`
-- `provider_options` 又包含 generation / reasoning / store / send_metadata / retry policy。
-
-**为什么这点优秀**
-
-- 这不是“CLI flag 透传”，而是“运行契约 durable 化”。
-- 一旦 session 被恢复、分析、比较或回放，真正采用了什么 provider policy 可以直接从事实源读到。
-
-**对 `compare` 的借鉴建议**
-
-- `compare` 当前 `state.json` 已经保存 provider / model / retry attempts，但还缺少更细的 request-level option durability。
-- 如果未来要扩到多 provider 或多 gateway，这套 metadata 策略应优先借鉴。
-
-### 4.3 live steer / interrupt 语义更成熟
-
-**已验证事实**
-
-- `go-cli-agent` 有独立 `steer` 命令、`control/steer.jsonl`、`pending/accepted/deferred/rejected` 状态、`best-effort interrupt`、provider cancel、tool cancel、后台结果并入，见 `internal/runtime/runner.go`、`internal/runtime/engine.go`、`spec/13-live-input-and-steering.md`。
-
-**为什么这点优秀**
-
-- 它把“运行中外部纠偏”当成一等语义，而不是补丁式功能。
-- 这非常适合 coding / audit / repo exploration 一类会中途改方向的任务。
-
-**对 `compare` 的借鉴建议**
-
-- `compare` 的 resume 非常强，但 live steer 仍然偏弱。
-- 若后续要提升“运行中的可控性”，优先引入：
-  - run-scoped control queue
-  - queue-first steer
-  - interrupt fallback
-  - 接纳边界语义
-
-这比直接上复杂交互壳更符合两个项目的 CLI-first 共识。
-
-### 4.4 双层任务系统比单 todo 更适合复杂工程任务
-
-**已验证事实**
-
-- `go-cli-agent` 同时拥有：
-  - session todo：`todo_write` / `todo_read`
-  - persistent task graph：`task_create` / `task_update` / `task_list` / `task_get`
-- 任务图支持 `blocked_by` / `blocks` / cycle check / auto unlock，见 `internal/session/taskboard.go` 与 `spec/12-task-system.md`。
-
-**为什么这点优秀**
-
-- 高频节奏控制与长周期依赖建模被分开了。
-- 对“大仓库、多轮实现、恢复后继续推进”的任务，它比单纯 todo 更稳。
-
-**对 `compare` 的借鉴建议**
-
-- `compare` 当前 `todo_set` 很适合 command-style long task，但对多依赖、多阶段长期开发任务表达力不足。
-- 若后续确实想支撑“大型项目长期自治开发平台”，建议在保留 `todo_set` 的同时引入 second layer task graph，而不是让 todo 继续膨胀。
-
-### 4.5 compaction 更像“证据保留系统”，不是单纯摘要
-
-**已验证事实**
-
-- `go-cli-agent` 的 compaction 会写 transcript 和 summary artifact。
-- summary 里显式保留：
-  - `artifact_memory`
-  - `high_value_proofs`
-  - `project_memory_stack`
-  - `todo`
-  - `ready_tasks` / `blocked_tasks`
-  - `proof_read_budget`
-  - `unresolved_issues`
-- 见 `internal/runtime/compaction.go`、`internal/runtime/project_memory.go`。
-
-**为什么这点优秀**
-
-- 这说明它把 compaction 当成“长期任务证据压缩层”，而不是简单聊天摘要。
-- 对 audit / debugging / long-running implementation 特别有价值。
-
-**对 `compare` 的借鉴建议**
-
-- `compare/internal/context/compaction.go` 目前已经足够简洁有效，但仍偏摘要化。
-- 如果未来要做更复杂 repo task，建议补：
-  - artifact memory
-  - proof memory
-  - durable project memory stack
-  - unresolved issues bucket
-
-### 4.6 review / audit guard 是非常强的 runtime 增益
-
-**已验证事实**
-
-- `go-cli-agent` 在 `internal/runtime/review_guard.go` 与 `internal/review/report.go` 中实现了：
-  - 审计任务自动识别
-  - finish 前 report artifact gate
-  - findings 结构校验
-  - `Severity/Confidence/Evidence/Why it matters` 字段校验
-  - cited path:line 是否可读
-  - snippet 是否真的落在 cited lines 内
-
-**为什么这点优秀**
-
-- 这不只是“要求写文档”，而是把审计输出质量变成 runtime contract。
-- 尤其 snippet-level evidence verification 非常难得，能显著减少“看起来像报告、实际上不可追溯”的产物。
-
-**对 `compare` 的借鉴建议**
-
-- `compare` 的 `security-review` 路线已经有“verified facts / inferred risks / not observed”的 prompt discipline，但仍主要依赖 command contract。
-- 若要进一步提高 audit output 可靠性，最值得借鉴的就是 `go-cli-agent` 这套 runtime validator，而不是继续堆 prompt。
-
-### 4.7 session-first 的实验扩展面做得更完整
-
-**已验证事实**
-
-- `go-cli-agent` 已经具备：
-  - child session / queue job linkage
-  - background notification 回流
-  - queue auto worker
-  - explicit `experimental web`
-  - `doctor` / `probe-provider`
-  - store-only web read model
-
-**为什么这点优秀**
-
-- 即使这些能力仍被定义为 experimental，它们已经不是“空壳命令”，而是建立在同一份 session/store 事实源上。
-
-**对 `compare` 的借鉴建议**
-
-- 如果 `compare` 以后要增加 operator observability，不建议直接造一个新数据库或新的运行态。
-- 更合适的方式是借鉴 `go-cli-agent`：所有观测面都只读同一份 durable store。
-
----
-
-## 5. `compare` 更优秀、值得 `go-cli-agent` 借鉴的设计
-
-### 5.1 command contract 是它最强的设计之一
-
-**已验证事实**
-
-- `compare/internal/extensions/extensions.go` 会发现 `.agent/skills`、`.agent/commands`、`.agent/agents`、`.agent/plugins`。
-- `compare/internal/runtime/command_runner.go` 会把一个 command 展开成：
-  - command body
-  - required agent
-  - required skills
-  - required output files
-  - tool restrictions
-  - max turns policy
-
-**为什么这点优秀**
-
-- 它把“任务约束”从 prompt 文本提升成了结构化 contract。
-- 比起让 runtime 临时猜测“这次是不是 audit / 是否需要产物 / 工具是不是应该限制”，这种 contract 更稳定，也更容易恢复。
-
-**对 `go-cli-agent` 的借鉴建议**
-
-- 当前 `go-cli-agent` 在 skill 上比较成熟，但 command / agent / plugin contract 还不够结构化。
-- 最值得借鉴的是“先有 contract，再组织 runtime”，而不是简单搬运 `.agent` 目录格式。
-
-### 5.2 completion gate 更硬、更真实
-
-**已验证事实**
-
-- `compare/internal/runtime/run.go` 的完成判定会检查：
-  - todo 是否还有 pending
-  - required artifacts 是否存在并真正由本 run 触达/更新
-  - sub-agent 是否仍在等待
-  - generic artifact-gated run 是否已经建立非空 todo plan
-- `compare/internal/runtime/parent_controller.go` 的 `CanComplete()` 是完成前统一 gate。
-
-**为什么这点优秀**
-
-- 这是“长任务不靠模型自己觉得完成”的真正落地。
-- completion gate 不只看 assistant 输出，也不只看工具是否停下，而是看 durable state 是否闭环。
-
-**对 `go-cli-agent` 的借鉴建议**
-
-- 当前 `go-cli-agent` 已有 `finish` 工具、review guard、feature list pre-completion check，但这些 gate 仍偏分散。
-- 非常值得引入一个统一的 `completion controller`：
-  - task/todo completeness
-  - required artifacts
-  - child/queue unresolved state
-  - exact delivery contract
-
-把 finish 守门统一起来。
-
-### 5.3 checkpoint resume 设计明显强于当前库
-
-**已验证事实**
-
-- `compare/internal/session/longrun.go` 定义了 `LongRunCheckpoint`。
-- `compare/internal/runtime/parent_controller.go` 会持续写 checkpoint。
-- `compare/internal/runtime/resume.go` 可以从 checkpoint 恢复：
-  - 校验 provider/model/workspace/trust flags 一致
-  - 恢复 todo / artifacts / context
-  - 恢复 waiting children
-  - 复用 persisted command contract，而不是重新解释当前 workspace 资产
-
-**为什么这点优秀**
-
-- 这是真正的 long-running durability，而不是简单的“继续上次 session”。
-- 尤其“resume 使用持久化 command contract 而不是重读当前资产”这一点，非常稳，能避免 workspace 漂移导致恢复语义变化。
-
-**对 `go-cli-agent` 的借鉴建议**
-
-- 当前 `go-cli-agent` 的 `continue` 更偏 session resume，不是 checkpoint resume。
-- 对单会话交互这已经够用，但对长任务/多子代理/多产物场景仍不够硬。
-- 建议优先借鉴：
-  - longrun checkpoint snapshot
-  - resume source validation
-  - persisted contract replay
-
-### 5.4 parent/sub-agent 控制器设计更凝练
-
-**已验证事实**
-
-- `compare` 通过 `ParentController + delegation.Manager` 形成清晰的 parent-child 控制闭环：
-  - `spawn_subagent`
-  - `wait_subagents`
-  - callback resume
-  - `wait-all` / `wait-any`
-  - subagent transition 事件
-  - parent parked / resumed
-
-**为什么这点优秀**
-
-- 它不是“把 child 跑起来就算完”，而是把 parent 的等待、恢复、汇总、checkpoint 都做成了显式语义。
-- 这比“只记录 child session id”更接近真实长任务编排。
-
-**精确边界**
-
-- 这里要注意，`compare` 的 child 更接近 **child run + summary callback + checkpoint orchestration**：
-  - `buildChildRunner()` 内部是再起一个 `Runner.Run(...)`
-  - parent 侧持久化的是 waiting/resolved child、summary、resume token、checkpoint
-- 它并不是 `go-cli-agent` 那种 **child session / queue job / background notification** 为核心的数据模型。
-- 因此，这一节的结论应理解为：`compare` 在 **parent-side orchestration contract** 上更强，而不是在 child session durability 这个维度全面胜出。
-
-**对 `go-cli-agent` 的借鉴建议**
-
-- 当前 `go-cli-agent` 的 child session、queue job、background notification 已经是很好的底子。
-- 但 parent 侧还缺一个像 `ParentController` 那样的统一协调对象。
-- 这会导致：
-  - queue/child 回流是有的
-  - 但 parent completeness / parked state / callback token 还不够集中
-
-### 5.5 扩展资产信任边界更严谨
-
-**已验证事实**
-
-- `compare/internal/extensions/extensions.go` 对 workspace `.agent` 资产引入了：
-  - `--trust-workspace-assets`
-  - plugin disable
-  - symlink / workspace boundary 校验
-  - qualified name / short name ambiguity 处理
-
-**为什么这点优秀**
-
-- 这不是“能发现资产”而已，而是把扩展资产当成潜在不可信输入。
-- 对 agent framework 来说，这个边界非常重要，因为 skill / command / plugin 本身就会改变 runtime 行为。
-
-**对 `go-cli-agent` 的借鉴建议**
-
-- 当前 `go-cli-agent` 的 `skills.Scan()` 很简洁，但还不具备 compare 这一层 workspace trust contract。
-- 如果后续要增强 workspace-local skills / commands / agents 体系，这个 trust boundary 几乎是必须先补的。
-
-### 5.6 operator trace 更简单直接
-
-**已验证事实**
-
-- `compare` 在正常成功/失败收尾路径都会写：
-  - `state.json`
-  - `events.jsonl`
-  - `run.md`
-  - checkpoint
-  - artifact linkage
-- 并且事件种类很稳定，如 `run.started`、`run.resumed`、`tool.call`、`provider.attempt`、`subagent.*`、`checkpoint.written`、`run.completed`。
-
-**为什么这点优秀**
-
-- 它非常适合 operator/debugger 直接阅读。
-- 对长任务诊断来说，一份人类可读 `run.md` 是低成本高价值资产。
-
-**对 `go-cli-agent` 的借鉴建议**
-
-- 当前 `go-cli-agent` 的事件和 session 数据更丰富，但 operator 入口相对分散。
-- 可以借鉴 `compare` 增加一份 run/session summary markdown，作为浏览 durable state 的第一入口。
-
-### 5.7 配置面与 builtins 保持了高度收敛
-
-**已验证事实**
-
-- `compare/internal/runtime/config.go` 只暴露少量关键配置：
-  - provider/model/base-url/api-key
-  - retry
-  - provider timeout
-  - max turns
-  - compaction
-  - subagent concurrency
-- builtins 也只保留 `read_file`、`write_file`、`exec_shell`，其余 runtime tools 都是任务执行必需能力。
-
-**为什么这点优秀**
-
-- 这让 compare 的 runtime 更像一个可验证的“执行内核”，而不是产品功能集合。
-
-**对 `go-cli-agent` 的借鉴建议**
-
-- `go-cli-agent` 当前功能更全面，但也更容易出现“功能层次越来越厚”的风险。
-- 应继续坚持已有 spec 中的原则：核心面必须瘦，实验面显式暴露。
-
----
-
-## 6. 两边的关键差异，不宜简单照搬
-
-### 6.1 `go-cli-agent` 不应直接照搬 `compare` 的 command-first 叙事
-
-原因：
-
-- 当前库的核心资产是 `session + steer + continue + provider abstraction`。
-- 如果直接把主叙事切成 `run/command/resume`，反而会削弱已有的 interactive/session-first 优势。
-
-正确借鉴方式：
-
-- 借 `command contract`
-- 不改 `core v1` 的默认命令面
-
-### 6.2 `compare` 不应直接照搬 `go-cli-agent` 的 web/tui 扩展面
-
-原因：
-
-- `compare` 的优势就是 CLI 执行面收敛。
-- 如果直接把 Web console、TUI、doctor、provider probe 整体搬进去，很容易打散它现在的 operator-first 简洁性。
-
-正确借鉴方式：
-
-- 先借 durable store 与 facade 分层
-- 再按需加观测面，而不是一次性搬全套产品面
-
-### 6.3 `go-cli-agent` 的 review guard 不该无条件套给所有任务
-
-原因：
-
-- 这套机制对 audit/review 任务极强，但并不是所有任务都需要这么重的 validator。
-
-正确借鉴方式：
-
-- 保持当前“任务语义识别 + 精确 gate”的方向
-- 避免把 review discipline 变成所有模式的默认束缚
-
-### 6.4 `compare` 的 todo-only 模型不适合直接替换当前 task graph
-
-原因：
-
-- 当前库已经明确要支持更长周期、更复杂依赖的工程任务。
-- 单 todo 不足以替代 task graph。
-
-正确借鉴方式：
-
-- 在 generic artifact-gated run 中借 compare 的 todo discipline
-- 不牺牲 `go-cli-agent` 已有的双层任务系统
-
----
-
-## 7. 互相借鉴的优先级建议
-
-### 7.1 `go-cli-agent` 优先借鉴清单
-
-### P1：高收益、低破坏
-
-1. **引入 contract layer**
-   - 为 command / batch / audit / longrun 建一个 durable contract
-   - 内容至少包括：
-     - required artifacts
-     - allowed tools
-     - activated skills
-     - agent role/profile
-     - completion gate 条件
-
-2. **统一 completion controller**
-   - 把现在分散在 finish / review / feature-list / queue 回流上的完成条件收拢成统一控制点
-
-3. **给长任务引入 checkpoint**
-   - 特别是 parent-child / queue / background 相关状态
-
-### P2：中收益、需要更细化设计
-
-4. **增强 workspace-local extension trust boundary**
-   - skill / command / agent / plugin 若进入 workspace 维度，必须带 trust gate
-
-5. **补 operator summary artifact**
-   - 每个 session 或每次 exec/run 生成稳定 summary，降低排障成本
-
-### P3：在大型项目 profile 下再推进
-
-6. **将 delegation 的 parent 控制显式化**
-   - wait-any / wait-all
-   - callback resume
-   - child summary reinjection
-
-### 7.2 `compare` 优先借鉴清单
-
-### P1：高收益、低破坏
-
-1. **引入 provider adapter 分层**
-   - 先别急着扩 provider 数量
-   - 先把 provider 选项、metadata、retry durability 的抽象打好
-
-2. **补 live steer**
-   - 对复杂任务非常有价值
-   - 比直接堆交互壳更值得先做
-
-3. **引入 project memory stack**
-   - 把 `spec/plan/progress/validation` 一类 durable files 变成 runtime 一等事实
-
-### P2：中收益
-
-4. **把 audit artifact validator runtime 化**
-   - 从 prompt discipline 升级到 output discipline
-
-5. **引入 task graph second layer**
-   - 保留 `todo_set`
-   - 增加 long-horizon dependency graph
-
-### P3：谨慎推进
-
-6. **增加 facade 分层**
-   - 不是为了炫架构
-   - 而是为了未来 command/runtime/store/operator view 不互相污染
-
----
-
-## 8. 最终判断
-
-### 8.1 如果目标是“通用 agent harness + 交互式会话能力”
-
-当前实现下，`go-cli-agent` 在这类目标上优势更明显，优势集中在：
-
-- provider 抽象
-- session durability
-- live steer
-- task graph
-- evidence-aware compaction
-- runtime review guard
-
-### 8.2 如果目标是“长任务执行纪律 + operator 可控性”
-
-当前实现下，`compare` 在这类目标上优势更明显，优势集中在：
-
-- command contract
-- required artifact gate
-- todo progress discipline
-- sub-agent park/resume
+- batch command
+- required artifact
 - checkpoint resume
-- trusted extension assets
-- operator trace
+- parent/sub-agent park and resume
+- operator 事后排障
 
-### 8.3 最佳融合方向
+它不追求像 `go-cli-agent` 那样把 session 变成长期交互对象，而是把一次 run 的执行纪律做硬。
 
-最值得追求的不是二选一，而是下面这个组合：
+### 4.3 不能混同的关键点
 
-- 以 `go-cli-agent` 的 **session-first runtime / provider architecture / steer / task graph** 为底座
-- 吸收 `compare` 的 **command contract / completion gate / checkpoint resume / trusted extension boundary**
+`go-cli-agent` 的 child 是 child session。`compare` 的 child 是 child run。
 
-如果这条融合路线走通，最终会得到一个更完整的形态：
+更精确地说：
 
-- 对外仍然保持 CLI-first、core surface 简洁
-- 对内同时具备：
-  - 强交互性
-  - 强长任务纪律
-  - 强恢复能力
-  - 强可追溯性
+- `go-cli-agent`：parent session 通过 `agent_spawn` / `experimental delegate` 产生 child session 或 queue job；child 的结果通过 background notification 回流到 parent session 的 `control/background.jsonl`。
+- `compare`：parent run 通过 `spawn_subagent` 产生 detached child run；`ParentController` 通过 callback、wait mode、resume token、checkpoint 管理 parent 是否 parked/resumed。
 
-这也是两套框架里最值得留下来的“各自真正优秀的部分”。
+因此，`compare` 在 parent-side orchestration 上更强，不等于它在 session durability 上强于 `go-cli-agent`。
+
+---
+
+## 5. CLI Surface 与产品边界
+
+### 5.1 `go-cli-agent` 的 surface 明确分层
+
+**已验证事实**
+
+`internal/app/app.go` 的默认 usage 只展示：
+
+- `init`
+- `run`
+- `exec`
+- `continue`
+- `steer`
+- `sessions`
+- `tasks`
+- `probe-provider`
+- `doctor`
+
+`delegate` / `children` / `queue` / `tui` / `web` 被放到 `experimental` 下。
+
+`internal/runtime/facade.go` 进一步拆出：
+
+- `CoreRunner`
+- `ExperimentalRunner`
+- `StoreView`
+
+**设计判断**
+
+这是当前项目非常重要的产品纪律：core v1 不被大型项目 profile、queue、web、tui 反向污染。
+
+这也符合 spec 中“CLI-only harness，Phase 11+ 显式扩展”的边界。
+
+### 5.2 `compare` 的 surface 更 operator-first
+
+**已验证事实**
+
+`compare/cmd/opsx/main.go` 暴露四个主命令：
+
+- `run`
+- `command`
+- `resume`
+- `smoke`
+
+其中：
+
+- `run` 支持 `--task`、`--require-artifact`、`--trust-workspace-assets`。
+- `command` 通过 `.agent` command contract 展开 agent / skills / tools / required outputs。
+- `resume` 从 run id 或 checkpoint 恢复。
+- `smoke` 跑内置场景。
+
+**设计判断**
+
+`compare` 的 CLI 非常像“批处理 agent kernel 的操作台”。它不试图提供完整 session 浏览和实时 steer，而是优先让 operator 发起、恢复、验证一次 run。
+
+### 5.3 当前项目不应改成 command-first
+
+**借鉴建议**
+
+`go-cli-agent` 应该借鉴 `compare` 的 command contract，而不是把主命令面改成 `run/command/resume/smoke`。
+
+当前项目已经有更完整的 session 主路径。若把产品叙事切成 command-first，会削弱：
+
+- live steer
+- interactive `run`
+- `continue`
+- `sessions/tasks`
+- provider probe / doctor
+- session store read model
+
+更合适的融合方式是：
+
+- 在当前 `run/exec` 之上增加可选 durable contract。
+- 将 batch command 作为 profile 或 explicit mode。
+- 不改变 core v1 默认入口。
+
+---
+
+## 6. Provider 与协议边界
+
+### 6.1 `go-cli-agent` 的 provider architecture 明显更完整
+
+**已验证事实**
+
+当前项目的 `ProviderAdapter` 接口是：
+
+- `Name()`
+- `RunTurn(ctx, TurnRequest, EmitFunc) -> TurnResult`
+
+`TurnRequest` 包含：
+
+- model
+- system prompt
+- messages
+- tools
+- metadata
+- temperature
+- top_p
+- max_output_tokens
+- reasoning_effort
+- text_verbosity
+- thinking_budget
+- include_thoughts
+- store
+
+当前实现支持：
+
+- OpenAI Responses
+- Anthropic Messages
+- Google Gemini `generateContent`
+- openai-compatible Responses shape
+
+`provider_options` 被持久化到 session metadata，并且 `provider.request.prepared` 事件会带上 option / timeout / retry policy 细节。
+
+**设计判断**
+
+这是 `go-cli-agent` 的核心优势之一：它不是只跑通一个 gateway，而是在 runtime 层把 provider 差异明确收束到 adapter。
+
+这使它更适合：
+
+- 多 provider 环境
+- OpenAI-compatible gateway
+- generation / reasoning option 实验
+- provider drift 诊断
+- `doctor` / `probe-provider`
+
+### 6.2 `compare` 的 provider 层更窄，但 retry trace 更像 batch run ledger
+
+**已验证事实**
+
+`compare` 当前 provider 支持：
+
+- `fake`
+- `openai-response`
+
+`openAIResponsesProvider` 直接使用 `http.Client{Timeout: cfg.ProviderTimeout}` 调 `/responses`，解析 message 和 function_call。
+
+`Runner.executeWithRetry()` 会记录每次 provider attempt：
+
+- turn
+- attempt
+- kind
+- outcome
+- retryable
+- status code
+- backoff
+- response committed
+- message
+
+并写入 `state.ProviderAttempts` 与 `provider.attempt` event。
+
+**设计判断**
+
+`compare` 不适合被描述成 provider-rich。它强的是“每次 provider attempt 都进入 run ledger”，尤其 `ResponseCommitted` 不重试的语义对 batch execution 很实用。
+
+### 6.3 当前项目的 provider 优化方向
+
+**借鉴建议**
+
+`go-cli-agent` 已经有更完整 provider adapter 和 timeout/retry split。它可以借鉴 `compare` 的地方不是 provider shape，而是 attempt ledger：
+
+- 在 `state.json` 或 session artifact 中增加结构化 provider attempt history。
+- 将 `provider.retry`、`provider.auto_resume`、最终 failure 统一汇总成人可读诊断。
+- 保持 retry / timeout policy 来自 session metadata，避免 resume 时配置漂移。
+
+### 6.4 `compare` 的 provider 优化方向
+
+**借鉴建议**
+
+如果 `compare` 后续要平台化，应优先借鉴当前项目：
+
+- provider adapter interface
+- generation option durability
+- OpenAI / Anthropic / Google replay 差异隔离
+- request timeout 与 stream idle timeout 分离
+- provider metadata 可追踪
+
+不要先扩一堆 provider 名称再回头补 contract。应先把 option / replay / retry / metadata 抽象打稳。
+
+---
+
+## 7. Agent Loop 与 Completion
+
+### 7.1 `go-cli-agent` 的 loop 更贴近交互式 agent harness
+
+**已验证事实**
+
+`Engine.Run()` 的基本循环是：
+
+- load messages / todo / tasks / project memory
+- build system prompt
+- maybe compact provider view
+- provider call
+- append assistant message
+- execute tool calls
+- append tool results
+- 根据 mode 决定 awaiting input / reminder / failed / completed
+
+在 `exec` / `init` 模式下，如果 provider 自然停止但没有调用 `finish`，runtime 会注入 “call finish explicitly” reminder；连续没有 `finish` 后会失败为 `incomplete_no_finish`。
+
+在 `run` 模式下，自然停止进入 `awaiting_input`。
+
+**设计判断**
+
+这符合当前项目“模型是 agent，runtime 提供 loop 和 action space”的原则。它适合人在旁边不断 steering 的任务。
+
+### 7.2 `compare` 的 completion gate 更统一
+
+**已验证事实**
+
+`compare` 的 provider 没有 tool call 后，会调用 `tryCompleteRun()`。
+
+完成前会检查：
+
+- `syncRequiredArtifacts`
+- `ParentController.CanComplete()`
+- `requireGenericArtifactTodoPlan`
+- artifact links
+- run summary
+
+`ParentController.CanComplete()` 会阻断：
+
+- pending todo
+- missing required artifact
+- waiting child callbacks
+- active child runs
+
+`compare` 还会：
+
+- 记录 required artifact baseline，避免把 run 开始前已有文件当成完成。
+- 对 required artifact run 注入 early artifact discipline。
+- 对 artifact stagnation / todo stagnation 注入 warning。
+
+**设计判断**
+
+`compare` 的 completion controller 更像单一判定中心。它比当前项目分散在 `finish`、review guard、target/report consistency、long-run taskboard guard、pre-completion feature check 里的完成约束更凝练。
+
+### 7.3 当前项目应该吸收 completion controller
+
+**借鉴建议**
+
+`go-cli-agent` 现在已有很多必要 gate：
+
+- explicit `finish`
+- review artifact guard
+- exact artifact path / template / literal guard
+- target consistency guard
+- report consistency guard
+- long-run taskboard guard
+- steer completion guard
+- pre-completion feature check
+
+问题不是“没有 guard”，而是 guard 分散在 prompt/tool guard 逻辑里，缺少一个 durable completion contract 和统一判定对象。
+
+建议新增一个 `CompletionController` 或等价层，聚合：
+
+- expected artifacts
+- requested exact target
+- supporting docs freshness
+- task/todo completeness
+- child/queue unresolved state
+- review/report validators
+- feature list completeness
+- completion policy
+
+这样可以保留当前项目的交互能力，同时获得 `compare` 那种“完成不是模型自评”的硬边界。
+
+---
+
+## 8. Live Input、Interrupt 与 Resume
+
+### 8.1 `go-cli-agent` 的 live steer 是强项
+
+**已验证事实**
+
+当前项目支持：
+
+- `go-cli-agent steer <session-id> --message ...`
+- `--interrupt`
+- `control/steer.jsonl`
+- steer status：`pending/accepted/deferred/rejected`
+- `session.steer.requested`
+- `session.steer.queued`
+- `session.steer.accepted`
+- `session.steer.deferred`
+
+`Runner.watchSteer()` 监控 control queue；`Engine.drainSteer()` 在安全边界把 steer 写成真实 user message。
+
+provider 或工具执行时，interrupt 可以走 best-effort cancel；工具被打断时会写回中断 tool result，避免 dangling tool call。
+
+**设计判断**
+
+这是 `compare` 当前没有的核心能力。对真实 coding / audit / debugging 任务非常关键，因为用户经常中途修正目标。
+
+### 8.2 `compare` 的 checkpoint resume 更硬
+
+**已验证事实**
+
+`compare.Resume()` 会：
+
+- 从 run id 或 checkpoint path 加载 `longrun-latest.json`
+- 读取源 run 的 `state.json`
+- 拒绝 resume 已成功 run
+- 校验 provider / model / workspace / trust-workspace-assets 是否与源 run 一致
+- 根据源 run state 重新构造 Request
+- 对 command run 注入 persisted command resume instruction
+- 如果 parent 正在等待 sub-agent，则重新 spawn checkpoint children，等待 callback，再把 child summaries 注入恢复指令
+
+**设计判断**
+
+这是 `compare` 最值得借鉴的部分之一：resume 不是“再给模型一点上下文继续聊”，而是从 durable checkpoint 恢复一次 run 的 contract 和 parent state。
+
+### 8.3 两者应该融合，而不是替代
+
+**借鉴建议**
+
+当前项目不应拿 `compare` 的 checkpoint resume 替代 `continue`。更合理的是分层：
+
+- session `continue`：保留当前交互恢复语义。
+- long-run checkpoint：用于 large-project profile、child/queue/background、多 artifact 任务。
+- command/batch contract resume：用于明确 command 或 batch mode。
+
+建议先在当前项目的大型任务 profile 下引入：
+
+- `longrun-latest.json` 或等价 checkpoint artifact
+- persisted contract snapshot
+- child/queue unresolved snapshot
+- resume source validation
+- resume summary instruction
+
+---
+
+## 9. Task / Todo 模型
+
+### 9.1 `go-cli-agent` 的双层任务系统表达力更强
+
+**已验证事实**
+
+当前项目同时有：
+
+- session todo：`todo_write` / `todo_read`
+- persistent task graph：`task_create` / `task_update` / `task_list` / `task_get`
+
+task graph 支持：
+
+- `blocked_by`
+- `blocks`
+- 双向依赖同步
+- unknown reference 校验
+- cycle check
+- completed 后自动解锁 dependents
+- ready / blocked / completed 分组
+
+**设计判断**
+
+这比 `compare` 的 todo 更适合长期工程任务。尤其当任务横跨多个 session、多个 child、多个依赖时，单 todo 很快不够表达。
+
+### 9.2 `compare` 的 todo 与 completion gate 绑定更紧
+
+**已验证事实**
+
+`compare` 的 `todo_set` 会写入 `ParentController`，并持续进入 checkpoint。
+
+`ParentController.CanComplete()` 会阻断 pending todo。
+
+`validateTodoTransitionLocked()` 还会防止 artifact-linked todo 在 required artifact 未 present 时被标成 done。
+
+**设计判断**
+
+`compare` 的 todo 表达力不如 task graph，但它和 completion gate 绑定更硬。当前项目虽然有 task graph，但模型仍可能在长 run 中不写 todo/task，上一轮才补了 long-run taskboard guard。
+
+### 9.3 当前项目应保留 task graph，同时加强 taskboard 与 completion 的绑定
+
+**借鉴建议**
+
+不建议用 `compare` 的 todo-only 模型替换当前 task graph。
+
+更合理的是：
+
+- 保留 `todo + task graph`。
+- 让 completion controller 读取 todo/task 状态。
+- 对大型任务要求至少一个 durable task/todo handoff。
+- 对 required artifacts 建立 task/artifact linkage。
+- 对 child/queue 任务建立 task owner 或 task label。
+
+---
+
+## 10. Multi-Agent 与 Parent Orchestration
+
+### 10.1 `go-cli-agent` 的 child session / queue 底座更完整
+
+**已验证事实**
+
+当前项目支持：
+
+- `agent_spawn`
+- `agent_status`
+- `agent_list`
+- `experimental delegate`
+- `experimental children`
+- `experimental queue`
+- child session metadata：parent/root/depth/agent/role/queue_job_id/isolation
+- background queue job
+- background notification 回流到 parent session
+- isolation workdir
+- visible output collection / sync
+
+**设计判断**
+
+这套设计更接近“session graph”。它适合在同一 agent harness 内长期观察 parent/child/queue 的关系。
+
+### 10.2 `compare` 的 parent-side orchestration 更凝练
+
+**已验证事实**
+
+`compare` 的 `ParentController` 管理：
+
+- todo
+- required artifacts
+- waiting children
+- resolved children
+- child summaries
+- wait mode：`wait-all` / `wait-any`
+- parent status：`running` / `waiting_on_subagents`
+- resume token
+- checkpoint
+- callback consumer
+
+`delegation.Manager` 管理：
+
+- child queue
+- concurrency
+- timeout
+- max retries
+- terminal status
+- callback event
+- observer transition
+
+`runtime_tools.go` 暴露：
+
+- `spawn_subagent`
+- `wait_subagents`
+- `inspect_subagent`
+- `cancel_subagent`
+
+**设计判断**
+
+`compare` 把 parent 等待、child callback、checkpoint、完成阻断放在一个清晰对象里。当前项目有 child/queue 的数据模型，但 parent completeness 和 parked/resumed 状态还不够集中。
+
+### 10.3 当前项目应借鉴 ParentController，不应照搬 child run 模型
+
+**借鉴建议**
+
+建议在 `go-cli-agent` 里引入 parent coordination layer：
+
+- parent session 的 unresolved child sessions
+- unresolved queue jobs
+- wait-any / wait-all
+- child result summary reinjection
+- parent parked / resumed event
+- checkpoint snapshot
+- completion gate 读取 child/queue 状态
+
+但不要把 child session 替换成 `compare` 的 child run。当前项目的 session store 已经是更通用的事实源，应在它上面补 parent controller。
+
+---
+
+## 11. Extension / Skill / Plugin 体系
+
+### 11.1 `go-cli-agent` 当前 skill 机制简洁，但 contract 面较薄
+
+**已验证事实**
+
+当前项目的 `skills.Scan()` 扫描 `SKILL.md`，提供：
+
+- skill summary
+- lazy load body
+- skill-defined command tools
+
+`ToolRegistry` 会注册 builtins，并把 skill command tools 变成 provider tools；reserved names 会阻止 skill tool 覆盖核心工具。
+
+**设计判断**
+
+这是一个轻量 skill catalog，适合当前 core v1。但它没有 `compare` 那种 `.agent/commands`、`.agent/agents`、`.agent/plugins` 的结构化 contract。
+
+### 11.2 `compare` 的 workspace extension contract 更完整
+
+**已验证事实**
+
+`compare/internal/extensions/extensions.go` 支持：
+
+- `.agent/skills`
+- `.agent/commands`
+- `.agent/agents`
+- `.agent/plugins`
+- plugin disable
+- `--trust-workspace-assets`
+- source path
+- qualified name
+- short name ambiguity resolution
+- symlink / workspace escape 检查
+
+command front matter 可声明：
+
+- `required_skills`
+- `required_agent`
+- `required_output_files`
+- `tool_restrictions`
+
+agent front matter 可声明：
+
+- model
+- tool policy
+- max turns
+
+**设计判断**
+
+这套机制是 `compare` 的核心优势之一：任务约束从 prompt 进入结构化 contract。
+
+### 11.3 当前项目应先借 contract，不应盲目复制 `.agent` 目录
+
+**借鉴建议**
+
+当前项目可以引入一个 generic contract schema，而不是直接把 `.agent` 作为唯一格式：
+
+- command name
+- required artifacts
+- required skills
+- agent role/profile
+- allowed tools
+- max turns
+- completion gates
+- trust source
+- resolved source paths
+
+如果未来支持 workspace-local `.agent`，必须同时引入：
+
+- explicit trust gate
+- symlink escape validation
+- plugin disable
+- qualified names
+- ambiguity errors
+
+否则 `.agent` 资产会成为改变 runtime 行为的隐式攻击面。
+
+---
+
+## 12. Tool 与安全边界
+
+### 12.1 两边都重视 workspace boundary
+
+**已验证事实**
+
+`go-cli-agent` 的 `ResolveWorkspacePath()`：
+
+- abs workdir
+- eval symlink base
+- resolve existing parent
+- 检查 target 是否仍在 base 内
+
+`compare` 的 `Workspace.Resolve()`：
+
+- abs workspace root
+- clean path
+- pathWithinRoot
+- validate symlink boundary
+- write 时拒绝 `.git`
+
+**设计判断**
+
+两边都没有只靠 `Clean` / `Rel` 做路径安全，均处理了 symlink escape。
+
+### 12.2 shell boundary 各有优势
+
+**已验证事实**
+
+`go-cli-agent`：
+
+- shell 工具使用 `CommandContext`
+- runtime command timeout 会 cap 模型请求的 timeout
+- 输出截断
+- shell env allowlist 默认 `PATH/HOME/LANG/TERM`
+- workspace 目录可被限制在 resolved workdir 下
+
+`compare`：
+
+- `exec_shell` 默认 5000ms timeout
+- 输出 limited buffer
+- Linux 下通过 `bwrap` 执行，`--unshare-all`，只 bind workspace 到 `/workspace`
+- 非 Linux 直接拒绝 `exec_shell`
+- write_file 拒绝 `.git`
+
+**设计判断**
+
+`compare` 的 shell sandbox 更硬，但依赖 `bwrap` 和 Linux。`go-cli-agent` 的 shell 更便携，且 env allowlist 更干净。
+
+**借鉴建议**
+
+当前项目不应默认强依赖 `bwrap`，否则会破坏 WSL/macOS/通用 CLI 可用性。更合适的是：
+
+- 保持当前 portable shell 作为默认。
+- 在 isolation profile 下增加可选 `bwrap` / stronger sandbox。
+- 将 `.git` write-deny 作为可配置 guard 或 protected path policy。
+- 继续保持 env allowlist 和 timeout cap。
+
+---
+
+## 13. Compaction 与长期上下文
+
+### 13.1 `go-cli-agent` 的 compaction 更偏证据保留
+
+**已验证事实**
+
+当前项目 compaction 会写 transcript artifact 和 summary artifact。
+
+summary 中包含：
+
+- completed items
+- artifact memory
+- current status
+- in-progress todo/task
+- high value proofs
+- feature list
+- key paths
+- next step guidance
+- proof read budget
+- project memory stack
+- todo
+- ready tasks
+- blocked tasks
+- unresolved issues
+- recent failure/pause
+- transcript path
+
+还引入 hysteresis，避免 compaction 过密时重复写新 artifact。
+
+**设计判断**
+
+这是面向审计/长任务的证据压缩系统，不只是聊天摘要。
+
+### 13.2 `compare` 的 compaction 更偏 checkpoint continuation
+
+**已验证事实**
+
+`compare` 的 `maybeCompactConversation()` 会在 char limit 后：
+
+- 保留 recent provider items
+- 总结旧 conversation
+- 带入 todo snapshot
+- 带入 child summaries
+- 写入 `contextstate.Continuation`
+- 通过 `ParentController.SetContext()` 进入 checkpoint
+
+**设计判断**
+
+`compare` 的 compaction 与 checkpoint 结合更紧，但 summary 内容没有当前项目的 proof/artifact memory 细。
+
+### 13.3 融合方向
+
+**借鉴建议**
+
+当前项目应保持现有证据型 compaction，同时吸收 `compare` 的 checkpoint coupling：
+
+- compaction summary artifact 继续保留。
+- long-run checkpoint 引用 latest compaction summary。
+- parent/child/queue state 进入 checkpoint。
+- resume prompt 从 checkpoint 和 compaction artifact 共同构造。
+
+---
+
+## 14. Report / Audit / Artifact Quality Gate
+
+### 14.1 `go-cli-agent` 的 review/report guard 更强
+
+**已验证事实**
+
+当前项目有多个 artifact quality gate：
+
+- review artifact guard
+- exact artifact path guard
+- exact template guard
+- exact literal guard
+- target consistency guard
+- report consistency guard
+- long-run taskboard guard
+- audit proof follow-up guard
+- retrieval tail guard
+
+其中 review artifact validator 会检查：
+
+- findings section
+- per-finding Severity / Confidence / Evidence / Why it matters
+- concrete path:line evidence
+- snippet or identifier 是否真的出现在 cited lines
+- unresolved / remaining risks section
+
+target/report consistency guard 会阻断：
+
+- 用户最新目标已经变更但最终报告仍写旧目标。
+- final report 与 `reports/progress.md` / `reports/validation.md` 结论冲突。
+- supporting docs 晚于 final report 更新但 final report 未刷新。
+
+说明：当前项目已按可信运行环境去掉报告和 prompt 脱敏；这些 guard 只做一致性和质量控制，不改写报告内容。
+
+**设计判断**
+
+这是当前项目在 audit/review 任务上的强项。它不只是 prompt discipline，而是 runtime contract。
+
+### 14.2 `compare` 的 artifact gate 更通用
+
+**已验证事实**
+
+`compare` 的 required artifact gate 会：
+
+- 记录 artifact baseline。
+- 要求 artifact 在本 run 中 touched 或相对 baseline changed。
+- required artifact 缺失时阻断 completion。
+- required artifact run 没有 todo plan 时阻断 generic completion。
+- 对 artifact stagnation 发 warning。
+- 写 artifact sidecar link。
+
+**设计判断**
+
+`compare` 不验证 audit report 的结构质量，但它更通用地保证“承诺的交付文件确实在本 run 中生成或更新”。
+
+### 14.3 当前项目应该把两类 gate 合并
+
+**借鉴建议**
+
+`go-cli-agent` 应保留现有 review/report guard，同时引入 `compare` 的 generic artifact gate：
+
+- required artifact baseline
+- touched-by-session / changed-from-baseline
+- required artifact sidecar metadata
+- generic artifact task/todo plan requirement
+- completion controller 统一读这些信息
+
+这样可以同时覆盖：
+
+- report 内容质量
+- artifact 是否真实交付
+- artifact 是否陈旧
+- artifact 是否与 supporting docs 一致
+
+---
+
+## 15. Operator Trace 与可观测性
+
+### 15.1 `go-cli-agent` 的事实更丰富，但入口更分散
+
+**已验证事实**
+
+当前项目有：
+
+- session metadata
+- state
+- messages
+- events
+- todo
+- tasks
+- artifacts
+- compactions
+- transcripts
+- queue jobs
+- background notifications
+- Web console local API / read model
+
+**设计判断**
+
+数据非常丰富，但 operator 如果只想快速判断“一次任务到底做了什么、为什么失败、报告在哪里”，目前需要跨多个文件看。
+
+### 15.2 `compare` 的 `run.md` 是低成本高价值资产
+
+**已验证事实**
+
+`compare/internal/logs/summary.go` 会写 `run.md`，包含：
+
+- run id
+- status
+- task
+- resume source
+- command
+- agent
+- skills
+- trust marker
+- loaded extensions
+- provider / model
+- provider attempts
+- max turns / completed turns
+- resume count
+- state file
+- events log
+- final output / failure
+
+**设计判断**
+
+这份 `run.md` 很简单，但正因为简单，operator 可读性很强。
+
+### 15.3 当前项目应补 session summary markdown
+
+**借鉴建议**
+
+建议在 `go-cli-agent` 中新增类似：
+
+- `.go-cli-agent/sessions/<id>/session.md`
+- 或 `artifacts/session-summary.md`
+
+内容最少包括：
+
+- session id / status / mode
+- provider / model / provider options summary
+- workdir / isolation
+- parent / child / queue relation
+- turn count / tool count / compaction count
+- latest task/todo state
+- artifact list
+- last failure / awaiting input / pause reason
+- important event links
+
+这不会改变 core runtime，只是给 operator 一个稳定入口。
+
+---
+
+## 16. 两边各自最强能力
+
+### 16.1 `go-cli-agent` 最强的能力
+
+当前实现下，`go-cli-agent` 最强的是：
+
+- 多 provider adapter 与协议 replay 分层。
+- provider generation / reasoning / retry / timeout policy durable 化。
+- session store 作为统一事实源。
+- `run` / `exec` / `continue` / `steer` 交互恢复语义。
+- todo + persistent task graph。
+- evidence-aware compaction。
+- review/report/target consistency guard。
+- child session / queue job / background notification / isolation 的 session graph 底座。
+- core / experimental / store facade 分离。
+- Web console 复用本地事实源，而不是另建权威状态。
+
+### 16.2 `compare` 最强的能力
+
+当前实现下，`compare` 最强的是：
+
+- command contract：required agent / skills / artifacts / tool restrictions。
+- required artifact gate：baseline + touched/changed + sidecar link。
+- centralized `ParentController.CanComplete()`。
+- long-run checkpoint：todo / artifacts / child / context / resume state。
+- checkpoint resume：provider/model/workspace/trust 校验 + persisted command contract。
+- parent/sub-agent callback orchestration：wait-all / wait-any / park / resume。
+- workspace extension trust boundary：`--trust-workspace-assets`、plugin disable、qualified names、symlink checks。
+- operator-readable `run.md`。
+- Linux shell sandbox via `bwrap`。
+
+---
+
+## 17. 不应该直接照搬的部分
+
+### 17.1 `go-cli-agent` 不应照搬 command-first 产品叙事
+
+当前项目的核心是 session-first harness。`compare` 的 `command` 很强，但它应进入 current architecture as contract/profile，而不是替换默认主路径。
+
+### 17.2 `go-cli-agent` 不应把 review guard 泛化成所有任务的重约束
+
+review guard 对 audit/review 强，但对普通 coding、整理、问答任务会变成负担。当前“任务语义识别 + 精确 artifact path”的方向应该保留。
+
+### 17.3 `go-cli-agent` 不应把 child session 改成 child run
+
+child session 是当前项目 session store 的自然延伸。应该补 parent controller，而不是换 durable model。
+
+### 17.4 `compare` 不应直接复制 Web/TUI 扩展面
+
+`compare` 的优势是极简 operator-first。直接引入 Web/TUI 会分散它的核心优势。若需要观测面，应先做 store facade 和 run summary API。
+
+### 17.5 `compare` 不应只靠 prompt 增强 audit quality
+
+如果 `compare` 要做审计类任务，应借鉴当前项目的 runtime validator，而不是继续堆 prompt discipline。
+
+---
+
+## 18. 对 `go-cli-agent` 的优先级建议
+
+### P0：当前项目最该补的框架级能力
+
+1. **Durable Contract Layer**
+
+   建立一个可持久化 contract，供 `run/exec/command-like profile/review/longrun` 共用。
+
+   最少字段：
+
+   - required artifacts
+   - artifact baseline
+   - allowed tools
+   - required skills
+   - agent role/profile
+   - completion gates
+   - exact target anchors
+   - supporting docs freshness requirements
+   - trust source
+
+2. **Completion Controller**
+
+   把分散的 finish / review / target / report / taskboard / feature / child / queue gate 收敛成统一判定层。
+
+   要求：
+
+   - 判定结果写 events。
+   - 判定原因写入 tool result 或 state。
+   - 支持 yolo 下仍保留用户显式 contract 与安全边界。
+
+3. **Long-Run Checkpoint**
+
+   在大型项目 profile 下保存：
+
+   - latest contract
+   - todo/task summary
+   - required artifact status
+   - child session / queue job unresolved state
+   - latest compaction artifact
+   - parent wait state
+   - resume hints
+
+### P1：高收益、低破坏
+
+4. **Session Summary Markdown**
+
+   为每个 session 生成稳定 `session.md`，类似 `compare` 的 `run.md`。
+
+5. **Workspace Extension Trust Gate**
+
+   如果继续扩展 workspace-local skills / commands / agents / plugins，需要引入：
+
+   - explicit trust
+   - plugin disable
+   - symlink escape validation
+   - qualified name
+   - short name ambiguity error
+
+6. **Provider Attempt Ledger**
+
+   在 session durable state/artifact 中沉淀 provider attempts，减少只靠 events/jsonl 检索的诊断成本。
+
+### P2：大型项目 profile 下推进
+
+7. **Parent Coordination Layer**
+
+   在 child session / queue job 之上补：
+
+   - wait-all / wait-any
+   - parent parked / resumed
+   - callback token
+   - child summary reinjection
+   - completion gate 读取 unresolved child/queue
+
+8. **Optional Strong Shell Sandbox**
+
+   在 Linux + explicit isolation profile 下支持 `bwrap`，但不要设为默认硬依赖。
+
+---
+
+## 19. 对 `compare` 的优先级建议
+
+### P0：若 `compare` 想做通用 agent harness
+
+1. **Provider Adapter 分层**
+
+   先把 provider interface 扩成真正 adapter，而不是继续堆 `openai-response` 特例。
+
+2. **Live Steer / Control Queue**
+
+   引入 run-scoped control queue，支持运行中补充输入和 best-effort interrupt。
+
+3. **Task Graph Second Layer**
+
+   保留 `todo_set`，增加 long-horizon task dependency graph。
+
+### P1：若 `compare` 继续做 audit/command kernel
+
+4. **Runtime Report Validator**
+
+   借鉴 `go-cli-agent` 的 review artifact validator，给 security-review 类 command 加结构校验和 evidence 校验。
+
+5. **Evidence-Aware Compaction**
+
+   在 continuation 中加入 artifact memory / high value proofs / unresolved issues。
+
+6. **Facade 分层**
+
+   将 core run、command contract、store/log view 拆开，避免 `run.go` 越来越厚。
+
+---
+
+## 20. 最终融合判断
+
+最佳融合方向是：
+
+- 以 `go-cli-agent` 的 **session-first runtime、provider architecture、steer/continue、task graph、session store** 为主底座。
+- 吸收 `compare` 的 **command contract、completion controller、required artifact gate、long-run checkpoint、parent callback orchestration、workspace extension trust gate、operator run summary**。
+
+融合后理想形态应该是：
+
+```text
+core v1:
+  session-first CLI harness
+  run / exec / continue / steer
+  provider adapters
+  tools / skills / hooks
+  todo + task graph
+  session facts
+
+contract layer:
+  optional durable task contract
+  required artifacts
+  allowed tools
+  role/profile
+  completion gates
+
+large-project profile:
+  parent controller
+  child sessions / queue jobs
+  checkpoint resume
+  artifact baseline
+  session summary
+
+experimental surfaces:
+  web / tui / queue operator views
+  all read from local facts
+```
+
+核心原则不变：不要让 framework 替模型做固定 DAG 决策；但必须让 framework 对事实源、恢复、交付物和完成判定负责。
