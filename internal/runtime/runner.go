@@ -382,14 +382,15 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 		return RunResult{}, err
 	}
-	checkpointHint, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
+	checkpointHint, checkpointWarnings, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
 	if checkpointErr != nil {
 		return RunResult{}, checkpointErr
 	}
 	if checkpointHint {
 		r.emit(meta.ID, "checkpoint.resume_hint.injected", "prepare", map[string]any{
-			"provider": meta.Provider,
-			"model":    meta.Model,
+			"provider":       meta.Provider,
+			"model":          meta.Model,
+			"drift_warnings": append([]string(nil), checkpointWarnings...),
 		})
 	}
 	if stringsTrim(req.Message) != "" {

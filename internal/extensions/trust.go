@@ -64,7 +64,26 @@ func Discover(workdir string, trusted bool) (DiscoveryResult, error) {
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].QualifiedName < candidates[j].QualifiedName })
+	if err := ValidateNoAmbiguousShortNames(candidates); err != nil {
+		return DiscoveryResult{}, err
+	}
 	return DiscoveryResult{Candidates: candidates}, nil
+}
+
+func ValidateNoAmbiguousShortNames(candidates []Candidate) error {
+	byName := map[string]string{}
+	for _, candidate := range candidates {
+		name := strings.TrimSpace(candidate.Name)
+		if name == "" {
+			continue
+		}
+		qualified := strings.TrimSpace(candidate.QualifiedName)
+		if existing, ok := byName[name]; ok && existing != qualified {
+			return fmt.Errorf("ambiguous workspace extension short name %q: %s and %s", name, existing, qualified)
+		}
+		byName[name] = qualified
+	}
+	return nil
 }
 
 func ValidateToolName(name string, reserved map[string]struct{}) error {

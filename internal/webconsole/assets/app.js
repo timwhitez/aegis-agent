@@ -5,9 +5,6 @@
 const POLL_INTERVAL_MS = 1600;
 const MAX_LIVE_EVENTS = 80;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
-const SIMPLE_VIRTUAL_SCROLL_MIN_MESSAGES = 120;
-const VIRTUAL_SCROLL_ITEM_HEIGHT = 120;
-const VIRTUAL_SCROLL_BUFFER_SIZE = 5;
 
 const SHORTCUTS = {
   'escape': 'stop',
@@ -61,11 +58,7 @@ const state = {
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
   lastInputWasEmpty: true,
-  virtualScroll: {
-    scrollTop: 0,
-    containerHeight: 600,
-    enabled: false
-  },
+  layoutObserver: null,
   showHelp: false
 };
 
@@ -83,6 +76,7 @@ const nodes = {
   stopSessionBtn: document.getElementById('stop-session-btn'),
   interruptSessionBtn: document.getElementById('interrupt-session-btn'),
   interruptToggleBtn: document.getElementById('interrupt-toggle-btn'),
+  inputArea: document.querySelector('.input-area'),
   inputContainer: document.getElementById('input-container'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
@@ -113,6 +107,7 @@ function init() {
   }
   setupWebSocket();
   setupEventListeners();
+  setupLayoutObservers();
   if (hasDurableSession()) {
     state.sessionDetail = null;
     state.optimisticMessages = [];
@@ -138,10 +133,6 @@ function init() {
   }
   switchView(state.currentView, { skipPersist: true });
   renderCurrentSession();
-
-  if (nodes.chatContainer) {
-    state.virtualScroll.containerHeight = nodes.chatContainer.clientHeight;
-  }
 
   if (state.currentView === 'chat' && nodes.chatInput) {
     state.lastInputWasEmpty = !nodes.chatInput.value.trim();
@@ -385,6 +376,7 @@ function setupEventListeners() {
       this.style.height = 'auto';
       this.style.height = `${this.scrollHeight}px`;
       lastScrollHeight = this.scrollHeight;
+      updateDynamicLayoutMetrics();
     }
 
     // Only update UI if we really need to (e.g. for empty vs non-empty state)
@@ -405,12 +397,7 @@ function setupEventListeners() {
       scrollThrottle = null;
     }, 16);
 
-    state.virtualScroll.scrollTop = this.scrollTop;
-    state.virtualScroll.containerHeight = this.clientHeight;
-
-    if (state.virtualScroll.enabled) {
-      renderCurrentSession();
-    }
+    updateDynamicLayoutMetrics();
   });
 
   document.addEventListener('click', async (event) => {
@@ -517,6 +504,36 @@ function setupEventListeners() {
       return;
     }
 
+    const workerScaleButton = event.target.closest('[data-worker-scale]');
+    if (workerScaleButton) {
+      const input = document.getElementById('worker-desired-count');
+      const desiredCount = Number.parseInt(input?.value || '0', 10);
+      if (!Number.isFinite(desiredCount) || desiredCount < 0 || desiredCount > 16) {
+        showToast('Worker count must be between 0 and 16.', 'error');
+        return;
+      }
+      workerScaleButton.disabled = true;
+      try {
+        const workers = await requestJSON('/api/workers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ desired_count: desiredCount })
+        });
+        state.overview = {
+          ...(state.overview || {}),
+          workers
+        };
+        showToast(`Worker pool set to ${desiredCount}.`, 'success');
+        await refreshOverview();
+        renderQueueView();
+      } catch (err) {
+        showToast(err.message || 'Failed to update worker pool.', 'error');
+      } finally {
+        workerScaleButton.disabled = false;
+      }
+      return;
+    }
+
     const skillActionBtn = event.target.closest('[data-skill-action]');
     if (skillActionBtn) {
       const id = skillActionBtn.getAttribute('data-skill-action');
@@ -612,15 +629,34 @@ function setupEventListeners() {
   });
 }
 
+function setupLayoutObservers() {
+  updateDynamicLayoutMetrics();
+  window.addEventListener('resize', updateDynamicLayoutMetrics);
+  if (window.ResizeObserver && nodes.inputArea) {
+    state.layoutObserver = new ResizeObserver(updateDynamicLayoutMetrics);
+    state.layoutObserver.observe(nodes.inputArea);
+    if (nodes.chatInput) {
+      state.layoutObserver.observe(nodes.chatInput);
+    }
+  }
+}
+
+function updateDynamicLayoutMetrics() {
+  const inputHeight = Math.ceil(nodes.inputArea?.getBoundingClientRect?.().height || 132);
+  const clearance = Math.max(112, inputHeight + 28);
+  document.documentElement.style.setProperty('--chat-input-clearance', `${clearance}px`);
+  document.documentElement.style.setProperty('--toast-bottom-clearance', `${clearance + 10}px`);
+}
+
 function applyViewVisibility(viewName) {
   if (!nodes.views[viewName]) {
     return;
   }
   Object.values(nodes.views).forEach((view) => {
-    view.style.display = 'none';
+    view.classList.add('is-hidden');
   });
   nodes.navItems.forEach((item) => item.classList.remove('active'));
-  nodes.views[viewName].style.display = 'flex';
+  nodes.views[viewName].classList.remove('is-hidden');
   const activeNav = Array.from(nodes.navItems).find((item) => item.getAttribute('data-view') === viewName);
   if (activeNav) {
     activeNav.classList.add('active');
@@ -1337,27 +1373,6 @@ function summarizeProviderFailure(detail) {
   return null;
 }
 
-function calculateVirtualScrollWindow(messages) {
-  if (!state.virtualScroll.enabled || messages.length < 50) {
-    return { startIndex: 0, endIndex: messages.length, offsetY: 0, totalHeight: 0 };
-  }
-
-  const { scrollTop, containerHeight } = state.virtualScroll;
-  const itemHeight = VIRTUAL_SCROLL_ITEM_HEIGHT;
-  const bufferSize = VIRTUAL_SCROLL_BUFFER_SIZE;
-
-  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - bufferSize);
-  const endIndex = Math.min(
-    messages.length,
-    Math.ceil((scrollTop + containerHeight) / itemHeight) + bufferSize
-  );
-
-  const offsetY = startIndex * itemHeight;
-  const totalHeight = messages.length * itemHeight;
-
-  return { startIndex, endIndex, offsetY, totalHeight };
-}
-
 function renderMessageStream() {
   const detailMessages = maybeArray(state.sessionDetail?.messages);
   const optimisticMessages = state.optimisticMessages.slice();
@@ -1372,23 +1387,7 @@ function renderMessageStream() {
     };
   }
 
-  state.virtualScroll.enabled = supportsFixedHeightVirtualization(stream);
-
-  const { startIndex, endIndex, offsetY, totalHeight } = calculateVirtualScrollWindow(stream);
-  const visibleMessages = stream.slice(startIndex, endIndex);
-
-  let bodyHTML;
-  if (state.virtualScroll.enabled) {
-    bodyHTML = `
-      <div class="virtual-scroll-container" style="height: ${totalHeight}px; position: relative;">
-        <div class="virtual-scroll-content" style="transform: translateY(${offsetY}px);">
-          ${visibleMessages.map((message) => renderMessage(message)).join('')}
-        </div>
-      </div>
-    `;
-  } else {
-    bodyHTML = stream.map((message) => renderMessage(message)).join('');
-  }
+  const bodyHTML = stream.map((message) => renderMessage(message)).join('');
 
   return {
     activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
@@ -1396,27 +1395,6 @@ function renderMessageStream() {
     body: bodyHTML,
     pending: state.isGenerating ? renderPendingStageCard() : ''
   };
-}
-
-function supportsFixedHeightVirtualization(messages) {
-  if (messages.length < SIMPLE_VIRTUAL_SCROLL_MIN_MESSAGES) {
-    return false;
-  }
-  return maybeArray(messages).every((message) => isSimpleVirtualScrollCandidate(message));
-}
-
-function isSimpleVirtualScrollCandidate(message) {
-  const text = String(message?.text || '');
-  if (maybeArray(message?.tool_calls).length || maybeArray(message?.tool_results).length) {
-    return false;
-  }
-  if (message?.pending) {
-    return false;
-  }
-  if (text.length > 500) {
-    return false;
-  }
-  return text.split('\n').length <= 6;
 }
 
 function renderEmptySessionState() {
@@ -2956,6 +2934,8 @@ function renderQueueView() {
   if (!container) return;
   const jobs = maybeArray(state.queueData?.items || state.queueData);
   const selected = jobs.find((job) => job.id === state.selectedQueueJobId) || jobs[0] || null;
+  const desiredWorkers = Number(state.overview?.workers?.desired_count ?? state.meta?.worker_count ?? 0);
+  const activeWorkers = Number(state.overview?.workers?.active_count ?? 0);
   if (selected && !state.selectedQueueJobId) {
     state.selectedQueueJobId = selected.id;
   }
@@ -2983,6 +2963,17 @@ function renderQueueView() {
           <div class="card-actions">
             <button class="skill-btn install" type="button" data-queue-submit>Submit queue job</button>
           </div>
+        </div>
+      </section>
+      <section class="panel-card worker-scale-panel" data-testid="worker-scale-control">
+        <div class="panel-card-header"><h3 class="view-title compact-title">Worker Pool</h3></div>
+        <div class="panel-card-body">
+          <div class="worker-scale-row">
+            <label class="field-label" for="worker-desired-count">Desired workers</label>
+            <input id="worker-desired-count" class="worker-scale-input" type="number" min="0" max="16" step="1" value="${escapeAttr(String(Number.isFinite(desiredWorkers) ? desiredWorkers : 0))}">
+            <button class="ghost-action-btn" type="button" data-worker-scale>Apply</button>
+          </div>
+          <div class="surface-chip">Active ${escapeHTML(String(Number.isFinite(activeWorkers) ? activeWorkers : 0))}</div>
         </div>
       </section>
     </div>
@@ -3464,23 +3455,23 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
   tree.forEach((node) => {
     const itemWrapper = document.createElement('div');
     const button = document.createElement('button');
-    button.className = 'tree-node';
-    button.style.paddingLeft = `${level * 16 + 8}px`;
+    button.className = `tree-node tree-level-${Math.min(level, 8)}`;
     const icon = node.type === 'directory' ? 'folder' : 'file-code';
     button.innerHTML = `<i data-lucide="${icon}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
     const childrenContainer = document.createElement('div');
+    childrenContainer.className = 'tree-node-children';
     if (node.type === 'directory') {
-      childrenContainer.style.display = 'none';
+      childrenContainer.classList.add('is-collapsed');
     }
 
-    button.onclick = async () => {
+    button.addEventListener('click', async () => {
       if (node.type === 'file') {
         await loadFile(node.path);
         document.querySelectorAll('.tree-node').forEach((treeNode) => treeNode.classList.remove('active'));
         button.classList.add('active');
         return;
       }
-      const hidden = childrenContainer.style.display === 'none';
+      const hidden = childrenContainer.classList.contains('is-collapsed');
       if (hidden && !node.childrenLoaded) {
         button.disabled = true;
         button.classList.add('is-loading');
@@ -3497,12 +3488,12 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
           button.classList.remove('is-loading');
         }
       }
-      childrenContainer.style.display = hidden ? 'block' : 'none';
+      childrenContainer.classList.toggle('is-collapsed', !hidden);
       button.innerHTML = `<i data-lucide="${hidden ? 'folder-open' : 'folder'}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
       if (window.lucide && lucide.createIcons) {
         lucide.createIcons({ root: button });
       }
-    };
+    });
 
     itemWrapper.appendChild(button);
     itemWrapper.appendChild(childrenContainer);

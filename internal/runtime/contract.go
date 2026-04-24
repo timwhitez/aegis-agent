@@ -211,10 +211,31 @@ func refreshContractForSession(store *session.Store, emit func(string, map[strin
 			"required_artifacts": len(next.RequiredArtifacts),
 			"completion_gates":   append([]string(nil), next.CompletionGates...),
 		})
+		if len(next.RequiredArtifacts) > 0 {
+			emit("artifact.required", map[string]any{
+				"contract_id": next.ContractID,
+				"artifacts":   requiredArtifactEventPayload(next.RequiredArtifacts),
+				"count":       len(next.RequiredArtifacts),
+			})
+		}
 	}
 	_ = writeSessionSummary(store, meta.ID)
 	_ = writeLongRunCheckpoint(store, meta.ID)
 	return nil
+}
+
+func requiredArtifactEventPayload(artifacts []session.RequiredArtifact) []map[string]any {
+	out := make([]map[string]any, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		out = append(out, map[string]any{
+			"path":              artifact.Path,
+			"display_path":      artifact.DisplayPath,
+			"required":          artifact.Required,
+			"baseline_exists":   artifact.Baseline.Exists,
+			"content_validator": artifact.ContentValidator,
+		})
+	}
+	return out
 }
 
 func contractsEquivalent(a, b session.SessionContract) bool {

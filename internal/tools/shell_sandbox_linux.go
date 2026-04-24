@@ -4,6 +4,7 @@ package tools
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,6 +28,7 @@ func shellSandboxCommand(sandbox, workdir, shellPath, shellArg, command string) 
 		"--ro-bind-try", "/etc", "/etc",
 		"--tmpfs", "/tmp",
 		"--chdir", workdir,
+		"--ro-bind-try", filepath.Join(workdir, ".git"), filepath.Join(workdir, ".git"),
 		shellPath, shellArg, command,
 	}
 	return bwrapPath, args, "bwrap"

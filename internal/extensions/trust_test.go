@@ -51,3 +51,13 @@ func TestValidateToolNameRequiresQualifiedNonReservedName(t *testing.T) {
 		t.Fatal("expected unqualified tool name to fail")
 	}
 }
+
+func TestValidateNoAmbiguousShortNamesRejectsDuplicateShortName(t *testing.T) {
+	err := ValidateNoAmbiguousShortNames([]Candidate{
+		{Name: "reviewer", QualifiedName: "workspace/reviewer"},
+		{Name: "reviewer", QualifiedName: "trusted/reviewer"},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate short name ambiguity to fail")
+	}
+}

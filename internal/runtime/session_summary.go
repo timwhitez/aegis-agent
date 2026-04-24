@@ -28,6 +28,7 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	children, _ := store.ListChildren(sessionID, 100)
 	jobs, _ := store.ListJobsByParent(sessionID, 100)
 	notifications, _ := store.LoadBackgroundNotifications(sessionID)
+	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	checkpoint, checkpointErr := store.LoadLongRunCheckpoint(sessionID)
 
 	var b strings.Builder
@@ -120,9 +121,25 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	}
 
 	b.WriteString("\n## Children And Queue\n\n")
-	if len(children) == 0 && len(jobs) == 0 && len(notifications) == 0 {
+	if len(children) == 0 && len(jobs) == 0 && len(notifications) == 0 && coordinationErr != nil {
 		b.WriteString("not recorded\n")
 	} else {
+		if coordinationErr == nil && coordination.ParentSessionID != "" {
+			b.WriteString(fmt.Sprintf("- wait mode: `%s`\n", firstNonEmpty(coordination.WaitMode, parentWaitAll)))
+			b.WriteString(fmt.Sprintf("- parked: `%t`\n", coordination.Parked))
+			if len(coordination.UnresolvedChildSessions) > 0 {
+				b.WriteString(fmt.Sprintf("- unresolved child sessions: `%s`\n", strings.Join(coordination.UnresolvedChildSessions, "`, `")))
+			}
+			if len(coordination.UnresolvedQueueJobs) > 0 {
+				b.WriteString(fmt.Sprintf("- unresolved queue jobs: `%s`\n", strings.Join(coordination.UnresolvedQueueJobs, "`, `")))
+			}
+			if len(coordination.CompletedChildSessions) > 0 || len(coordination.CompletedQueueJobs) > 0 {
+				b.WriteString(fmt.Sprintf("- completed children/jobs: `%d` / `%d`\n", len(coordination.CompletedChildSessions), len(coordination.CompletedQueueJobs)))
+			}
+			if len(coordination.FailedChildSessions) > 0 || len(coordination.FailedQueueJobs) > 0 {
+				b.WriteString(fmt.Sprintf("- failed children/jobs: `%d` / `%d`\n", len(coordination.FailedChildSessions), len(coordination.FailedQueueJobs)))
+			}
+		}
 		if len(children) > 0 {
 			b.WriteString(fmt.Sprintf("- child sessions: `%d`\n", len(children)))
 		}
@@ -172,6 +189,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	notifications, _ := store.LoadBackgroundNotifications(sessionID)
 	messages, _ := store.LoadMessages(sessionID)
 	eventsList, _ := store.LoadEvents(sessionID)
+	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 
 	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, artifacts, tasks, children, jobs, state) {
 		return nil
@@ -216,6 +234,13 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	}
 	if len(checkpoint.UnresolvedChildSessions) > 0 || len(checkpoint.UnresolvedQueueJobs) > 0 {
 		checkpoint.ParentWaitState = "waiting"
+	}
+	if coordinationErr == nil && coordination.ParentSessionID != "" {
+		if coordination.Parked {
+			checkpoint.ParentWaitState = "parked"
+		} else if coordination.WaitMode != "" {
+			checkpoint.ParentWaitState = "ready"
+		}
 	}
 	checkpoint.ResumeHints = checkpointHints(checkpoint, state)
 	return store.SaveLongRunCheckpoint(sessionID, checkpoint)
@@ -275,24 +300,15 @@ func checkpointHints(checkpoint session.LongRunCheckpoint, state session.State) 
 	return hints
 }
 
-func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetadata, provider, model string) (bool, error) {
+func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetadata, provider, model string) (bool, []string, error) {
 	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return false, nil, nil
 		}
-		return false, err
+		return false, nil, err
 	}
-	var warnings []string
-	if checkpoint.Provider != "" && checkpoint.Provider != provider {
-		warnings = append(warnings, fmt.Sprintf("provider changed from %s to %s", checkpoint.Provider, provider))
-	}
-	if checkpoint.Model != "" && checkpoint.Model != model {
-		warnings = append(warnings, fmt.Sprintf("model changed from %s to %s", checkpoint.Model, model))
-	}
-	if checkpoint.Workdir != "" && checkpoint.Workdir != meta.Workdir {
-		warnings = append(warnings, fmt.Sprintf("workdir changed from %s to %s", checkpoint.Workdir, meta.Workdir))
-	}
+	warnings := checkpointDriftWarnings(store, meta, checkpoint, provider, model)
 	text := "Harness resume note: a long-run checkpoint is available. Use durable session facts first"
 	if len(checkpoint.ResumeHints) > 0 {
 		text += "; hints: " + strings.Join(checkpoint.ResumeHints, "; ")
@@ -303,8 +319,63 @@ func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetada
 	text += "."
 	msg := session.NewMessage("user", text)
 	msg.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "longrun_checkpoint",
+		"source":         "harness_reminder",
+		"kind":           "longrun_checkpoint",
+		"drift_warnings": append([]string(nil), warnings...),
 	}
-	return true, store.AppendMessage(meta.ID, msg)
+	return true, warnings, store.AppendMessage(meta.ID, msg)
+}
+
+func checkpointDriftWarnings(store *session.Store, meta session.SessionMetadata, checkpoint session.LongRunCheckpoint, provider, model string) []string {
+	var warnings []string
+	if checkpoint.Provider != "" && checkpoint.Provider != provider {
+		warnings = append(warnings, fmt.Sprintf("provider changed from %s to %s", checkpoint.Provider, provider))
+	}
+	if checkpoint.Model != "" && checkpoint.Model != model {
+		warnings = append(warnings, fmt.Sprintf("model changed from %s to %s", checkpoint.Model, model))
+	}
+	if checkpoint.Workdir != "" && checkpoint.Workdir != meta.Workdir {
+		warnings = append(warnings, fmt.Sprintf("workdir changed from %s to %s", checkpoint.Workdir, meta.Workdir))
+	}
+	if checkpoint.RequestedWorkdir != "" && checkpoint.RequestedWorkdir != meta.RequestedWorkdir {
+		warnings = append(warnings, fmt.Sprintf("requested workdir changed from %s to %s", checkpoint.RequestedWorkdir, meta.RequestedWorkdir))
+	}
+	if warning := isolationDriftWarning(checkpoint.Isolation, meta.Isolation); warning != "" {
+		warnings = append(warnings, warning)
+	}
+	if checkpoint.ContractSnapshot != nil {
+		if current, err := store.LoadContract(meta.ID); err == nil && current.ContractID != "" {
+			if checkpoint.ContractSnapshot.TrustSource != "" && current.TrustSource != "" && checkpoint.ContractSnapshot.TrustSource != current.TrustSource {
+				warnings = append(warnings, fmt.Sprintf("trust source changed from %s to %s", checkpoint.ContractSnapshot.TrustSource, current.TrustSource))
+			}
+		} else if checkpoint.ContractSnapshot.TrustSource != "" {
+			warnings = append(warnings, fmt.Sprintf("trust source changed from %s to missing current contract", checkpoint.ContractSnapshot.TrustSource))
+		}
+	}
+	return warnings
+}
+
+func isolationDriftWarning(previous, current *session.IsolationInfo) string {
+	if previous == nil && current == nil {
+		return ""
+	}
+	if previous == nil {
+		return fmt.Sprintf("isolation changed from off to %s", current.Mode)
+	}
+	if current == nil {
+		return fmt.Sprintf("isolation changed from %s to off", previous.Mode)
+	}
+	if previous.Mode != current.Mode {
+		return fmt.Sprintf("isolation mode changed from %s to %s", previous.Mode, current.Mode)
+	}
+	if previous.RequestedMode != current.RequestedMode {
+		return fmt.Sprintf("isolation requested mode changed from %s to %s", previous.RequestedMode, current.RequestedMode)
+	}
+	if previous.Workdir != current.Workdir {
+		return fmt.Sprintf("isolation workdir changed from %s to %s", previous.Workdir, current.Workdir)
+	}
+	if previous.RootDir != current.RootDir {
+		return fmt.Sprintf("isolation root changed from %s to %s", previous.RootDir, current.RootDir)
+	}
+	return ""
 }
