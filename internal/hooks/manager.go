@@ -190,14 +190,6 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 			if hook.Filter.RejectIfContains != "" && strings.Contains(value, hook.Filter.RejectIfContains) {
 				return execution, fmt.Errorf("hook rejected payload by field %s", field)
 			}
-			updated := value
-			for _, redact := range hook.Filter.Redact {
-				updated = strings.ReplaceAll(updated, redact, "***")
-			}
-			if updated != value {
-				next[field] = updated
-				execution.modifiedFields = appendUniqueString(execution.modifiedFields, field)
-			}
 		}
 	}
 	return execution, nil

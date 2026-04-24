@@ -425,29 +425,17 @@ func defWriteFile() Definition {
 			if err != nil {
 				return errorResult("write_file", err), nil
 			}
-			content, redacted := redactReportSecrets(execCtx.Workdir, path, input.Content)
-			if err := writeAtomically(path, []byte(content), 0o600); err != nil {
+			if err := writeAtomically(path, []byte(input.Content), 0o600); err != nil {
 				return errorResult("write_file", err), nil
 			}
-			message := fmt.Sprintf("Wrote %d bytes to %s", len(content), relativeOrAbsolute(execCtx.Workdir, path))
-			metadata := map[string]any{
-				"path": path,
-			}
-			if redacted {
-				message += " (redacted secrets)"
-				metadata["redacted_secrets"] = true
-				if execCtx.Emit != nil {
-					execCtx.Emit("secret.redacted", map[string]any{
-						"tool_name": "write_file",
-						"path":      path,
-					})
-				}
-			}
+			message := fmt.Sprintf("Wrote %d bytes to %s", len(input.Content), relativeOrAbsolute(execCtx.Workdir, path))
 			return session.ToolResult{
 				Name:          "write_file",
 				LLMOutput:     message,
 				DisplayOutput: message,
-				Metadata:      metadata,
+				Metadata: map[string]any{
+					"path": path,
+				},
 			}, nil
 		},
 	}
@@ -488,63 +476,20 @@ func defEditFile() Definition {
 				return errorResult("edit_file", errors.New("old_text not found")), nil
 			}
 			updated := strings.Replace(current, input.OldText, input.NewText, 1)
-			updated, redacted := redactReportSecrets(execCtx.Workdir, path, updated)
 			if err := writeAtomically(path, []byte(updated), 0o600); err != nil {
 				return errorResult("edit_file", err), nil
 			}
 			message := fmt.Sprintf("Edited %s", relativeOrAbsolute(execCtx.Workdir, path))
-			metadata := map[string]any{
-				"path": path,
-			}
-			if redacted {
-				message += " (redacted secrets)"
-				metadata["redacted_secrets"] = true
-				if execCtx.Emit != nil {
-					execCtx.Emit("secret.redacted", map[string]any{
-						"tool_name": "edit_file",
-						"path":      path,
-					})
-				}
-			}
 			return session.ToolResult{
 				Name:          "edit_file",
 				LLMOutput:     message,
 				DisplayOutput: message,
-				Metadata:      metadata,
+				Metadata: map[string]any{
+					"path": path,
+				},
 			}, nil
 		},
 	}
-}
-
-var reportSecretRedactionPatterns = []struct {
-	re          *regexp.Regexp
-	replacement string
-}{
-	{regexp.MustCompile(`(?im)(Authorization\s*:\s*Bearer\s+)[^\s"'` + "`" + `]+`), `${1}[REDACTED]`},
-	{regexp.MustCompile(`(?im)(Authorization\s*:\s*)[^\r\n]+`), `${1}[REDACTED]`},
-	{regexp.MustCompile(`(?im)(Cookie\s*:\s*)[^\r\n]+`), `${1}[REDACTED]`},
-	{regexp.MustCompile(`(?im)^([A-Z0-9_]*(?:AUTHORIZATION|COOKIE|TOKEN|SECRET|API_KEY)[A-Z0-9_]*\s*=\s*).+$`), `${1}[REDACTED]`},
-	{regexp.MustCompile(`(?i)("(?:authorization|cookie|token|access_token|refresh_token|session)"\s*:\s*")[^"]+(")`), `${1}[REDACTED]${2}`},
-}
-
-func redactReportSecrets(workdir, path, content string) (string, bool) {
-	if !isWorkspaceReportPath(workdir, path) {
-		return content, false
-	}
-	redacted := content
-	for _, pattern := range reportSecretRedactionPatterns {
-		redacted = pattern.re.ReplaceAllString(redacted, pattern.replacement)
-	}
-	return redacted, redacted != content
-}
-
-func isWorkspaceReportPath(workdir, path string) bool {
-	rel, err := filepath.Rel(workdir, path)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return false
-	}
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	return len(parts) > 1 && parts[0] == "reports"
 }
 
 func defGlob() Definition {

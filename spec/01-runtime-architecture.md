@@ -414,7 +414,6 @@ failed -> running
 - `compact.reused`
 - `provider.retry`
 - `provider.auto_resume`
-- `secret.redacted`
 
 每个事件字段至少包括：
 

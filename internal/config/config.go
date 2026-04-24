@@ -183,9 +183,8 @@ type HookInject struct {
 }
 
 type HookFilter struct {
-	Field            string   `yaml:"field"`
-	RejectIfContains string   `yaml:"reject_if_contains,omitempty"`
-	Redact           []string `yaml:"redact,omitempty"`
+	Field            string `yaml:"field"`
+	RejectIfContains string `yaml:"reject_if_contains,omitempty"`
 }
 
 func Default() *Config {

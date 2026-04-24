@@ -51,7 +51,7 @@
 补充问题：
 
 - 问题 G：用户纠偏后的目标 `/sim` 没有进入最终产物
-- 问题 H：敏感凭据被明文落入普通 `reports/` 目录
+- 可信环境下保留原始请求材料：用户已确认运行环境可信，不做默认脱敏，避免影响 agent 效果和复现能力
 - 问题 I：主报告与 supporting docs 结论冲突
 
 ## 修复状态
@@ -64,7 +64,7 @@
 - P1 bounded auto-resume：provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，会按 `runtime.provider_auto_resume.max_attempts` 自动续跑，并写出 `provider.auto_resume` 事件，避免报告收尾阶段每次 timeout 都需要人工 continue。
 - P1 长任务 taskboard：即使在 `yolo` 模式下，如果会话已经明显过长且仍没有 `todo_write` / `task_*` 事实源，`finish` 会被 `long_run_taskboard` guard 阻断，要求先写入一个可恢复的 durable task 状态。
 - P1 compaction storm：新增 `runtime.compact.hysteresis_delta_chars` 和 state 水位；一次真实 compaction 后，如果上下文增长没有超过 delta，会生成 compacted view 但只写 `compact.reused` 事件，不再每轮重写 summary artifact。
-- P2 报告脱敏：`write_file` / `edit_file` 写入 workspace `reports/` 下文件时会自动脱敏 `Authorization`、`Cookie`、常见 token/API key/env/json 字段，并写出 `secret.redacted` 事件；普通非报告文件不受影响。
+- 凭据原文落盘：用户已确认运行环境可信，本轮移除所有默认脱敏操作，包括 `reports/` 写入脱敏与 hook/prompt 字段替换，保留原始内容以保证 agent 判断和请求复现效果。
 
 本轮验证：
 
@@ -343,7 +343,7 @@
   - 主报告是否引用了已经被后续更新推翻的结论
 - 若不一致，直接阻断 `finish`。
 
-## 问题 I：敏感凭据被明文写入普通 `reports/` 目录，流程安全性不够
+## 非修复项：可信环境下保留原始请求材料
 
 ### 现象
 
@@ -355,20 +355,17 @@
 - `reports/ikvm-http-requests.ndjson:1-2`
 - 当前 `git status --short` 也显示这些凭据相关文件都在普通 `reports/` 下，且是未跟踪文件
 
-### 原因分析
+### 当前决策
 
-- 当前流程偏向“为了复现，把原始请求完整落盘”
-- 但没有提供更安全的默认路径：
-  - 例如 session owner-only artifacts
-  - 或 redacted view 与 raw secret 分离
-- 对安全评估类任务来说，这会把目标系统凭据二次扩散到 workspace。
+- 用户已确认运行环境可信，默认保留原始请求、token、Cookie、Authorization 等上下文，不做 runtime 层脱敏。
+- 原因是脱敏会影响 agent 对真实请求材料的判断、复现和后续安全评估准确性。
+- 因此本项不进入 P0/P1/P2 修复队列，也不实现自动替换、报告视图替换或 prompt/hook 字段替换。
 
-### 建议方案
+### 操作边界
 
-- 默认把 raw credential material 放到 session owner-only artifact 目录，而不是普通 `reports/`
-- `reports/` 里只保留 redacted 版本
-- 对包含 `Authorization`、`Cookie`、`token`、`session` 等字段的文件写入增加默认脱敏
-- 若用户确实需要原始请求重放材料，再通过显式开关导出到 workspace
+- runtime 不改写文件内容。
+- runtime 不改写 prompt / hook payload 内容。
+- 是否清理或隔离原始请求材料由 operator 手动决定，不作为 harness 默认行为。
 
 ## 四、优先级建议
 
@@ -383,10 +380,6 @@
 - 给长任务补 durable task/todo 和 completion-oriented guard
 - 抑制 compaction storm 和报告阶段重复 reread
 
-### P2
-
-- 加强敏感凭据的默认脱敏和 artifact 隔离
-
 ## 五、结论
 
 这次 session 暴露出的不是单一 bug，而是一条完整长任务链路的几个关键短板：
@@ -400,4 +393,4 @@
 
 1. 先修 P0：目标一致性和报告一致性
 2. 再修 P1：timeout/retry/auto-resume + 长任务 completion mode
-3. 最后补 P2：敏感凭据默认脱敏与隔离
+3. 凭据原文落盘按可信运行环境处理，不做默认脱敏

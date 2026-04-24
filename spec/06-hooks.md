@@ -84,14 +84,11 @@ hooks:
       inject:
         field: text
         prefix: "[interactive]\n"
-  tool_after:
-    - name: redact-secret
-      match:
-        tool: shell
+  user_message:
+    - name: block-forbidden-input
       filter:
-        field: llm_output
-        redact:
-          - sk-
+        field: text
+        reject_if_contains: forbidden
 ```
 
 说明：
@@ -164,12 +161,10 @@ v1 不支持：
 
 - `field`
 - `reject_if_contains`
-- `redact`
 
 规则：
 
 - `reject_if_contains` 命中时返回 hook 阻断错误
-- `redact` 命中时将文本替换为 `***`
 
 ## 8. 执行顺序
 

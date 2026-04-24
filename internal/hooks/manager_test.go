@@ -7,7 +7,7 @@ import (
 	"go-cli-agent/internal/config"
 )
 
-func TestManagerInjectAndRedact(t *testing.T) {
+func TestManagerInject(t *testing.T) {
 	manager := New(config.HooksConfig{
 		AssistantMessage: []config.HookDefinition{
 			{
@@ -17,23 +17,16 @@ func TestManagerInjectAndRedact(t *testing.T) {
 					Prefix: "[interactive] ",
 				},
 			},
-			{
-				Name: "redact",
-				Filter: &config.HookFilter{
-					Field:  "text",
-					Redact: []string{"secret"},
-				},
-			},
 		},
 	}, t.TempDir())
 
 	payload, err := manager.Trigger(context.Background(), "assistant.message", map[string]any{
-		"text": "secret value",
+		"text": "raw value",
 	})
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	if payload["text"] != "[interactive] *** value" {
+	if payload["text"] != "[interactive] raw value" {
 		t.Fatalf("unexpected payload: %#v", payload["text"])
 	}
 }
