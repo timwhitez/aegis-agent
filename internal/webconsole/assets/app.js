@@ -89,7 +89,6 @@ const nodes = {
   editorFilename: document.getElementById('editor-filename'),
   editorContent: document.getElementById('editor-content'),
   views: {
-    overview: document.getElementById('overview-view'),
     chat: document.getElementById('chat-view'),
     queue: document.getElementById('queue-view'),
     skills: document.getElementById('skills-view'),
@@ -504,36 +503,6 @@ function setupEventListeners() {
       return;
     }
 
-    const workerScaleButton = event.target.closest('[data-worker-scale]');
-    if (workerScaleButton) {
-      const input = document.getElementById('worker-desired-count');
-      const desiredCount = Number.parseInt(input?.value || '0', 10);
-      if (!Number.isFinite(desiredCount) || desiredCount < 0 || desiredCount > 16) {
-        showToast('Worker count must be between 0 and 16.', 'error');
-        return;
-      }
-      workerScaleButton.disabled = true;
-      try {
-        const workers = await requestJSON('/api/workers', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ desired_count: desiredCount })
-        });
-        state.overview = {
-          ...(state.overview || {}),
-          workers
-        };
-        showToast(`Worker pool set to ${desiredCount}.`, 'success');
-        await refreshOverview();
-        renderQueueView();
-      } catch (err) {
-        showToast(err.message || 'Failed to update worker pool.', 'error');
-      } finally {
-        workerScaleButton.disabled = false;
-      }
-      return;
-    }
-
     const skillActionBtn = event.target.closest('[data-skill-action]');
     if (skillActionBtn) {
       const id = skillActionBtn.getAttribute('data-skill-action');
@@ -688,10 +657,6 @@ function switchView(viewName, options = {}) {
   }
   if (viewName === 'history') {
     fetchHistory();
-  }
-  if (viewName === 'overview') {
-    renderOverviewView();
-    refreshOverview().then(renderOverviewView).catch(() => {});
   }
   if (viewName === 'queue') {
     fetchQueue();
@@ -1075,8 +1040,6 @@ async function refreshOverview() {
     state.overview = await requestJSON('/api/overview');
     if (state.currentView === 'chat') {
       renderCurrentSession();
-    } else if (state.currentView === 'overview') {
-      renderOverviewView();
     }
   } catch (err) {
     console.error('overview error', err);
@@ -1830,14 +1793,12 @@ function renderAgentsPanel(detail) {
   const children = maybeArray(detail.children?.sessions);
   const jobs = maybeArray(detail.children?.jobs);
   const notifications = maybeArray(detail.background_notifications);
-  const workers = maybeArray(state.overview?.workers?.workers);
   return `
     <section class="panel-section">
       <div class="summary-grid wide">
         ${renderMetricCard('Child sessions', String(children.length), 'durable sessions')}
         ${renderMetricCard('Background jobs', String(jobs.length), 'queued or completed')}
         ${renderMetricCard('Notifications', String(notifications.length), 'background results')}
-        ${renderMetricCard('Workers', String(state.overview?.workers?.active_count ?? 0), `${state.overview?.workers?.desired_count ?? 0} desired`)}
       </div>
     </section>
 
@@ -1860,13 +1821,6 @@ function renderAgentsPanel(detail) {
         <h4>Background notifications</h4>
       </div>
       ${notifications.length ? `<div class="card-stack">${notifications.map((note) => renderNotificationCard(note)).join('')}</div>` : '<div class="empty-panel">No background notifications yet.</div>'}
-    </section>
-
-    <section class="panel-section">
-      <div class="section-title-row">
-        <h4>Worker pool</h4>
-      </div>
-      ${workers.length ? `<div class="worker-pill-row">${workers.map((worker) => `<span class="surface-chip">Worker ${escapeHTML(String(worker.id))}: ${escapeHTML(humanizeStatus(worker.state || 'idle'))}${worker.last_job_id ? ` · ${escapeHTML(shortId(worker.last_job_id))}` : ''}</span>`).join('')}</div>` : '<div class="empty-panel">No active workers reported.</div>'}
     </section>
   `;
 }
@@ -1946,8 +1900,8 @@ function renderInspectorPanel() {
   }
   const tabs = [
     ['summary', 'Summary'],
-    ['tasks', 'Todo/Tasks'],
-    ['agents', 'Agents'],
+    ['tasks', 'Tasks'],
+    ['agents', 'Background'],
     ['timeline', 'Timeline']
   ];
   const active = tabs.some(([key]) => key === state.inspectorTab) ? state.inspectorTab : 'tasks';
@@ -2674,58 +2628,6 @@ function showToast(message, tone = 'info') {
   }, 3200);
 }
 
-function renderOverviewView() {
-  const container = nodes.views.overview;
-  if (!container) return;
-  const overview = state.overview;
-  if (!overview) {
-    container.innerHTML = '<div class="view-loading">Loading operator overview...</div>';
-    return;
-  }
-  const sessionCounters = overview.session_counters || {};
-  const queueCounters = overview.queue_counters || {};
-  const failures = maybeArray(overview.recent_failures);
-  const feed = maybeArray(overview.feed).slice(0, 10);
-  container.innerHTML = `
-    <div class="view-header">
-      <h2 class="view-title">Overview</h2>
-      <p class="view-subtitle">Runtime state from local session, queue, worker, and event files.</p>
-    </div>
-    <section class="panel-card">
-      <div class="panel-card-body">
-        <div class="overview-grid" data-testid="overview-kpi">
-          ${renderMetricCard('Running sessions', String(sessionCounters.running || 0), 'active local runs')}
-          ${renderMetricCard('Awaiting input', String(sessionCounters.awaiting_input || 0), 'ready to continue')}
-          ${renderMetricCard('Failed', String(sessionCounters.failed || 0), 'needs operator action')}
-          ${renderMetricCard('Queued jobs', String(queueCounters.queued || 0), `${queueCounters.running || 0} running`)}
-          ${renderMetricCard('Workers', String(overview.workers?.active_count || 0), `${overview.workers?.desired_count || 0} desired`)}
-        </div>
-      </div>
-    </section>
-    <div class="overview-columns">
-      <section class="panel-card">
-        <div class="panel-card-header"><h3 class="view-title compact-title">Recent Sessions</h3></div>
-        <div class="panel-card-body">${maybeArray(overview.recent_sessions).length ? maybeArray(overview.recent_sessions).slice(0, 8).map(renderHistorySessionCard).join('') : '<div class="empty-panel">No sessions yet.</div>'}</div>
-      </section>
-      <section class="panel-card">
-        <div class="panel-card-header"><h3 class="view-title compact-title">Queue</h3></div>
-        <div class="panel-card-body">${maybeArray(overview.recent_jobs).length ? maybeArray(overview.recent_jobs).slice(0, 8).map(renderQueueJobCard).join('') : '<div class="empty-panel">No queue jobs yet.</div>'}</div>
-      </section>
-    </div>
-    <section class="panel-card">
-      <div class="panel-card-header"><h3 class="view-title compact-title">Recent Failures</h3></div>
-      <div class="panel-card-body">${failures.length ? failures.map((item) => `<div class="notification-card"><span class="status-badge danger">${escapeHTML(item.kind || 'failure')}</span><div class="notification-copy">${escapeHTML(item.message || item.id || '')}</div></div>`).join('') : '<div class="empty-panel">No recent failures.</div>'}</div>
-    </section>
-    <section class="panel-card">
-      <div class="panel-card-header"><h3 class="view-title compact-title">Activity Feed</h3></div>
-      <div class="panel-card-body"><div class="timeline-stack">${feed.length ? feed.map((item) => renderTimelineItem(item, { compact: true, hideData: true })).join('') : '<div class="empty-panel">No activity yet.</div>'}</div></div>
-    </section>
-  `;
-  if (window.lucide && lucide.createIcons) {
-    lucide.createIcons({ root: container });
-  }
-}
-
 async function fetchQueue() {
   const container = nodes.views.queue;
   if (!container || state.refreshingQueue) return;
@@ -2749,48 +2651,49 @@ function renderQueueView() {
   if (!container) return;
   const jobs = maybeArray(state.queueData?.items || state.queueData);
   const selected = jobs.find((job) => job.id === state.selectedQueueJobId) || jobs[0] || null;
-  const desiredWorkers = Number(state.overview?.workers?.desired_count ?? state.meta?.worker_count ?? 0);
-  const activeWorkers = Number(state.overview?.workers?.active_count ?? 0);
+  const queueCounters = state.overview?.queue_counters || {};
   if (selected && !state.selectedQueueJobId) {
     state.selectedQueueJobId = selected.id;
   }
   container.innerHTML = `
     <div class="view-header history-header">
       <div>
-        <h2 class="view-title">Queue</h2>
-        <p class="view-subtitle">Submit and inspect experimental background jobs without leaving the local file-backed runtime.</p>
+        <h2 class="view-title">Queue monitor</h2>
+        <p class="view-subtitle">Optional background jobs. Normal work starts from Session; this view only shows durable queued runs and their child session links.</p>
       </div>
       <button class="ghost-action-btn" type="button" data-queue-refresh>Refresh</button>
     </div>
+    <section class="queue-primer">
+      <span class="surface-chip">Queued ${escapeHTML(String(queueCounters.queued || 0))}</span>
+      <span class="surface-chip">Running ${escapeHTML(String(queueCounters.running || 0))}</span>
+      <span class="surface-chip">Failed ${escapeHTML(String(queueCounters.failed || 0))}</span>
+      <span class="surface-chip">Completed ${escapeHTML(String(queueCounters.completed || 0))}</span>
+    </section>
     <div class="queue-layout" data-testid="queue-view">
       <section class="panel-card">
         <div class="panel-card-header"><h3 class="view-title compact-title">Jobs</h3></div>
         <div class="panel-card-body">${jobs.length ? jobs.map((job) => renderQueueJobCard(job)).join('') : '<div class="empty-panel">No queue jobs yet.</div>'}</div>
       </section>
-      <section class="panel-card">
-        <div class="panel-card-header"><h3 class="view-title compact-title">Selected Job</h3></div>
-        <div class="panel-card-body">${selected ? renderQueueDetail(selected) : '<div class="empty-panel">Select a queue job to inspect detail.</div>'}</div>
-      </section>
-      <section class="panel-card queue-submit-panel">
-        <div class="panel-card-header"><h3 class="view-title compact-title">Submit Job</h3></div>
-        <div class="panel-card-body">
-          <textarea id="queue-submit-prompt" class="queue-submit-input" rows="5" placeholder="Prompt for a background child session"></textarea>
-          <div class="card-actions">
-            <button class="skill-btn install" type="button" data-queue-submit>Submit queue job</button>
+      <aside class="queue-side-stack">
+        <section class="panel-card">
+          <div class="panel-card-header"><h3 class="view-title compact-title">Selected job</h3></div>
+          <div class="panel-card-body">${selected ? renderQueueDetail(selected) : '<div class="empty-panel">Select a queue job to inspect detail.</div>'}</div>
+        </section>
+        <section class="panel-card queue-submit-panel">
+          <div class="panel-card-header">
+            <div>
+              <h3 class="view-title compact-title">Start background job</h3>
+              <p class="view-subtitle">Advanced: use this only when you intentionally want a child session to run outside the main chat.</p>
+            </div>
           </div>
-        </div>
-      </section>
-      <section class="panel-card worker-scale-panel" data-testid="worker-scale-control">
-        <div class="panel-card-header"><h3 class="view-title compact-title">Worker Pool</h3></div>
-        <div class="panel-card-body">
-          <div class="worker-scale-row">
-            <label class="field-label" for="worker-desired-count">Desired workers</label>
-            <input id="worker-desired-count" class="worker-scale-input" type="number" min="0" max="16" step="1" value="${escapeAttr(String(Number.isFinite(desiredWorkers) ? desiredWorkers : 0))}">
-            <button class="ghost-action-btn" type="button" data-worker-scale>Apply</button>
+          <div class="panel-card-body">
+            <textarea id="queue-submit-prompt" class="queue-submit-input" rows="4" placeholder="Prompt for the background child session"></textarea>
+            <div class="card-actions">
+              <button class="skill-btn install" type="button" data-queue-submit>Submit job</button>
+            </div>
           </div>
-          <div class="surface-chip">Active ${escapeHTML(String(Number.isFinite(activeWorkers) ? activeWorkers : 0))}</div>
-        </div>
-      </section>
+        </section>
+      </aside>
     </div>
   `;
   if (window.lucide && lucide.createIcons) {
@@ -2803,13 +2706,15 @@ function renderQueueDetail(job) {
     <div class="kv-list" data-testid="queue-job-detail" data-queue-job-id="${escapeAttr(job.id)}">
       ${renderKVRow('Job', job.id)}
       ${renderKVRow('Status', humanizeStatus(job.status || 'queued'))}
-      ${renderKVRow('Session', job.session_id || 'not started')}
-      ${renderKVRow('Provider', `${job.provider || 'default'} / ${job.model || 'default'}`)}
       ${renderKVRow('Role', agentLabel(job.agent_name, job.agent_role) || 'unspecified')}
-      ${renderKVRow('Workdir', job.effective_workdir || job.requested_workdir || 'default')}
+      ${renderKVRow('Child session', job.session_id || 'not started')}
       ${job.last_error ? renderKVRow('Last error', job.last_error) : ''}
       ${job.final_text ? renderKVRow('Final text', truncateText(job.final_text, 220)) : ''}
       ${job.prompt ? renderKVRow('Prompt', truncateText(job.prompt, 280)) : ''}
+      <div class="card-actions">
+        ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
+        ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
+      </div>
     </div>
   `;
 }

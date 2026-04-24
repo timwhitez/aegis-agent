@@ -199,7 +199,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Ask anything...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 	if !strings.Contains(indexBody, "Enter to send, Shift+Enter / Ctrl+Enter for new line") {
@@ -207,6 +207,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if strings.Contains(indexBody, "theme-toggle") || strings.Contains(indexBody, "Toggle theme") {
 		t.Fatalf("expected dark mode toggle to be removed, got shell body: %s", indexBody)
+	}
+	if strings.Contains(indexBody, `data-view="overview"`) || strings.Contains(indexBody, "Overview</span>") || strings.Contains(indexBody, "overview-view") {
+		t.Fatalf("expected standalone overview page to be removed from shell, got shell body: %s", indexBody)
 	}
 	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "utils.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
@@ -221,8 +224,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	jsBody := checkBody(server.URL + "/app.js")
-	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "renderPendingStageCard") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "renderOverviewView") || !strings.Contains(jsBody, "renderQueueView") {
+	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "renderPendingStageCard") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "renderQueueView") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
+	}
+	if strings.Contains(jsBody, "renderOverviewView") || strings.Contains(jsBody, "data-worker-scale") || strings.Contains(jsBody, "Worker Pool") {
+		t.Fatalf("expected default UI to hide overview and worker-pool controls, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "marked.parse") || strings.Contains(jsBody, "unpkg.com") || strings.Contains(jsBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected app.js to avoid external markdown/icon dependencies, got app.js body: %s", jsBody)

@@ -8,7 +8,7 @@ Web console 解决三类问题：
 
 - 新用户很难快速理解 `run`、`steer`、`continue`、background queue 的差异
 - 复杂任务运行时，session / todo / task graph / child / queue / error 分散在多个命令和文件里，不易整体判断进度
-- 当需要后台并发 worker 时，纯 CLI 查看成本高，缺少统一的任务队列与执行器可视观测面
+- 当确实需要后台任务时，纯 CLI 查看成本高，缺少统一的 queue / child session 可视观测面
 
 这次实现要提供一个完整的本地控制台，而不是只有只读页面：
 
@@ -17,7 +17,7 @@ Web console 解决三类问题：
 - 可以对暂停或等待输入的 session 执行 continue
 - 可以提交 queue job
 - 可以查看 queue / children / task board / timeline / errors
-- 可以看到后台 worker 并发状态
+- 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
 
 ## 2. 产品边界
 
@@ -28,6 +28,7 @@ Web console 解决三类问题：
 - 基于本地 session 文件事实的只读视图
 - 基于 runtime / queue 的真实控制操作
 - 后台 worker pool 并发执行
+- 默认首页直接进入 Session 执行工作区，不再单独设置 Overview 落点
 
 ### 2.2 明确不做
 
@@ -37,6 +38,7 @@ Web console 解决三类问题：
 - 不要求 provider 流式 API、SSE 或 WebSocket 才能工作
 - 不在 v1 里引入浏览器端代码编辑器、文件树 IDE 或远程终端
 - 当前 workspace 面板只作为“服务进程当前 cwd”的只读浏览器存在，不承诺独立的 workspace-root 切换能力
+- 不把 worker pool 并发配置作为默认可见前端功能；需要时通过 `experimental web --workers` 或后端 API 调整
 
 ## 3. 设计参考与交互取舍
 
@@ -67,26 +69,27 @@ Web console 解决三类问题：
 
 - 产品标题
 - session 根目录
-- 当前 worker 并发度
 - 新建任务按钮
 - 手动刷新按钮
 - 当前选中 session 的短标识与状态（若存在）
 
-顶部栏属于全局状态条，不依赖用户先进入总览页才能看到这些信息。
-当前实现中，顶部栏采用轻量 dashboard header：左侧是说明性 copy，中间是 4 个事实卡片，右侧是 `New Session` / `Refresh` 主操作。
+顶部栏属于全局状态条，不依赖用户先进入其他页面才能看到这些信息。
+当前实现中，顶部栏保持克制：连接状态、当前 session、`New Session`、停止/中断主操作固定可见，不再塞入 KPI 数字墙。
 
 ### 4.2 左侧主导航
 
 固定区域：
 
-- 总览
 - Sessions
 - Queue
+- History
+- Skills
+- Workspace
+- Settings
 
-当前实现的左栏不是纯文本列表，而是品牌区 + 导航区 + session rail 三段式结构；新用户进入页面后可以先看导航，再逐步进入 session 详情。
-当 session 数量增多时，左栏还应支持纯客户端 search + status filter，让用户先缩小集合，再切换具体 session。
-为了保持 drill-down 速度，session rail / queue 过滤条还应提供一键状态 chips；若当前选中的 session 被 filter 暂时隐藏，UI 应提示用户并提供直接恢复可见的入口。
-当前实现的 session 工作区进一步固定为三栏：左侧 session rail、中间 chat/timeline、右侧 inspector panel。Tasks / Agents / Timeline / Summary 这类 tracker 必须固定可见，而不是被埋在需要反复滚动的卡片深处。
+当前实现的左栏不再提供 Overview 入口；进入页面即是 Session 执行工作区。
+session 工作区采用三栏：左侧 session rail、中间 chat/timeline、右侧 inspector panel。Tasks / Background / Timeline / Summary 这类 tracker 固定在当前 session 上下文中，而不是拆成独立总览页。
+小屏幕下三栏必须按 session rail -> chat -> inspector 顺序纵向堆叠，不能因横向挤压导致输入区或 tracker 不可用。
 
 Sessions 列表项必须展示：
 
@@ -97,17 +100,15 @@ Sessions 列表项必须展示：
 - agent role / agent name（若存在）
 - workdir 摘要，方便在多工作目录场景里快速分辨 session 上下文
 
-### 4.3 总览页
+### 4.3 Session 首页
 
-总览页是新用户的默认落点，展示：
+Session 工作区是新用户的默认落点，展示：
 
-- 运行中 session 数
-- awaiting_input session 数
-- queued / running / failed jobs 数
-- worker pool 状态
-- 最近活动 feed
-- 最近失败 session / job
-- KPI 卡片应允许直接 drill down 到对应的 session / queue 过滤视图，而不是只提供静态数字
+- 空状态说明：从输入框开始一个 durable session
+- 最近 session rail：只显示可直接打开的 session 摘要
+- 中央执行流：消息、工具调用、运行态和错误都在同一条 session timeline 中出现
+- 右侧 tracker：Summary / Tasks / Background / Timeline 按当前 session 聚焦展示
+- Queue 只作为可选后台任务页存在，不再是首页 KPI 的一部分
 
 ### 4.4 Session 工作区
 
@@ -171,14 +172,14 @@ Sessions 列表项必须展示：
 
 #### Queue 主视图补充
 
-- queue 视图不应只停留在过滤后的列表；当前实现还应提供 selected queue job 的 detail 面板
-- 该 detail 面板至少暴露 prompt、session linkage、requested/effective workdir、provider/model、visible paths 与 raw durable payload
-- 当 filter 排除当前 selected queue job 时，UI 仍应把它 pin 住并提示 operator 可一键 reveal
-- overview feed、recent jobs、failure cards、worker last-job 卡片都应能 drill down 到 queue detail，而不是只停留在静态文本
+- queue 视图默认是后台任务监控面，不再展示 worker pool 调参或 raw durable payload
+- 该 detail 面板只暴露 operator 可理解、可操作的信息：status、prompt、child session、parent session、final text、last error
+- queue job 的 provider、workdir、raw payload 等内部事实仍可由 API 与文件事实追溯，但默认前端不强行展示
+- queue submit 保留为“高级后台任务”入口，并用文案提示普通任务应回到 Session 执行
 
 ### 4.5 右侧动作区
 
-动作区跟随当前选择对象变化。
+动作区跟随当前选择对象变化，但默认聚焦当前 session。
 
 当选择 session 时：
 
@@ -193,38 +194,38 @@ Sessions 列表项必须展示：
 
 当选择 Queue 时：
 
-- 显示 queue submit 表单
-- 显示 worker pool 并发调节控件
+- 显示 queue jobs 列表
+- 显示 selected job 的简化详情
+- 可选显示“Start background job”高级入口
+- 不显示 worker pool 并发调节控件
 
-当前实现里，右侧动作区会始终保留 `Start Session` 入口，并在此基础上叠加 `Session Actions`、`Queue Job`、`Worker Pool` 三张上下文卡片。
-当前 `Session Actions` 卡片还会额外显示当前 session 的 phase、pending steer、agent identity 和 workdir 摘要，避免用户在操作前还要切回中间详情区确认上下文。
-Queue 主视图同样应支持纯客户端 search + status filter，优先服务本地控制台的高密度浏览，而不是先要求 operator 增加新的后端查询 API。
+当前实现不再提供单独 Overview 页面，也不再把 Worker Pool 当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、History 和可选 Queue。
 
 ## 5. 视觉系统
 
 ### 5.1 风格方向
 
-- 风格：简洁、现代、偏 operations dashboard
-- 目标气质：工程化、可追踪、低噪声
+- 风格：简洁、现代、session-first operations console
+- 目标气质：工程化、可追踪、低噪声、低边框
 - 不使用花哨拟物或泛 AI landing page 视觉
-- 当前外观采用浅底、柔和边框、低对比玻璃卡片与明确层级阴影，接近现代本地控制台而不是深色监控墙或营销页
+- 当前外观采用暖灰浅底、少量柔和阴影、克制状态色与大面积留白；容器之间主要用空间和阴影分层，不在每个 container 上堆边框
 
 ### 5.2 设计系统
 
 基于 `ui-ux-pro-max` 的建议，本实现采用：
 
-- pattern：data-dense dashboard
+- pattern：session cockpit
 - typography：系统字体栈 + 本地 monospace 栈，不依赖外部 font CDN
 - primary accent：蓝色用于主操作、导航聚焦和运行态
 - semantic success：绿色用于完成与健康状态
-- neutral：浅灰蓝用于背景、边框和信息层级
+- neutral：暖灰用于背景、弱分割和信息层级
 
-为避免纯黑压迫感，页面使用“浅背景 + 白色/浅灰卡片 + 蓝色主强调 + 语义状态色”的本地控制台风格，而不是全黑监控墙。
+为避免纯黑压迫感和过密 dashboard 感，页面使用“暖浅背景 + 白色纸面 + 蓝色主强调 + 语义状态色”的本地控制台风格，而不是全黑监控墙或多边框管理后台。
 
 ### 5.3 组件要求
 
 - 状态芯片：running / awaiting_input / paused / completed / failed / queued
-- KPI 卡片：概览计数
+- 摘要卡片：当前 session / queue 局部计数
 - 时间线卡片：消息与事件混合流
 - 数据表格：queue jobs、children
 - 摘要卡：session health / recovery / provider options / current focus
@@ -232,6 +233,7 @@ Queue 主视图同样应支持纯客户端 search + status filter，优先服务
 - 右侧 action panel：统一提交交互
 - 左侧 session rail：支持快速扫视 status / provider / role / 最近更新时间
 - mini action chips：从 queue/children/notification 等卡片直接跳到相关 session
+- Worker pool 不作为默认可见组件
 
 ### 5.4 可访问性
 
@@ -306,7 +308,7 @@ worker pool 允许并发 `N >= 1`。
 
 ### 7.2 `GET /api/overview`
 
-返回聚合统计：
+返回供 Session rail 和后台摘要复用的聚合数据；当前前端不再提供独立 Overview 页面。
 
 - session counters by status
 - queue counters by status
@@ -468,6 +470,7 @@ worker pool 允许并发 `N >= 1`。
 行为：
 
 - 动态调整 worker pool 并发数
+- 该接口保留给高级/测试入口，默认前端不展示 worker pool 调参控件
 
 ## 8. 交互状态机
 
@@ -509,15 +512,15 @@ worker pool 允许并发 `N >= 1`。
 
 1. 打开 Queue 面板
 2. 提交一个或多个 jobs
-3. 调整 worker count
-4. 在队列表里观察 queued -> running -> completed/failed
-5. 若 job 属于 parent session，则在该 parent timeline 里看到 background notification
+3. 在队列表里观察 queued -> running -> completed/failed
+4. 若 job 属于 parent session，则在该 parent timeline 里看到 background notification
+5. 若需要调整并发，重启 Web 服务时修改 `--workers` 或调用后端 worker API，不从默认页面直接配置
 
 ## 9. 刷新与实时策略
 
 当前实现采用 polling-first：
 
-- overview / queue：2 秒
+- session rail summary / queue：2 秒
 - session detail：1.5 秒
 - actions 提交成功后立即触发一次本地 refresh
 
@@ -532,7 +535,7 @@ worker pool 允许并发 `N >= 1`。
 错误必须区分三类：
 
 - 用户输入错误
-  - 例如空 prompt、空 steer message、非法 worker 数
+  - 例如空 prompt、空 steer message
 - 运行时错误
   - 例如 provider 缺 API key、session 不可恢复、job 失败
 - 基础设施错误
@@ -555,8 +558,8 @@ worker pool 允许并发 `N >= 1`。
 - 前端静态资源不依赖外部 CDN，icons 和 Markdown renderer 均为本地实现
 - start / continue 异步返回
 - steer 写入与 `source=web`
-- overview 聚合
-- worker pool 缩放
+- overview API 聚合仍可用作 session rail 数据源
+- worker pool API 缩放
 - queue job 从提交到完成的 happy path
 - role-aware start form 可显式传递 `agent_name` / `agent_role`
 - queue job 失败的持久化与可见性
@@ -566,7 +569,7 @@ worker pool 允许并发 `N >= 1`。
 - WebSocket malformed payload 不得造成全局 runtime exception
 - focused retry-resume live rerun 需要同时验证 durable retry metadata 未漂移，以及真实 `provider.retry` 事件出现
 - 若 retry proof 已经拿到上述 durable evidence，而 bounded finish nudges 后 session 仍为 `awaiting_input`，应将其记为 non-blocking completion quirk，而不是把整轮 webconsole follow-up 判成失败
-- headless browser UI smoke 覆盖 start、role-aware session chrome、session sidebar filter/reveal、queue quick-filter chips、queue pin/reveal、overview recent-job/feed/failed-job drilldown、worker last-job drilldown、timeline event filter、tasks/children/queue 标签切换、continue、worker 更新、queue submit、queue 视图、queue-links 通知与 manual refresh
+- headless browser UI smoke 覆盖 start、role-aware session chrome、session rail、timeline event filter、tasks/background/timeline tab 切换、continue、queue submit、queue 视图、queue-links 通知与 manual refresh；worker API 缩放保留为服务层测试，不作为默认页面交互
 - 浏览器侧 `runtime exception` 与 `console error` 为空
 
 手工验证至少覆盖：
@@ -583,7 +586,7 @@ worker pool 允许并发 `N >= 1`。
 - embedded shell 与前端 assets 能由同一进程本地服务直接提供
 - 页面可在无外部网络资源时加载；缺失 CDN 不得导致 `lucide is not defined` 或 `marked is not defined`
 - 用户无需记忆 CLI 全命令，也能完成 session 启动、追加输入、继续执行和后台排队
-- queue worker pool 支持真实并发消费
+- queue worker pool 支持真实并发消费，但默认 UI 不暴露 Worker Pool 配置卡
 - retry-resume proof 以 durable retry metadata 加真实 `provider.retry` 事件作为主要通过条件；若 proof 已成立，session 是否最终落成 `completed` 只作为附带运行状态记录
 - 浏览器可以完成核心交互链且无前端运行时错误
 - 页面能清晰展示 session、tasks、queue、children、errors 的最新状态

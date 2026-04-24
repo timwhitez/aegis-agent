@@ -18,10 +18,6 @@
       </div>
       
       <nav>
-        <button class="nav-item" data-view="overview">
-          <i data-lucide="layout-dashboard"></i>
-          <span>Overview</span>
-        </button>
         <button class="nav-item active" data-view="chat">
           <i data-lucide="message-square"></i>
           <span>Session</span>
@@ -87,7 +83,7 @@
         
         <div class="input-area">
           <div class="input-container" id="input-container">
-            <textarea id="chat-input" placeholder="Ask anything..." rows="1"></textarea>
+            <textarea id="chat-input" placeholder="Describe the task for this session..." rows="1"></textarea>
             <div class="input-actions">
               <button class="interrupt-toggle-btn" id="interrupt-toggle-btn" type="button" aria-pressed="false">
                 <i data-lucide="siren"></i>
@@ -103,9 +99,6 @@
           </div>
         </div>
       </div>
-
-      <!-- Overview View -->
-      <div id="overview-view" class="view is-hidden"></div>
 
       <!-- Queue View -->
       <div id="queue-view" class="view is-hidden"></div>

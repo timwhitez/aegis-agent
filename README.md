@@ -5,14 +5,11 @@
 它的主目标不是做一个复杂的终端 UI，而是把最小但完整的 agent loop、provider adapter、tools、skills、hooks、session 持久化、任务系统、运行中补充输入与恢复语义组织成一个干净的 CLI 基座。它既可以做 coding agent，也可以做审计、文档、运维、整理型 agent。真正决定“它做什么”的，是 `skills/`、工作目录里的 `AGENTS.md`、以及用户给它的 prompt。
 
 在保持 CLI-first 的前提下，仓库现在也允许显式 `experimental web` 控制台：它提供本地单页前端，用于 session / task / queue / children / timeline 观测，以及 `start` / `steer` / `continue` / background queue 的低门槛交互，但不会替代默认 core CLI 叙事。
-当前内嵌前端已经重构为更完整的轻量控制台壳层：左侧导航与 session rail、中央工作区、右侧 inspector tracker 同时存在，视觉上采用浅色 data-dense dashboard，而不是把实验面继续维持成裸信息页。
+当前内嵌前端采用 session-first 控制台壳层：进入页面就是简洁的 session 执行工作区，左侧 session rail、中间执行流、右侧 inspector tracker 同时存在，但不再提供独立 Overview 首页。
 当前 Web 控制台的 start / queue 表单都支持显式 `agent_name` / `agent_role`，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的 role-aware 运行。
 当前 session detail 还会把 execution / recovery / output / provider options、contract、required artifacts、provider attempts 与 checkpoint 线索直接放在详情数据里，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
-当前前端还加入了纯客户端的 session rail、queue jobs、timeline 检索和状态筛选；当 run 目录里会话、队列任务和事件数量上来时，可以先在浏览器里收窄集合，再进入具体 session 处理。
-在此基础上，session rail 和 queue 视图现在还有一键状态 chips；如果当前选中的 session 被 sidebar filter 隐藏，页面也会给出直接恢复可见的提示，而不是让 selection 静默“消失”。
-overview 里的 KPI 卡片现在也能直接 drill down 到对应的 session / queue 过滤视图，不再只是只读数字墙。
-Queue 主视图也已经从单列表推进成 list-detail 工作区：左侧过滤后的 job 列表，右侧是所选 queue job 的 durable payload、workdir、session linkage 和原始详情。
-如果 queue filter 暂时把当前所选 job 排除，列表仍会把该 selected job pin 住，并提供 `Reveal selected`；overview feed、recent jobs、failures、worker cards 也都能直接打开 queue detail。
+当前前端还保留轻量的 session rail、History、Queue、Skills、Workspace 与 Settings，但默认不把 worker pool 调参、raw queue payload 或 KPI 数字墙暴露给普通操作流。
+Queue 主视图现在定位为可选后台任务监控：展示 jobs、selected job 的简化状态与 child/parent session 跳转，并把提交后台 job 标注为高级入口；worker 并发请通过启动参数或后端 API 管理。
 
 ## 当前定位
 
@@ -80,12 +77,12 @@ export GEMINI_API_KEY=...
 
 浏览器里会看到：
 
-- 左侧：固定的 Overview / Queue 导航和 session rail
-- 中央：overview、queue、chat/timeline 三类主工作区
-- 右侧：Summary / Tasks / Agents / Timeline 固定 inspector tracker
+- 左侧：固定的 Session / Queue / History / Skills / Workspace / Settings 导航和 session rail
+- 中央：默认 session chat/timeline 执行流；Queue 仅作为可选后台任务监控面
+- 右侧：Summary / Tasks / Background / Timeline 固定 inspector tracker
 
 其中 session detail 会额外显示执行摘要、provider 选项、contract、required artifact、provider attempts、long-run checkpoint 和 parent coordination；queue / children / queue-links 卡片则支持直接打开相关 session，方便在 parent、child 和 background job 之间跳转。
-左侧 session rail、Queue Jobs、Timeline 都支持 search + status/kind filter，不需要等后端分页或额外 API 才能先把当前视图压缩到可操作范围。
+Queue 页面默认隐藏 Worker Pool 配置和 raw durable payload，只保留 jobs、selected job 摘要、child/parent session 跳转，以及一个明确标注为高级入口的 background job 提交框。
 
 ## 核心命令
 
@@ -228,7 +225,7 @@ providers:
 - `validation/run_round31_complex_real_matrix.sh`: 当前最完整的 26 场景真实矩阵入口；现在会额外产出 RT21 gap-proof preflight evidence，直接覆盖 provider metadata durability、review artifact enforcement、report path hardening 三条 proof-completeness 缺口
 - `validation/run_round61_task_heavy_real_matrix.sh`: 面向真实复杂开发任务族的 task-heavy live 矩阵入口；它围绕多语言修复、same-task steer、interrupt->resume->completion、role-aware delegate/children、role-aware queue、retry/webconsole operator proof 组织约 20 个场景，并把每个场景单独落到 `validation/runs/<run-id>/cases/<case-id>/`。该入口还会把 task-heavy + RT21 gap-proof preflight 收敛到 `notes/preflight-task-heavy-proof-tests.md` 与 `notes/preflight-gap-proof-summary.md`，让 provider metadata/retry durability、artifact/path guard、exact-template guard、interrupt/queue/delegate/project-memory refresh 等 proof 在进入 live cases 前就有脚本层锚点
 - `validation/run_openai_compatible_acceptance_stack.sh`: 当前长期稳定的一键 acceptance 入口；在 provider 连通性已经确认后，它会串行执行 `round31` 主矩阵和 focused webconsole follow-up，并产出 bundle 级 summary/notes
-- `validation/run_experimental_webconsole_followup_validation.sh`: `experimental web` 的 focused live 验证入口，覆盖 durable retry restore、queue background notification 去重、embedded shell/assets，以及 headless Chrome 的真实浏览器交互 smoke；当前 smoke 还会显式验证 role-aware start、session sidebar filter/reveal、queue quick-filter chips、queue pin/reveal、overview recent-job/feed/failed-job drilldown、worker last-job drilldown、timeline event filter、tasks/children/queue tab 切换、continue、worker 更新、queue submit、queue-links 通知与 manual refresh。脚本会先制造一个真实 failed queue canary，使 recent failure 和 worker last-job 入口在浏览器里有可验证的 durable 目标。当前稳定参考证据见 `validation/runs/2026-03-27-openai-compatible-gpt-5.4-round54e-experimental-webconsole-followup-stable-proof/`。retry proof 以 durable retry metadata + 真实 `provider.retry` 为准，即使 bounded finish nudges 后 session 仍是 `awaiting_input` 也只记为备注；需要 `OPENAI_API_KEY`、`node` 和本地 Chrome/Chromium，可通过 `CHROME_BIN` 指定浏览器
+- `validation/run_experimental_webconsole_followup_validation.sh`: `experimental web` 的 focused live 验证入口，覆盖 durable retry restore、queue background notification 去重、embedded shell/assets，以及 headless Chrome 的真实浏览器交互 smoke；当前默认 UI 口径以 session-first 首页、session rail、timeline event filter、Tasks/Background/Timeline tracker、continue、queue submit、queue 视图、queue-links 通知与 manual refresh 为主。worker 缩放和 overview 聚合仍保留服务层/API 测试，不再作为默认页面交互。retry proof 以 durable retry metadata + 真实 `provider.retry` 为准，即使 bounded finish nudges 后 session 仍是 `awaiting_input` 也只记为备注；需要 `OPENAI_API_KEY`、`node` 和本地 Chrome/Chromium，可通过 `CHROME_BIN` 指定浏览器
 
 ## 扩展能力
 
