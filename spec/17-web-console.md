@@ -86,6 +86,7 @@ Web console 解决三类问题：
 当前实现的左栏不是纯文本列表，而是品牌区 + 导航区 + session rail 三段式结构；新用户进入页面后可以先看导航，再逐步进入 session 详情。
 当 session 数量增多时，左栏还应支持纯客户端 search + status filter，让用户先缩小集合，再切换具体 session。
 为了保持 drill-down 速度，session rail / queue 过滤条还应提供一键状态 chips；若当前选中的 session 被 filter 暂时隐藏，UI 应提示用户并提供直接恢复可见的入口。
+当前实现的 session 工作区进一步固定为三栏：左侧 session rail、中间 chat/timeline、右侧 inspector panel。Tasks / Agents / Timeline / Summary 这类 tracker 必须固定可见，而不是被埋在需要反复滚动的卡片深处。
 
 Sessions 列表项必须展示：
 
@@ -213,7 +214,7 @@ Queue 主视图同样应支持纯客户端 search + status filter，优先服务
 基于 `ui-ux-pro-max` 的建议，本实现采用：
 
 - pattern：data-dense dashboard
-- typography：`Fira Sans` + `Fira Code`
+- typography：系统字体栈 + 本地 monospace 栈，不依赖外部 font CDN
 - primary accent：蓝色用于主操作、导航聚焦和运行态
 - semantic success：绿色用于完成与健康状态
 - neutral：浅灰蓝用于背景、边框和信息层级
@@ -328,6 +329,11 @@ worker pool 允许并发 `N >= 1`。
 - metadata
 - state
 - latest task board
+- contract snapshot
+- required artifact tracker
+- provider attempts tail
+- long-run checkpoint
+- parent coordination state
 - recent messages
 - recent events
 - children summary
@@ -434,6 +440,7 @@ worker pool 允许并发 `N >= 1`。
 - `workdir?`
 - `system?`
 - `mode?`
+- `wait_mode?` (`wait-all` | `wait-any`)
 - `isolation_mode?`
 - `isolation_root?`
 
@@ -536,6 +543,8 @@ worker pool 允许并发 `N >= 1`。
 - 顶部 toast 用于一次性反馈
 - 详情页内联错误用于对象级失败
 - queue/job/session 失败状态必须保留可见错误摘要
+- Markdown 渲染必须经过本地 sanitizer，不允许依赖外部 `marked` CDN，也不能直接注入未净化 HTML
+- skills upload / uninstall、settings 保存、WebSocket 消息解析都必须显示后端错误或 malformed payload 错误，不能假成功或静默失败
 
 ## 11. 测试要求
 
@@ -543,6 +552,7 @@ worker pool 允许并发 `N >= 1`。
 
 - API 路由
 - embedded shell 与 `embed` 静态资产可直接加载
+- 前端静态资源不依赖外部 CDN，icons 和 Markdown renderer 均为本地实现
 - start / continue 异步返回
 - steer 写入与 `source=web`
 - overview 聚合
@@ -551,6 +561,9 @@ worker pool 允许并发 `N >= 1`。
 - role-aware start form 可显式传递 `agent_name` / `agent_role`
 - queue job 失败的持久化与可见性
 - queue completion 与 stale-running reconcile 重叠时，background notification 仍按 `queue_job_id` 去重
+- session detail 能暴露 contract、required artifacts、provider attempts、long-run checkpoint 和 parent coordination
+- skills upload / uninstall 和 settings save 失败时必须使用真实后端错误反馈，并恢复按钮 pending 状态
+- WebSocket malformed payload 不得造成全局 runtime exception
 - focused retry-resume live rerun 需要同时验证 durable retry metadata 未漂移，以及真实 `provider.retry` 事件出现
 - 若 retry proof 已经拿到上述 durable evidence，而 bounded finish nudges 后 session 仍为 `awaiting_input`，应将其记为 non-blocking completion quirk，而不是把整轮 webconsole follow-up 判成失败
 - headless browser UI smoke 覆盖 start、role-aware session chrome、session sidebar filter/reveal、queue quick-filter chips、queue pin/reveal、overview recent-job/feed/failed-job drilldown、worker last-job drilldown、timeline event filter、tasks/children/queue 标签切换、continue、worker 更新、queue submit、queue 视图、queue-links 通知与 manual refresh
@@ -568,6 +581,7 @@ worker pool 允许并发 `N >= 1`。
 
 - `experimental web` 能稳定启动本地控制台
 - embedded shell 与前端 assets 能由同一进程本地服务直接提供
+- 页面可在无外部网络资源时加载；缺失 CDN 不得导致 `lucide is not defined` 或 `marked is not defined`
 - 用户无需记忆 CLI 全命令，也能完成 session 启动、追加输入、继续执行和后台排队
 - queue worker pool 支持真实并发消费
 - retry-resume proof 以 durable retry metadata 加真实 `provider.retry` 事件作为主要通过条件；若 proof 已成立，session 是否最终落成 `completed` 只作为附带运行状态记录

@@ -1,0 +1,310 @@
+package runtime
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"go-cli-agent/internal/session"
+)
+
+func writeSessionSummary(store *session.Store, sessionID string) error {
+	meta, err := store.LoadMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+	state, err := store.LoadState(sessionID)
+	if err != nil {
+		return err
+	}
+	todo, _ := store.LoadTodo(sessionID)
+	tasks, _ := store.ListTasks(sessionID)
+	contract, contractErr := store.LoadContract(sessionID)
+	artifacts, _ := store.LoadArtifactTracker(sessionID)
+	attempts, _ := store.LoadProviderAttempts(sessionID)
+	children, _ := store.ListChildren(sessionID, 100)
+	jobs, _ := store.ListJobsByParent(sessionID, 100)
+	notifications, _ := store.LoadBackgroundNotifications(sessionID)
+	checkpoint, checkpointErr := store.LoadLongRunCheckpoint(sessionID)
+
+	var b strings.Builder
+	b.WriteString("# Session Summary\n\n")
+	b.WriteString(fmt.Sprintf("- session: `%s`\n", meta.ID))
+	b.WriteString(fmt.Sprintf("- status: `%s`\n", state.Status))
+	b.WriteString(fmt.Sprintf("- phase: `%s`\n", state.Phase))
+	b.WriteString(fmt.Sprintf("- mode: `%s`\n", meta.Mode))
+	b.WriteString(fmt.Sprintf("- provider/model: `%s` / `%s`\n", meta.Provider, meta.Model))
+	b.WriteString(fmt.Sprintf("- workdir: `%s`\n", meta.Workdir))
+	if meta.RequestedWorkdir != "" && meta.RequestedWorkdir != meta.Workdir {
+		b.WriteString(fmt.Sprintf("- requested workdir: `%s`\n", meta.RequestedWorkdir))
+	}
+	if meta.ParentSessionID != "" {
+		b.WriteString(fmt.Sprintf("- parent session: `%s`\n", meta.ParentSessionID))
+	}
+	if meta.RootSessionID != "" && meta.RootSessionID != meta.ID {
+		b.WriteString(fmt.Sprintf("- root session: `%s`\n", meta.RootSessionID))
+	}
+	if meta.AgentName != "" || meta.AgentRole != "" {
+		b.WriteString(fmt.Sprintf("- agent: `%s` role `%s`\n", firstNonEmpty(meta.AgentName, "unnamed"), firstNonEmpty(meta.AgentRole, "unspecified")))
+	}
+	if meta.QueueJobID != "" {
+		b.WriteString(fmt.Sprintf("- queue job: `%s`\n", meta.QueueJobID))
+	}
+	if meta.Isolation != nil && meta.Isolation.Mode != "" {
+		b.WriteString(fmt.Sprintf("- isolation: `%s` requested `%s`\n", meta.Isolation.Mode, meta.Isolation.RequestedMode))
+	}
+	if state.LastError != "" {
+		b.WriteString(fmt.Sprintf("- last error: `%s`\n", state.LastError))
+	}
+	if state.PauseReason != "" {
+		b.WriteString(fmt.Sprintf("- pause reason: `%s`\n", state.PauseReason))
+	}
+	b.WriteString(fmt.Sprintf("- turn count: `%d`\n", state.Turn))
+
+	b.WriteString("\n## Contract\n\n")
+	if contractErr == nil && contract.ContractID != "" {
+		b.WriteString(fmt.Sprintf("- contract: `%s`\n", contract.ContractID))
+		b.WriteString(fmt.Sprintf("- profile: `%s`\n", contract.Profile))
+		b.WriteString(fmt.Sprintf("- source: `%s` trust `%s`\n", contract.Source, contract.TrustSource))
+		if len(contract.CompletionGates) > 0 {
+			b.WriteString(fmt.Sprintf("- gates: `%s`\n", strings.Join(contract.CompletionGates, "`, `")))
+		}
+		if len(contract.RequiredArtifacts) > 0 {
+			b.WriteString(fmt.Sprintf("- required artifacts: `%d`\n", len(contract.RequiredArtifacts)))
+		}
+	} else {
+		b.WriteString("not recorded\n")
+	}
+
+	b.WriteString("\n## Required Artifacts\n\n")
+	if len(artifacts) == 0 {
+		b.WriteString("not recorded\n")
+	} else {
+		for _, artifact := range artifacts {
+			display := firstNonEmpty(artifact.DisplayPath, artifact.Path)
+			status := artifact.Status
+			b.WriteString(fmt.Sprintf("- `%s`: present=%t touched=%t changed=%t writer=`%s`\n", display, status.Present, status.TouchedBySession, status.ChangedFromBaseline, status.LastWriterTool))
+		}
+	}
+
+	b.WriteString("\n## Task State\n\n")
+	if len(todo) == 0 && len(tasks) == 0 {
+		b.WriteString("not recorded\n")
+	} else {
+		if len(todo) > 0 {
+			b.WriteString("- todo:\n")
+			for _, item := range todo {
+				b.WriteString(fmt.Sprintf("  - `%s` [%s/%s]\n", item.Content, item.Status, item.Priority))
+			}
+		}
+		if len(tasks) > 0 {
+			ready, blocked, completed := taskCounts(tasks)
+			b.WriteString(fmt.Sprintf("- tasks: ready=%d blocked=%d completed=%d total=%d\n", ready, blocked, completed, len(tasks)))
+		}
+	}
+
+	b.WriteString("\n## Provider Attempts\n\n")
+	if len(attempts) == 0 {
+		b.WriteString("not recorded\n")
+	} else {
+		start := len(attempts) - 8
+		if start < 0 {
+			start = 0
+		}
+		for _, attempt := range attempts[start:] {
+			b.WriteString(fmt.Sprintf("- turn=%d attempt=%d outcome=`%s` provider=`%s` class=`%s` status=%d error=`%s`\n", attempt.Turn, attempt.Attempt, attempt.Outcome, attempt.Provider, attempt.ErrorClass, attempt.StatusCode, truncateText(attempt.Error, 120)))
+		}
+	}
+
+	b.WriteString("\n## Children And Queue\n\n")
+	if len(children) == 0 && len(jobs) == 0 && len(notifications) == 0 {
+		b.WriteString("not recorded\n")
+	} else {
+		if len(children) > 0 {
+			b.WriteString(fmt.Sprintf("- child sessions: `%d`\n", len(children)))
+		}
+		if len(jobs) > 0 {
+			b.WriteString(fmt.Sprintf("- queue jobs: `%d`\n", len(jobs)))
+		}
+		if len(notifications) > 0 {
+			b.WriteString(fmt.Sprintf("- background notifications: `%d`\n", len(notifications)))
+		}
+	}
+
+	b.WriteString("\n## Checkpoint\n\n")
+	if checkpointErr == nil && checkpoint.SessionID != "" {
+		b.WriteString(fmt.Sprintf("- latest: `%s`\n", filepath.Join(store.SessionDir(sessionID), "checkpoints", "longrun-latest.json")))
+		b.WriteString(fmt.Sprintf("- created_at: `%s`\n", checkpoint.CreatedAt))
+		if len(checkpoint.ResumeHints) > 0 {
+			b.WriteString(fmt.Sprintf("- resume hints: `%s`\n", strings.Join(checkpoint.ResumeHints, "`, `")))
+		}
+	} else {
+		b.WriteString("not recorded\n")
+	}
+
+	b.WriteString("\n## Files\n\n")
+	b.WriteString(fmt.Sprintf("- metadata: `%s`\n", filepath.Join(store.SessionDir(sessionID), "session.json")))
+	b.WriteString(fmt.Sprintf("- state: `%s`\n", filepath.Join(store.SessionDir(sessionID), "state.json")))
+	b.WriteString(fmt.Sprintf("- messages: `%s`\n", filepath.Join(store.SessionDir(sessionID), "messages.jsonl")))
+	b.WriteString(fmt.Sprintf("- events: `%s`\n", filepath.Join(store.SessionDir(sessionID), "events.jsonl")))
+	b.WriteString(fmt.Sprintf("- updated_at: `%s`\n", time.Now().UTC().Format(time.RFC3339Nano)))
+	return store.WriteSessionMarkdown(sessionID, b.String())
+}
+
+func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
+	meta, err := store.LoadMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+	state, err := store.LoadState(sessionID)
+	if err != nil {
+		return err
+	}
+	contract, contractErr := store.LoadContract(sessionID)
+	artifacts, _ := store.LoadArtifactTracker(sessionID)
+	todo, _ := store.LoadTodo(sessionID)
+	tasks, _ := store.ListTasks(sessionID)
+	children, _ := store.ListChildren(sessionID, 100)
+	jobs, _ := store.ListJobsByParent(sessionID, 100)
+	notifications, _ := store.LoadBackgroundNotifications(sessionID)
+	messages, _ := store.LoadMessages(sessionID)
+	eventsList, _ := store.LoadEvents(sessionID)
+
+	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, artifacts, tasks, children, jobs, state) {
+		return nil
+	}
+	rootSessionID := meta.RootSessionID
+	if rootSessionID == "" {
+		rootSessionID = meta.ID
+	}
+	ready, blocked, completed := taskCounts(tasks)
+	checkpoint := session.LongRunCheckpoint{
+		SchemaVersion:            1,
+		SessionID:                meta.ID,
+		RootSessionID:            rootSessionID,
+		TodoSummary:              todo,
+		TaskSummary:              map[string]int{"ready": ready, "blocked": blocked, "completed": completed, "total": len(tasks)},
+		RequiredArtifactStatus:   artifacts,
+		LatestCompactionArtifact: latestCompactionArtifact(store, sessionID),
+		Provider:                 meta.Provider,
+		Model:                    meta.Model,
+		EffectiveProviderOptions: meta.ProviderOptions,
+		Workdir:                  meta.Workdir,
+		RequestedWorkdir:         meta.RequestedWorkdir,
+		Isolation:                meta.Isolation,
+		BackgroundNotifications:  len(notifications),
+		SourceEventCount:         len(eventsList),
+		SourceMessageCount:       len(messages),
+		CreatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if contractErr == nil && contract.ContractID != "" {
+		copyContract := contract
+		checkpoint.ContractSnapshot = &copyContract
+	}
+	for _, child := range children {
+		if child.Status != session.StatusCompleted && child.Status != session.StatusFailed {
+			checkpoint.UnresolvedChildSessions = append(checkpoint.UnresolvedChildSessions, child.ID)
+		}
+	}
+	for _, job := range jobs {
+		if job.Status == session.QueueStatusQueued || job.Status == session.QueueStatusRunning {
+			checkpoint.UnresolvedQueueJobs = append(checkpoint.UnresolvedQueueJobs, job.ID)
+		}
+	}
+	if len(checkpoint.UnresolvedChildSessions) > 0 || len(checkpoint.UnresolvedQueueJobs) > 0 {
+		checkpoint.ParentWaitState = "waiting"
+	}
+	checkpoint.ResumeHints = checkpointHints(checkpoint, state)
+	return store.SaveLongRunCheckpoint(sessionID, checkpoint)
+}
+
+func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session.SessionContract, contractErr error, artifacts []session.RequiredArtifact, tasks []session.Task, children []session.SessionSummary, jobs []session.QueueJob, state session.State) bool {
+	if meta.Depth > 0 || meta.ParentSessionID != "" || meta.QueueJobID != "" || len(children) > 0 || len(jobs) > 0 {
+		return true
+	}
+	if meta.Isolation != nil && meta.Isolation.Mode != "" && meta.Isolation.Mode != "off" {
+		return true
+	}
+	if contractErr == nil && contract.ContractID != "" && (contract.Profile == "large_project" || contract.Profile == "delegated" || len(contract.RequiredArtifacts) > 0) {
+		return true
+	}
+	if len(artifacts) > 1 || len(tasks) > 0 {
+		return true
+	}
+	return state.LastCompactionInputChars > 0
+}
+
+func latestCompactionArtifact(store *session.Store, sessionID string) string {
+	dir := filepath.Join(store.SessionDir(sessionID), "artifacts", "compactions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var latest os.DirEntry
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if latest == nil || entry.Name() > latest.Name() {
+			latest = entry
+		}
+	}
+	if latest == nil {
+		return ""
+	}
+	return filepath.Join(dir, latest.Name())
+}
+
+func checkpointHints(checkpoint session.LongRunCheckpoint, state session.State) []string {
+	var hints []string
+	if len(checkpoint.RequiredArtifactStatus) > 0 {
+		hints = append(hints, "recheck required artifacts before finish")
+	}
+	if checkpoint.ParentWaitState == "waiting" {
+		hints = append(hints, "resolve parent child or queue wait state")
+	}
+	if state.LastError != "" {
+		hints = append(hints, "resume from last error: "+truncateText(state.LastError, 120))
+	}
+	if checkpoint.LatestCompactionArtifact != "" {
+		hints = append(hints, "load latest compaction summary before broad reread")
+	}
+	return hints
+}
+
+func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetadata, provider, model string) (bool, error) {
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	var warnings []string
+	if checkpoint.Provider != "" && checkpoint.Provider != provider {
+		warnings = append(warnings, fmt.Sprintf("provider changed from %s to %s", checkpoint.Provider, provider))
+	}
+	if checkpoint.Model != "" && checkpoint.Model != model {
+		warnings = append(warnings, fmt.Sprintf("model changed from %s to %s", checkpoint.Model, model))
+	}
+	if checkpoint.Workdir != "" && checkpoint.Workdir != meta.Workdir {
+		warnings = append(warnings, fmt.Sprintf("workdir changed from %s to %s", checkpoint.Workdir, meta.Workdir))
+	}
+	text := "Harness resume note: a long-run checkpoint is available. Use durable session facts first"
+	if len(checkpoint.ResumeHints) > 0 {
+		text += "; hints: " + strings.Join(checkpoint.ResumeHints, "; ")
+	}
+	if len(warnings) > 0 {
+		text += "; drift warnings: " + strings.Join(warnings, "; ")
+	}
+	text += "."
+	msg := session.NewMessage("user", text)
+	msg.Meta = map[string]any{
+		"source": "harness_reminder",
+		"kind":   "longrun_checkpoint",
+	}
+	return true, store.AppendMessage(meta.ID, msg)
+}

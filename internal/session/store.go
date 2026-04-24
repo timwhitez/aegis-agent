@@ -66,6 +66,7 @@ func (s *Store) Create(meta SessionMetadata, state State) error {
 		filepath.Join(dir, "artifacts"),
 		filepath.Join(dir, "artifacts", "compactions"),
 		filepath.Join(dir, "artifacts", "transcripts"),
+		filepath.Join(dir, "checkpoints"),
 	} {
 		if err := s.ensureDir(path); err != nil {
 			return err
@@ -132,6 +133,85 @@ func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
 		return []events.Event{}, nil
 	}
 	return out, err
+}
+
+func (s *Store) LoadContract(sessionID string) (SessionContract, error) {
+	var contract SessionContract
+	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "contract.json"), &contract)
+	return contract, err
+}
+
+func (s *Store) SaveContract(sessionID string, contract SessionContract) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "contract.json"), contract)
+}
+
+func (s *Store) AppendContractHistory(sessionID string, contract SessionContract) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "artifacts", "contract-history.jsonl"), contract)
+}
+
+func (s *Store) LoadArtifactTracker(sessionID string) ([]RequiredArtifact, error) {
+	var artifacts []RequiredArtifact
+	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "artifact-tracker.json"), &artifacts)
+	if errors.Is(err, os.ErrNotExist) {
+		return []RequiredArtifact{}, nil
+	}
+	return artifacts, err
+}
+
+func (s *Store) SaveArtifactTracker(sessionID string, artifacts []RequiredArtifact) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "artifact-tracker.json"), artifacts)
+}
+
+func (s *Store) AppendProviderAttempt(sessionID string, attempt ProviderAttempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "provider-attempts.jsonl"), attempt)
+}
+
+func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error) {
+	path := filepath.Join(s.SessionDir(sessionID), "provider-attempts.jsonl")
+	var out []ProviderAttempt
+	err := readJSONL(path, &out)
+	if errors.Is(err, os.ErrNotExist) {
+		return []ProviderAttempt{}, nil
+	}
+	return out, err
+}
+
+func (s *Store) LoadLongRunCheckpoint(sessionID string) (LongRunCheckpoint, error) {
+	var checkpoint LongRunCheckpoint
+	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "checkpoints", "longrun-latest.json"), &checkpoint)
+	return checkpoint, err
+}
+
+func (s *Store) SaveLongRunCheckpoint(sessionID string, checkpoint LongRunCheckpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "checkpoints", "longrun-latest.json"), checkpoint)
+}
+
+func (s *Store) LoadParentCoordination(sessionID string) (ParentCoordination, error) {
+	var coordination ParentCoordination
+	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "parent-coordination.json"), &coordination)
+	return coordination, err
+}
+
+func (s *Store) SaveParentCoordination(sessionID string, coordination ParentCoordination) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "parent-coordination.json"), coordination)
+}
+
+func (s *Store) WriteSessionMarkdown(sessionID string, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeBytesFile(filepath.Join(s.SessionDir(sessionID), "session.md"), []byte(content))
 }
 
 func (s *Store) AppendEvent(sessionID string, event events.Event) error {

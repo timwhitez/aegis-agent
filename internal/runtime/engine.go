@@ -181,6 +181,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			Store:           meta.ProviderOptions.Store,
 		}, func(eventType string, data map[string]any) {
 			e.emit(meta.ID, eventType, "provider_call", data)
+			if eventType == "provider.retry" {
+				recordProviderRetry(e.store, meta, state.Turn, data)
+				_ = writeSessionSummary(e.store, meta.ID)
+			}
 		})
 		e.control.clearCancel(cancel)
 		if err != nil {
@@ -203,6 +207,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					return RunResult{}, err
 				}
 				e.emitProviderAutoResume(meta.ID, err, state.ProviderAutoResumeCount)
+				recordProviderAutoResumeAttempt(e.store, meta, state.Turn, err, state.ProviderAutoResumeCount)
+				_ = writeSessionSummary(e.store, meta.ID)
+				_ = writeLongRunCheckpoint(e.store, meta.ID)
 				if _, appendErr := e.appendHarnessReminder(meta, "provider_call", providerAutoResumePrompt(err, state.ProviderAutoResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts), "provider_auto_resume"); appendErr != nil {
 					return RunResult{}, appendErr
 				}
@@ -213,8 +220,13 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			state.Phase = "provider_call"
 			_ = e.store.SaveState(meta.ID, state)
 			e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"error": err.Error()})
+			recordProviderFailure(e.store, meta, state.Turn, err, false)
+			_ = writeSessionSummary(e.store, meta.ID)
+			_ = writeLongRunCheckpoint(e.store, meta.ID)
 			return RunResult{SessionID: meta.ID, Status: state.Status, LastError: err.Error()}, WrapProviderError(err)
 		}
+		recordProviderSuccess(e.store, meta, state.Turn, result)
+		_ = writeSessionSummary(e.store, meta.ID)
 		if state.ProviderAutoResumeCount != 0 {
 			state.ProviderAutoResumeCount = 0
 			if err := e.store.SaveState(meta.ID, state); err != nil {
@@ -309,28 +321,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if len(toolResults) > 0 {
 					currentMessages = append(currentMessages, session.NewToolMessage(toolResults))
 				}
-				guardKind := ""
-				guardText := ""
-				guardKind, guardText = toolGuard(meta.Workdir, currentMessages, call.Name, toolArgs, e.guardrailsYolo())
-
-				if call.Name == "finish" && e.cfg.Runtime.PreCompletion.Enabled && e.cfg.Runtime.PreCompletion.CheckFeatures {
-					featureListPath := filepath.Join(e.store.SessionDir(meta.ID), "feature_list.json")
-					if data, err := os.ReadFile(featureListPath); err == nil {
-						var featureList session.FeatureList
-						if json.Unmarshal(data, &featureList) == nil {
-							var incomplete []string
-							for _, f := range featureList.Features {
-								if f.Status != "completed" {
-									incomplete = append(incomplete, fmt.Sprintf("- %s (status: %s)", f.ID, f.Status))
-								}
-							}
-							if len(incomplete) > 0 {
-								guardKind = "pre_completion_check"
-								guardText = fmt.Sprintf("Pre-completion check failed: %d feature(s) not completed:\n%s\n\nPlease complete all features before calling finish.", len(incomplete), strings.Join(incomplete, "\n"))
-							}
-						}
-					}
+				controller := NewCompletionController(e.store, meta.ID, meta.Workdir, e.guardrailsYolo(), func(eventType string, data map[string]any) {
+					e.emit(meta.ID, eventType, "tool_execute", data)
+				})
+				decision := controller.EvaluateToolCall(currentMessages, call.Name, toolArgs)
+				if decision.Status == GateAllow && call.Name == "finish" && e.cfg.Runtime.PreCompletion.Enabled && e.cfg.Runtime.PreCompletion.CheckFeatures {
+					decision = controller.EvaluatePreCompletionFeatures(true)
 				}
+				if decision.Status == GateAllow {
+					controller.MarkAllowed(call.Name)
+				}
+				guardKind := decision.GateID
+				guardText := decision.ModelMessage
 
 				var toolResult session.ToolResult
 				var toolErr error
@@ -367,6 +369,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					annotateExactArtifactLiteralResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateTargetConsistencyResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateReviewArtifactResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
+					controller.TrackToolResult(call.Name, toolResult, state.Turn)
 				}
 				toolResult.ToolCallID = call.ID
 				toolResult.Name = call.Name
@@ -515,6 +518,8 @@ func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{})
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
 }
 
@@ -529,6 +534,8 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.completed", state.Phase, map[string]any{})
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
 }
 
@@ -543,6 +550,8 @@ func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state 
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.paused", state.Phase, map[string]any{"reason": reason})
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status}, nil
 }
 
@@ -559,6 +568,8 @@ func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state s
 		return RunResult{}, saveErr
 	}
 	e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"error": state.LastError})
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, err
 }
 
@@ -724,7 +735,15 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 			state.PendingSteerCount = countOpenSteerRequests(requests)
 			_ = e.store.SaveState(sessionID, state)
 		}
-		return accepted, e.store.UpdateSteerRequests(sessionID, requests)
+		if err := e.store.UpdateSteerRequests(sessionID, requests); err != nil {
+			return accepted, err
+		}
+		if err := refreshContractForSession(e.store, func(eventType string, data map[string]any) {
+			e.emit(sessionID, eventType, "control_drain", data)
+		}, meta); err != nil {
+			return accepted, err
+		}
+		return accepted, nil
 	}
 	return accepted, nil
 }

@@ -97,6 +97,7 @@
 职责：
 
 - 管理 `session.json`、`state.json`、`messages.jsonl`、`events.jsonl`、`control/`
+- 管理 `contract.json`、`artifact-tracker.json`、`provider-attempts.jsonl`、`parent-coordination.json`、`session.md` 与 `checkpoints/`
 - 写入 compaction artifacts
 - 为 `continue` 提供恢复数据
 - 持久化 `control/steer.jsonl` 与 `control/background.jsonl`
@@ -125,7 +126,50 @@
 - 在不丢失原始日志的前提下压缩提供给模型的上下文
 - 生成压缩摘要与 transcript artifact
 
-### 2.12 DelegationManager
+### 2.12 SessionContractManager
+
+职责：
+
+- 从最新外部用户指令、provider/session metadata 与已存在的 guard parser 中提取 session contract
+- 写入 `contract.json`、`artifacts/contract-history.jsonl` 与 `artifact-tracker.json`
+- 在 `start`、`continue` 和已接纳 `steer` 后刷新 contract snapshot
+- 只记录显式要求与可验证交付约束，不把 runtime 变成固定 workflow engine
+
+### 2.13 CompletionController
+
+职责：
+
+- 作为 tool/finish gate 的统一入口
+- 先复用已有 review、artifact、template、literal、target、taskboard、steer guard
+- 再执行 required-artifact baseline/touched/changed gate
+- 再执行 parent child/queue coordination gate
+- 把 `completion.evaluate.*`、`completion.gate.*`、`artifact.gate.*`、`artifact.tracked` 事件写回 session
+
+### 2.14 ProviderAttemptLedger
+
+职责：
+
+- 把 provider retry、auto-resume、final failure、success 写入 `provider-attempts.jsonl`
+- 保留 provider/model、turn、attempt、timeout/retry 线索、error class、timeout kind、status code、response id
+- 只作为恢复与诊断事实，不反向驱动 adapter retry policy
+
+### 2.15 SessionSummaryWriter
+
+职责：
+
+- 生成 `.go-cli-agent/sessions/<id>/session.md`
+- 聚合 state、contract、artifact tracker、todo/task、provider attempts、children、queue、background notifications 和 checkpoint 位置
+- 只作为 operator-readable 派生视图，不能替代 `messages.jsonl` / `events.jsonl` / `state.json`
+
+### 2.16 LongRunCheckpointWriter
+
+职责：
+
+- 对大型、delegated、child/queue、isolation、显式 artifact contract、task-heavy、compacted session 写 `checkpoints/longrun-latest.json`
+- 记录 resume index、artifact status、task summary、provider options、parent wait state、resume hints
+- `continue` 发现 checkpoint 时可插入 harness resume note，但不能覆盖原始日志或改变 session fact source
+
+### 2.17 DelegationManager
 
 职责：
 
@@ -136,7 +180,7 @@
 - 当 `agent_name` 显式声明 `planner` / `generator` / `evaluator` 一类 persona 时，把它作为 role hint 传入 child session，而不是把角色分工硬编码成固定 DAG
 - child handoff 必须依赖可见文件事实，例如 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md` 与 visible output 列表，而不是依赖进程内临时上下文
 
-### 2.13 QueueStore And Worker
+### 2.18 QueueStore And Worker
 
 职责：
 
@@ -146,14 +190,14 @@
 - 在活跃 CLI 进程内提供 auto worker
 - 将 child 完成/失败结果投递回 parent session 的控制通知
 
-### 2.14 TerminalDashboard
+### 2.19 TerminalDashboard
 
 职责：
 
 - 渲染 session / child / queue / event 面板
 - 只读取文件事实，不持有权威状态
 
-### 2.15 WebConsoleService
+### 2.20 WebConsoleService
 
 职责：
 
@@ -299,8 +343,9 @@ while true:
 对每个 tool call：
 
 1. 触发 `tool.before`
-2. 必要时先应用 runtime 级 guard
+2. 通过 `CompletionController` 应用 runtime 级 guard
    - 若 `runtime.guardrails_mode = yolo`，则跳过 retrieval / project-memory / review-artifact 这类 runtime reminder 与 guard，由模型在工具边界内自主管理
+   - `yolo` 不跳过显式用户 contract、workspace path safety、shell timeout/output limit 或 required-artifact gate
    - 当最近 harness reminder 已明确要求“停止只读探索、直接基于当前证据行动”时
    - runtime 可以拒绝继续的 read-only tool call，并写入一条普通可重放错误结果
    - retrieval-tail guard 允许至多两次新的、精确命名的 `read_file`
@@ -310,14 +355,15 @@ while true:
    - 目的是阻止 repo-scale overread、artifact 已写出后的尾部重读、interrupt steer 之后的 completion detour，以及 compaction 后的无意义重试
 3. 执行工具
 4. 触发 `tool.after`
-5. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
-6. 落盘最终 tool result
+5. 成功的 `write_file` / `edit_file` 会更新 `artifact-tracker.json`，使 required-artifact gate 能区分“文件本来存在”和“本 session 确实写过或改过”
+6. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
+7. 落盘最终 tool result
 
 ### 5.6 turn_decide
 
 分支规则：
 
-- 如果模型调用了 `finish` 工具，则 session 完成
+- 如果模型调用了 `finish` 工具，必须先通过 `CompletionController` 的 finish gates；通过后 session 完成
 - 如果有普通 tool calls，则进入下一轮
 - 如果没有 tool calls：
   - `run` 模式下将 session 置为 `awaiting_input`
@@ -414,6 +460,16 @@ failed -> running
 - `compact.reused`
 - `provider.retry`
 - `provider.auto_resume`
+- `contract.created`
+- `contract.updated`
+- `completion.evaluate.started`
+- `completion.gate.passed`
+- `completion.gate.blocked`
+- `completion.evaluate.finished`
+- `artifact.tracked`
+- `artifact.gate.passed`
+- `artifact.gate.blocked`
+- `checkpoint.resume_hint.injected`
 
 每个事件字段至少包括：
 

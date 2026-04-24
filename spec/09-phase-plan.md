@@ -182,20 +182,45 @@ minimal core 的默认完成标准停在 Phase 10。
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
 
-## 14. Extension Phases
+## 14. Core v1 收敛加固
+
+Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件：
+
+- 不把 runtime 改造成固定 DAG 或重型 workflow engine
+- 不让 experimental Web / queue / delegate 入口反向主导默认 CLI 叙事
+
+当前已纳入 core v1 收敛口径的加固项：
+
+- session contract snapshot：`contract.json` 与 `artifacts/contract-history.jsonl`
+- required artifact tracker：`artifact-tracker.json`
+- centralized completion controller：统一复用既有 guard，并补充显式 artifact / parent coordination gate
+- provider attempt ledger：`provider-attempts.jsonl`
+- operator session summary：`session.md`
+- long-run checkpoint：`checkpoints/longrun-latest.json`
+- explicit parent coordination：`parent-coordination.json`
+- workspace extension trust discovery：`.agent` 默认 discovery-only，显式 trust 前不加载
+- optional Linux shell sandbox：`runtime.shell.sandbox: bwrap`
+
+验收补充：
+
+- `go test ./cmd/... ./internal/... ./pkg/...` 覆盖新增持久化与 gate
+- `node --check internal/webconsole/assets/app.js` 与 `icons.js` 覆盖前端语法
+- WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 sanitizer
+
+## 15. Extension Phases
 
 以下 phase 继续保留，但需要区分两类：
 
 - Phase 11-13 可作为 large-project profile 的已验证扩展面
 - Phase 14 及之后仍属于实验扩展面
 
-### 14.1 Phase 11 - Worktree Isolation
+### 15.1 Phase 11 - Worktree Isolation
 
 - `off` / `auto` / `git` / `copy`
 - session metadata 中记录 isolation
 - 当 large-project profile 被显式启用时，这一 phase 需要有真实隔离目录、requested/effective workdir 分离，以及不污染 parent workdir 的验证证据
 
-### 14.2 Phase 12 - Multi-Agent Delegation
+### 15.2 Phase 12 - Multi-Agent Delegation
 
 - `delegate`
 - `children`
@@ -204,7 +229,7 @@ minimal core 的默认完成标准停在 Phase 10。
 - `agent_list`
 - 当 large-project profile 被显式启用时，这一 phase 需要有 parent/child linkage、child session durability、observability 和同步/异步 child 执行证据
 
-### 14.3 Phase 13 - Background Queue
+### 15.3 Phase 13 - Background Queue
 
 - `queue submit`
 - `queue list`
@@ -213,12 +238,12 @@ minimal core 的默认完成标准停在 Phase 10。
 - parent background notification
 - 当 large-project profile 被显式启用时，这一 phase 需要有真实 worker 消费、job/session 关联和 background notification 回流证据
 
-### 14.4 Phase 14 - Terminal TUI
+### 15.4 Phase 14 - Terminal TUI
 
 - `tui`
 - snapshot / interactive 观测面
 
-### 14.5 Phase 15 - Web Console
+### 15.5 Phase 15 - Web Console
 
 - `experimental web`
 - 本地 HTTP API
@@ -227,7 +252,7 @@ minimal core 的默认完成标准停在 Phase 10。
 - Web 发起的 `start` / `continue` / `steer` / `queue submit`
 - 可配置并发 worker pool
 
-### 14.6 Phase 16+ 的规则
+### 15.6 Phase 16+ 的规则
 
 - 即使仓库里已有对应实现，也只能作为实验扩展
 - 不得反过来要求 core 文档、帮助文本、smoke 脚本都围绕它们设计

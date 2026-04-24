@@ -218,6 +218,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err := r.store.Create(meta, state); err != nil {
 		return RunResult{}, err
 	}
+	_ = writeSessionSummary(r.store, meta.ID)
 	r.emit(meta.ID, "session.created", "prepare", map[string]any{
 		"provider": meta.Provider,
 		"model":    meta.Model,
@@ -226,6 +227,9 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	})
 	if stringsTrim(req.Prompt) != "" {
 		if err := r.appendUserMessage(ctx, meta, "prepare", req.Prompt, nil); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+		if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
@@ -378,8 +382,21 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 		return RunResult{}, err
 	}
+	checkpointHint, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
+	if checkpointErr != nil {
+		return RunResult{}, checkpointErr
+	}
+	if checkpointHint {
+		r.emit(meta.ID, "checkpoint.resume_hint.injected", "prepare", map[string]any{
+			"provider": meta.Provider,
+			"model":    meta.Model,
+		})
+	}
 	if stringsTrim(req.Message) != "" {
 		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, nil); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+		if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
@@ -457,6 +474,9 @@ func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error)
 	r.emit(req.SessionID, "session.steer.queued", "control", map[string]any{
 		"id": request.ID,
 	})
+	if meta, err := r.store.LoadMetadata(req.SessionID); err == nil {
+		_ = writeSessionSummary(r.store, meta.ID)
+	}
 	return SteerResult{
 		SessionID: req.SessionID,
 		Accepted:  true,
@@ -721,6 +741,8 @@ func (r *Runner) failBeforeRun(sessionID string, state session.State, phase stri
 	state.LastError = err.Error()
 	_ = r.store.SaveState(sessionID, state)
 	r.emit(sessionID, "session.failed", phase, map[string]any{"error": err.Error()})
+	_ = writeSessionSummary(r.store, sessionID)
+	_ = writeLongRunCheckpoint(r.store, sessionID)
 	return RunResult{
 		SessionID: sessionID,
 		Status:    state.Status,

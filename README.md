@@ -5,9 +5,9 @@
 它的主目标不是做一个复杂的终端 UI，而是把最小但完整的 agent loop、provider adapter、tools、skills、hooks、session 持久化、任务系统、运行中补充输入与恢复语义组织成一个干净的 CLI 基座。它既可以做 coding agent，也可以做审计、文档、运维、整理型 agent。真正决定“它做什么”的，是 `skills/`、工作目录里的 `AGENTS.md`、以及用户给它的 prompt。
 
 在保持 CLI-first 的前提下，仓库现在也允许显式 `experimental web` 控制台：它提供本地单页前端，用于 session / task / queue / children / timeline 观测，以及 `start` / `steer` / `continue` / background queue 的低门槛交互，但不会替代默认 core CLI 叙事。
-当前内嵌前端已经重构为更完整的轻量控制台壳层：左侧导航与 session rail、中央工作区、右侧 action rail 同时存在，视觉上采用浅色 data-dense dashboard，而不是把实验面继续维持成裸信息页。
+当前内嵌前端已经重构为更完整的轻量控制台壳层：左侧导航与 session rail、中央工作区、右侧 inspector tracker 同时存在，视觉上采用浅色 data-dense dashboard，而不是把实验面继续维持成裸信息页。
 当前 Web 控制台的 start / queue 表单都支持显式 `agent_name` / `agent_role`，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的 role-aware 运行。
-当前 session detail 还会把 execution / recovery / output / provider options 四类摘要直接放在顶部，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
+当前 session detail 还会把 execution / recovery / output / provider options、contract、required artifacts、provider attempts 与 checkpoint 线索直接放在详情数据里，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
 当前前端还加入了纯客户端的 session rail、queue jobs、timeline 检索和状态筛选；当 run 目录里会话、队列任务和事件数量上来时，可以先在浏览器里收窄集合，再进入具体 session 处理。
 在此基础上，session rail 和 queue 视图现在还有一键状态 chips；如果当前选中的 session 被 sidebar filter 隐藏，页面也会给出直接恢复可见的提示，而不是让 selection 静默“消失”。
 overview 里的 KPI 卡片现在也能直接 drill down 到对应的 session / queue 过滤视图，不再只是只读数字墙。
@@ -80,11 +80,11 @@ export GEMINI_API_KEY=...
 
 浏览器里会看到：
 
-- 左侧：固定的 Overview / Queue 导航和 session 列表
-- 中央：overview、queue、session detail 三类主工作区
-- 右侧：Start / Session Actions / Queue Job / Worker Pool 四个上下文动作卡
+- 左侧：固定的 Overview / Queue 导航和 session rail
+- 中央：overview、queue、chat/timeline 三类主工作区
+- 右侧：Summary / Tasks / Agents / Timeline 固定 inspector tracker
 
-其中 session detail 会额外显示执行摘要卡、provider 选项摘要和可展开的 metadata；queue / children / queue-links 卡片则支持直接打开相关 session，方便在 parent、child 和 background job 之间跳转。
+其中 session detail 会额外显示执行摘要、provider 选项、contract、required artifact、provider attempts、long-run checkpoint 和 parent coordination；queue / children / queue-links 卡片则支持直接打开相关 session，方便在 parent、child 和 background job 之间跳转。
 左侧 session rail、Queue Jobs、Timeline 都支持 search + status/kind filter，不需要等后端分页或额外 API 才能先把当前视图压缩到可操作范围。
 
 ## 核心命令
@@ -209,10 +209,12 @@ providers:
 - CLI 是适配层，不把关键状态藏在终端里
 - core / experimental / store 入口在 app-facing 边界上保持独立 facade，不再复用同一个 concrete runner type
 - session / state / messages / events 是文件事实源
+- session contract、required artifact tracker、provider attempts、session summary 与 long-run checkpoint 都是围绕本地文件事实源生成的 durable 辅助面；它们不替代 messages/events/state，也不引入固定 workflow engine
 - compaction 只压缩发给模型的上下文视图，不覆盖原始日志
 - compaction summary 会尽量保留 `artifact_memory`、`project_memory_stack`、`high_value_proofs` 和保留给最终证据复核的 targeted read 预算；同一次 compaction 后增长未超过 hysteresis delta 时会复用 compacted view，避免每轮重写 summary artifact
 - review/audit 产物不只校验 Markdown 结构；runtime validator 还会核对 cited path:line 是否可读，并要求 snippet-level evidence support
 - 当任务对交付文件要求固定开头、精确标题或 section 顺序时，runtime 会把这些 exact-template 约束当成一等 guard，而不是继续被默认 findings-first 习惯带偏
+- 当任务明确要求写出某个 artifact 时，runtime 会记录 baseline 并要求本 session 真实写入或改动该文件后才能通过 finish gate
 - 大任务优先把 durable memory 外置到文件。推荐在工作目录下维护 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md`
 - 当大型任务在运行中被 `steer` 改变方向时，runtime 会优先提醒并在必要时阻断，要求先刷新 `reports/spec.md` / `reports/plan.md`，再继续实现、handoff 或 finish
 - 默认主路径优先于扩展能力，先把 Phase 0-10 做实，再谈 Phase 11+
@@ -260,6 +262,7 @@ providers:
 - `docs`: operator-facing runbooks
 - `internal/app`: 参数解析、命令调度、stdout/stderr 适配
 - `internal/runtime`: runner、engine、compaction、interrupt / steer / continue
+- `internal/extensions`: workspace extension discovery 与 trust gate
 - `internal/provider`: OpenAI / Anthropic / Google adapter
 - `internal/tools`: built-in tools、skill command tools、workspace safety
 - `internal/session`: session store、todo、task graph、queue files
@@ -288,3 +291,4 @@ providers:
 - [`spec/15-background-queue.md`](./spec/15-background-queue.md)
 - [`spec/16-terminal-tui.md`](./spec/16-terminal-tui.md)
 - [`spec/17-web-console.md`](./spec/17-web-console.md)
+- [`spec/18-durable-contract-and-completion.md`](./spec/18-durable-contract-and-completion.md)

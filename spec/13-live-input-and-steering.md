@@ -116,6 +116,7 @@ active `run` / `exec` 进程启动后，需要额外启动一个 control watcher
 - runtime 新增一条真实 `user` message
 - `meta.source = steer`
 - `meta.interrupt = true|false`
+- runtime 基于最新外部指令刷新 `contract.json` / `artifact-tracker.json`，使新的显式 artifact、template、literal 或目标约束能参与后续 completion gate
 
 若在同一边界接纳了多条 steer：
 
@@ -224,3 +225,4 @@ inline steer hotkey 可以作为后续增强项，但不作为当前实现前提
 - 不可安全抢占时会 defer，而不是静默丢失
 - 明确要求“stop without finishing / later continue”的 interrupt steer 不会被误判成“finish immediately”，并且当前 run 结束后 session 仍可 `continue`
 - steer 最终进入 `messages.jsonl` 的形式是普通 user message，而不是只停留在控制文件中
+- 已接纳 steer 若改变交付物或 completion 条件，`contract.created` / `contract.updated` 与 artifact tracker 需要同步反映，不允许只靠旧 prompt view 判断 finish

@@ -23,6 +23,7 @@ type DelegateRequest struct {
 	Workdir         string
 	SystemOverride  string
 	Background      bool
+	WaitMode        string
 	Mode            string
 	IsolationMode   string
 	IsolationRoot   string
@@ -55,6 +56,7 @@ func (r *Runner) Delegate(ctx context.Context, req DelegateRequest) (DelegateRes
 		Workdir:         req.Workdir,
 		SystemOverride:  req.SystemOverride,
 		Background:      req.Background,
+		WaitMode:        req.WaitMode,
 		Mode:            req.Mode,
 		IsolationMode:   req.IsolationMode,
 		IsolationRoot:   req.IsolationRoot,
@@ -109,6 +111,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			Workdir:         workdir,
 			SystemOverride:  req.SystemOverride,
 			Mode:            mode,
+			WaitMode:        req.WaitMode,
 			IsolationMode:   isolationMode,
 			IsolationRoot:   req.IsolationRoot,
 		})
@@ -119,7 +122,11 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			"job_id":     job.ID,
 			"agent_name": job.AgentName,
 			"agent_role": job.AgentRole,
+			"wait_mode":  job.WaitMode,
 		})
+		_ = addParentQueueJob(r.store, req.ParentSessionID, job.ID, req.WaitMode)
+		_ = writeSessionSummary(r.store, req.ParentSessionID)
+		_ = writeLongRunCheckpoint(r.store, req.ParentSessionID)
 		return tools.AgentSpawnResult{
 			QueueJobID: job.ID,
 			Status:     job.Status,
@@ -167,7 +174,12 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			"status":     result.Status,
 			"agent_name": req.AgentName,
 			"agent_role": out.AgentRole,
+			"wait_mode":  normalizeParentWaitMode(req.WaitMode),
 		})
+		_ = addParentChildSession(r.store, req.ParentSessionID, result.SessionID, req.WaitMode)
+		_ = resolveParentChildSession(r.store, req.ParentSessionID, result.SessionID, result.Status)
+		_ = writeSessionSummary(r.store, req.ParentSessionID)
+		_ = writeLongRunCheckpoint(r.store, req.ParentSessionID)
 	}
 	return out, err
 }
@@ -232,6 +244,7 @@ type QueueSubmitRequest struct {
 	Workdir         string
 	SystemOverride  string
 	Mode            string
+	WaitMode        string
 	IsolationMode   string
 	IsolationRoot   string
 }
@@ -286,10 +299,19 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		RequestedWorkdir: workdir,
 		SystemOverride:   req.SystemOverride,
 		Background:       true,
+		WaitMode:         normalizeParentWaitMode(req.WaitMode),
 		IsolationMode:    normalizeIsolationMode(req.IsolationMode, "auto"),
 		IsolationRoot:    req.IsolationRoot,
 	}
-	return job, r.store.EnqueueJob(job)
+	if err := r.store.EnqueueJob(job); err != nil {
+		return session.QueueJob{}, err
+	}
+	if job.ParentSessionID != "" {
+		_ = addParentQueueJob(r.store, job.ParentSessionID, job.ID, job.WaitMode)
+		_ = writeSessionSummary(r.store, job.ParentSessionID)
+		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
+	}
+	return job, nil
 }
 
 func (r *Runner) QueueShow(jobID string) (session.QueueJob, error) {
@@ -364,6 +386,9 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			"status":     job.Status,
 			"agent_role": job.AgentRole,
 		})
+		_ = resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status)
+		_ = writeSessionSummary(r.store, job.ParentSessionID)
+		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
 	}
 	if job.ParentSessionID != "" {
 		eventType := "queue.job.completed"

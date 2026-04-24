@@ -119,6 +119,11 @@ type FailureSummary struct {
 type SessionDetailResponse struct {
 	Metadata                session.SessionMetadata          `json:"metadata"`
 	State                   session.State                    `json:"state"`
+	Contract                *session.SessionContract         `json:"contract,omitempty"`
+	RequiredArtifacts       []session.RequiredArtifact       `json:"required_artifacts,omitempty"`
+	ProviderAttempts        []session.ProviderAttempt        `json:"provider_attempts,omitempty"`
+	LongRunCheckpoint       *session.LongRunCheckpoint       `json:"longrun_checkpoint,omitempty"`
+	ParentCoordination      *session.ParentCoordination      `json:"parent_coordination,omitempty"`
 	TaskBoard               session.TaskBoard                `json:"task_board"`
 	Children                ChildrenResponse                 `json:"children"`
 	BackgroundNotifications []session.BackgroundNotification `json:"background_notifications"`
@@ -575,10 +580,25 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
+	var contractPtr *session.SessionContract
+	if contract, err := s.store.LoadContract(sessionID); err == nil && contract.ContractID != "" {
+		contractPtr = &contract
+	}
+	requiredArtifacts, _ := s.store.LoadArtifactTracker(sessionID)
+	providerAttempts, _ := s.store.LoadProviderAttempts(sessionID)
+	var checkpointPtr *session.LongRunCheckpoint
+	if checkpoint, err := s.store.LoadLongRunCheckpoint(sessionID); err == nil && checkpoint.SessionID != "" {
+		checkpointPtr = &checkpoint
+	}
+	var parentCoordinationPtr *session.ParentCoordination
+	if coordination, err := s.store.LoadParentCoordination(sessionID); err == nil && coordination.ParentSessionID != "" {
+		parentCoordinationPtr = &coordination
+	}
 	messages = tailMessages(messages, limit)
 	eventsList = tailEvents(eventsList, limit)
-	background = tailBackground(background, limit)
+	background = tailBackground(dedupeBackgroundNotifications(background), limit)
 	steers = tailSteers(steers, limit)
+	providerAttempts = tailProviderAttempts(providerAttempts, limit)
 	if messages == nil {
 		messages = []session.Message{}
 	}
@@ -598,6 +618,11 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	return SessionDetailResponse{
 		Metadata:                meta,
 		State:                   state,
+		Contract:                contractPtr,
+		RequiredArtifacts:       requiredArtifacts,
+		ProviderAttempts:        providerAttempts,
+		LongRunCheckpoint:       checkpointPtr,
+		ParentCoordination:      parentCoordinationPtr,
 		TaskBoard:               session.BuildTaskBoard(todo, tasks),
 		Children:                children,
 		BackgroundNotifications: background,
@@ -874,6 +899,7 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		Workdir         string `json:"workdir"`
 		SystemOverride  string `json:"system"`
 		Mode            string `json:"mode"`
+		WaitMode        string `json:"wait_mode"`
 		IsolationMode   string `json:"isolation_mode"`
 		IsolationRoot   string `json:"isolation_root"`
 	}
@@ -896,6 +922,7 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		Workdir:         req.Workdir,
 		SystemOverride:  req.SystemOverride,
 		Mode:            req.Mode,
+		WaitMode:        req.WaitMode,
 		IsolationMode:   req.IsolationMode,
 		IsolationRoot:   req.IsolationRoot,
 	})
@@ -2169,6 +2196,32 @@ func tailEvents(items []events.Event, limit int) []events.Event {
 	return items[len(items)-limit:]
 }
 
+func dedupeBackgroundNotifications(items []session.BackgroundNotification) []session.BackgroundNotification {
+	if len(items) <= 1 {
+		return items
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]session.BackgroundNotification, 0, len(items))
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		key := item.QueueJobID
+		if key == "" {
+			key = item.ID
+		}
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		out = append(out, item)
+	}
+	for left, right := 0, len(out)-1; left < right; left, right = left+1, right-1 {
+		out[left], out[right] = out[right], out[left]
+	}
+	return out
+}
+
 func tailBackground(items []session.BackgroundNotification, limit int) []session.BackgroundNotification {
 	if limit <= 0 || len(items) <= limit {
 		return items
@@ -2177,6 +2230,13 @@ func tailBackground(items []session.BackgroundNotification, limit int) []session
 }
 
 func tailSteers(items []session.SteerRequest, limit int) []session.SteerRequest {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[len(items)-limit:]
+}
+
+func tailProviderAttempts(items []session.ProviderAttempt, limit int) []session.ProviderAttempt {
 	if limit <= 0 || len(items) <= limit {
 		return items
 	}

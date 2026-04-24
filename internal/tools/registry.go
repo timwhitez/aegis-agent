@@ -52,6 +52,7 @@ type AgentSpawnRequest struct {
 	SystemOverride  string `json:"system,omitempty"`
 	Mode            string `json:"mode,omitempty"`
 	Background      bool   `json:"background,omitempty"`
+	WaitMode        string `json:"wait_mode,omitempty"`
 	IsolationMode   string `json:"isolation_mode,omitempty"`
 	IsolationRoot   string `json:"isolation_root,omitempty"`
 }
@@ -268,7 +269,12 @@ func defShell() Definition {
 				defer cancel()
 			}
 			command, shellArg := shellCommand()
-			cmd := exec.CommandContext(callCtx, command, shellArg, input.Command)
+			shellSandbox := ""
+			if execCtx.Config != nil {
+				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
+			}
+			commandPath, commandArgs, sandboxStatus := shellSandboxCommand(shellSandbox, workdir, command, shellArg, input.Command)
+			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
 			cmd.Dir = workdir
 			cmd.Env = filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist)
 			output, err := cmd.CombinedOutput()
@@ -297,6 +303,7 @@ func defShell() Definition {
 							"exit_code":  exitCode,
 							"timeout":    timeout,
 							"workdir":    workdir,
+							"sandbox":    sandboxStatus,
 							"raw_length": rawLength,
 							"truncated":  truncated,
 						},
@@ -312,6 +319,7 @@ func defShell() Definition {
 						"exit_code":  exitCode,
 						"timeout":    timeout,
 						"workdir":    workdir,
+						"sandbox":    sandboxStatus,
 						"raw_length": rawLength,
 						"truncated":  truncated,
 					},
@@ -326,6 +334,7 @@ func defShell() Definition {
 					"exit_code":  exitCode,
 					"timeout":    timeout,
 					"workdir":    workdir,
+					"sandbox":    sandboxStatus,
 					"raw_length": rawLength,
 					"truncated":  truncated,
 				},
@@ -1162,6 +1171,11 @@ func defAgentSpawn(control ControlPlane) Definition {
 					"description": "Optional run mode. full-auto is accepted as an alias for exec.",
 				},
 				"background": map[string]any{"type": "boolean"},
+				"wait_mode": map[string]any{
+					"type":        "string",
+					"enum":        []string{"wait-all", "wait-any", "all", "any", "default"},
+					"description": "Optional parent coordination mode for background or child work. default/all means parent finish waits for all unresolved work; any allows finish after one completed result while keeping other work visible.",
+				},
 				"isolation_mode": map[string]any{
 					"type":        "string",
 					"enum":        []string{"auto", "copy", "git", "off", "none", "workspace-write", "default"},

@@ -208,10 +208,20 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, "theme-toggle") || strings.Contains(indexBody, "Toggle theme") {
 		t.Fatalf("expected dark mode toggle to be removed, got shell body: %s", indexBody)
 	}
+	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "icons.js") {
+		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
+	}
+	iconsBody := checkBody(server.URL + "/icons.js")
+	if !strings.Contains(iconsBody, "window.lucide") || !strings.Contains(iconsBody, "createIcons") {
+		t.Fatalf("unexpected icons.js body: %s", iconsBody)
+	}
 
 	jsBody := checkBody(server.URL + "/app.js")
-	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "renderPendingStageCard") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") {
+	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "renderPendingStageCard") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "renderOverviewView") || !strings.Contains(jsBody, "renderQueueView") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
+	}
+	if strings.Contains(jsBody, "marked.parse") || strings.Contains(jsBody, "unpkg.com") || strings.Contains(jsBody, "cdn.jsdelivr.net") {
+		t.Fatalf("expected app.js to avoid external markdown/icon dependencies, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "shouldSubmitChatInput") {
 		t.Fatalf("expected explicit chat input submit helper, got app.js body: %s", jsBody)
@@ -233,7 +243,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	cssBody := checkBody(server.URL + "/styles.css")
-	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") {
+	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") || !strings.Contains(cssBody, ".session-rail") || !strings.Contains(cssBody, ".queue-layout") {
 		t.Fatalf("unexpected styles.css body: %s", cssBody)
 	}
 	if strings.Contains(cssBody, "[data-theme=\"dark\"]") || strings.Contains(cssBody, ".theme-toggle") {

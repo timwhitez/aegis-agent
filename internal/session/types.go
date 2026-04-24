@@ -87,6 +87,113 @@ type SessionMetadata struct {
 	ProviderOptions  ProviderOptions `json:"provider_options,omitempty"`
 }
 
+type ArtifactSnapshot struct {
+	Exists bool   `json:"exists"`
+	Size   int64  `json:"size,omitempty"`
+	MTime  string `json:"mtime,omitempty"`
+	Hash   string `json:"hash,omitempty"`
+}
+
+type ArtifactStatus struct {
+	Present             bool     `json:"present"`
+	TouchedBySession    bool     `json:"touched_by_session"`
+	ChangedFromBaseline bool     `json:"changed_from_baseline"`
+	LastWriteTurn       int      `json:"last_write_turn,omitempty"`
+	LastWriterTool      string   `json:"last_writer_tool,omitempty"`
+	ValidationStatus    string   `json:"validation_status,omitempty"`
+	ValidationIssues    []string `json:"validation_issues,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
+}
+
+type RequiredArtifact struct {
+	Path             string           `json:"path"`
+	DisplayPath      string           `json:"display_path,omitempty"`
+	Required         bool             `json:"required"`
+	Baseline         ArtifactSnapshot `json:"baseline"`
+	Status           ArtifactStatus   `json:"status"`
+	ContentValidator string           `json:"content_validator,omitempty"`
+}
+
+type SessionContract struct {
+	SchemaVersion             int                `json:"schema_version"`
+	ContractID                string             `json:"contract_id"`
+	Source                    string             `json:"source"`
+	TrustSource               string             `json:"trust_source"`
+	Profile                   string             `json:"profile"`
+	AgentRole                 string             `json:"agent_role,omitempty"`
+	RequiredArtifacts         []RequiredArtifact `json:"required_artifacts,omitempty"`
+	AllowedTools              []string           `json:"allowed_tools,omitempty"`
+	RequiredSkills            []string           `json:"required_skills,omitempty"`
+	MaxTurns                  int                `json:"max_turns,omitempty"`
+	CompletionGates           []string           `json:"completion_gates,omitempty"`
+	ExactTargetAnchors        []string           `json:"exact_target_anchors,omitempty"`
+	ExactTemplateRequirements []string           `json:"exact_template_requirements,omitempty"`
+	LiteralAnchors            []string           `json:"literal_anchors,omitempty"`
+	SupportingDocsFreshness   string             `json:"supporting_docs_freshness,omitempty"`
+	TaskboardRequirement      string             `json:"taskboard_requirement,omitempty"`
+	ChildQueueRequirement     string             `json:"child_queue_requirement,omitempty"`
+	CreatedAt                 string             `json:"created_at"`
+	UpdatedAt                 string             `json:"updated_at"`
+}
+
+type ProviderAttempt struct {
+	Turn                int    `json:"turn,omitempty"`
+	Attempt             int    `json:"attempt,omitempty"`
+	Provider            string `json:"provider"`
+	Model               string `json:"model"`
+	RequestTimeoutSec   int    `json:"request_timeout_sec,omitempty"`
+	StreamIdleTimeoutMS int    `json:"stream_idle_timeout_ms,omitempty"`
+	Outcome             string `json:"outcome"`
+	Retryable           bool   `json:"retryable,omitempty"`
+	StatusCode          int    `json:"status_code,omitempty"`
+	ErrorClass          string `json:"error_class,omitempty"`
+	TimeoutKind         string `json:"timeout_kind,omitempty"`
+	ResponseCommitted   bool   `json:"response_committed,omitempty"`
+	BackoffMS           int64  `json:"backoff_ms,omitempty"`
+	ProviderResponseID  string `json:"provider_response_id,omitempty"`
+	Error               string `json:"error,omitempty"`
+	CreatedAt           string `json:"created_at"`
+}
+
+type LongRunCheckpoint struct {
+	SchemaVersion            int                `json:"schema_version"`
+	SessionID                string             `json:"session_id"`
+	RootSessionID            string             `json:"root_session_id,omitempty"`
+	ContractSnapshot         *SessionContract   `json:"contract_snapshot,omitempty"`
+	TodoSummary              []TodoItem         `json:"todo_summary,omitempty"`
+	TaskSummary              map[string]int     `json:"task_summary,omitempty"`
+	RequiredArtifactStatus   []RequiredArtifact `json:"required_artifact_status,omitempty"`
+	LatestCompactionArtifact string             `json:"latest_compaction_artifact,omitempty"`
+	Provider                 string             `json:"provider"`
+	Model                    string             `json:"model"`
+	EffectiveProviderOptions ProviderOptions    `json:"effective_provider_options,omitempty"`
+	Workdir                  string             `json:"workdir"`
+	RequestedWorkdir         string             `json:"requested_workdir,omitempty"`
+	Isolation                *IsolationInfo     `json:"isolation,omitempty"`
+	ParentWaitState          string             `json:"parent_wait_state,omitempty"`
+	UnresolvedChildSessions  []string           `json:"unresolved_child_sessions,omitempty"`
+	UnresolvedQueueJobs      []string           `json:"unresolved_queue_jobs,omitempty"`
+	BackgroundNotifications  int                `json:"background_notifications,omitempty"`
+	ResumeHints              []string           `json:"resume_hints,omitempty"`
+	SourceEventCount         int                `json:"source_event_count,omitempty"`
+	SourceMessageCount       int                `json:"source_message_count,omitempty"`
+	CreatedAt                string             `json:"created_at"`
+}
+
+type ParentCoordination struct {
+	SchemaVersion           int      `json:"schema_version"`
+	ParentSessionID         string   `json:"parent_session_id"`
+	WaitMode                string   `json:"wait_mode"`
+	UnresolvedChildSessions []string `json:"unresolved_child_sessions,omitempty"`
+	UnresolvedQueueJobs     []string `json:"unresolved_queue_jobs,omitempty"`
+	CompletedChildSessions  []string `json:"completed_child_sessions,omitempty"`
+	CompletedQueueJobs      []string `json:"completed_queue_jobs,omitempty"`
+	FailedChildSessions     []string `json:"failed_child_sessions,omitempty"`
+	FailedQueueJobs         []string `json:"failed_queue_jobs,omitempty"`
+	Parked                  bool     `json:"parked,omitempty"`
+	UpdatedAt               string   `json:"updated_at"`
+}
+
 type State struct {
 	Status                   string   `json:"status"`
 	Phase                    string   `json:"phase"`
@@ -240,6 +347,7 @@ type QueueJob struct {
 	SessionStatus    string   `json:"session_status,omitempty"`
 	SystemOverride   string   `json:"system_override,omitempty"`
 	Background       bool     `json:"background"`
+	WaitMode         string   `json:"wait_mode,omitempty"`
 	IsolationMode    string   `json:"isolation_mode,omitempty"`
 	IsolationRoot    string   `json:"isolation_root,omitempty"`
 	LastError        string   `json:"last_error,omitempty"`

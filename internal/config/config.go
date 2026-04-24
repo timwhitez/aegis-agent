@@ -88,6 +88,7 @@ type RuntimeConfig struct {
 	MultiAgent         MultiAgentConfig         `yaml:"multi_agent"`
 	Isolation          IsolationConfig          `yaml:"isolation"`
 	Queue              QueueConfig              `yaml:"queue"`
+	Shell              ShellConfig              `yaml:"shell"`
 	ShellEnvAllowlist  []string                 `yaml:"shell_env_allowlist"`
 	Compact            CompactConfig            `yaml:"compact"`
 	Ephemeral          EphemeralConfig          `yaml:"ephemeral"`
@@ -113,6 +114,10 @@ type IsolationConfig struct {
 type QueueConfig struct {
 	PollIntervalMS int  `yaml:"poll_interval_ms"`
 	AutoWorker     bool `yaml:"auto_worker"`
+}
+
+type ShellConfig struct {
+	Sandbox string `yaml:"sandbox,omitempty"`
 }
 
 type CompactConfig struct {
@@ -399,6 +404,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.Runtime.Queue.PollIntervalMS <= 0 {
 		cfg.Runtime.Queue.PollIntervalMS = 1000
 	}
+	cfg.Runtime.Shell.Sandbox = strings.ToLower(strings.TrimSpace(cfg.Runtime.Shell.Sandbox))
 	if cfg.Runtime.Compact.InputCharThreshold <= 0 {
 		cfg.Runtime.Compact.InputCharThreshold = 160000
 	}

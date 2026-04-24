@@ -150,7 +150,7 @@ func queueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 }
 
 func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"parent", "agent", "role", "provider", "model", "config", "workdir", "system", "mode", "isolation", "isolation-root"}, []string{"json"})
+	args = normalizeInterspersedFlags(args, []string{"parent", "agent", "role", "provider", "model", "config", "workdir", "system", "mode", "wait-mode", "isolation", "isolation-root"}, []string{"json"})
 	fs := flag.NewFlagSet("queue submit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -163,6 +163,7 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		workdir         = fs.String("workdir", "", "")
 		system          = fs.String("system", "", "")
 		mode            = fs.String("mode", session.ModeExec, "")
+		waitMode        = fs.String("wait-mode", "", "")
 		jsonMode        = fs.Bool("json", false, "")
 		isolationMode   = fs.String("isolation", "", "")
 		isolationRoot   = fs.String("isolation-root", "", "")
@@ -189,6 +190,7 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		Workdir:         *workdir,
 		SystemOverride:  *system,
 		Mode:            *mode,
+		WaitMode:        *waitMode,
 		IsolationMode:   *isolationMode,
 		IsolationRoot:   *isolationRoot,
 	})

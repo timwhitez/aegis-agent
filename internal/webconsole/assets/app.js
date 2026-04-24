@@ -31,7 +31,11 @@ const state = {
   historyData: null,
   historyPage: 1,
   historyPageSize: 8,
+  queueData: null,
+  selectedQueueJobId: '',
+  inspectorTab: 'tasks',
   refreshingHistory: false,
+  refreshingQueue: false,
   toastCounter: 0,
   skills: [],
   fileTree: [],
@@ -46,7 +50,9 @@ const state = {
     activity: '',
     flow: '',
     body: '',
-    pending: ''
+    pending: '',
+    rail: '',
+    inspector: ''
   },
   nextSendInterrupt: false,
   pollHandle: null,
@@ -55,7 +61,7 @@ const state = {
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
   lastInputWasEmpty: true,
-virtualScroll: {
+  virtualScroll: {
     scrollTop: 0,
     containerHeight: 600,
     enabled: false
@@ -71,6 +77,8 @@ const nodes = {
   connectionDot: document.getElementById('connection-dot'),
   connectionStatus: document.getElementById('connection-status'),
   sessionIdDisplay: document.getElementById('session-id-display'),
+  sessionRail: document.getElementById('session-rail'),
+  inspectorPanel: document.getElementById('inspector-panel'),
   newSessionBtn: document.getElementById('new-session-btn'),
   stopSessionBtn: document.getElementById('stop-session-btn'),
   interruptSessionBtn: document.getElementById('interrupt-session-btn'),
@@ -78,6 +86,8 @@ const nodes = {
   inputContainer: document.getElementById('input-container'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
+  skillUploadBtn: document.getElementById('skill-upload-btn'),
+  skillUpload: document.getElementById('skill-upload'),
   skillsGrid: document.getElementById('skills-grid'),
   fileTree: document.getElementById('file-tree'),
   workspaceSubtitle: document.getElementById('workspace-subtitle'),
@@ -85,7 +95,9 @@ const nodes = {
   editorFilename: document.getElementById('editor-filename'),
   editorContent: document.getElementById('editor-content'),
   views: {
+    overview: document.getElementById('overview-view'),
     chat: document.getElementById('chat-view'),
+    queue: document.getElementById('queue-view'),
     skills: document.getElementById('skills-view'),
     workspace: document.getElementById('workspace-view'),
     history: document.getElementById('history-view'),
@@ -96,13 +108,9 @@ const nodes = {
 
 function init() {
   restoreUIState();
-  if (window.marked?.setOptions) {
-    window.marked.setOptions({
-      breaks: true,
-      gfm: true
-    });
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons();
   }
-  lucide.createIcons();
   setupWebSocket();
   setupEventListeners();
   if (hasDurableSession()) {
@@ -197,8 +205,13 @@ function setupWebSocket() {
   };
 
   ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    handleServerEvent(data);
+    try {
+      const data = JSON.parse(event.data);
+      handleServerEvent(data);
+    } catch (err) {
+      console.warn('ignored malformed websocket payload', err);
+      showToast('Ignored malformed websocket payload from local server.', 'error');
+    }
   };
 
   ws.onclose = () => {
@@ -340,6 +353,7 @@ function setupEventListeners() {
   nodes.stopSessionBtn?.addEventListener('click', requestStop);
   nodes.interruptSessionBtn?.addEventListener('click', requestInterrupt);
   nodes.interruptToggleBtn?.addEventListener('click', toggleInterruptArm);
+  nodes.skillUploadBtn?.addEventListener('click', () => nodes.skillUpload?.click());
   nodes.newSessionBtn?.addEventListener('click', () => {
     const wasGenerating = state.isGenerating;
     resetChatSession({ notifyBackend: true });
@@ -420,6 +434,12 @@ function setupEventListeners() {
       return;
     }
 
+    const viewShortcut = event.target.closest('[data-view-shortcut]');
+    if (viewShortcut) {
+      switchView(viewShortcut.getAttribute('data-view-shortcut'));
+      return;
+    }
+
     const deleteHistoryButton = event.target.closest('[data-delete-session]');
     if (deleteHistoryButton) {
       const sessionID = deleteHistoryButton.getAttribute('data-delete-session');
@@ -447,6 +467,56 @@ function setupEventListeners() {
       return;
     }
 
+    const inspectorTab = event.target.closest('[data-inspector-tab], [data-focus-inspector-tab]');
+    if (inspectorTab) {
+      state.inspectorTab = inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks';
+      renderCurrentSession();
+      return;
+    }
+
+    const queueJobButton = event.target.closest('[data-open-job]');
+    if (queueJobButton) {
+      state.selectedQueueJobId = queueJobButton.getAttribute('data-open-job') || '';
+      switchView('queue');
+      return;
+    }
+
+    const queueRefresh = event.target.closest('[data-queue-refresh]');
+    if (queueRefresh) {
+      await fetchQueue();
+      return;
+    }
+
+    const queueSubmit = event.target.closest('[data-queue-submit]');
+    if (queueSubmit) {
+      const prompt = document.getElementById('queue-submit-prompt')?.value?.trim() || '';
+      if (!prompt) {
+        showToast('Queue prompt is required.', 'error');
+        return;
+      }
+      queueSubmit.disabled = true;
+      try {
+        const job = await requestJSON('/api/queue/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            parent_session_id: hasDurableSession() ? state.sessionId : '',
+            mode: 'exec'
+          })
+        });
+        state.selectedQueueJobId = job.id;
+        showToast('Queue job submitted.', 'success');
+        await fetchQueue();
+        queueOverviewRefresh(120);
+      } catch (err) {
+        showToast(err.message || 'Failed to submit queue job.', 'error');
+      } finally {
+        queueSubmit.disabled = false;
+      }
+      return;
+    }
+
     const skillActionBtn = event.target.closest('[data-skill-action]');
     if (skillActionBtn) {
       const id = skillActionBtn.getAttribute('data-skill-action');
@@ -468,16 +538,15 @@ function setupEventListeners() {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      await fetch('/api/skills/upload', {
+      await requestFormJSON('/api/skills/upload', formData, {
         method: 'POST',
-        body: formData
       });
       showToast('Skill uploaded and extracted successfully.', 'success');
       if (state.currentView === 'skills') {
         await fetchSkills();
       }
     } catch (err) {
-      showToast('Failed to upload skill zip.', 'error');
+      showToast(err.message || 'Failed to upload skill zip.', 'error');
     }
     event.target.value = '';
   });
@@ -583,6 +652,13 @@ function switchView(viewName, options = {}) {
   }
   if (viewName === 'history') {
     fetchHistory();
+  }
+  if (viewName === 'overview') {
+    renderOverviewView();
+    refreshOverview().then(renderOverviewView).catch(() => {});
+  }
+  if (viewName === 'queue') {
+    fetchQueue();
   }
   if (viewName === 'skills') {
     fetchSkills();
@@ -770,12 +846,18 @@ function setGenerating(value, activity) {
 }
 
 function updateSessionId() {
+  const detail = state.sessionDetail;
+  if (detail?.metadata) {
+    nodes.sessionIdDisplay.innerText = `${humanizeStatus(detail.state?.status || 'loaded')} · ${shortId(detail.metadata.id)} · ${detail.metadata.provider || 'provider'}/${detail.metadata.model || 'model'} · ${workdirBase(detail.metadata.workdir)}`;
+    return;
+  }
   nodes.sessionIdDisplay.innerText = `ID: ${state.sessionId}`;
 }
 
 function updateUI() {
   const hasDraft = nodes.chatInput.value.trim().length > 0;
   nodes.sendBtn.disabled = !state.isConnected || !hasDraft;
+  nodes.sendBtn.classList.toggle('is-loading', state.isGenerating && hasDraft);
   nodes.sendBtn.classList.toggle('is-interrupt', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
   nodes.inputContainer.classList.toggle('is-busy', state.isGenerating);
   nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
@@ -799,19 +881,32 @@ function updateUI() {
         : 'Send a steer message into the running session...'
       : 'Ask anything...';
 
-  nodes.inputStatusText.textContent = !state.isConnected
-    ? 'Reconnecting to the local agent…'
-    : state.isGenerating && hasDurableSession()
-      ? state.nextSendInterrupt
-        ? 'Next send will request interrupt before merging your steer prompt.'
-        : 'Session is running. Send again to queue steer input, or arm interrupt for the next send.'
-      : 'Enter to send, Shift+Enter / Ctrl+Enter for new line';
+  nodes.inputStatusText.textContent = inputActionLabel();
 
   if (!state.isConnected) {
     nodes.connectionDot.className = 'dot';
     return;
   }
   nodes.connectionDot.className = state.isGenerating ? 'dot busy' : 'dot online';
+}
+
+function inputActionLabel() {
+  if (!state.isConnected) {
+    return 'Reconnecting to the local agent...';
+  }
+  const status = state.sessionDetail?.state?.status || '';
+  if (state.isGenerating && hasDurableSession()) {
+    return state.nextSendInterrupt
+      ? 'Interrupt armed: next send requests preemption, then merges your steer prompt.'
+      : 'Steer running session: next send queues guidance into the current run.';
+  }
+  if (hasDurableSession() && (status === 'awaiting_input' || status === 'paused' || status === 'failed')) {
+    return `Continue ${humanizeStatus(status)} session: next send resumes this durable session.`;
+  }
+  if (hasDurableSession() && status === 'completed') {
+    return 'Completed session loaded: next send starts a new session unless you open another history item.';
+  }
+  return 'Start new session: Enter sends, Shift+Enter / Ctrl+Enter inserts a line.';
 }
 
 function startPolling() {
@@ -944,6 +1039,8 @@ async function refreshOverview() {
     state.overview = await requestJSON('/api/overview');
     if (state.currentView === 'chat') {
       renderCurrentSession();
+    } else if (state.currentView === 'overview') {
+      renderOverviewView();
     }
   } catch (err) {
     console.error('overview error', err);
@@ -960,6 +1057,7 @@ async function refreshCurrentSession() {
   try {
     const detail = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}?limit=80`);
     state.sessionDetail = detail;
+    updateSessionId();
     reconcileOptimisticMessages(detail);
     if (detail?.state?.status === 'running') {
       state.isGenerating = true;
@@ -1056,6 +1154,12 @@ function renderCurrentSession() {
   mutated = patchChatSlot(slots.flow, 'flow', sections.flow) || mutated;
   mutated = patchChatSlot(slots.body, 'body', sections.body) || mutated;
   mutated = patchChatSlot(slots.pending, 'pending', sections.pending) || mutated;
+  if (nodes.sessionRail) {
+    mutated = patchAuxSlot(nodes.sessionRail, 'rail', renderSessionRail()) || mutated;
+  }
+  if (nodes.inspectorPanel) {
+    mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', renderInspectorPanel()) || mutated;
+  }
 
   if (!mutated) {
     return;
@@ -1069,6 +1173,19 @@ function renderCurrentSession() {
     return;
   }
   nodes.chatContainer.scrollTop = previousScrollTop;
+}
+
+function patchAuxSlot(node, key, html) {
+  const markup = html || '';
+  if (state.chatRenderCache[key] === markup) {
+    return false;
+  }
+  node.innerHTML = markup;
+  state.chatRenderCache[key] = markup;
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: node });
+  }
+  return true;
 }
 
 function prefersReducedMotion() {
@@ -1098,7 +1215,9 @@ function ensureChatSlots() {
       activity: '',
       flow: '',
       body: '',
-      pending: ''
+      pending: '',
+      rail: '',
+      inspector: ''
     };
     shell = nodes.chatMessages.querySelector('.chat-stream-shell');
   }
@@ -1387,8 +1506,8 @@ function renderMessage(message) {
   return `
     <article class="message ${visualRole} ${message.pending ? 'optimistic' : ''}">
       <div class="message-header">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <i data-lucide="${escapeAttr(icon)}" class="message-header-icon" style="width:14px;height:14px;"></i>
+        <div class="message-header-main">
+          <i data-lucide="${escapeAttr(icon)}" class="message-header-icon icon-small"></i>
           <span class="message-header-name">${escapeHTML(actor)}</span>
         </div>
         <div class="message-header-meta">
@@ -1497,7 +1616,7 @@ function renderToolCall(call) {
     <details class="tool-card tool-call-card ${delegate ? 'delegate' : ''}" ${delegate ? 'open' : ''}>
       <summary>
         <div class="tool-card-heading">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div class="tool-card-title-row">
             <span class="tool-card-type">Call</span>
             <strong>${escapeHTML(call.name || 'tool')}</strong>
           </div>
@@ -1523,7 +1642,7 @@ function renderToolResult(result) {
     <details class="tool-card tool-result-card ${delegate ? 'delegate' : ''} ${result.is_error ? 'error' : ''}" ${open ? 'open' : ''}>
       <summary>
         <div class="tool-card-heading">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div class="tool-card-title-row">
             <span class="tool-card-type">${result.is_error ? 'Error' : 'Result'}</span>
             <strong>${escapeHTML(result.name || 'tool')}</strong>
           </div>
@@ -1626,7 +1745,7 @@ function renderMetadataChips(metadata) {
     return '';
   }
   return `
-    <div class="meta-chip-row" style="padding:0 15px 15px;">
+    <div class="meta-chip-row padded">
       ${entries.map(([key, value]) => `<span class="surface-chip">${escapeHTML(key)}: ${escapeHTML(metadataValue(value))}</span>`).join('')}
     </div>
   `;
@@ -1804,6 +1923,112 @@ function renderTasksPanel(detail) {
   `;
 }
 
+function renderSessionRail() {
+  const currentID = state.sessionBacked ? state.sessionId : '';
+  const recent = maybeArray(state.overview?.recent_sessions);
+  const pinned = state.sessionDetail?.metadata
+    ? [sessionSummaryFromDetail(state.sessionDetail)]
+    : [];
+  const items = uniqueById(pinned.concat(recent)).slice(0, 12);
+  return `
+    <div class="rail-header">
+      <div>
+        <div class="inspector-eyebrow">Sessions</div>
+        <h3>Workspace</h3>
+      </div>
+      <button class="mini-link-btn" type="button" data-view-shortcut="history">History</button>
+    </div>
+    <div class="session-rail-list">
+      ${items.length ? items.map((item) => `
+        <button class="session-rail-row ${item.id === currentID ? 'active' : ''}" type="button" data-open-session="${escapeAttr(item.id)}" data-session-id="${escapeAttr(item.id)}">
+          <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
+          <span class="session-rail-id">${escapeHTML(shortId(item.id))}</span>
+          <span class="session-rail-meta">${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
+          <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}</span>
+        </button>
+      `).join('') : '<div class="empty-panel compact">No durable sessions yet.</div>'}
+    </div>
+  `;
+}
+
+function renderInspectorPanel() {
+  const detail = state.sessionDetail;
+  if (!detail) {
+    return `
+      <div class="inspector-header">
+        <div>
+          <div class="inspector-eyebrow">Tracker</div>
+          <h3>No session loaded</h3>
+        </div>
+      </div>
+      <div class="inspector-content">
+        <div class="empty-panel compact">No todo/task state recorded.</div>
+      </div>
+    `;
+  }
+  const tabs = [
+    ['summary', 'Summary'],
+    ['tasks', 'Todo/Tasks'],
+    ['agents', 'Agents'],
+    ['timeline', 'Timeline']
+  ];
+  const active = tabs.some(([key]) => key === state.inspectorTab) ? state.inspectorTab : 'tasks';
+  const panel = active === 'summary'
+    ? renderSummaryPanel(detail)
+    : active === 'agents'
+      ? renderAgentsPanel(detail)
+      : active === 'timeline'
+        ? renderTimelinePanel(detail)
+        : renderTasksPanel(detail);
+  return `
+    <div class="inspector-header">
+      <div>
+        <div class="inspector-eyebrow">Tracker</div>
+        <h3>${escapeHTML(shortId(detail.metadata?.id || state.sessionId))}</h3>
+      </div>
+      <span class="status-badge ${toneForStatus(detail.state?.status)}">${escapeHTML(humanizeStatus(detail.state?.status || 'idle'))}</span>
+    </div>
+    <div class="inspector-tabs" role="tablist">
+      ${tabs.map(([key, label]) => `<button class="inspector-tab ${key === active ? 'active' : ''}" type="button" data-inspector-tab="${escapeAttr(key)}">${escapeHTML(label)}</button>`).join('')}
+    </div>
+    <div class="inspector-content">${panel}</div>
+  `;
+}
+
+function sessionSummaryFromDetail(detail) {
+  return {
+    id: detail.metadata?.id || state.sessionId,
+    status: detail.state?.status || 'running',
+    provider: detail.metadata?.provider || '',
+    model: detail.metadata?.model || '',
+    updated_at: detail.state?.updated_at || detail.metadata?.created_at || '',
+    phase: detail.state?.phase || '',
+    workdir: detail.metadata?.workdir || '',
+    agent_name: detail.metadata?.agent_name || '',
+    agent_role: detail.metadata?.agent_role || ''
+  };
+}
+
+function uniqueById(items) {
+  const seen = new Set();
+  return maybeArray(items).filter((item) => {
+    const id = item?.id;
+    if (!id || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+}
+
+function workdirBase(path) {
+  const text = String(path || '').replaceAll('\\', '/');
+  if (!text) {
+    return 'workspace';
+  }
+  return text.split('/').filter(Boolean).pop() || text;
+}
+
 function renderMetricCard(label, value, copy) {
   return `
     <div class="metric-card">
@@ -1818,7 +2043,7 @@ function renderMiniMetric(label, value) {
   return `
     <div class="summary-card">
       <span class="metric-label">${escapeHTML(label)}</span>
-      <div class="metric-card-value" style="font-size:16px;margin-top:8px;">${escapeHTML(value)}</div>
+      <div class="metric-card-value mini-metric-value">${escapeHTML(value)}</div>
     </div>
   `;
 }
@@ -1888,7 +2113,7 @@ function renderTimelineItem(item, options = {}) {
   return `
     <div class="timeline-card ${options.compact ? 'compact' : ''}">
       <div class="timeline-icon ${descriptor.tone === 'danger' ? 'danger' : descriptor.tone === 'queued' ? 'warning' : ''}">
-        <i data-lucide="${escapeAttr(descriptor.icon)}" style="width:16px;height:16px;"></i>
+        <i data-lucide="${escapeAttr(descriptor.icon)}" class="icon-small"></i>
       </div>
       <div class="timeline-card-copy">
         <div class="timeline-card-top">
@@ -1921,7 +2146,7 @@ function renderChildSessionCard(item) {
 
 function renderQueueJobCard(job) {
   return `
-    <div class="job-card">
+    <div class="job-card ${job.id === state.selectedQueueJobId ? 'active' : ''}" data-queue-job-id="${escapeAttr(job.id)}">
       <div class="job-card-top">
         <div class="job-card-title">${escapeHTML(agentLabel(job.agent_name, job.agent_role) || shortId(job.id))}</div>
         <span class="status-badge ${toneForStatus(job.status)}">${escapeHTML(humanizeStatus(job.status))}</span>
@@ -1930,6 +2155,7 @@ function renderQueueJobCard(job) {
       <div class="job-card-meta">${escapeHTML(shortId(job.id))} · ${escapeHTML(job.mode || 'exec')}${job.session_id ? ` · child ${escapeHTML(shortId(job.session_id))}` : ''}</div>
       ${renderVisiblePaths(job.visible_paths)}
       <div class="card-actions">
+        <button class="mini-link-btn" type="button" data-open-job="${escapeAttr(job.id)}">Open job</button>
         ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
         ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
       </div>
@@ -2447,11 +2673,79 @@ function normalizeText(value) {
 }
 
 function safeMarkdown(text) {
-  try {
-    return window.marked.parse(String(text || ''));
-  } catch {
-    return `<p>${escapeHTML(String(text || ''))}</p>`;
+  const source = String(text || '').replace(/\r\n/g, '\n');
+  const lines = source.split('\n');
+  const blocks = [];
+  let inCode = false;
+  let codeLines = [];
+  let listLines = [];
+  const flushList = () => {
+    if (!listLines.length) return;
+    blocks.push(`<ul>${listLines.map((line) => `<li>${inlineMarkdown(line)}</li>`).join('')}</ul>`);
+    listLines = [];
+  };
+  const flushCode = () => {
+    blocks.push(`<pre><code>${escapeHTML(codeLines.join('\n'))}</code></pre>`);
+    codeLines = [];
+  };
+  lines.forEach((line) => {
+    if (line.trim().startsWith('```')) {
+      if (inCode) {
+        flushCode();
+      } else {
+        flushList();
+      }
+      inCode = !inCode;
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      listLines.push(line.replace(/^\s*[-*]\s+/, ''));
+      return;
+    }
+    flushList();
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      const level = heading[1].length;
+      blocks.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      return;
+    }
+    blocks.push(`<p>${inlineMarkdown(trimmed)}</p>`);
+  });
+  if (inCode) {
+    flushCode();
   }
+  flushList();
+  return blocks.join('') || '<p></p>';
+}
+
+function inlineMarkdown(value) {
+  let html = escapeHTML(value);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+    const safeHref = sanitizeHref(href);
+    if (!safeHref) {
+      return label;
+    }
+    return `<a href="${escapeAttr(safeHref)}" target="_blank" rel="noreferrer">${label}</a>`;
+  });
+  return html;
+}
+
+function sanitizeHref(value) {
+  const href = String(value || '').trim();
+  if (!href) return '';
+  if (/^(https?:|mailto:)/i.test(href)) return href;
+  if (/^[./#][A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]*$/.test(href)) return href;
+  return '';
 }
 
 function escapeHTML(value) {
@@ -2568,6 +2862,13 @@ async function requestJSON(url, options = {}) {
   return payload;
 }
 
+async function requestFormJSON(url, formData, options = {}) {
+  return requestJSON(url, {
+    ...options,
+    body: formData
+  });
+}
+
 function showToast(message, tone = 'info') {
   const id = `toast-${++state.toastCounter}`;
   const toast = document.createElement('div');
@@ -2578,6 +2879,133 @@ function showToast(message, tone = 'info') {
   window.setTimeout(() => {
     document.getElementById(id)?.remove();
   }, 3200);
+}
+
+function renderOverviewView() {
+  const container = nodes.views.overview;
+  if (!container) return;
+  const overview = state.overview;
+  if (!overview) {
+    container.innerHTML = '<div class="view-loading">Loading operator overview...</div>';
+    return;
+  }
+  const sessionCounters = overview.session_counters || {};
+  const queueCounters = overview.queue_counters || {};
+  const failures = maybeArray(overview.recent_failures);
+  const feed = maybeArray(overview.feed).slice(0, 10);
+  container.innerHTML = `
+    <div class="view-header">
+      <h2 class="view-title">Overview</h2>
+      <p class="view-subtitle">Runtime state from local session, queue, worker, and event files.</p>
+    </div>
+    <section class="panel-card">
+      <div class="panel-card-body">
+        <div class="overview-grid" data-testid="overview-kpi">
+          ${renderMetricCard('Running sessions', String(sessionCounters.running || 0), 'active local runs')}
+          ${renderMetricCard('Awaiting input', String(sessionCounters.awaiting_input || 0), 'ready to continue')}
+          ${renderMetricCard('Failed', String(sessionCounters.failed || 0), 'needs operator action')}
+          ${renderMetricCard('Queued jobs', String(queueCounters.queued || 0), `${queueCounters.running || 0} running`)}
+          ${renderMetricCard('Workers', String(overview.workers?.active_count || 0), `${overview.workers?.desired_count || 0} desired`)}
+        </div>
+      </div>
+    </section>
+    <div class="overview-columns">
+      <section class="panel-card">
+        <div class="panel-card-header"><h3 class="view-title compact-title">Recent Sessions</h3></div>
+        <div class="panel-card-body">${maybeArray(overview.recent_sessions).length ? maybeArray(overview.recent_sessions).slice(0, 8).map(renderHistorySessionCard).join('') : '<div class="empty-panel">No sessions yet.</div>'}</div>
+      </section>
+      <section class="panel-card">
+        <div class="panel-card-header"><h3 class="view-title compact-title">Queue</h3></div>
+        <div class="panel-card-body">${maybeArray(overview.recent_jobs).length ? maybeArray(overview.recent_jobs).slice(0, 8).map(renderQueueJobCard).join('') : '<div class="empty-panel">No queue jobs yet.</div>'}</div>
+      </section>
+    </div>
+    <section class="panel-card">
+      <div class="panel-card-header"><h3 class="view-title compact-title">Recent Failures</h3></div>
+      <div class="panel-card-body">${failures.length ? failures.map((item) => `<div class="notification-card"><span class="status-badge danger">${escapeHTML(item.kind || 'failure')}</span><div class="notification-copy">${escapeHTML(item.message || item.id || '')}</div></div>`).join('') : '<div class="empty-panel">No recent failures.</div>'}</div>
+    </section>
+    <section class="panel-card">
+      <div class="panel-card-header"><h3 class="view-title compact-title">Activity Feed</h3></div>
+      <div class="panel-card-body"><div class="timeline-stack">${feed.length ? feed.map((item) => renderTimelineItem(item, { compact: true, hideData: true })).join('') : '<div class="empty-panel">No activity yet.</div>'}</div></div>
+    </section>
+  `;
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: container });
+  }
+}
+
+async function fetchQueue() {
+  const container = nodes.views.queue;
+  if (!container || state.refreshingQueue) return;
+  state.refreshingQueue = true;
+  if (!state.queueData) {
+    container.innerHTML = '<div class="view-loading">Loading queue...</div>';
+  }
+  try {
+    state.queueData = await requestJSON('/api/queue/jobs?limit=80');
+    renderQueueView();
+  } catch (err) {
+    container.innerHTML = `<div class="empty-panel">Failed to load queue. ${escapeHTML(err.message || '')}</div>`;
+    showToast(err.message || 'Failed to load queue.', 'error');
+  } finally {
+    state.refreshingQueue = false;
+  }
+}
+
+function renderQueueView() {
+  const container = nodes.views.queue;
+  if (!container) return;
+  const jobs = maybeArray(state.queueData?.items || state.queueData);
+  const selected = jobs.find((job) => job.id === state.selectedQueueJobId) || jobs[0] || null;
+  if (selected && !state.selectedQueueJobId) {
+    state.selectedQueueJobId = selected.id;
+  }
+  container.innerHTML = `
+    <div class="view-header history-header">
+      <div>
+        <h2 class="view-title">Queue</h2>
+        <p class="view-subtitle">Submit and inspect experimental background jobs without leaving the local file-backed runtime.</p>
+      </div>
+      <button class="ghost-action-btn" type="button" data-queue-refresh>Refresh</button>
+    </div>
+    <div class="queue-layout" data-testid="queue-view">
+      <section class="panel-card">
+        <div class="panel-card-header"><h3 class="view-title compact-title">Jobs</h3></div>
+        <div class="panel-card-body">${jobs.length ? jobs.map((job) => renderQueueJobCard(job)).join('') : '<div class="empty-panel">No queue jobs yet.</div>'}</div>
+      </section>
+      <section class="panel-card">
+        <div class="panel-card-header"><h3 class="view-title compact-title">Selected Job</h3></div>
+        <div class="panel-card-body">${selected ? renderQueueDetail(selected) : '<div class="empty-panel">Select a queue job to inspect detail.</div>'}</div>
+      </section>
+      <section class="panel-card queue-submit-panel">
+        <div class="panel-card-header"><h3 class="view-title compact-title">Submit Job</h3></div>
+        <div class="panel-card-body">
+          <textarea id="queue-submit-prompt" class="queue-submit-input" rows="5" placeholder="Prompt for a background child session"></textarea>
+          <div class="card-actions">
+            <button class="skill-btn install" type="button" data-queue-submit>Submit queue job</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: container });
+  }
+}
+
+function renderQueueDetail(job) {
+  return `
+    <div class="kv-list" data-testid="queue-job-detail" data-queue-job-id="${escapeAttr(job.id)}">
+      ${renderKVRow('Job', job.id)}
+      ${renderKVRow('Status', humanizeStatus(job.status || 'queued'))}
+      ${renderKVRow('Session', job.session_id || 'not started')}
+      ${renderKVRow('Provider', `${job.provider || 'default'} / ${job.model || 'default'}`)}
+      ${renderKVRow('Role', agentLabel(job.agent_name, job.agent_role) || 'unspecified')}
+      ${renderKVRow('Workdir', job.effective_workdir || job.requested_workdir || 'default')}
+      ${job.last_error ? renderKVRow('Last error', job.last_error) : ''}
+      ${job.final_text ? renderKVRow('Final text', truncateText(job.final_text, 220)) : ''}
+      ${job.prompt ? renderKVRow('Prompt', truncateText(job.prompt, 280)) : ''}
+    </div>
+  `;
 }
 
 async function fetchHistory(page = state.historyPage, options = {}) {
@@ -2834,11 +3262,11 @@ async function handleSkillAction(id, isInstalled, button) {
   button.disabled = true;
   button.innerText = 'Uninstalling...';
   try {
-    await fetch(`/api/skills/${id}/uninstall`, { method: 'POST' });
+    await requestJSON(`/api/skills/${id}/uninstall`, { method: 'POST' });
     await fetchSkills();
     showToast('Skill removed from the local catalog.', 'success');
   } catch (err) {
-    showToast('Failed to uninstall skill.', 'error');
+    showToast(err.message || 'Failed to uninstall skill.', 'error');
     button.disabled = false;
     button.innerText = 'Uninstall';
   }
@@ -2863,48 +3291,48 @@ async function renderSettings() {
         <h2 class="view-title">Settings</h2>
         <p class="view-subtitle">Configure provider defaults, local API credentials, and guardrails mode. API keys are persisted to the local env file for future restarts.</p>
       </div>
-      <div class="skill-card" style="max-width:680px;">
-        <div style="display:flex; flex-direction:column; gap:20px;">
+      <div class="skill-card settings-card">
+        <div class="settings-form">
           <div class="field">
-            <label style="display:block; font-weight:600; margin-bottom:8px;">Guardrails Mode</label>
-            <select id="settings-guardrails" class="input-container" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:12px;">
+            <label class="field-label">Guardrails Mode</label>
+            <select id="settings-guardrails" class="settings-input">
               <option value="yolo" ${guardrailsMode === 'yolo' ? 'selected' : ''}>YOLO (default)</option>
               <option value="standard" ${guardrailsMode === 'standard' ? 'selected' : ''}>Standard</option>
             </select>
-            <p class="view-subtitle" style="margin-top:8px;">
+            <p class="view-subtitle settings-help">
               YOLO disables runtime retrieval, project-memory, and review-artifact guardrails for new or resumed turns.
             </p>
           </div>
           <div class="field">
-            <label style="display:block; font-weight:600; margin-bottom:8px;">Hard Max Turns</label>
-            <input id="settings-max-turns-hard" type="number" min="1" step="1" style="width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--background);">
-            <label style="display:flex; align-items:center; gap:10px; margin-top:10px; color:var(--text-main);">
+            <label class="field-label">Hard Max Turns</label>
+            <input id="settings-max-turns-hard" class="settings-input" type="number" min="1" step="1">
+            <label class="check-row">
               <input id="settings-disable-hard-turn-limit" type="checkbox">
               <span>Disable hard turn limit</span>
             </label>
-            <p class="view-subtitle" style="margin-top:8px;">
+            <p class="view-subtitle settings-help">
               When disabled, the runtime will no longer fail a session with <code>max_turns_hard_exceeded</code>.
             </p>
           </div>
           <div class="field">
-            <label style="display:block; font-weight:600; margin-bottom:8px;">API Provider</label>
-            <select id="settings-provider" class="input-container" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:12px;">
+            <label class="field-label">API Provider</label>
+            <select id="settings-provider" class="settings-input">
               ${options}
             </select>
           </div>
           <div class="field">
-            <label style="display:block; font-weight:600; margin-bottom:8px;">Base URL</label>
-            <input id="settings-baseurl" type="text" style="width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--background);">
+            <label class="field-label">Base URL</label>
+            <input id="settings-baseurl" class="settings-input" type="text">
           </div>
           <div class="field">
-            <label style="display:block; font-weight:600; margin-bottom:8px;">Model Name</label>
-            <input id="settings-model" type="text" style="width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--background);">
+            <label class="field-label">Model Name</label>
+            <input id="settings-model" class="settings-input" type="text">
           </div>
           <div class="field">
-            <label style="display:block; font-weight:600; margin-bottom:8px;">API Key</label>
-            <input id="settings-apikey" type="password" placeholder="Leave blank to keep existing persisted key…" style="width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--background);">
+            <label class="field-label">API Key</label>
+            <input id="settings-apikey" class="settings-input" type="password" placeholder="Leave blank to keep existing persisted key...">
           </div>
-          <button id="settings-save-btn" class="skill-btn install" style="padding:12px;">Save Changes</button>
+          <button id="settings-save-btn" class="skill-btn install settings-save-btn">Save Changes</button>
         </div>
       </div>
     `;
@@ -2967,6 +3395,11 @@ async function renderSettings() {
         await renderSettings();
       } catch (err) {
         showToast(err.message || 'Failed to save configuration.', 'error');
+      } finally {
+        if (document.body.contains(saveButton)) {
+          saveButton.innerText = 'Save Changes';
+          saveButton.disabled = false;
+        }
       }
     });
   } catch (err) {
@@ -3034,7 +3467,7 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     button.className = 'tree-node';
     button.style.paddingLeft = `${level * 16 + 8}px`;
     const icon = node.type === 'directory' ? 'folder' : 'file-code';
-    button.innerHTML = `<i data-lucide="${icon}" style="width:14px;height:14px;"></i><span>${escapeHTML(node.name)}</span>`;
+    button.innerHTML = `<i data-lucide="${icon}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
     const childrenContainer = document.createElement('div');
     if (node.type === 'directory') {
       childrenContainer.style.display = 'none';
@@ -3065,7 +3498,7 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
         }
       }
       childrenContainer.style.display = hidden ? 'block' : 'none';
-      button.innerHTML = `<i data-lucide="${hidden ? 'folder-open' : 'folder'}" style="width:14px;height:14px;"></i><span>${escapeHTML(node.name)}</span>`;
+      button.innerHTML = `<i data-lucide="${hidden ? 'folder-open' : 'folder'}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
       if (window.lucide && lucide.createIcons) {
         lucide.createIcons({ root: button });
       }
