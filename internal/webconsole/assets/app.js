@@ -1571,12 +1571,7 @@ function renderMessage(message) {
   const actor = actorNameForMessage(message);
   const icon = iconForRole(role);
   const textHTML = message.text ? renderMessageText(message) : '';
-  const toolCallHTML = maybeArray(message.tool_calls).length
-    ? `<div class="tool-cluster">${maybeArray(message.tool_calls).map((call) => renderToolCall(call)).join('')}</div>`
-    : '';
-  const toolResultHTML = maybeArray(message.tool_results).length
-    ? `<div class="tool-cluster">${maybeArray(message.tool_results).map((result) => renderToolResult(result)).join('')}</div>`
-    : '';
+  const toolLaneHTML = renderToolLane(message);
 
   return `
     <article class="message ${visualRole} ${message.pending ? 'optimistic' : ''}">
@@ -1591,8 +1586,7 @@ function renderMessage(message) {
       </div>
       <div class="message-body">
         ${textHTML}
-        ${toolCallHTML}
-        ${toolResultHTML}
+        ${toolLaneHTML}
       </div>
     </article>
   `;
@@ -1603,6 +1597,90 @@ function renderMessageText(message) {
     return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
   }
   return `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`;
+}
+
+function renderToolLane(message) {
+  const calls = maybeArray(message.tool_calls);
+  const results = maybeArray(message.tool_results);
+
+  if (!calls.length && !results.length) return '';
+
+  const resultsByCallId = new Map();
+  for (const r of results) {
+    if (r.tool_call_id) {
+      if (!resultsByCallId.has(r.tool_call_id)) {
+        resultsByCallId.set(r.tool_call_id, []);
+      }
+      resultsByCallId.get(r.tool_call_id).push(r);
+    }
+  }
+
+  const pairedResults = new Set();
+  let treeHTML = '';
+
+  for (const call of calls) {
+    const callResults = resultsByCallId.get(call.id) || [];
+    for (const r of callResults) pairedResults.add(r);
+
+    const delegate = isMultiAgentTool(call.name);
+    const hasExpanded = callResults.some(function(r) { return r.is_error || r.final; }) || delegate;
+
+    treeHTML +=
+      '<details class="tl-row tl-row-call"' + (hasExpanded ? ' open' : '') + '>' +
+        '<summary class="tl-summary">' +
+          '<span class="tl-type-chip call">Call</span>' +
+          '<strong class="tl-name">' + escapeHTML(call.name) + '</strong>' +
+          (call.id ? '<span class="tl-id-chip">' + escapeHTML(shortId(call.id)) + '</span>' : '') +
+          '<span class="tl-preview">' + escapeHTML(summarizeToolCall(call)) + '</span>' +
+        '</summary>' +
+        '<pre class="tl-body">' + escapeHTML(prettyJSON(call.arguments)) + '</pre>' +
+        callResults.map(function(r) { return renderToolLaneResultRow(r, true); }).join('') +
+      '</details>';
+  }
+
+  for (var i = 0; i < results.length; i++) {
+    if (pairedResults.has(results[i])) continue;
+    treeHTML += renderToolLaneResultRow(results[i], false);
+  }
+
+  return (
+    '<div class="tool-lane">' +
+      '<div class="tool-lane-header">' +
+        '<i data-lucide="wrench" class="tl-header-icon"></i>' +
+        '<span>Tool Lane</span>' +
+        '<span class="tl-header-count">' +
+          escapeHTML(String(calls.length)) + ' call' + (calls.length !== 1 ? 's' : '') +
+          ' &middot; ' +
+          escapeHTML(String(results.length)) + ' result' + (results.length !== 1 ? 's' : '') +
+        '</span>' +
+      '</div>' +
+      '<div class="tool-lane-tree">' +
+        treeHTML +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function renderToolLaneResultRow(result, indent) {
+  var payloadText = result.display_output || result.llm_output || '(no output)';
+  var parsed = parseMaybeJSON(payloadText);
+  var delegate = isMultiAgentTool(result.name);
+  var open = result.is_error || result.final || delegate;
+  var special = renderSpecialToolResult(result, parsed);
+
+  return (
+    '<details class="tl-row tl-row-result' + (indent ? ' tl-indent' : '') + (result.is_error ? ' tl-error' : '') + '"' + (open ? ' open' : '') + '>' +
+      '<summary class="tl-summary">' +
+        '<span class="tl-type-chip ' + (result.is_error ? 'error' : delegate ? 'child' : 'result') + '">' + (result.is_error ? 'Error' : delegate ? 'Child' : 'Result') + '</span>' +
+        '<strong class="tl-name">' + escapeHTML(result.name) + '</strong>' +
+        (result.final ? '<span class="tl-badge final">Final</span>' : '') +
+        (delegate ? '<span class="tl-badge delegate">Delegate</span>' : '') +
+        '<span class="tl-preview">' + escapeHTML(summarizeToolResult(result, parsed, payloadText)) + '</span>' +
+      '</summary>' +
+      (special || '<pre class="tl-body">' + escapeHTML(truncateText(payloadText, 3200)) + '</pre>') +
+      renderMetadataChips(result.metadata) +
+    '</details>'
+  );
 }
 
 function renderMessageMetaChips(message) {
