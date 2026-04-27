@@ -399,6 +399,18 @@ async function main() {
       const styles = window.getComputedStyle(el);
       return !el.classList.contains('scrollbar-hide') && styles.overflowY === 'auto';
     })()`);
+    results.interactions.chat_scrollbar_clear_of_input = await browserClient.evaluate(`(() => {
+      const scroller = document.getElementById('chat-container');
+      const inputArea = document.querySelector('#chat-view .input-area');
+      if (!scroller || !inputArea) return false;
+      const scrollerRect = scroller.getBoundingClientRect();
+      const inputRect = inputArea.getBoundingClientRect();
+      const horizontallyAligned = scrollerRect.right > inputRect.left && scrollerRect.left < inputRect.right;
+      return !horizontallyAligned || scrollerRect.bottom <= inputRect.top + 1;
+    })()`);
+    if (!results.interactions.chat_scrollbar_clear_of_input) {
+      throw new Error('chat scrollbar bottom is covered by the input area');
+    }
 
     const initialSessionChip = await browserClient.evaluate(`document.getElementById('session-id-display')?.textContent || ''`);
     const initialEphemeralPrefix = normalizeWhitespace(initialSessionChip);

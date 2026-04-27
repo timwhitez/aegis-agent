@@ -290,8 +290,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(cssBody, ".message-bubble-plaintext") {
 		t.Fatalf("expected plaintext user-message styles, got styles.css body: %s", cssBody)
 	}
-	if !strings.Contains(cssBody, "--chat-input-clearance") || !strings.Contains(cssBody, "padding: 24px 0 var(--chat-input-clearance)") || !strings.Contains(cssBody, "#chat-view .chat-container") || !strings.Contains(cssBody, "overflow-y: auto") {
-		t.Fatalf("expected session chat container to reserve visible scrollbar clearance, got styles.css body: %s", cssBody)
+	if !strings.Contains(cssBody, "#chat-view .chat-container") || !strings.Contains(cssBody, "padding: 24px 0 24px") || !strings.Contains(cssBody, "overflow-y: auto") || !strings.Contains(cssBody, "scrollbar-gutter: stable both-edges") {
+		t.Fatalf("expected session chat container to keep a visible own scroll area, got styles.css body: %s", cssBody)
+	}
+	if !strings.Contains(cssBody, "#chat-view .input-area") || !strings.Contains(cssBody, "position: relative") || !strings.Contains(cssBody, "flex: 0 0 auto") {
+		t.Fatalf("expected session input area to participate in the chat flex layout, got styles.css body: %s", cssBody)
 	}
 	for _, selector := range []string{"#skills-view.view", "#workspace-view.view", "#history-view.view", "#settings-view.view"} {
 		if !strings.Contains(cssBody, selector) {

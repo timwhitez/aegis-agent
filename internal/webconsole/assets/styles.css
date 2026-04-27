@@ -2008,7 +2008,8 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  height: 100%;
+  height: auto;
+  padding: 0;
 }
 
 #chat-view .chat-container {
@@ -2016,14 +2017,22 @@ textarea {
   z-index: 0;
   flex: 1;
   min-height: 0;
-  height: 100%;
+  height: auto;
   margin-bottom: 0;
-  padding: 24px 0 var(--chat-input-clearance);
+  padding: 24px 0 24px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
   scrollbar-color: rgba(100, 116, 139, 0.52) transparent;
+}
+
+#chat-view .input-area {
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  flex: 0 0 auto;
 }
 
 #chat-view .chat-inner {
