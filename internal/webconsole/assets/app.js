@@ -651,6 +651,15 @@ function updateDynamicLayoutMetrics() {
   document.documentElement.style.setProperty('--toast-bottom-clearance', `${clearance + 10}px`);
 }
 
+const VIEW_TITLES = {
+  chat: 'Session — Agent Console',
+  queue: 'Queue — Agent Console',
+  history: 'History — Agent Console',
+  skills: 'Skills — Agent Console',
+  workspace: 'Workspace — Agent Console',
+  settings: 'Settings — Agent Console'
+};
+
 function applyViewVisibility(viewName) {
   if (!nodes.views[viewName]) {
     return;
@@ -665,6 +674,7 @@ function applyViewVisibility(viewName) {
     activeNav.classList.add('active');
   }
   state.currentView = viewName;
+  document.title = VIEW_TITLES[viewName] || 'Agent Console';
 }
 
 function switchView(viewName, options = {}) {
@@ -2953,12 +2963,16 @@ async function fetchQueue() {
   const container = nodes.views.queue;
   if (!container || state.refreshingQueue) return;
   state.refreshingQueue = true;
+  // Save form state before potential innerHTML replacement
+  const savedPrompt = document.getElementById('queue-prompt-input')?.value || '';
+  const savedParent = document.getElementById('queue-parent-input')?.value || '';
+  const savedAgent = document.getElementById('queue-agent-input')?.value || '';
   if (!state.queueData) {
     container.innerHTML = '<div class="view-loading">Loading queue...</div>';
   }
   try {
     state.queueData = await requestJSON('/api/queue/jobs?limit=80');
-    renderQueueView();
+    renderQueueView({ savedPrompt, savedParent, savedAgent });
   } catch (err) {
     container.innerHTML = `<div class="empty-panel">Failed to load queue. ${escapeHTML(err.message || '')}</div>`;
     showToast(err.message || 'Failed to load queue.', 'error');
@@ -2967,7 +2981,7 @@ async function fetchQueue() {
   }
 }
 
-function renderQueueView() {
+function renderQueueView(opts = {}) {
   const container = nodes.views.queue;
   if (!container) return;
   const jobs = maybeArray(state.queueData?.items || state.queueData);
@@ -2976,6 +2990,9 @@ function renderQueueView() {
   if (selected && !state.selectedQueueJobId) {
     state.selectedQueueJobId = selected.id;
   }
+  const savedPrompt = opts.savedPrompt || '';
+  const savedParent = opts.savedParent || '';
+  const savedAgent = opts.savedAgent || '';
   container.innerHTML = `
     <div class="view-header history-header">
       <div>
@@ -3006,19 +3023,19 @@ function renderQueueView() {
         <div class="settings-form">
           <div class="field">
             <label class="field-label">Prompt</label>
-            <textarea id="queue-prompt-input" class="settings-input" placeholder="Task description..." rows="2"></textarea>
+            <textarea id="queue-prompt-input" class="settings-input" placeholder="Task description..." rows="2">${escapeHTML(savedPrompt)}</textarea>
           </div>
           <div class="field">
             <label class="field-label">Parent Session ID (optional)</label>
-            <input id="queue-parent-input" class="settings-input" type="text" placeholder="Session ID to link as child...">
+            <input id="queue-parent-input" class="settings-input" type="text" placeholder="Session ID to link as child..." value="${escapeAttr(savedParent)}">
           </div>
           <div class="field">
             <label class="field-label">Agent Role (optional)</label>
             <select id="queue-agent-input" class="settings-input">
-              <option value="">Auto / none</option>
-              <option value="planner">planner</option>
-              <option value="generator">generator</option>
-              <option value="evaluator">evaluator</option>
+              <option value="" ${!savedAgent ? 'selected' : ''}>Auto / none</option>
+              <option value="planner" ${savedAgent === 'planner' ? 'selected' : ''}>planner</option>
+              <option value="generator" ${savedAgent === 'generator' ? 'selected' : ''}>generator</option>
+              <option value="evaluator" ${savedAgent === 'evaluator' ? 'selected' : ''}>evaluator</option>
             </select>
           </div>
           <button id="queue-submit-btn" class="skill-btn install queue-submit-btn">Submit Job</button>
@@ -3169,7 +3186,7 @@ function renderHistory(data) {
           <div>
             <span class="history-page-label">Page ${escapeHTML(String(page))}${totalPages ? ` / ${escapeHTML(String(totalPages))}` : ''}</span>
           </div>
-          <button class="ghost-action-btn" type="button" data-history-page="next" ${totalPages !== 0 && page >= totalPages ? 'disabled' : ''}>
+          <button class="ghost-action-btn" type="button" data-history-page="next" ${totalPages === 0 || page >= totalPages ? 'disabled' : ''}>
             <span>Next</span>
             <i data-lucide="chevron-right"></i>
           </button>
@@ -3248,7 +3265,7 @@ function renderHistorySessionCard(item) {
         <div class="history-session-top">
           <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
           <span class="tiny-code-chip">${escapeHTML(shortId(item.id))}</span>
-          <span class="history-session-time">${escapeHTML(formatTimestamp(item.updated_at || item.created_at))}</span>
+          <span class="history-session-time" title="${escapeAttr(formatTimestamp(item.updated_at || item.created_at))}">${escapeHTML(formatRelativeTime(item.updated_at || item.created_at))}</span>
         </div>
         <div class="history-session-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
         <div class="history-session-meta">${escapeHTML(metaText)}</div>
@@ -3321,10 +3338,21 @@ function renderSkills(skills) {
   if (!skills.length) {
     nodes.skillsGrid.innerHTML = `
       <div class="empty-panel">
+        <i data-lucide="package-open" class="empty-icon"></i>
         <strong>No local skills found.</strong>
-        <span>Upload a .zip skill to add one to this console.</span>
+        <span>Upload a .zip skill package to extend your agent's capabilities.</span>
+        <button class="skill-btn install" type="button" id="empty-upload-btn" style="margin-top:12px">Upload .zip Skill</button>
       </div>
     `;
+    if (window.lucide && lucide.createIcons) {
+      lucide.createIcons({ root: nodes.skillsGrid });
+    }
+    const emptyBtn = document.getElementById('empty-upload-btn');
+    if (emptyBtn) {
+      emptyBtn.addEventListener('click', () => {
+        document.getElementById('skill-upload')?.click();
+      });
+    }
     return;
   }
   nodes.skillsGrid.innerHTML = skills.map((skill) => `
@@ -3337,7 +3365,7 @@ function renderSkills(skills) {
       <p class="skill-desc">${escapeHTML(skill.description)}</p>
       <div class="skill-footer">
         <button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}">
-          ${skill.installed ? 'Uninstall' : 'Install'}
+          ${skill.installed ? 'Uninstall' : 'Upload to Install'}
         </button>
       </div>
     </div>
@@ -3349,7 +3377,12 @@ function renderSkills(skills) {
 
 async function handleSkillAction(id, isInstalled, button) {
   if (!isInstalled) {
-    showToast('Marketplace install is not supported here yet. Upload a .zip skill instead.', 'info');
+    const uploadInput = document.getElementById('skill-upload');
+    if (uploadInput) {
+      uploadInput.click();
+    } else {
+      showToast('Upload input not available.', 'error');
+    }
     return;
   }
   button.disabled = true;
@@ -3486,7 +3519,17 @@ async function renderSettings() {
           })
         });
         showToast('Settings saved.', 'success');
-        await renderSettings();
+        // Optimistic update: reflect saved state without full re-render
+        saveButton.innerText = 'Saved';
+        if (apiKeyInput.value !== '••••••••••••••••') {
+          apiKeyInput.value = '••••••••••••••••';
+          apiKeyInput.dataset.originalHasKey = 'true';
+        }
+        setTimeout(() => {
+          if (document.body.contains(saveButton)) {
+            saveButton.innerText = 'Save Changes';
+          }
+        }, 1500);
       } catch (err) {
         showToast(err.message || 'Failed to save configuration.', 'error');
       } finally {
@@ -3593,7 +3636,8 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
   tree.forEach((node) => {
     const itemWrapper = document.createElement('div');
     const button = document.createElement('button');
-    button.className = `tree-node tree-level-${Math.min(level, 8)}`;
+    button.className = 'tree-node';
+    button.style.paddingLeft = `${16 + level * 16}px`;
     const icon = node.navigation === 'parent' ? 'corner-up-left' : node.type === 'directory' ? 'folder' : 'file-code';
     button.innerHTML = `<i data-lucide="${icon}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
     const childrenContainer = document.createElement('div');
