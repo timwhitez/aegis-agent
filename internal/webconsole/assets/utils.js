@@ -177,6 +177,136 @@ function parseMaybeJSON(value) {
   }
 }
 
+function collectShellRedirectPaths(command) {
+  const tokens = tokenizeShellCommand(command);
+  const paths = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (!isShellOutputRedirect(token)) {
+      continue;
+    }
+    const target = cleanShellRedirectTarget(tokens[i + 1]);
+    if (!target) {
+      continue;
+    }
+    paths.push({
+      path: target,
+      mode: token.includes('>>') ? 'append' : 'write'
+    });
+    i += 1;
+  }
+  return paths;
+}
+
+function tokenizeShellCommand(command) {
+  const source = String(command || '');
+  const tokens = [];
+  let current = '';
+  let quote = '';
+  let escaping = false;
+
+  const flush = () => {
+    if (current) {
+      tokens.push(current);
+      current = '';
+    }
+  };
+
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
+    }
+
+    if (ch === '\\' && quote !== "'") {
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      if (ch === quote) {
+        quote = '';
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      flush();
+      continue;
+    }
+
+    const redirect = readShellOutputRedirect(source, i);
+    if (redirect) {
+      flush();
+      tokens.push(redirect.token);
+      i = redirect.end;
+      continue;
+    }
+
+    if (ch === ';' || ch === '|' || ch === '&') {
+      flush();
+      continue;
+    }
+
+    current += ch;
+  }
+
+  flush();
+  return tokens;
+}
+
+function readShellOutputRedirect(source, index) {
+  const first = source[index];
+  let prefix = '';
+  let cursor = index;
+  if ((first >= '0' && first <= '9') || first === '&') {
+    if (source[index + 1] !== '>') {
+      return null;
+    }
+    prefix = first;
+    cursor += 1;
+  } else if (first !== '>') {
+    return null;
+  }
+
+  if (source[cursor] !== '>') {
+    return null;
+  }
+
+  if (source[cursor + 1] === '>') {
+    return { token: `${prefix}>>`, end: cursor + 1 };
+  }
+  if (source[cursor + 1] === '|') {
+    return { token: `${prefix}>|`, end: cursor + 1 };
+  }
+  return { token: `${prefix}>`, end: cursor };
+}
+
+function isShellOutputRedirect(token) {
+  return /^(?:\d+|&)?(?:>|>>|>\|)$/.test(String(token || ''));
+}
+
+function cleanShellRedirectTarget(target) {
+  const value = String(target || '').trim();
+  if (!value || value === '-' || value.startsWith('&') || value.startsWith('(')) {
+    return '';
+  }
+  if (value === '/dev/null' || value.startsWith('/dev/fd/')) {
+    return '';
+  }
+  return value;
+}
+
 function metadataValue(value) {
   if (value === undefined || value === null) {
     return 'null';

@@ -247,7 +247,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 		t.Fatalf("unexpected icons.js body: %s", iconsBody)
 	}
 	utilsBody := checkBody(server.URL + "/utils.js")
-	if !strings.Contains(utilsBody, "safeMarkdown") || !strings.Contains(utilsBody, "escapeHTML") || strings.Contains(utilsBody, "unpkg.com") || strings.Contains(utilsBody, "cdn.jsdelivr.net") {
+	if !strings.Contains(utilsBody, "safeMarkdown") || !strings.Contains(utilsBody, "escapeHTML") || !strings.Contains(utilsBody, "collectShellRedirectPaths") || strings.Contains(utilsBody, "unpkg.com") || strings.Contains(utilsBody, "cdn.jsdelivr.net") {
 		t.Fatalf("unexpected utils.js body: %s", utilsBody)
 	}
 
@@ -269,6 +269,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "renderMessageText") || !strings.Contains(jsBody, "message-bubble-plaintext") {
 		t.Fatalf("expected explicit plaintext user-message renderer, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "collectShellRedirectPaths(parsed?.command)") {
+		t.Fatalf("expected files panel to include shell-created workspace files, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "Ctrl+Enter', 'Submit message") || strings.Contains(jsBody, "'ctrl+enter': 'submit'") {
 		t.Fatalf("expected Ctrl+Enter submit shortcut to be removed, got app.js body: %s", jsBody)

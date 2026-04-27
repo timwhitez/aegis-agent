@@ -50,7 +50,8 @@ const state = {
     body: '',
     pending: '',
     rail: '',
-    inspector: ''
+    inspector: '',
+    todoFloat: ''
   },
   nextSendInterrupt: false,
   pollHandle: null,
@@ -60,7 +61,9 @@ const state = {
   pendingOverviewRefresh: null,
   lastInputWasEmpty: true,
   layoutObserver: null,
-  showHelp: false
+  showHelp: false,
+  todoFloatExpanded: true,
+  fileChangesExpanded: true
 };
 
 const nodes = {
@@ -81,6 +84,7 @@ const nodes = {
   interruptSessionBtn: document.getElementById('interrupt-session-btn'),
   interruptToggleBtn: document.getElementById('interrupt-toggle-btn'),
   inputArea: document.querySelector('.input-area'),
+  todoFloatPanel: document.getElementById('todo-float-panel'),
   inputContainer: document.getElementById('input-container'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
@@ -510,6 +514,24 @@ function setupEventListeners() {
       const id = skillActionBtn.getAttribute('data-skill-action');
       const isInstalled = skillActionBtn.getAttribute('data-skill-installed') === '1';
       handleSkillAction(id, isInstalled, skillActionBtn);
+      return;
+    }
+
+    const todoFloatToggle = event.target.closest('[data-todo-float-toggle]');
+    if (todoFloatToggle) {
+      state.todoFloatExpanded = !state.todoFloatExpanded;
+      persistUIState();
+      state.chatRenderCache.todoFloat = '';
+      renderCurrentSession();
+      return;
+    }
+
+    const filesFloatToggle = event.target.closest('[data-files-float-toggle]');
+    if (filesFloatToggle) {
+      state.fileChangesExpanded = !state.fileChangesExpanded;
+      persistUIState();
+      state.chatRenderCache.todoFloat = '';
+      renderCurrentSession();
       return;
     }
 
@@ -1254,6 +1276,9 @@ function renderCurrentSession() {
       patchAuxSlot(nodes.inspectorSlideOut, 'inspector', inspectorHTML);
     }
   }
+  if (nodes.todoFloatPanel) {
+    patchAuxSlot(nodes.todoFloatPanel, 'todoFloat', renderActivityFloat());
+  }
 
   if (!mutated) {
     return;
@@ -1311,7 +1336,8 @@ function ensureChatSlots() {
       body: '',
       pending: '',
       rail: '',
-      inspector: ''
+      inspector: '',
+      todoFloat: ''
     };
     shell = nodes.chatMessages.querySelector('.chat-stream-shell');
   }
@@ -1951,6 +1977,192 @@ function renderTasksPanel(detail) {
       ${tasks.length ? `<div class="card-stack">${tasks.map((task) => renderTaskItem(task)).join('')}</div>` : '<div class="empty-panel">No persistent tasks.</div>'}
     </section>
   `;
+}
+
+function collectFileChanges() {
+  const detail = state.sessionDetail;
+  if (!detail) return [];
+  const messages = maybeArray(detail.messages);
+  const fileMap = {};
+  messages.forEach((msg) => {
+    maybeArray(msg.tool_calls).forEach((call) => {
+      const parsed = parseMaybeJSON(call.arguments);
+      if (call.name === 'shell') {
+        collectShellRedirectPaths(parsed?.command).forEach((redirect) => {
+          const p = redirect.path;
+          if (!fileMap[p]) fileMap[p] = { path: p, writes: 0, edits: 0, linesAdded: 0, linesRemoved: 0 };
+          if (redirect.mode === 'append') {
+            fileMap[p].edits++;
+          } else {
+            fileMap[p].writes++;
+          }
+        });
+        return;
+      }
+      if (call.name !== 'write_file' && call.name !== 'edit_file') return;
+      if (!parsed || !parsed.path) return;
+      const p = parsed.path;
+      if (!fileMap[p]) fileMap[p] = { path: p, writes: 0, edits: 0, linesAdded: 0, linesRemoved: 0 };
+      if (call.name === 'write_file') {
+        fileMap[p].writes++;
+        const lines = (parsed.content || '').split('\n').length;
+        fileMap[p].linesAdded += lines;
+      } else {
+        fileMap[p].edits++;
+        const oldLines = (parsed.old_text || '').split('\n').length;
+        const newLines = (parsed.new_text || '').split('\n').length;
+        fileMap[p].linesAdded += Math.max(0, newLines - oldLines);
+        fileMap[p].linesRemoved += Math.max(0, oldLines - newLines);
+      }
+    });
+  });
+  return Object.values(fileMap);
+}
+
+function renderTodoFloat() {
+  const detail = state.sessionDetail;
+  if (!detail) {
+    return '';
+  }
+  const taskBoard = detail.task_board || {};
+  const todos = maybeArray(taskBoard.todo);
+  const tasks = maybeArray(taskBoard.tasks);
+  const totalItems = todos.length + tasks.length;
+  if (totalItems === 0) {
+    return '';
+  }
+
+  const expanded = state.todoFloatExpanded;
+
+  // Build a unified flat list sorted by status priority
+  const items = [];
+  todos.forEach((t) => {
+    items.push({ kind: 'todo', label: t.content || 'Untitled', status: t.status || 'pending' });
+  });
+  tasks.forEach((t) => {
+    items.push({ kind: 'task', label: t.subject || t.id || 'Task', status: t.status || 'pending', owner: t.owner || '' });
+  });
+
+  // Status order: in_progress first, then pending, then completed/cancelled
+  const statusOrder = (s) => {
+    const sl = (s || '').toLowerCase();
+    if (sl === 'in_progress' || sl === 'running') return 0;
+    if (sl === 'pending' || sl === 'todo' || sl === 'ready') return 1;
+    if (sl === 'completed' || sl === 'done') return 2;
+    return 3;
+  };
+  items.sort((a, b) => statusOrder(a.status) - statusOrder(b.status));
+
+  // Count from actual items to include both todos and tasks
+  let doneCount = 0;
+  let activeCount = 0;
+  items.forEach((item) => {
+    const sl = (item.status || '').toLowerCase();
+    if (sl === 'completed' || sl === 'done' || sl === 'cancelled') doneCount++;
+    if (sl === 'in_progress' || sl === 'running') activeCount++;
+  });
+  const progressPct = totalItems > 0 ? Math.round((doneCount / totalItems) * 100) : 0;
+
+  const chevronSVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+
+  const statusIcon = (s) => {
+    const sl = (s || '').toLowerCase();
+    if (sl === 'completed' || sl === 'done') {
+      return '<svg class="tf-icon tf-icon-done" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+    }
+    if (sl === 'in_progress' || sl === 'running') {
+      return '<svg class="tf-icon tf-icon-active" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+    }
+    if (sl === 'cancelled' || sl === 'failed' || sl === 'error') {
+      return '<svg class="tf-icon tf-icon-cancel" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
+    }
+    return '<svg class="tf-icon tf-icon-pending" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>';
+  };
+
+  // Header summary line
+  const summaryParts = [];
+  if (activeCount > 0) summaryParts.push(`<span class="tf-sum-chip tf-sum-active">${activeCount} active</span>`);
+  summaryParts.push(`<span class="tf-sum-chip">${doneCount}/${totalItems} done</span>`);
+
+  let body = '';
+  if (expanded) {
+    const rows = items.map((item) => {
+      const sl = (item.status || '').toLowerCase();
+      const rowClass = (sl === 'completed' || sl === 'done') ? ' is-done' : (sl === 'in_progress' || sl === 'running') ? ' is-active' : '';
+      return `<div class="tf-row${rowClass}">${statusIcon(item.status)}<span class="tf-row-label">${escapeHTML(item.label)}</span></div>`;
+    }).join('');
+    body = `<div class="tf-body">${rows}</div>`;
+  }
+
+  return `
+    <div class="tf-inner ${expanded ? 'is-expanded' : ''}">
+      <div class="tf-header" data-todo-float-toggle>
+        <div class="tf-header-left">
+          <span class="tf-title">Tasks</span>
+          <div class="tf-progress-bar"><div class="tf-progress-fill" style="width:${progressPct}%"></div></div>
+          <span class="tf-progress-label">${progressPct}%</span>
+        </div>
+        <div class="tf-header-right">
+          ${summaryParts.join('')}
+          <button class="tf-chevron" type="button" data-todo-float-toggle aria-label="${expanded ? 'Minimize' : 'Expand'} task panel">${chevronSVG}</button>
+        </div>
+      </div>
+      ${body}
+    </div>
+  `;
+}
+
+function renderFileChangesFloat() {
+  const files = collectFileChanges();
+  if (files.length === 0) return '';
+
+  const expanded = state.fileChangesExpanded;
+  const chevronSVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+  const fileIconSVG = '<svg class="tf-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+
+  const totalAdded = files.reduce((s, f) => s + f.linesAdded, 0);
+  const totalRemoved = files.reduce((s, f) => s + f.linesRemoved, 0);
+
+  let body = '';
+  if (expanded) {
+    const rows = files.map((f) => {
+      const addLabel = f.linesAdded > 0 ? `<span class="tf-file-stat tf-file-stat-add">+${f.linesAdded}</span>` : '';
+      const delLabel = f.linesRemoved > 0 ? `<span class="tf-file-stat tf-file-stat-del">-${f.linesRemoved}</span>` : '';
+      const opChip = f.writes > 0 && f.edits === 0 ? '<span class="tf-file-op tf-file-op-new">new</span>' : f.edits > 0 ? '<span class="tf-file-op tf-file-op-edit">edit</span>' : '';
+      return `<div class="tf-file-row">${fileIconSVG}<span class="tf-file-path" title="${escapeAttr(f.path)}">${escapeHTML(shortenPath(f.path))}</span>${opChip}${addLabel}${delLabel}</div>`;
+    }).join('');
+    body = `<div class="tf-body">${rows}</div>`;
+  }
+
+  const summaryParts = [];
+  summaryParts.push(`<span class="tf-sum-chip">${files.length} file${files.length === 1 ? '' : 's'}</span>`);
+  if (totalAdded > 0) summaryParts.push(`<span class="tf-sum-chip tf-sum-add">+${totalAdded}</span>`);
+  if (totalRemoved > 0) summaryParts.push(`<span class="tf-sum-chip tf-sum-del">-${totalRemoved}</span>`);
+
+  return `
+    <div class="tf-inner ${expanded ? 'is-expanded' : ''}">
+      <div class="tf-header" data-files-float-toggle>
+        <div class="tf-header-left">
+          <span class="tf-title">Files</span>
+        </div>
+        <div class="tf-header-right">
+          ${summaryParts.join('')}
+          <button class="tf-chevron" type="button" data-files-float-toggle aria-label="${expanded ? 'Minimize' : 'Expand'} file panel">${chevronSVG}</button>
+        </div>
+      </div>
+      ${body}
+    </div>
+  `;
+}
+
+function renderActivityFloat() {
+  const todoHTML = renderTodoFloat();
+  const filesHTML = renderFileChangesFloat();
+  if (!todoHTML && !filesHTML) return '';
+  if (todoHTML && filesHTML) {
+    return `<div class="tf-duo"><div class="tf-duo-left">${todoHTML}</div><div class="tf-duo-right">${filesHTML}</div></div>`;
+  }
+  return todoHTML || filesHTML;
 }
 
 function renderSessionRail() {
@@ -2994,7 +3206,9 @@ function persistUIState() {
     window.localStorage?.setItem(UI_STATE_STORAGE_KEY, JSON.stringify({
       currentView: state.currentView,
       historyPage: state.historyPage,
-      selectedSessionId
+      selectedSessionId,
+      todoFloatExpanded: state.todoFloatExpanded,
+      fileChangesExpanded: state.fileChangesExpanded
     }));
   } catch {
     // Ignore storage failures and continue with in-memory state.
@@ -3014,6 +3228,12 @@ function restoreUIState() {
   if (typeof persisted.selectedSessionId === 'string' && persisted.selectedSessionId.trim()) {
     state.sessionId = persisted.selectedSessionId.trim();
     state.sessionBacked = true;
+  }
+  if (typeof persisted.todoFloatExpanded === 'boolean') {
+    state.todoFloatExpanded = persisted.todoFloatExpanded;
+  }
+  if (typeof persisted.fileChangesExpanded === 'boolean') {
+    state.fileChangesExpanded = persisted.fileChangesExpanded;
   }
   applyViewVisibility(state.currentView);
 }
