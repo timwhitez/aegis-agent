@@ -416,6 +416,7 @@ header {
 }
 
 .message.user { align-items: flex-end; }
+.message.assistant { align-items: flex-start; }
 .message.user .message-bubble {
   background-color: var(--accent);
   color: white;

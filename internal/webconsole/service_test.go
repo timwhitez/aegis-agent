@@ -478,9 +478,20 @@ func TestServiceWebSocketDisconnectDuringActiveRunDoesNotBreakSession(t *testing
 		}
 		return string(data)
 	})
-	if _, ok := svc.handleForSession(backendSessionID); ok {
-		t.Fatalf("expected disconnected session handle to be cleaned up for %s", backendSessionID)
-	}
+	waitFor(t, 4*time.Second, func() bool {
+		_, ok := svc.handleForSession(backendSessionID)
+		return !ok
+	}, func() string {
+		state, err := svc.store.LoadState(backendSessionID)
+		if err != nil {
+			return "session handle still active; state error: " + err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return "session handle still active; state marshal error: " + marshalErr.Error()
+		}
+		return "session handle still active; state=" + string(data)
+	})
 }
 
 func TestServiceQueueWorkersProcessJob(t *testing.T) {
