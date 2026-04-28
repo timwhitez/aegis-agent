@@ -270,7 +270,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "renderMessageText") || !strings.Contains(jsBody, "message-bubble-plaintext") {
 		t.Fatalf("expected explicit plaintext user-message renderer, got app.js body: %s", jsBody)
 	}
-	if !strings.Contains(jsBody, "renderBackgroundResultsMessage") || !strings.Contains(jsBody, "Background agents") || !strings.Contains(jsBody, "Background results accepted") {
+	if !strings.Contains(jsBody, "renderBackgroundResultsMessage") || !strings.Contains(jsBody, "messageSource") || !strings.Contains(jsBody, "Background agents") || !strings.Contains(jsBody, "Background results accepted") {
 		t.Fatalf("expected background agent results to have a dedicated renderer, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "collectShellRedirectPaths(parsed?.command)") {

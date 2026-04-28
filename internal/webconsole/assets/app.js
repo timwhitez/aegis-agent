@@ -1641,10 +1641,27 @@ function renderMessageText(message) {
   return `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`;
 }
 
+function messageMeta(message) {
+  if (message?.meta && typeof message.meta === 'object' && !Array.isArray(message.meta)) {
+    return message.meta;
+  }
+  if (message?.data && typeof message.data === 'object' && !Array.isArray(message.data)) {
+    return message.data;
+  }
+  return {};
+}
+
+function messageSource(message) {
+  return String(messageMeta(message).source || '');
+}
+
 function isBackgroundResultsMessage(message) {
   if (!message) return false;
-  if (message.meta?.source === 'background_results') return true;
-  return String(message.text || '').includes('<background-agent-results>');
+  if (messageSource(message) === 'background_results') return true;
+  const text = String(message.text || '');
+  if (!text.includes('<background-agent-results>')) return false;
+  const payload = parseBackgroundResultsPayload(text);
+  return maybeArray(payload?.background_results).length > 0;
 }
 
 function parseBackgroundResultsPayload(text) {
@@ -1831,14 +1848,15 @@ function renderToolLaneResultRow(result, indent) {
 
 function renderMessageMetaChips(message) {
   const chips = [];
+  const meta = messageMeta(message);
   if (message.pending) {
     chips.push('<span class="message-meta-chip">Pending</span>');
   }
-  if (message.meta?.source) {
-    const sourceLabel = message.meta.source === 'background_results' ? 'background results' : message.meta.source;
+  if (meta.source) {
+    const sourceLabel = meta.source === 'background_results' ? 'background results' : meta.source;
     chips.push(`<span class="message-meta-chip">${escapeHTML(sourceLabel)}</span>`);
   }
-  if (message.meta?.interrupt) {
+  if (meta.interrupt) {
     chips.push('<span class="message-meta-chip">interrupt</span>');
   }
   if (message.created_at) {
@@ -3187,8 +3205,9 @@ function actorNameForMessage(message) {
   if (isBackgroundResultsMessage(message)) {
     return 'Background agents';
   }
+  const source = messageSource(message);
   if (message.role === 'user') {
-    return message.meta?.source === 'steer' ? 'You · steer' : 'You';
+    return source === 'steer' ? 'You · steer' : 'You';
   }
   if (message.role === 'system') {
     return 'System';
@@ -3196,7 +3215,7 @@ function actorNameForMessage(message) {
   if (message.role === 'tool') {
     return 'Tool lane';
   }
-  if (message.meta?.source === 'harness_reminder') {
+  if (source === 'harness_reminder') {
     return 'Harness';
   }
   return agentLabel(state.sessionDetail?.metadata?.agent_name, state.sessionDetail?.metadata?.agent_role) || 'Agent';
