@@ -20,6 +20,14 @@
 - compaction 只能改变发给模型的上下文视图，不能覆盖原始日志。
 - provider 的 generation / reasoning / store 选项必须通过 runtime/session 元数据传递，不能只停留在一次性 CLI 参数里。
 
+## Runtime Guard 与模型自主性
+
+- 模型是 agent，runtime / tool schema 负责提供能力描述、事实记录和安全边界；不要用 `prompt.go` 或 tool guard 固定审计路线、委派策略、阅读顺序、taskboard 节奏等本应由模型判断的工作流。
+- 优先通过 tool description、system prompt、skill 文档和 harness reminder 引导决策；一次 session 暴露的问题先优化描述与可观测事实，避免把 runtime 写成 task-specific workflow engine。
+- hard guard 只用于安全/权限边界、workspace/path escape、用户显式指定的交付路径/模板/字面锚点、恢复一致性、provider/tool 协议完整性，以及用户最新 steer 的明确约束。
+- sub-agent/child-agent 是否使用必须 model-led；优化 `agent_spawn` / `agent_status` / `agent_list` 描述和 child prompt 模板来提示委派时机，不要用 runtime guard 强迫或阻止委派。
+- durable project memory、todo/taskboard 和 long-run checkpoint 主要用于恢复与协作提醒；除非 finish 会留下明显过期或矛盾的 durable state，不要阻断 agent handoff 或普通执行动作。
+
 ## 安全与恢复
 
 - 文件工具必须防止 workspace escape，并处理 symlink escape，不要只做 `Clean`/`Rel`。
