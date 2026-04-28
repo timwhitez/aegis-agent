@@ -51,7 +51,8 @@ const state = {
     pending: '',
     rail: '',
     inspector: '',
-    todoFloat: ''
+    todoFloat: '',
+    subAgentFloat: ''
   },
   nextSendInterrupt: false,
   pollHandle: null,
@@ -63,7 +64,8 @@ const state = {
   layoutObserver: null,
   showHelp: false,
   todoFloatExpanded: true,
-  fileChangesExpanded: true
+  fileChangesExpanded: true,
+  subAgentExpanded: true
 };
 
 const nodes = {
@@ -529,6 +531,15 @@ function setupEventListeners() {
     const filesFloatToggle = event.target.closest('[data-files-float-toggle]');
     if (filesFloatToggle) {
       state.fileChangesExpanded = !state.fileChangesExpanded;
+      persistUIState();
+      state.chatRenderCache.todoFloat = '';
+      renderCurrentSession();
+      return;
+    }
+
+    const subAgentToggle = event.target.closest('[data-sub-agent-toggle]');
+    if (subAgentToggle) {
+      state.subAgentExpanded = !state.subAgentExpanded;
       persistUIState();
       state.chatRenderCache.todoFloat = '';
       renderCurrentSession();
@@ -1347,7 +1358,8 @@ function ensureChatSlots() {
       pending: '',
       rail: '',
       inspector: '',
-      todoFloat: ''
+      todoFloat: '',
+      subAgentFloat: ''
     };
     shell = nodes.chatMessages.querySelector('.chat-stream-shell');
   }
@@ -2243,14 +2255,112 @@ function renderFileChangesFloat() {
   `;
 }
 
+function renderSubAgentFloat() {
+  const detail = state.sessionDetail;
+  if (!detail) return '';
+
+  const sessions = maybeArray(detail.children?.sessions);
+  const jobs = maybeArray(detail.children?.jobs);
+  if (!sessions.length && !jobs.length) return '';
+
+  const expanded = state.subAgentExpanded;
+  const chevronSVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+
+  // Group jobs under their parent sessions
+  const jobsByParent = {};
+  jobs.forEach((job) => {
+    const parentKey = job.parent_session_id || '_orphan';
+    if (!jobsByParent[parentKey]) jobsByParent[parentKey] = [];
+    jobsByParent[parentKey].push(job);
+  });
+
+  const summaryParts = [];
+  summaryParts.push(`<span class="tf-sum-chip sa-sum-sessions">${sessions.length} session${sessions.length === 1 ? '' : 's'}</span>`);
+  if (jobs.length) summaryParts.push(`<span class="tf-sum-chip sa-sum-jobs">${jobs.length} job${jobs.length === 1 ? '' : 's'}</span>`);
+
+  let body = '';
+  if (expanded) {
+    const rows = [];
+    // Render sessions with their child jobs
+    sessions.forEach((sess) => {
+      rows.push(renderSubAgentSessionRow(sess));
+      const childJobs = jobsByParent[sess.id] || [];
+      childJobs.forEach((job) => {
+        rows.push(renderSubAgentJobRow(job));
+      });
+      // Remove from orphan tracking
+      delete jobsByParent[sess.id];
+    });
+    // Render orphan jobs (no matching session in list)
+    const orphans = jobsByParent._orphan || [];
+    orphans.forEach((job) => {
+      rows.push(renderSubAgentJobRow(job));
+    });
+    // Render jobs belonging to sessions not in the visible list
+    Object.keys(jobsByParent).forEach((key) => {
+      if (key === '_orphan') return;
+      jobsByParent[key].forEach((job) => {
+        rows.push(renderSubAgentJobRow(job));
+      });
+    });
+
+    body = `<div class="sa-tree-body">${rows.join('')}</div>`;
+  }
+
+  return `
+    <div class="sa-float-panel">
+      <div class="tf-inner ${expanded ? 'is-expanded' : ''}">
+        <div class="tf-header" data-sub-agent-toggle>
+          <div class="tf-header-left">
+            <span class="tf-title">Sub Agents</span>
+          </div>
+          <div class="tf-header-right">
+            ${summaryParts.join('')}
+            <button class="tf-chevron" type="button" data-sub-agent-toggle aria-label="${expanded ? 'Minimize' : 'Expand'} sub-agent panel">${chevronSVG}</button>
+          </div>
+        </div>
+        ${body}
+      </div>
+    </div>
+  `;
+}
+
+function renderSubAgentSessionRow(sess) {
+  const statusTone = toneForStatus(sess.status);
+  const label = agentLabel(sess.agent_name, sess.agent_role) || shortId(sess.id);
+  return `
+    <div class="sa-tree-row parent" data-open-session="${escapeAttr(sess.id)}">
+      <span class="sa-tree-dot ${statusTone}"></span>
+      <span class="sa-tree-label" title="${escapeAttr(label)}">${escapeHTML(label)}</span>
+      <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(sess.status))}</span>
+      <span class="sa-tree-meta">${escapeHTML(sess.model || sess.provider || 'n/a')} · ${escapeHTML(shortId(sess.id))}</span>
+    </div>
+  `;
+}
+
+function renderSubAgentJobRow(job) {
+  const statusTone = toneForStatus(job.status);
+  const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
+  const targetId = job.session_id || job.id;
+  return `
+    <div class="sa-tree-row child" data-open-session="${escapeAttr(targetId)}">
+      <span class="sa-tree-dot ${statusTone}"></span>
+      <span class="sa-tree-label" title="${escapeAttr(label)}">${escapeHTML(label)}</span>
+      <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(job.status))}</span>
+      <span class="sa-tree-meta">${escapeHTML(job.mode || '')} · ${escapeHTML(shortId(job.id))}</span>
+    </div>
+  `;
+}
+
 function renderActivityFloat() {
+  const subHTML = renderSubAgentFloat();
   const todoHTML = renderTodoFloat();
   const filesHTML = renderFileChangesFloat();
-  if (!todoHTML && !filesHTML) return '';
-  if (todoHTML && filesHTML) {
-    return `<div class="tf-duo"><div class="tf-duo-left">${todoHTML}</div><div class="tf-duo-right">${filesHTML}</div></div>`;
-  }
-  return todoHTML || filesHTML;
+  if (!subHTML && !todoHTML && !filesHTML) return '';
+  const duoHTML = (todoHTML || filesHTML)
+    ? `<div class="tf-duo"><div class="tf-duo-left">${todoHTML || ''}</div><div class="tf-duo-right">${filesHTML || ''}</div></div>`
+    : '';
+  return subHTML + duoHTML;
 }
 
 function renderSessionRail() {
@@ -3303,7 +3413,8 @@ function persistUIState() {
       historyPage: state.historyPage,
       selectedSessionId,
       todoFloatExpanded: state.todoFloatExpanded,
-      fileChangesExpanded: state.fileChangesExpanded
+      fileChangesExpanded: state.fileChangesExpanded,
+      subAgentExpanded: state.subAgentExpanded
     }));
   } catch {
     // Ignore storage failures and continue with in-memory state.
@@ -3329,6 +3440,9 @@ function restoreUIState() {
   }
   if (typeof persisted.fileChangesExpanded === 'boolean') {
     state.fileChangesExpanded = persisted.fileChangesExpanded;
+  }
+  if (typeof persisted.subAgentExpanded === 'boolean') {
+    state.subAgentExpanded = persisted.subAgentExpanded;
   }
   applyViewVisibility(state.currentView);
 }
