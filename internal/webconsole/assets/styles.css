@@ -1148,7 +1148,9 @@ textarea {
 
 .message.assistant .message-body {
   max-width: 100%;
-  align-self: stretch;
+  width: fit-content;
+  align-self: flex-start;
+  align-items: flex-start;
 }
 
 .message.user .message-body {
@@ -1189,6 +1191,7 @@ textarea {
 }
 
 .message.assistant .message-bubble {
+  width: fit-content;
   max-width: 100%;
 }
 
