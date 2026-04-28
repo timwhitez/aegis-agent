@@ -418,9 +418,9 @@ header {
 .message.user { align-items: flex-end; }
 .message.assistant { align-items: flex-start; }
 .message.user .message-bubble {
-  background-color: var(--accent);
-  color: white;
-  border: none;
+  background-color: rgba(13, 148, 136, 0.10);
+  color: var(--text-main);
+  border: 1px solid rgba(13, 148, 136, 0.16);
   border-top-right-radius: var(--radius-xs);
   width: auto;
   max-width: 100%;
@@ -1144,7 +1144,6 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: 100%;
 }
 
 .message.assistant .message-body {
@@ -1157,9 +1156,9 @@ textarea {
 }
 
 .message.user .message-bubble {
-  background: var(--accent);
-  border: none;
-  color: white;
+  background: rgba(13, 148, 136, 0.10);
+  border: 1px solid rgba(13, 148, 136, 0.16);
+  color: var(--text-main);
   width: auto;
   max-width: 100%;
   box-shadow: var(--shadow-soft);
