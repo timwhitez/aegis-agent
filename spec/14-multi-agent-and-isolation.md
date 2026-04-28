@@ -137,6 +137,7 @@ child session 使用独立工作目录执行。当前支持：
 - `mode=full-auto` 作为兼容别名按 `exec` 处理
 - `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 - 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
+- 如果 master agent 在 TODO / taskboard 中显式声明 delegated、sub-agent、worker 或 parallel slice 工作，完成状态必须与 child-agent 证据一致；在没有成功 `agent_spawn` 记录时，runtime 可以阻止把这类委派项直接标记为 completed，并要求先派发 child agent 或把任务改写为真实的手动执行状态
 - `background=true` 时提交到后台自治队列
 - 当 parent 处于活跃 `run` / `exec` 中时，后台 child 默认由同一 CLI 进程内的 auto worker 自动拉起执行
 - child 完成或失败后，结果需要回投到 parent session 的控制通知，供下一安全边界自动并入上下文

@@ -1159,13 +1159,23 @@ func taskFilePath(execCtx ExecContext, taskID string) string {
 func defAgentSpawn(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_spawn",
-		Description: "Spawn child agent (use isolation_mode=auto for isolation).",
+		Description: "Spawn a child agent for delegated child-agent work. Use this for broad investigations, code audits, module scans, independent validation, or reviewer passes when the parent would otherwise do all slice reads alone; use isolation_mode=auto when the child must write artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prompt":     map[string]any{"type": "string"},
-				"agent_name": map[string]any{"type": "string"},
-				"agent_role": map[string]any{"type": "string", "enum": []string{"planner", "generator", "evaluator"}},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "Self-contained child task prompt. Include objective, scope, boundaries, inputs, expected output, completion criteria, and any inherited rubric for the delegated work.",
+				},
+				"agent_name": map[string]any{
+					"type":        "string",
+					"description": "Short human-readable child label such as audit-auth-slice, scan-api-module, or reviewer-routing.",
+				},
+				"agent_role": map[string]any{
+					"type":        "string",
+					"enum":        []string{"planner", "generator", "evaluator"},
+					"description": "Child role hint. Use evaluator for review, audit, validation, and reviewer work.",
+				},
 				"provider": map[string]any{
 					"type":        "string",
 					"description": "Optional provider override. Omit or use default to inherit the current session provider.",
@@ -1174,14 +1184,23 @@ func defAgentSpawn(control ControlPlane) Definition {
 					"type":        "string",
 					"description": "Optional model override. Omit or use default to inherit the current session model.",
 				},
-				"workdir": map[string]any{"type": "string"},
-				"system":  map[string]any{"type": "string"},
+				"workdir": map[string]any{
+					"type":        "string",
+					"description": "Optional child working directory. Omit to inherit the parent workspace.",
+				},
+				"system": map[string]any{
+					"type":        "string",
+					"description": "Optional child system instruction override. Usually omit so the child inherits the runtime contract.",
+				},
 				"mode": map[string]any{
 					"type":        "string",
 					"enum":        []string{"run", "exec", "full-auto", "default"},
 					"description": "Optional run mode. full-auto is accepted as an alias for exec.",
 				},
-				"background": map[string]any{"type": "boolean"},
+				"background": map[string]any{
+					"type":        "boolean",
+					"description": "Use true for independent or long-running delegated slices so the parent can continue non-overlapping work and collect results later with agent_status or agent_list.",
+				},
 				"wait_mode": map[string]any{
 					"type":        "string",
 					"enum":        []string{"wait-all", "wait-any", "all", "any", "default"},
@@ -1192,7 +1211,10 @@ func defAgentSpawn(control ControlPlane) Definition {
 					"enum":        []string{"auto", "copy", "git", "off", "none", "workspace-write", "default"},
 					"description": "Optional isolation mode. workspace-write is accepted as an alias for off.",
 				},
-				"isolation_root": map[string]any{"type": "string"},
+				"isolation_root": map[string]any{
+					"type":        "string",
+					"description": "Optional base directory for copy/git isolation workspaces.",
+				},
 			},
 			"required": []string{"prompt"},
 		},
@@ -1218,12 +1240,18 @@ func defAgentSpawn(control ControlPlane) Definition {
 func defAgentStatus(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_status",
-		Description: "Check agent status.",
+		Description: "Check a child agent or background job status after agent_spawn. Use this to collect final_text, errors, and workdir before parent synthesis.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"session_id":   map[string]any{"type": "string"},
-				"queue_job_id": map[string]any{"type": "string"},
+				"session_id": map[string]any{
+					"type":        "string",
+					"description": "Child session id returned by agent_spawn.",
+				},
+				"queue_job_id": map[string]any{
+					"type":        "string",
+					"description": "Background queue job id returned by agent_spawn(background=true).",
+				},
 			},
 		},
 		Execute: func(ctx context.Context, _ ExecContext, raw json.RawMessage) (session.ToolResult, error) {
@@ -1250,7 +1278,7 @@ func defAgentStatus(control ControlPlane) Definition {
 func defAgentList(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_list",
-		Description: "List child agents and jobs.",
+		Description: "List child agents and background jobs for the current session. Use this to recover delegated work and find unresolved child outputs before final synthesis.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},

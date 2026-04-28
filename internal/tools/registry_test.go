@@ -334,6 +334,56 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestAgentSpawnGuidesDelegatedAuditSlices(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	def := registry.Get("agent_spawn")
+	if def == nil {
+		t.Fatal("agent_spawn definition missing")
+	}
+	for _, want := range []string{"delegated child-agent work", "broad investigations", "independent validation"} {
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("expected agent_spawn description to mention %q, got %q", want, def.Description)
+		}
+	}
+	properties, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties schema, got %#v", def.InputSchema["properties"])
+	}
+	for name, want := range map[string]string{
+		"prompt":     "objective, scope, boundaries",
+		"agent_role": "Use evaluator for review",
+		"background": "agent_status or agent_list",
+	} {
+		schema, ok := properties[name].(map[string]any)
+		if !ok {
+			t.Fatalf("expected %s schema, got %#v", name, properties[name])
+		}
+		description := fmt.Sprint(schema["description"])
+		if !strings.Contains(description, want) {
+			t.Fatalf("expected %s description to mention %q, got %q", name, want, description)
+		}
+	}
+	statusDef := registry.Get("agent_status")
+	if statusDef == nil {
+		t.Fatal("agent_status definition missing")
+	}
+	if !strings.Contains(statusDef.Description, "collect final_text") {
+		t.Fatalf("expected agent_status description to guide result collection, got %q", statusDef.Description)
+	}
+	listDef := registry.Get("agent_list")
+	if listDef == nil {
+		t.Fatal("agent_list definition missing")
+	}
+	if !strings.Contains(listDef.Description, "recover delegated work") {
+		t.Fatalf("expected agent_list description to guide delegated work recovery, got %q", listDef.Description)
+	}
+}
+
 func TestFeatureListToolsPersistUpdateAndReadSnapshot(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

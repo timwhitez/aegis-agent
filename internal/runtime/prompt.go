@@ -892,6 +892,70 @@ func isActionTool(name string) bool {
 	}
 }
 
+func delegatedWorkCompletionGuard(messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
+	if toolName != "todo_write" || !todoWriteCompletesDelegatedWork(rawArgs) {
+		return "", ""
+	}
+	if hasSuccessfulAgentSpawnSinceLatestExternal(messages) {
+		return "", ""
+	}
+	return "delegation_completion", "Delegation guard: this todo_write marks delegated, sub-agent, worker, or parallel slice work as completed, but this session has no successful agent_spawn result since the latest user instruction. Use agent_spawn for the delegated work first, or keep the item incomplete / rewrite it as manual work and record why delegation was unavailable."
+}
+
+func todoWriteCompletesDelegatedWork(rawArgs json.RawMessage) bool {
+	var input struct {
+		Todos []session.TodoItem `json:"todos"`
+	}
+	if err := json.Unmarshal(rawArgs, &input); err != nil {
+		return false
+	}
+	for _, todo := range input.Todos {
+		if todo.Status == "completed" && looksDelegatedAgentWork(todo.Content) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksDelegatedAgentWork(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+	lowered := strings.ToLower(content)
+	for _, keyword := range []string{
+		"sub-agent", "subagent", "child agent", "delegate", "delegated", "delegation", "worker",
+		"子代理", "子agent", "委派", "派发",
+	} {
+		if strings.Contains(lowered, keyword) || strings.Contains(content, keyword) {
+			return true
+		}
+	}
+	hasSlice := strings.Contains(lowered, "slice") || strings.Contains(content, "切片")
+	hasParallel := strings.Contains(lowered, "parallel") || strings.Contains(content, "并行")
+	hasReview := strings.Contains(lowered, "audit") || strings.Contains(lowered, "review") ||
+		strings.Contains(lowered, "scan") || strings.Contains(content, "审计") || strings.Contains(content, "扫描")
+	return hasSlice && (hasParallel || hasReview)
+}
+
+func hasSuccessfulAgentSpawnSinceLatestExternal(messages []session.Message) bool {
+	start := latestExternalInstructionIndex(messages)
+	if start < 0 {
+		start = -1
+	}
+	for _, msg := range messages[start+1:] {
+		if msg.Role != "tool" {
+			continue
+		}
+		for _, result := range msg.ToolResults {
+			if result.Name == "agent_spawn" && !result.IsError {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func quoteForPrompt(text string, limit int) string {
 	cleaned := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
 	if cleaned == "" {
@@ -1140,6 +1204,9 @@ func toolGuard(workdir string, messages []session.Message, toolName string, rawA
 		return kind, text
 	}
 	if kind, text := reportConsistencyGuard(workdir, messages, toolName, rawArgs); text != "" {
+		return kind, text
+	}
+	if kind, text := delegatedWorkCompletionGuard(messages, toolName, rawArgs); text != "" {
 		return kind, text
 	}
 	if kind, text := longRunTaskboardGuard(messages, toolName); text != "" {
