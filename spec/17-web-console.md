@@ -142,6 +142,7 @@ Session 工作区是新用户的默认落点，展示：
 
 目标是让用户在一个时间轴里同时理解对话和系统行为，而不是分散到两个页面来回跳。
 当前实现额外支持 timeline search + kind filter（all/message/event），便于在长会话里快速锁定 message 或 runtime event。
+后台 worker 回流到 parent session 的 `background_results` 仍以 durable message 进入 `messages.jsonl`，保持 provider replay 与文件事实源不变；WebConsole 在展示层必须把这类消息识别为后台 agent 结果卡片，展示 agent、role、status、final text / error、child session 与 queue job 链接，而不是渲染成普通用户 prompt 气泡。
 
 #### Tasks
 

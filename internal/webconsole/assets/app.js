@@ -1605,9 +1605,10 @@ function renderFlowLane() {
 
 function renderMessage(message) {
   const role = message.role || 'assistant';
-  const visualRole = role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
+  const backgroundResults = isBackgroundResultsMessage(message);
+  const visualRole = backgroundResults ? 'assistant background-results' : role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
   const actor = actorNameForMessage(message);
-  const icon = iconForRole(role);
+  const icon = backgroundResults ? 'git-branch' : iconForRole(role);
   const textHTML = message.text ? renderMessageText(message) : '';
   const toolLaneHTML = renderToolLane(message);
 
@@ -1631,10 +1632,117 @@ function renderMessage(message) {
 }
 
 function renderMessageText(message) {
+  if (isBackgroundResultsMessage(message)) {
+    return renderBackgroundResultsMessage(message);
+  }
   if (message.role === 'user') {
     return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
   }
   return `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`;
+}
+
+function isBackgroundResultsMessage(message) {
+  if (!message) return false;
+  if (message.meta?.source === 'background_results') return true;
+  return String(message.text || '').includes('<background-agent-results>');
+}
+
+function parseBackgroundResultsPayload(text) {
+  const raw = String(text || '').trim();
+  const match = raw.match(/<background-agent-results>\s*([\s\S]*?)\s*<\/background-agent-results>/);
+  const jsonText = match ? match[1] : raw;
+  const parsed = parseMaybeJSON(jsonText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+function renderBackgroundResultsMessage(message) {
+  const payload = parseBackgroundResultsPayload(message.text);
+  const results = maybeArray(payload?.background_results);
+  if (!results.length) {
+    return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
+  }
+  const completed = results.filter((item) => backgroundResultStatus(item).toLowerCase() === 'completed').length;
+  const failed = results.filter((item) => backgroundResultTone(item) === 'danger').length;
+  return `
+    <div class="agent-result-panel">
+      <div class="agent-result-panel-head">
+        <div>
+          <div class="agent-result-eyebrow">Background agent results</div>
+          <div class="agent-result-title">${escapeHTML(String(results.length))} delegated result${results.length === 1 ? '' : 's'} accepted</div>
+        </div>
+        <div class="agent-result-summary">
+          ${completed ? `<span class="status-badge live">${escapeHTML(String(completed))} completed</span>` : ''}
+          ${failed ? `<span class="status-badge danger">${escapeHTML(String(failed))} failed</span>` : ''}
+          ${message.created_at ? `<span class="surface-chip">${escapeHTML(formatClock(message.created_at))}</span>` : ''}
+        </div>
+      </div>
+      <div class="agent-result-list">
+        ${results.map((item) => renderBackgroundResultItem(item)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderBackgroundResultItem(item) {
+  item = item || {};
+  const status = backgroundResultStatus(item);
+  const tone = backgroundResultTone(item);
+  const label = agentLabel(item.agent_name, item.agent_role) || shortId(item.session_id) || 'Child agent';
+  const body = item.last_error || item.final_text || 'No final text recorded.';
+  const workdir = item.effective_workdir || item.requested_workdir || '';
+  return `
+    <section class="agent-result-item ${tone}">
+      <div class="agent-result-item-top">
+        <div class="agent-result-identity">
+          <span class="agent-result-dot ${tone}"></span>
+          <span class="agent-result-name">${escapeHTML(label)}</span>
+        </div>
+        <span class="status-badge ${tone}">${escapeHTML(humanizeStatus(status))}</span>
+      </div>
+      <div class="agent-result-copy">${escapeHTML(body)}</div>
+      <div class="agent-result-meta">
+        ${item.queue_job_id ? `<span class="tiny-code-chip">job ${escapeHTML(shortId(item.queue_job_id))}</span>` : ''}
+        ${item.session_id ? `<span class="tiny-code-chip">child ${escapeHTML(shortId(item.session_id))}</span>` : ''}
+        ${workdir ? `<span class="surface-chip">${escapeHTML(workdirBase(workdir))}</span>` : ''}
+      </div>
+      ${renderVisiblePaths(item.visible_paths)}
+      <div class="card-actions">
+        ${item.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>` : ''}
+        ${item.queue_job_id ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(item.queue_job_id)}">Open job</button>` : ''}
+      </div>
+    </section>
+  `;
+}
+
+function backgroundResultStatus(item) {
+  return String(item?.status || item?.session_status || 'unknown');
+}
+
+function backgroundResultTone(item) {
+  if (item?.last_error) {
+    return 'danger';
+  }
+  return toneForStatus(backgroundResultStatus(item));
+}
+
+function summarizeBackgroundResultsPayload(payload) {
+  const results = maybeArray(payload?.background_results);
+  if (!results.length) {
+    return '';
+  }
+  const failed = results.filter((item) => backgroundResultTone(item) === 'danger').length;
+  const completed = results.filter((item) => backgroundResultStatus(item).toLowerCase() === 'completed').length;
+  const first = results[0] || {};
+  const firstCopy = first.last_error || first.final_text || agentLabel(first.agent_name, first.agent_role) || '';
+  const statusSummary = [
+    completed ? `${completed} completed` : '',
+    failed ? `${failed} failed` : ''
+  ].filter(Boolean).join(', ');
+  const prefix = `${results.length} delegated result${results.length === 1 ? '' : 's'} accepted`;
+  return truncateText([prefix, statusSummary, firstCopy].filter(Boolean).join(': '), 180);
 }
 
 function renderToolLane(message) {
@@ -1727,7 +1835,8 @@ function renderMessageMetaChips(message) {
     chips.push('<span class="message-meta-chip">Pending</span>');
   }
   if (message.meta?.source) {
-    chips.push(`<span class="message-meta-chip">${escapeHTML(message.meta.source)}</span>`);
+    const sourceLabel = message.meta.source === 'background_results' ? 'background results' : message.meta.source;
+    chips.push(`<span class="message-meta-chip">${escapeHTML(sourceLabel)}</span>`);
   }
   if (message.meta?.interrupt) {
     chips.push('<span class="message-meta-chip">interrupt</span>');
@@ -2717,6 +2826,19 @@ function collectRecentToolEntries(messages) {
 
 function describeTimelineItem(item) {
   if (item.kind === 'message') {
+    if (isBackgroundResultsMessage({ text: item.text, meta: item.data || {} })) {
+      const payload = parseBackgroundResultsPayload(item.text);
+      const results = maybeArray(payload?.background_results);
+      const failed = results.filter((result) => backgroundResultTone(result) === 'danger').length;
+      return {
+        icon: 'git-branch',
+        title: 'Background results accepted',
+        copy: summarizeBackgroundResultsPayload(payload) || 'Background agent results were accepted into this session.',
+        meta: item.message_id ? shortId(item.message_id) : '',
+        tone: failed ? 'danger' : 'live',
+        data: ''
+      };
+    }
     if (item.role === 'tool') {
       return {
         icon: 'wrench',
@@ -3062,6 +3184,9 @@ function iconForRole(role) {
 }
 
 function actorNameForMessage(message) {
+  if (isBackgroundResultsMessage(message)) {
+    return 'Background agents';
+  }
   if (message.role === 'user') {
     return message.meta?.source === 'steer' ? 'You · steer' : 'You';
   }

@@ -270,6 +270,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "renderMessageText") || !strings.Contains(jsBody, "message-bubble-plaintext") {
 		t.Fatalf("expected explicit plaintext user-message renderer, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "renderBackgroundResultsMessage") || !strings.Contains(jsBody, "Background agents") || !strings.Contains(jsBody, "Background results accepted") {
+		t.Fatalf("expected background agent results to have a dedicated renderer, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "collectShellRedirectPaths(parsed?.command)") {
 		t.Fatalf("expected files panel to include shell-created workspace files, got app.js body: %s", jsBody)
 	}
@@ -292,6 +295,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(cssBody, ".message-bubble-plaintext") {
 		t.Fatalf("expected plaintext user-message styles, got styles.css body: %s", cssBody)
+	}
+	if !strings.Contains(cssBody, ".agent-result-panel") || !strings.Contains(cssBody, ".message.background-results") {
+		t.Fatalf("expected dedicated background agent result styles, got styles.css body: %s", cssBody)
 	}
 	if !strings.Contains(cssBody, "#chat-view .chat-container") || !strings.Contains(cssBody, "padding: 24px 0 24px") || !strings.Contains(cssBody, "overflow-y: auto") || !strings.Contains(cssBody, "scrollbar-gutter: stable both-edges") {
 		t.Fatalf("expected session chat container to keep a visible own scroll area, got styles.css body: %s", cssBody)
