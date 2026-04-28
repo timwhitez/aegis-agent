@@ -80,9 +80,9 @@ Web console 解决三类问题：
 
 固定区域：
 
+- Session
+- Background Jobs
 - Sessions
-- Queue
-- History
 - Skills
 - Workspace
 - Settings
@@ -171,11 +171,11 @@ Session 工作区是新用户的默认落点，展示：
 - steer 请求与 notification 卡片里的关键 metadata
 - 能从 background notification 直接打开对应 child session
 
-#### Queue 主视图补充
+#### Background Jobs 主视图补充
 
-- queue 视图默认是后台任务监控面，不再展示 worker pool 调参或 raw durable payload
-- 该 detail 面板只暴露 operator 可理解、可操作的信息：status、prompt、child session、parent session、final text、last error
-- queue job 的 provider、workdir、raw payload 等内部事实仍可由 API 与文件事实追溯，但默认前端不强行展示
+- Background Jobs 视图默认是后台任务提交入口与状态计数面，不再展示 worker pool 调参、raw durable payload、完整 jobs 列表或 selected job detail
+- queue job 的 status、prompt、child session、parent session、final text、last error 等细节仍可由当前 session detail、background notification 链接、后端 API 与文件事实追溯，但默认前端不强行展开为独立监控页面
+- queue job 的 provider、workdir、raw payload 等内部事实仍可由 API 与文件事实追溯
 - queue submit 保留为“高级后台任务”入口，并用文案提示普通任务应回到 Session 执行
 
 ### 4.5 右侧动作区
@@ -193,14 +193,14 @@ Session 工作区是新用户的默认落点，展示：
   - 支持 provider / model 覆盖
 - 始终可显示 `queue child job` 表单
 
-当选择 Queue 时：
+当选择 Background Jobs 时：
 
-- 显示 queue jobs 列表
-- 显示 selected job 的简化详情
-- 可选显示“Start background job”高级入口
+- 显示 queue 状态计数
+- 显示“Submit Job”后台任务入口
 - 不显示 worker pool 并发调节控件
+- 不默认显示完整 queue jobs 列表或 selected job 详情
 
-当前实现不再提供单独 Overview 页面，也不再把 Worker Pool 当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、History 和可选 Queue。
+当前实现不再提供单独 Overview 页面，也不再把 Worker Pool 当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、Sessions 和可选 Background Jobs。
 
 ## 5. 视觉系统
 
@@ -511,9 +511,9 @@ worker pool 允许并发 `N >= 1`。
 
 用户路径：
 
-1. 打开 Queue 面板
+1. 打开 Background Jobs 面板
 2. 提交一个或多个 jobs
-3. 在队列表里观察 queued -> running -> completed/failed
+3. 通过状态计数、当前 session inspector 的 background 卡片、background notification 链接、API 或文件事实观察 queued -> running -> completed/failed
 4. 若 job 属于 parent session，则在该 parent timeline 里看到 background notification
 5. 若需要调整并发，重启 Web 服务时修改 `--workers` 或调用后端 worker API，不从默认页面直接配置
 

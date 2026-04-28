@@ -6,10 +6,10 @@
 
 在保持 CLI-first 的前提下，仓库现在也允许显式 `experimental web` 控制台：它提供本地单页前端，用于 session / task / queue / children / timeline 观测，以及 `start` / `steer` / `continue` / background queue 的低门槛交互，但不会替代默认 core CLI 叙事。
 当前内嵌前端采用 session-first 控制台壳层：进入页面就是简洁的 session 执行工作区，左侧 session rail、中间执行流、右侧 inspector tracker 同时存在，但不再提供独立 Overview 首页。
-当前 Web 控制台的 start / queue 表单都支持显式 `agent_name` / `agent_role`，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的 role-aware 运行。
+当前 Web 控制台的 start / queue 表单支持 role-aware 运行入口，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的任务。
 当前 session detail 还会把 execution / recovery / output / provider options、contract、required artifacts、provider attempts 与 checkpoint 线索直接放在详情数据里，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
-当前前端还保留轻量的 session rail、History、Queue、Skills、Workspace 与 Settings，但默认不把 worker pool 调参、raw queue payload 或 KPI 数字墙暴露给普通操作流。
-Queue 主视图现在定位为可选后台任务监控：展示 jobs、selected job 的简化状态与 child/parent session 跳转，并把提交后台 job 标注为高级入口；worker 并发请通过启动参数或后端 API 管理。
+当前前端还保留轻量的 session rail、Sessions、Background Jobs、Skills、Workspace 与 Settings，但默认不把 worker pool 调参、raw queue payload 或 KPI 数字墙暴露给普通操作流。
+Background Jobs 主视图现在定位为后台任务提交入口和状态计数面：默认不展开完整 jobs 列表或 selected job 详情；已有作业仍可通过 session detail、background notification、后端 API 与文件事实追溯。worker 并发请通过启动参数或后端 API 管理。
 
 ## 当前定位
 
@@ -77,12 +77,12 @@ export GEMINI_API_KEY=...
 
 浏览器里会看到：
 
-- 左侧：固定的 Session / Queue / History / Skills / Workspace / Settings 导航和 session rail
-- 中央：默认 session chat/timeline 执行流；Queue 仅作为可选后台任务监控面
+- 左侧：固定的 Session / Background Jobs / Sessions / Skills / Workspace / Settings 导航和 session rail
+- 中央：默认 session chat/timeline 执行流；Background Jobs 仅作为可选后台任务提交与状态面
 - 右侧：Summary / Tasks / Background / Timeline 固定 inspector tracker
 
 其中 session detail 会额外显示执行摘要、provider 选项、contract、required artifact、provider attempts、long-run checkpoint 和 parent coordination；queue / children / queue-links 卡片则支持直接打开相关 session，方便在 parent、child 和 background job 之间跳转。
-Queue 页面默认隐藏 Worker Pool 配置和 raw durable payload，只保留 jobs、selected job 摘要、child/parent session 跳转，以及一个明确标注为高级入口的 background job 提交框。
+Background Jobs 页面默认隐藏 Worker Pool 配置、raw durable payload、完整 job 列表和 selected job 详情，只保留状态计数与一个明确标注的 background job 提交框；job 细节通过 session detail、notification 链接、API 或文件事实查看。
 
 ## 核心命令
 

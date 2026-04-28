@@ -2274,10 +2274,6 @@ textarea {
     padding: 12px 10px;
   }
 
-  .queue-layout {
-    grid-template-columns: minmax(240px, 0.5fr) minmax(280px, 1fr);
-  }
-
   .chat-shell,
   .history-columns {
     grid-template-columns: 1fr;
@@ -2435,10 +2431,6 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .queue-layout {
-    grid-template-columns: 1fr;
-  }
-
   .skills-grid {
     grid-template-columns: 1fr;
   }
@@ -2501,16 +2493,11 @@ textarea {
   gap: 0;
 }
 
-.overview-columns,
-.queue-layout {
+.overview-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
   margin-top: 16px;
-}
-
-.queue-layout {
-  grid-template-columns: 1fr 1.2fr;
 }
 
 .queue-primer {

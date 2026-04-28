@@ -691,8 +691,8 @@ function updateDynamicLayoutMetrics() {
 
 const VIEW_TITLES = {
   chat: 'Session — Agent Console',
-  queue: 'Queue — Agent Console',
-  history: 'History — Agent Console',
+  queue: 'Background Jobs — Agent Console',
+  history: 'Sessions — Agent Console',
   skills: 'Skills — Agent Console',
   workspace: 'Workspace — Agent Console',
   settings: 'Settings — Agent Console'
@@ -1067,7 +1067,7 @@ function inputActionLabel() {
     return `Continue ${humanizeStatus(status)} session: next send resumes this durable session.`;
   }
   if (hasDurableSession() && status === 'completed') {
-    return 'Completed session loaded: next send starts a new session unless you open another history item.';
+    return 'Completed session loaded: next send starts a new session unless you open another session from the Sessions view.';
   }
   return 'Start new session: Enter sends, Shift+Enter / Ctrl+Enter inserts a line.';
 }
@@ -1535,8 +1535,8 @@ function renderEmptySessionState() {
     <section class="empty-session-state">
       <div class="status-badge neutral">Ready</div>
       <h1 class="empty-session-title">Start a session.</h1>
-      <p class="empty-session-copy">Answers, tool calls, and running flow will appear here. Use History to reopen older sessions.</p>
-      ${recentSessions ? `<div class="empty-session-note">${escapeHTML(String(recentSessions))} recent sessions available in History.</div>` : ''}
+      <p class="empty-session-copy">Answers, tool calls, and running flow will appear here. Use Sessions to reopen older sessions.</p>
+      ${recentSessions ? `<div class="empty-session-note">${escapeHTML(String(recentSessions))} recent sessions available in Sessions.</div>` : ''}
     </section>
   `;
 }
@@ -2522,7 +2522,7 @@ function renderSessionRail() {
         <div class="inspector-eyebrow">Sessions</div>
         <h3>Workspace</h3>
       </div>
-      <button class="mini-link-btn" type="button" data-view-shortcut="history">History</button>
+      <button class="mini-link-btn" type="button" data-view-shortcut="history">Sessions</button>
     </div>
     <div class="session-rail-list">
       ${items.length ? items.map((item) => `
@@ -3318,12 +3318,13 @@ async function fetchQueue() {
   const savedPrompt = document.getElementById('queue-prompt-input')?.value || '';
   const savedParent = document.getElementById('queue-parent-input')?.value || '';
   const savedAgent = document.getElementById('queue-agent-input')?.value || '';
+  const savedModel = document.getElementById('queue-model-input')?.value || '';
   if (!state.queueData) {
     container.innerHTML = '<div class="view-loading">Loading queue...</div>';
   }
   try {
     state.queueData = await requestJSON('/api/queue/jobs?limit=80');
-    renderQueueView({ savedPrompt, savedParent, savedAgent });
+    renderQueueView({ savedPrompt, savedParent, savedAgent, savedModel });
   } catch (err) {
     container.innerHTML = `<div class="empty-panel">Failed to load queue. ${escapeHTML(err.message || '')}</div>`;
     showToast(err.message || 'Failed to load queue.', 'error');
@@ -3336,19 +3337,27 @@ function renderQueueView(opts = {}) {
   const container = nodes.views.queue;
   if (!container) return;
   const jobs = maybeArray(state.queueData?.items || state.queueData);
-  const selected = jobs.find((job) => job.id === state.selectedQueueJobId) || jobs[0] || null;
-  const queueCounters = state.overview?.queue_counters || {};
-  if (selected && !state.selectedQueueJobId) {
-    state.selectedQueueJobId = selected.id;
-  }
+  const fetchedCounters = jobs.reduce((acc, job) => {
+    const status = job.status || 'queued';
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+  const queueCounters = state.queueData ? fetchedCounters : (state.overview?.queue_counters || {});
   const savedPrompt = opts.savedPrompt || '';
   const savedParent = opts.savedParent || '';
   const savedAgent = opts.savedAgent || '';
+  const savedModel = opts.savedModel || '';
+
+  const recentSessions = maybeArray(state.overview?.recent_sessions).slice(0, 8);
+  const parentOptions = recentSessions.map((s) =>
+    `<option value="${escapeAttr(s.id)}" ${s.id === savedParent ? 'selected' : ''}>${escapeHTML(shortId(s.id))} · ${escapeHTML(agentLabel(s.agent_name, s.agent_role) || 'master')} (${escapeHTML(s.status || '?')})</option>`
+  ).join('');
+
   container.innerHTML = `
     <div class="view-header history-header">
       <div>
-        <h2 class="view-title">Queue</h2>
-        <p class="view-subtitle">Background jobs and their child session links.</p>
+        <h2 class="view-title">Background Jobs</h2>
+        <p class="view-subtitle">Submit agent tasks that run asynchronously and report results when complete.</p>
       </div>
       <button class="ghost-action-btn" type="button" data-queue-refresh>Refresh</button>
     </div>
@@ -3358,27 +3367,25 @@ function renderQueueView(opts = {}) {
       <span class="surface-chip">Failed ${escapeHTML(String(queueCounters.failed || 0))}</span>
       <span class="surface-chip">Completed ${escapeHTML(String(queueCounters.completed || 0))}</span>
     </section>
-    <div class="queue-layout" data-testid="queue-view">
-      <section class="panel-card">
-        <div class="panel-card-header"><h3 class="view-title compact-title">Jobs</h3></div>
-        <div class="panel-card-body">${jobs.length ? jobs.map((job) => renderQueueJobCard(job)).join('') : '<div class="empty-panel">No queue jobs yet.</div>'}</div>
-      </section>
-      <section class="panel-card">
-        <div class="panel-card-header"><h3 class="view-title compact-title">Job detail</h3></div>
-        <div class="panel-card-body">${selected ? renderQueueDetail(selected) : '<div class="empty-panel">Select a queue job to inspect detail.</div>'}</div>
-      </section>
-    </div>
     <section class="panel-card queue-submit-panel">
-      <div class="panel-card-header"><h3 class="view-title compact-title">Submit New Job</h3></div>
+      <div class="panel-card-header"><h3 class="view-title compact-title">Submit Job</h3></div>
       <div class="panel-card-body">
         <div class="settings-form">
           <div class="field">
             <label class="field-label">Prompt</label>
-            <textarea id="queue-prompt-input" class="settings-input" placeholder="Task description..." rows="2">${escapeHTML(savedPrompt)}</textarea>
+            <textarea id="queue-prompt-input" class="settings-input" placeholder="Describe the task for the background agent..." rows="3">${escapeHTML(savedPrompt)}</textarea>
           </div>
           <div class="field">
-            <label class="field-label">Parent Session ID (optional)</label>
-            <input id="queue-parent-input" class="settings-input" type="text" placeholder="Session ID to link as child..." value="${escapeAttr(savedParent)}">
+            <label class="field-label">Model override (optional)</label>
+            <input id="queue-model-input" class="settings-input" type="text" placeholder="e.g. gpt-5.4 or claude-sonnet-4-6" value="${escapeAttr(savedModel)}">
+          </div>
+          <div class="field">
+            <label class="field-label">Parent Session (optional)</label>
+            <select id="queue-parent-input" class="settings-input">
+              <option value="" ${!savedParent ? 'selected' : ''}>None (standalone job)</option>
+              ${parentOptions}
+              ${savedParent && !recentSessions.some((s) => s.id === savedParent) ? `<option value="${escapeAttr(savedParent)}" selected>${escapeHTML(shortId(savedParent))} (manual)</option>` : ''}
+            </select>
           </div>
           <div class="field">
             <label class="field-label">Agent Role (optional)</label>
@@ -3403,17 +3410,18 @@ function renderQueueView(opts = {}) {
     submitBtn.addEventListener('click', async () => {
       const promptInput = document.getElementById('queue-prompt-input');
       const parentInput = document.getElementById('queue-parent-input');
+      const modelInput = document.getElementById('queue-model-input');
       const agentInput = document.getElementById('queue-agent-input');
       const prompt = promptInput.value.trim();
-      
+
       if (!prompt) {
         showToast('Prompt is required to submit a job.', 'error');
         return;
       }
-      
+
       submitBtn.disabled = true;
       submitBtn.innerText = 'Submitting...';
-      
+
       try {
         await requestJSON('/api/queue/jobs', {
           method: 'POST',
@@ -3421,11 +3429,12 @@ function renderQueueView(opts = {}) {
           body: JSON.stringify({
             prompt: prompt,
             parent_session_id: parentInput.value.trim(),
+            model: modelInput.value.trim(),
             agent_role: agentInput.value.trim(),
             workdir: selectedWorkspaceWorkdir()
           })
         });
-        showToast('Job submitted successfully.', 'success');
+        showToast('Background job submitted.', 'success');
         promptInput.value = '';
         await fetchQueue();
       } catch (err) {
@@ -3440,27 +3449,6 @@ function renderQueueView(opts = {}) {
   }
 }
 
-function renderQueueDetail(job) {
-  const canContinue = job.session_id &&
-    ['paused', 'awaiting_input', 'failed'].includes(job.session_status || job.status);
-  return `
-    <div class="kv-list" data-testid="queue-job-detail" data-queue-job-id="${escapeAttr(job.id)}">
-      ${renderKVRow('Job', job.id)}
-      ${renderKVRow('Status', humanizeStatus(job.status || 'queued'))}
-      ${renderKVRow('Role', agentLabel(job.agent_name, job.agent_role) || 'unspecified')}
-      ${renderKVRow('Child session', job.session_id || 'not started')}
-      ${job.last_error ? renderKVRow('Last error', job.last_error) : ''}
-      ${job.final_text ? renderKVRow('Final text', truncateText(job.final_text, 220)) : ''}
-      ${job.prompt ? renderKVRow('Prompt', truncateText(job.prompt, 280)) : ''}
-      <div class="card-actions">
-        ${canContinue ? `<button class="skill-btn install" type="button" data-continue-session="${escapeAttr(job.session_id)}">Continue session</button>` : ''}
-        ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
-        ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
-      </div>
-    </div>
-  `;
-}
-
 async function fetchHistory(page = state.historyPage, options = {}) {
   if (state.refreshingHistory) {
     return;
@@ -3472,7 +3460,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
   state.historyPage = Math.max(1, Number(page) || 1);
   persistUIState();
   if (showLoading) {
-    container.innerHTML = '<div class="view-loading">Loading durable history…</div>';
+    container.innerHTML = '<div class="view-loading">Loading sessions...</div>';
   }
   try {
     const data = await requestJSON(`/api/history?page=${encodeURIComponent(state.historyPage)}&page_size=${encodeURIComponent(state.historyPageSize)}`);
@@ -3498,7 +3486,7 @@ function renderHistory(data) {
   const container = nodes.views.history;
   const history = data || state.historyData;
   if (!history) {
-    container.innerHTML = '<div class="empty-panel">No history data available yet.</div>';
+    container.innerHTML = '<div class="empty-panel">No session data available yet.</div>';
     return;
   }
   const items = maybeArray(history.items);
@@ -3547,14 +3535,14 @@ function renderHistory(data) {
   container.innerHTML = `
     <div class="view-header history-header">
       <div>
-        <h2 class="view-title">History</h2>
-        <p class="view-subtitle">Durable sessions only. Open one to inspect or continue it.</p>
+        <h2 class="view-title">Sessions</h2>
+        <p class="view-subtitle">All durable sessions with parent-child hierarchy. Open one to inspect or continue it.</p>
       </div>
       <div class="history-toolbar">
         <span class="surface-chip">${escapeHTML(String(total))} total</span>
         <button class="ghost-action-btn danger" type="button" data-history-clear ${total === 0 ? 'disabled' : ''}>
           <i data-lucide="trash-2"></i>
-          <span>Clear history</span>
+          <span>Clear sessions</span>
         </button>
       </div>
     </div>
@@ -3580,7 +3568,7 @@ function renderHistory(data) {
         </div>
       </div>
       <div class="panel-card-body">
-        ${items.length ? `<div class="history-session-list">${renderTreeRows(rootItems)}</div>` : '<div class="empty-panel">No history yet.</div>'}
+        ${items.length ? `<div class="history-session-list">${renderTreeRows(rootItems)}</div>` : '<div class="empty-panel">No sessions yet.</div>'}
       </div>
     </section>
   `;
@@ -3679,7 +3667,7 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
 }
 
 async function deleteHistorySession(sessionID) {
-  if (!window.confirm(`Delete history for session ${sessionID}?`)) {
+  if (!window.confirm(`Delete session ${sessionID}?`)) {
     return;
   }
   try {
@@ -3690,19 +3678,19 @@ async function deleteHistorySession(sessionID) {
     if (state.sessionId === sessionID || activeMeta.parent_session_id === sessionID || activeMeta.root_session_id === sessionID) {
       resetChatSession({ notifyBackend: false });
     }
-    showToast('History entry deleted.', 'success');
+    showToast('Session deleted.', 'success');
     await fetchHistory(state.historyPage);
     if ((state.historyData?.items || []).length === 0 && state.historyPage > 1) {
       await fetchHistory(state.historyPage - 1);
     }
     refreshOverview().catch(() => {});
   } catch (err) {
-    showToast(err.message || 'Failed to delete history entry.', 'error');
+    showToast(err.message || 'Failed to delete session.', 'error');
   }
 }
 
 async function clearHistory() {
-  if (!window.confirm('Clear all session history? This will remove saved sessions and queue history.')) {
+  if (!window.confirm('Clear all saved sessions? This will remove sessions and queue history.')) {
     return;
   }
   try {
@@ -3712,11 +3700,11 @@ async function clearHistory() {
     resetChatSession({ notifyBackend: false });
     state.historyData = null;
     state.historyPage = 1;
-    showToast('History cleared.', 'success');
+    showToast('Sessions cleared.', 'success');
     await fetchHistory(1);
     refreshOverview().catch(() => {});
   } catch (err) {
-    showToast(err.message || 'Failed to clear history.', 'error');
+    showToast(err.message || 'Failed to clear sessions.', 'error');
   }
 }
 
