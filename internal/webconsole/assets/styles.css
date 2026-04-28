@@ -1153,6 +1153,8 @@ textarea {
 
 .message.user .message-body {
   max-width: 100%;
+  width: fit-content;
+  align-items: flex-end;
 }
 
 .message.user .message-bubble {
