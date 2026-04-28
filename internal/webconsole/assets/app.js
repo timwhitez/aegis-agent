@@ -2363,9 +2363,12 @@ function renderActivityFloat() {
   const todoHTML = renderTodoFloat();
   const filesHTML = renderFileChangesFloat();
   if (!subHTML && !todoHTML && !filesHTML) return '';
-  const duoHTML = (todoHTML || filesHTML)
-    ? `<div class="tf-duo"><div class="tf-duo-left">${todoHTML || ''}</div><div class="tf-duo-right">${filesHTML || ''}</div></div>`
-    : '';
+  let duoHTML = '';
+  if (todoHTML && filesHTML) {
+    duoHTML = `<div class="tf-duo"><div class="tf-duo-left">${todoHTML}</div><div class="tf-duo-right">${filesHTML}</div></div>`;
+  } else {
+    duoHTML = todoHTML || filesHTML || '';
+  }
   return duoHTML + subHTML;
 }
 
