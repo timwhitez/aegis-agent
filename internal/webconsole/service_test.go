@@ -273,6 +273,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "renderBackgroundResultsMessage") || !strings.Contains(jsBody, "messageSource") || !strings.Contains(jsBody, "Background agents") || !strings.Contains(jsBody, "Background results accepted") {
 		t.Fatalf("expected background agent results to have a dedicated renderer, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "Click to open queue job") || !strings.Contains(jsBody, "data-open-job") {
+		t.Fatalf("expected orphan background jobs to open queue jobs instead of child sessions, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "collectShellRedirectPaths(parsed?.command)") {
 		t.Fatalf("expected files panel to include shell-created workspace files, got app.js body: %s", jsBody)
 	}

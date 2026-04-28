@@ -2000,43 +2000,51 @@ function renderSpecialToolResult(result, parsed) {
   }
 
   if (result.name === 'agent_list') {
-    const sessions = maybeArray(parsed.sessions).slice(0, 4);
-    const jobs = maybeArray(parsed.jobs).slice(0, 4);
+    const sessions = maybeArray(parsed.sessions);
+    const jobs = maybeArray(parsed.jobs);
+    const sessionIds = new Set(sessions.map((s) => s.id));
+    const orphanJobs = jobs.filter((job) => !sessionIds.has(job.session_id));
+    if (!sessions.length && !orphanJobs.length) return '';
+
+    const rows = [];
+    sessions.forEach((sess) => {
+      const statusTone = toneForStatus(sess.status);
+      const label = agentLabel(sess.agent_name, sess.agent_role) || shortId(sess.id);
+      rows.push(`
+        <div class="sa-tree-row parent" style="cursor:default; background:transparent; padding:0;">
+          <span class="sa-tree-dot ${statusTone}"></span>
+          <span class="sa-tree-label">${escapeHTML(label)}</span>
+          <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(sess.status))}</span>
+          <span class="sa-tree-meta">${escapeHTML(sess.model || sess.provider || 'n/a')} · ${escapeHTML(shortId(sess.id))}</span>
+          <button class="mini-link-btn" type="button" data-sub-agent-open="${escapeAttr(sess.id)}" style="margin-left:4px;flex-shrink:0;">Open</button>
+        </div>
+      `);
+    });
+    orphanJobs.forEach((job) => {
+      const statusTone = toneForStatus(job.status);
+      const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
+      const action = job.session_id
+        ? `<button class="mini-link-btn" type="button" data-sub-agent-open="${escapeAttr(job.session_id)}" style="margin-left:4px;flex-shrink:0;">Open</button>`
+        : `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(job.id)}" style="margin-left:4px;flex-shrink:0;">Open job</button>`;
+      rows.push(`
+        <div class="sa-tree-row orphan" style="cursor:default; background:transparent; padding:0;">
+          <span class="sa-tree-dot ${statusTone}"></span>
+          <span class="sa-tree-label">${escapeHTML(label)}</span>
+          <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(job.status))}</span>
+          <span class="sa-tree-meta">${escapeHTML(job.mode || '')} · ${escapeHTML(shortId(job.id))}</span>
+          ${action}
+        </div>
+      `);
+    });
+
     return `
       <div class="tool-special-card">
-        <div class="tool-special-grid">
-          ${renderMiniMetric('Child sessions', String(maybeArray(parsed.sessions).length))}
-          ${renderMiniMetric('Queue jobs', String(maybeArray(parsed.jobs).length))}
+        <div class="section-title-row" style="padding-bottom:6px;">
+          <h4>Background agents</h4>
+          <span class="tf-sum-chip sa-sum-sessions" style="margin-left:auto;">${sessions.length} session${sessions.length !== 1 ? 's' : ''}</span>
+          ${orphanJobs.length ? `<span class="tf-sum-chip sa-sum-jobs">${orphanJobs.length} job${orphanJobs.length !== 1 ? 's' : ''}</span>` : ''}
         </div>
-        ${sessions.length ? `
-          <div class="card-stack">
-            ${sessions.map((item) => `
-              <div class="agent-card">
-                <div class="agent-card-top">
-                  <div class="agent-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || shortId(item.id))}</div>
-                  <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
-                </div>
-                <div class="agent-card-meta">${escapeHTML(item.model || item.provider || 'n/a')} · ${escapeHTML(shortId(item.id))}</div>
-                <div class="card-actions">
-                  <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">Open session</button>
-                </div>
-              </div>
-            `).join('')}
-          </div>
-        ` : ''}
-        ${jobs.length ? `
-          <div class="card-stack">
-            ${jobs.map((job) => `
-              <div class="job-card">
-                <div class="job-card-top">
-                  <div class="job-card-title">${escapeHTML(agentLabel(job.agent_name, job.agent_role) || shortId(job.id))}</div>
-                  <span class="status-badge ${toneForStatus(job.status)}">${escapeHTML(humanizeStatus(job.status))}</span>
-                </div>
-                <div class="job-card-meta">${escapeHTML(shortId(job.id))} · ${escapeHTML(job.mode || 'exec')}</div>
-              </div>
-            `).join('')}
-          </div>
-        ` : ''}
+        ${rows.join('')}
       </div>
     `;
   }
@@ -2474,9 +2482,11 @@ function renderSubAgentSessionRow(sess, job) {
 function renderSubAgentJobRow(job) {
   const statusTone = toneForStatus(job.status);
   const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
-  const targetId = job.session_id || job.id;
+  const targetAttr = job.session_id
+    ? `data-sub-agent-open="${escapeAttr(job.session_id)}" title="Click to open child session"`
+    : `data-open-job="${escapeAttr(job.id)}" title="Click to open queue job"`;
   return `
-    <div class="sa-tree-row orphan" data-sub-agent-open="${escapeAttr(targetId)}" title="Click to open child session">
+    <div class="sa-tree-row orphan" ${targetAttr}>
       <span class="sa-tree-dot ${statusTone}"></span>
       <span class="sa-tree-label">${escapeHTML(label)}</span>
       <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(job.status))}</span>
