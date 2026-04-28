@@ -51,8 +51,7 @@ const state = {
     pending: '',
     rail: '',
     inspector: '',
-    todoFloat: '',
-    subAgentFloat: ''
+    todoFloat: ''
   },
   nextSendInterrupt: false,
   pollHandle: null,
@@ -65,7 +64,8 @@ const state = {
   showHelp: false,
   todoFloatExpanded: true,
   fileChangesExpanded: true,
-  subAgentExpanded: true
+  subAgentExpanded: true,
+  expandedHistoryParents: new Set()
 };
 
 const nodes = {
@@ -457,6 +457,20 @@ function setupEventListeners() {
       return;
     }
 
+    const historyExpandToggle = event.target.closest('[data-history-toggle-children]');
+    if (historyExpandToggle) {
+      const parentID = historyExpandToggle.getAttribute('data-history-toggle-children');
+      if (parentID) {
+        if (state.expandedHistoryParents.has(parentID)) {
+          state.expandedHistoryParents.delete(parentID);
+        } else {
+          state.expandedHistoryParents.add(parentID);
+        }
+        renderHistory();
+      }
+      return;
+    }
+
     const openSessionButton = event.target.closest('[data-open-session]');
     if (openSessionButton) {
       const sessionID = openSessionButton.getAttribute('data-open-session');
@@ -471,6 +485,19 @@ function setupEventListeners() {
       const parentSessionID = openParentButton.getAttribute('data-open-parent-session');
       if (parentSessionID) {
         await openSession(parentSessionID, { switchToChat: true });
+      }
+      return;
+    }
+
+    const subAgentOpenButton = event.target.closest('[data-sub-agent-open]');
+    if (subAgentOpenButton) {
+      const sessionID = subAgentOpenButton.getAttribute('data-sub-agent-open');
+      if (sessionID) {
+        const label = (subAgentOpenButton.querySelector('.sa-tree-label')?.textContent || '').trim();
+        const hint = label ? `Open child session "${label}"?` : 'Open child session?';
+        if (confirm(hint)) {
+          await openSession(sessionID, { switchToChat: true });
+        }
       }
       return;
     }
@@ -1358,8 +1385,7 @@ function ensureChatSlots() {
       pending: '',
       rail: '',
       inspector: '',
-      todoFloat: '',
-      subAgentFloat: ''
+      todoFloat: ''
     };
     shell = nodes.chatMessages.querySelector('.chat-stream-shell');
   }
@@ -1830,23 +1856,18 @@ function renderSpecialToolResult(result, parsed) {
   }
 
   if (result.name === 'agent_spawn' || result.name === 'agent_status') {
+    const statusTone = toneForStatus(parsed.status || parsed.session_status);
+    const label = agentLabel(parsed.agent_name, parsed.agent_role) || shortId(parsed.session_id) || 'child agent';
     return `
       <div class="tool-special-card">
-        <div class="tool-special-grid">
-          ${renderMiniMetric('Status', humanizeStatus(parsed.status || parsed.session_status || 'unknown'))}
-          ${renderMiniMetric('Role', parsed.agent_role || 'master-decided')}
-          ${renderMiniMetric('Session', shortId(parsed.session_id || 'n/a'))}
-          ${renderMiniMetric('Queue job', shortId(parsed.queue_job_id || 'n/a'))}
+        <div class="sa-tree-row parent" style="cursor:default; background:transparent; padding:0;">
+          <span class="sa-tree-dot ${statusTone}"></span>
+          <span class="sa-tree-label">${escapeHTML(label)}</span>
+          <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(parsed.status || parsed.session_status || 'unknown'))}</span>
+          <span class="sa-tree-meta">${escapeHTML(shortId(parsed.session_id || ''))}</span>
+          ${parsed.session_id ? `<button class="mini-link-btn" type="button" data-sub-agent-open="${escapeAttr(parsed.session_id)}" style="margin-left:4px;flex-shrink:0;">Open</button>` : ''}
         </div>
-        <div class="kv-list">
-          ${parsed.workdir ? renderKVRow('Workdir', parsed.workdir) : ''}
-          ${parsed.last_error ? renderKVRow('Last error', parsed.last_error) : ''}
-          ${parsed.final_text ? renderKVRow('Final text', truncateText(parsed.final_text, 180)) : ''}
-        </div>
-        <div class="card-actions">
-          ${parsed.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(parsed.session_id)}">Open child session</button>` : ''}
-        </div>
-        ${renderVisiblePaths(parsed.visible_paths)}
+        ${parsed.last_error ? `<div class="tl-preview" style="color:#dc2626;font-size:11px;margin-top:4px;">${escapeHTML(truncateText(parsed.last_error, 120))}</div>` : ''}
       </div>
     `;
   }
@@ -2266,44 +2287,28 @@ function renderSubAgentFloat() {
   const expanded = state.subAgentExpanded;
   const chevronSVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
 
-  // Group jobs under their parent sessions
-  const jobsByParent = {};
-  jobs.forEach((job) => {
-    const parentKey = job.parent_session_id || '_orphan';
-    if (!jobsByParent[parentKey]) jobsByParent[parentKey] = [];
-    jobsByParent[parentKey].push(job);
-  });
+  // Build set of session IDs that already have a session entry.
+  // Jobs whose session_id is in this set are redundant — skip them.
+  const sessionIds = new Set(sessions.map((s) => s.id));
+
+  // Count orphan jobs for the summary chip
+  const orphanJobs = jobs.filter((job) => !sessionIds.has(job.session_id));
 
   const summaryParts = [];
   summaryParts.push(`<span class="tf-sum-chip sa-sum-sessions">${sessions.length} session${sessions.length === 1 ? '' : 's'}</span>`);
-  if (jobs.length) summaryParts.push(`<span class="tf-sum-chip sa-sum-jobs">${jobs.length} job${jobs.length === 1 ? '' : 's'}</span>`);
+  if (orphanJobs.length) summaryParts.push(`<span class="tf-sum-chip sa-sum-jobs">${orphanJobs.length} job${orphanJobs.length === 1 ? '' : 's'}</span>`);
 
   let body = '';
   if (expanded) {
     const rows = [];
-    // Render sessions with their child jobs
     sessions.forEach((sess) => {
-      rows.push(renderSubAgentSessionRow(sess));
-      const childJobs = jobsByParent[sess.id] || [];
-      childJobs.forEach((job) => {
-        rows.push(renderSubAgentJobRow(job));
-      });
-      // Remove from orphan tracking
-      delete jobsByParent[sess.id];
+      // Look up matching job to show mode as extra context
+      const matchedJob = jobs.find((job) => job.session_id === sess.id);
+      rows.push(renderSubAgentSessionRow(sess, matchedJob));
     });
-    // Render orphan jobs (no matching session in list)
-    const orphans = jobsByParent._orphan || [];
-    orphans.forEach((job) => {
+    orphanJobs.forEach((job) => {
       rows.push(renderSubAgentJobRow(job));
     });
-    // Render jobs belonging to sessions not in the visible list
-    Object.keys(jobsByParent).forEach((key) => {
-      if (key === '_orphan') return;
-      jobsByParent[key].forEach((job) => {
-        rows.push(renderSubAgentJobRow(job));
-      });
-    });
-
     body = `<div class="sa-tree-body">${rows.join('')}</div>`;
   }
 
@@ -2325,15 +2330,16 @@ function renderSubAgentFloat() {
   `;
 }
 
-function renderSubAgentSessionRow(sess) {
+function renderSubAgentSessionRow(sess, job) {
   const statusTone = toneForStatus(sess.status);
   const label = agentLabel(sess.agent_name, sess.agent_role) || shortId(sess.id);
+  const jobMeta = job ? ` · ${escapeHTML(job.mode || '')}` : '';
   return `
-    <div class="sa-tree-row parent" data-open-session="${escapeAttr(sess.id)}">
+    <div class="sa-tree-row parent" data-sub-agent-open="${escapeAttr(sess.id)}" title="Click to open child session">
       <span class="sa-tree-dot ${statusTone}"></span>
-      <span class="sa-tree-label" title="${escapeAttr(label)}">${escapeHTML(label)}</span>
+      <span class="sa-tree-label">${escapeHTML(label)}</span>
       <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(sess.status))}</span>
-      <span class="sa-tree-meta">${escapeHTML(sess.model || sess.provider || 'n/a')} · ${escapeHTML(shortId(sess.id))}</span>
+      <span class="sa-tree-meta">${escapeHTML(sess.model || sess.provider || 'n/a')}${jobMeta} · ${escapeHTML(shortId(sess.id))}</span>
     </div>
   `;
 }
@@ -2343,9 +2349,9 @@ function renderSubAgentJobRow(job) {
   const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
   const targetId = job.session_id || job.id;
   return `
-    <div class="sa-tree-row child" data-open-session="${escapeAttr(targetId)}">
+    <div class="sa-tree-row orphan" data-sub-agent-open="${escapeAttr(targetId)}" title="Click to open child session">
       <span class="sa-tree-dot ${statusTone}"></span>
-      <span class="sa-tree-label" title="${escapeAttr(label)}">${escapeHTML(label)}</span>
+      <span class="sa-tree-label">${escapeHTML(label)}</span>
       <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(job.status))}</span>
       <span class="sa-tree-meta">${escapeHTML(job.mode || '')} · ${escapeHTML(shortId(job.id))}</span>
     </div>
@@ -2360,7 +2366,7 @@ function renderActivityFloat() {
   const duoHTML = (todoHTML || filesHTML)
     ? `<div class="tf-duo"><div class="tf-duo-left">${todoHTML || ''}</div><div class="tf-duo-right">${filesHTML || ''}</div></div>`
     : '';
-  return subHTML + duoHTML;
+  return duoHTML + subHTML;
 }
 
 function renderSessionRail() {
@@ -3345,6 +3351,42 @@ function renderHistory(data) {
   const totalPages = Number(history.total_pages || 0);
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const rangeEnd = total === 0 ? 0 : rangeStart + items.length - 1;
+
+  // Build tree: group children under their parent
+  const itemMap = {};
+  const rootItems = [];
+  const childrenByParent = {};
+  items.forEach((item) => {
+    itemMap[item.id] = item;
+  });
+  items.forEach((item) => {
+    if (item.parent_session_id && itemMap[item.parent_session_id]) {
+      if (!childrenByParent[item.parent_session_id]) {
+        childrenByParent[item.parent_session_id] = [];
+      }
+      childrenByParent[item.parent_session_id].push(item);
+    } else {
+      rootItems.push(item);
+    }
+  });
+
+  const chevronDown = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+
+  function renderTreeRows(list) {
+    return list.map((item) => {
+      const children = childrenByParent[item.id] || [];
+      const hasChildren = children.length > 0;
+      const isExpanded = state.expandedHistoryParents.has(item.id);
+      let html = renderHistorySessionCard(item, false, hasChildren, isExpanded, chevronDown, children.length);
+      if (hasChildren) {
+        html += `<div class="history-tree-children${isExpanded ? ' is-expanded' : ''}">`;
+        html += children.map((child) => renderHistorySessionCard(child, true, false, false, '', 0)).join('');
+        html += '</div>';
+      }
+      return html;
+    }).join('');
+  }
+
   container.innerHTML = `
     <div class="view-header history-header">
       <div>
@@ -3381,7 +3423,7 @@ function renderHistory(data) {
         </div>
       </div>
       <div class="panel-card-body">
-        ${items.length ? `<div class="history-session-list">${items.map((item) => renderHistorySessionCard(item)).join('')}</div>` : '<div class="empty-panel">No history yet.</div>'}
+        ${items.length ? `<div class="history-session-list">${renderTreeRows(rootItems)}</div>` : '<div class="empty-panel">No history yet.</div>'}
       </div>
     </section>
   `;
@@ -3447,22 +3489,31 @@ function restoreUIState() {
   applyViewVisibility(state.currentView);
 }
 
-function renderHistorySessionCard(item) {
+function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevronSVG, childCount) {
   const metaText = item.last_error
     ? truncateText(item.last_error, 140)
     : `${item.model || item.provider || 'n/a'} · ${phaseHeadline(item.phase || 'prepare')}`;
+  const rowClass = isChild ? 'child-session' : (hasChildren ? 'parent-session' : '');
+  const expandToggle = hasChildren
+    ? `<button class="history-expand-toggle${isExpanded ? ' is-expanded' : ''}" type="button" data-history-toggle-children="${escapeAttr(item.id)}" title="${isExpanded ? 'Collapse' : 'Expand'} children">${chevronSVG}<span>${isExpanded ? 'Collapse' : 'Expand'}</span></button>`
+    : '';
+  const childrenBadge = hasChildren
+    ? `<span class="history-children-count">${childCount} child${childCount !== 1 ? 'ren' : ''}</span>`
+    : '';
   return `
-    <div class="history-session-row">
+    <div class="history-session-row ${rowClass}">
       <div class="history-session-main">
         <div class="history-session-top">
           <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
           <span class="tiny-code-chip">${escapeHTML(shortId(item.id))}</span>
+          ${childrenBadge}
           <span class="history-session-time" title="${escapeAttr(formatTimestamp(item.updated_at || item.created_at))}">${escapeHTML(formatRelativeTime(item.updated_at || item.created_at))}</span>
         </div>
         <div class="history-session-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
         <div class="history-session-meta">${escapeHTML(metaText)}</div>
       </div>
       <div class="history-row-actions">
+        ${expandToggle}
         <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">Open session</button>
         <button class="mini-link-btn danger" type="button" data-delete-session="${escapeAttr(item.id)}">Delete</button>
       </div>

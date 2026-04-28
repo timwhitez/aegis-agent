@@ -1396,6 +1396,14 @@ textarea {
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   background: rgba(248, 250, 252, 0.45);
   overflow: hidden;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.tool-lane-tree {
+  overflow-x: auto;
+  overflow-y: visible;
+  max-width: 100%;
 }
 
 .tool-lane-header {
@@ -1511,7 +1519,10 @@ textarea {
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
-  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+  flex-shrink: 1;
 }
 
 /* ID chip */
@@ -1586,9 +1597,12 @@ textarea {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   color: var(--primary);
   background: rgba(248, 250, 252, 0.5);
   border-top: 1px solid rgba(71, 85, 105, 0.05);
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .tl-row.tl-indent .tl-body {
@@ -1601,6 +1615,8 @@ textarea {
   border-top: 1px solid rgba(71, 85, 105, 0.05);
   padding: 12px 14px 12px 24px;
   background: transparent;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .tl-row.tl-indent .tool-special-card {
@@ -1724,6 +1740,8 @@ textarea {
   font-weight: 500;
   text-align: right;
   word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .timeline-stack,
@@ -2958,6 +2976,85 @@ textarea {
   color: var(--text-muted);
 }
 
+/* ── History Tree ── */
+.history-tree-children {
+  display: none;
+  margin-left: 32px;
+  border-left: 2px solid rgba(100, 116, 139, 0.16);
+  padding-left: 0;
+}
+
+.history-tree-children.is-expanded {
+  display: block;
+}
+
+.history-session-row.parent-session {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.history-session-row.child-session {
+  margin-left: 0;
+  border-radius: 0;
+  border-left: none;
+  box-shadow: none;
+  background: var(--surface-strong);
+}
+
+.history-session-row.child-session:last-child {
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+}
+
+.history-session-row.child-session:hover {
+  background: var(--surface-hover);
+}
+
+.history-expand-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.history-expand-toggle:hover {
+  background: rgba(13, 148, 136, 0.14);
+}
+
+.history-expand-toggle svg {
+  width: 10px;
+  height: 10px;
+  transition: transform 0.2s ease;
+}
+
+.history-expand-toggle.is-expanded svg {
+  transform: rotate(180deg);
+}
+
+.history-children-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(79, 70, 229, 0.08);
+  color: #4f46e5;
+  border: 1px solid rgba(79, 70, 229, 0.14);
+  flex-shrink: 0;
+}
+
 @media (max-width: 720px) {
   .history-header,
   .history-panel-header,
@@ -2977,6 +3074,10 @@ textarea {
   .history-row-actions .mini-link-btn {
     flex: 1 1 auto;
     justify-content: center;
+  }
+
+  .history-tree-children {
+    margin-left: 16px;
   }
 }
 
@@ -3434,30 +3535,10 @@ textarea {
   padding-left: 8px;
 }
 
-/* Child (job) row — indented with connector line */
-.sa-tree-row.child {
-  padding-left: 28px;
+/* Orphan job row — no parent, no connector */
+.sa-tree-row.orphan {
+  padding-left: 8px;
   font-size: 12px;
-}
-
-.sa-tree-row.child::before {
-  content: '';
-  position: absolute;
-  left: 12px;
-  top: 0;
-  bottom: 50%;
-  width: 2px;
-  background: rgba(100, 116, 139, 0.14);
-}
-
-.sa-tree-row.child::after {
-  content: '';
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  width: 12px;
-  height: 2px;
-  background: rgba(100, 116, 139, 0.14);
 }
 
 /* Status dot */
@@ -3499,12 +3580,6 @@ textarea {
   line-height: 1.4;
 }
 
-.sa-tree-row.child .sa-tree-label {
-  font-size: 11.5px;
-  font-weight: 400;
-  color: var(--text-muted);
-}
-
 /* Meta */
 .sa-tree-meta {
   font-size: 11px;
@@ -3513,10 +3588,6 @@ textarea {
   flex-shrink: 0;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-}
-
-.sa-tree-row.child .sa-tree-meta {
-  font-size: 10px;
 }
 
 /* Summary chips */
