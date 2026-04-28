@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -140,6 +141,20 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 			return execution, err
 		}
 		argv := substituteVars(hook.Command, next)
+		if preflight, ok := m.missingCommandPreflight(argv); ok {
+			execution.skipped = append(execution.skipped, preflight.Message)
+			data := map[string]any{
+				"name":         hook.Name,
+				"command":      argv,
+				"missing_path": preflight.Path,
+				"reason":       preflight.Reason,
+			}
+			if hook.FailClosed {
+				return execution, fmt.Errorf("%s", preflight.Message)
+			}
+			m.emit("hook.warning", data)
+			goto afterCommand
+		}
 		cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
 		cmd.Dir = m.workdir
 		cmd.Env = minimalEnv(next)
@@ -159,6 +174,7 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 		exitCode := 0
 		execution.commandExitCode = &exitCode
 	}
+afterCommand:
 	if hook.Inject != nil {
 		field := hook.Inject.Field
 		rawValue, exists := next[field]
@@ -193,6 +209,95 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 		}
 	}
 	return execution, nil
+}
+
+type hookCommandPreflight struct {
+	Path    string
+	Reason  string
+	Message string
+}
+
+func (m *Manager) missingCommandPreflight(argv []string) (hookCommandPreflight, bool) {
+	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+		return hookCommandPreflight{
+			Reason:  "empty_command",
+			Message: "hook command is empty",
+		}, true
+	}
+	if path, ok := missingExecutablePath(m.workdir, argv[0]); ok {
+		return hookCommandPreflight{
+			Path:    path,
+			Reason:  "missing_executable",
+			Message: fmt.Sprintf("hook command executable is missing: %s", path),
+		}, true
+	}
+	if path, ok := missingShellScriptOperand(m.workdir, argv); ok {
+		return hookCommandPreflight{
+			Path:    path,
+			Reason:  "missing_shell_script",
+			Message: fmt.Sprintf("hook shell script is missing: %s", path),
+		}, true
+	}
+	return hookCommandPreflight{}, false
+}
+
+func missingExecutablePath(workdir, command string) (string, bool) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", false
+	}
+	if strings.ContainsAny(command, `/\`) {
+		path := resolveHookPath(workdir, command)
+		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+			return path, true
+		}
+		return "", false
+	}
+	if _, err := exec.LookPath(command); err != nil {
+		return command, true
+	}
+	return "", false
+}
+
+func missingShellScriptOperand(workdir string, argv []string) (string, bool) {
+	if len(argv) < 2 || !isShellExecutable(argv[0]) {
+		return "", false
+	}
+	for i := 1; i < len(argv); i++ {
+		arg := strings.TrimSpace(argv[i])
+		if arg == "" {
+			continue
+		}
+		if arg == "-c" {
+			return "", false
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		path := resolveHookPath(workdir, arg)
+		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+			return path, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+func isShellExecutable(command string) bool {
+	base := filepath.Base(strings.TrimSpace(command))
+	switch base {
+	case "sh", "bash", "dash", "zsh", "ksh":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveHookPath(workdir, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(filepath.Join(workdir, path))
 }
 
 func matches(match config.HookMatch, payload map[string]any) bool {

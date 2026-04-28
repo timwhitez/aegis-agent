@@ -137,6 +137,14 @@ v1 不支持：
 - `$STATUS`
 - `$FILE`
 
+缺失命令预检：
+
+- 若 hook command 的可执行文件或可静态识别的 shell script 路径缺失：
+  - `fail_closed: false` 时写入结构化 `hook.warning` 事件并跳过 command 执行，后续 `inject` / `filter` 仍可继续处理同一 payload
+  - `fail_closed: true` 时按 fail-closed 失败处理并阻断当前流程
+- 预检只覆盖 argv 形式可直接判断的命令路径和 `sh script.sh` / `bash script.sh` 这类脚本操作数，不尝试完整解析 `sh -c` 字符串
+- 预检不能替代 command timeout、输出截断和最小环境变量规则；存在的 command 仍按正常 hook command 路径执行
+
 ### 7.2 `inject`
 
 对指定字段做轻量文本修改。
@@ -241,6 +249,7 @@ v1 不支持：
 - `hook.triggered`
 - `hook.finished`
 - `hook.failed`
+- `hook.warning`，用于 fail-open 预检跳过等非阻断配置漂移
 
 记录字段：
 
@@ -249,6 +258,7 @@ v1 不支持：
 - 是否改写 payload
 - command 返回码
 - fail-open / fail-closed
+- 缺失 command/script 的路径与原因（如适用）
 
 ## 13. 验收标准
 

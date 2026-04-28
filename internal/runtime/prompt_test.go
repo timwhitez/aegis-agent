@@ -444,24 +444,126 @@ func TestToolGuardBlocksFinishWhenLatestTargetNotInFinalArtifact(t *testing.T) {
 	}
 }
 
-func TestToolGuardBlocksReportContradictingValidation(t *testing.T) {
+func TestToolGuardBlocksReviewArtifactValidationSuccessContradictedByShellFailure(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Audit the repo and write reports/final-audit.md."),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:          "shell",
+			DisplayOutput: "validation failed: 2 checks failed",
+			IsError:       true,
+			Metadata: map[string]any{
+				"command":   "make test",
+				"exit_code": 2,
+			},
+		}}),
+	}
+
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{
+		"path":"reports/final-audit.md",
+		"content":"# Final Audit\n\n## Validation\nAll tests passed.\n\n## Findings\nNo validated findings.\n\n## Remaining Risks\n- None.\n"
+	}`))
+	if kind != "validation_fact_consistency" {
+		t.Fatalf("expected validation_fact_consistency guard, got kind=%q text=%q", kind, text)
+	}
+	if !strings.Contains(text, "make test") || !strings.Contains(text, "durable session evidence") {
+		t.Fatalf("expected contradictory validation evidence in guard text, got %q", text)
+	}
+}
+
+func TestToolGuardAllowsReviewArtifactThatReportsValidationFailure(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Audit the repo and write reports/final-audit.md."),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:          "shell",
+			DisplayOutput: "validation failed: 2 checks failed",
+			IsError:       true,
+			Metadata: map[string]any{
+				"command":   "make test",
+				"exit_code": 2,
+			},
+		}}),
+	}
+
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{
+		"path":"reports/final-audit.md",
+		"content":"# Final Audit\n\n## Validation\nValidation failed: make test exited with code 2.\n\n## Findings\nNo validated findings.\n\n## Remaining Risks\n- Fix the failing checks before release.\n"
+	}`), true)
+	if kind != "" || text != "" {
+		t.Fatalf("expected accurate validation failure report to pass fact guard, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardAllowsReviewArtifactWithoutValidationSuccessClaim(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Audit the repo and write reports/final-audit.md."),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:          "shell",
+			DisplayOutput: "validation failed: 2 checks failed",
+			IsError:       true,
+			Metadata: map[string]any{
+				"command":   "make test",
+				"exit_code": 2,
+			},
+		}}),
+	}
+
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{
+		"path":"reports/final-audit.md",
+		"content":"# Final Audit\n\n## Findings\nNo validated findings.\n\n## Remaining Risks\n- Validation status is listed separately.\n"
+	}`), true)
+	if kind != "" || text != "" {
+		t.Fatalf("expected artifact without validation success claim to pass fact guard, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardSkipsValidationFactGuardForExplicitNonReviewTask(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "This is not a review or audit task. Write reports/final-audit.md as a migration note."),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:          "shell",
+			DisplayOutput: "validation failed: 2 checks failed",
+			IsError:       true,
+			Metadata: map[string]any{
+				"command":   "make test",
+				"exit_code": 2,
+			},
+		}}),
+	}
+
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{
+		"path":"reports/final-audit.md",
+		"content":"# Migration Note\n\nValidation passed.\n"
+	}`), true)
+	if kind != "" || text != "" {
+		t.Fatalf("expected explicit non-review task to bypass review fact guard, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestToolGuardBlocksValidationSuccessContradictedBySupportingDoc(t *testing.T) {
 	workdir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {
 		t.Fatalf("mkdir reports: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, "reports", "validation.md"), []byte("去掉 Authorization 后返回业务 401，至少受 bearer token 保护。\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(workdir, "reports", "validation.md"), []byte("Validation failed: command exited with code 1.\n"), 0o600); err != nil {
 		t.Fatalf("write validation: %v", err)
 	}
 	messages := []session.Message{
-		session.NewMessage("user", "Write reports/assessment-report.md and finish."),
+		session.NewMessage("user", "Audit the repo and write reports/final-audit.md."),
 	}
 
 	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{
-		"path":"reports/assessment-report.md",
-		"content":"# Assessment\n\n## Findings\n- 无认证匿名访问 code=0，可访问敏感数据。"
+		"path":"reports/final-audit.md",
+		"content":"# Final Audit\n\n## Validation\nValidation passed.\n\n## Findings\nNo validated findings.\n\n## Remaining Risks\n- None.\n"
 	}`), true)
-	if kind != "report_consistency" {
-		t.Fatalf("expected report_consistency guard, got kind=%q text=%q", kind, text)
+	if kind != "validation_fact_consistency" {
+		t.Fatalf("expected validation_fact_consistency guard, got kind=%q text=%q", kind, text)
+	}
+	if !strings.Contains(text, "reports/validation.md") {
+		t.Fatalf("expected supporting validation doc evidence, got %q", text)
 	}
 }
 
@@ -509,6 +611,35 @@ func TestBuildSystemPromptCountsReadOnlyShellInspectionAsRetrieval(t *testing.T)
 	)
 	if !strings.Contains(prompt, "Recent work already used 6 read-only tool calls") {
 		t.Fatalf("expected shell inspection to count toward retrieval pressure, got:\n%s", prompt)
+	}
+}
+
+func TestBuildSystemPromptAddsGenericValidationAndChildReconciliationGuidance(t *testing.T) {
+	prompt := buildSystemPrompt(
+		"/tmp/work",
+		session.ModeExec,
+		"",
+		nil,
+		nil,
+		session.State{},
+		nil,
+	)
+	for _, want := range []string{
+		"Before reporting validation success",
+		"identify the relevant project or build root",
+		"reconcile their durable results before final parent conclusions",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt guidance %q, got:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"must spawn",
+		"must use child",
+	} {
+		if strings.Contains(strings.ToLower(prompt), forbidden) {
+			t.Fatalf("prompt should keep delegation model-led, found %q in:\n%s", forbidden, prompt)
+		}
 	}
 }
 

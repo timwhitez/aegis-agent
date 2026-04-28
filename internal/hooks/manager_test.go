@@ -2,6 +2,8 @@ package hooks
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go-cli-agent/internal/config"
@@ -100,5 +102,120 @@ func TestManagerEmitsCommandExitCodeOnFailure(t *testing.T) {
 	}
 	if failed["command_exit_code"] != 3 {
 		t.Fatalf("expected exit code 3, got %#v", failed["command_exit_code"])
+	}
+}
+
+func TestManagerSkipsMissingFailOpenCommandWithWarning(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name:    "missing-command",
+				Command: []string{"definitely-missing-hook-command-for-preflight"},
+			},
+		},
+	}, t.TempDir())
+
+	var warning map[string]any
+	var commandRan bool
+	manager.SetEmitter(func(eventType string, data map[string]any) {
+		if eventType == "hook.warning" {
+			warning = data
+		}
+		if eventType == "hook.command" {
+			commandRan = true
+		}
+	})
+
+	payload, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if payload["text"] != "hello" {
+		t.Fatalf("expected fail-open hook to preserve payload, got %#v", payload)
+	}
+	if warning == nil || warning["reason"] != "missing_executable" {
+		t.Fatalf("expected missing executable warning, got %#v", warning)
+	}
+	if commandRan {
+		t.Fatal("expected missing fail-open hook to skip command execution")
+	}
+}
+
+func TestManagerMissingFailClosedCommandBlocks(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name:       "missing-command",
+				Command:    []string{"definitely-missing-hook-command-for-preflight"},
+				FailClosed: true,
+			},
+		},
+	}, t.TempDir())
+
+	var failed map[string]any
+	manager.SetEmitter(func(eventType string, data map[string]any) {
+		if eventType == "hook.failed" {
+			failed = data
+		}
+	})
+
+	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err == nil {
+		t.Fatal("expected missing fail-closed hook to block")
+	}
+	if failed == nil || failed["error"] == "" {
+		t.Fatalf("expected hook.failed event, got %#v", failed)
+	}
+}
+
+func TestManagerPreflightsMissingRelativeShellScript(t *testing.T) {
+	workdir := t.TempDir()
+	manager := New(config.HooksConfig{
+		SessionComplete: []config.HookDefinition{
+			{
+				Name:    "missing-script",
+				Command: []string{"/bin/sh", ".go-cli-agent/hooks/session-complete.sh"},
+			},
+		},
+	}, workdir)
+
+	var warning map[string]any
+	manager.SetEmitter(func(eventType string, data map[string]any) {
+		if eventType == "hook.warning" {
+			warning = data
+		}
+	})
+
+	if _, err := manager.Trigger(context.Background(), "session.complete", map[string]any{"status": "completed"}); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	want := filepath.Join(workdir, ".go-cli-agent", "hooks", "session-complete.sh")
+	if warning == nil || warning["reason"] != "missing_shell_script" || warning["missing_path"] != want {
+		t.Fatalf("expected relative shell script warning for %s, got %#v", want, warning)
+	}
+}
+
+func TestManagerRunsExistingRelativeShellScript(t *testing.T) {
+	workdir := t.TempDir()
+	script := filepath.Join(workdir, ".go-cli-agent", "hooks", "session-complete.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o700); err != nil {
+		t.Fatalf("mkdir hook dir: %v", err)
+	}
+	if err := os.WriteFile(script, []byte("#!/usr/bin/env sh\ncat > hook-payload.json\n"), 0o700); err != nil {
+		t.Fatalf("write hook script: %v", err)
+	}
+	manager := New(config.HooksConfig{
+		SessionComplete: []config.HookDefinition{
+			{
+				Name:    "existing-script",
+				Command: []string{"/bin/sh", ".go-cli-agent/hooks/session-complete.sh"},
+			},
+		},
+	}, workdir)
+
+	if _, err := manager.Trigger(context.Background(), "session.complete", map[string]any{"status": "completed"}); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "hook-payload.json")); err != nil {
+		t.Fatalf("expected hook script to run: %v", err)
 	}
 }

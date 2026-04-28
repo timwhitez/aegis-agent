@@ -252,6 +252,44 @@ func TestParentCoordinationGateBlocksWaitAllAndAllowsWaitAnyAfterOneCompletion(t
 	}
 }
 
+func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := store.AppendBackgroundNotification(meta.ID, session.NewBackgroundNotification(session.QueueJob{
+		ID:            "job-accepted-later",
+		Status:        session.QueueStatusCompleted,
+		SessionID:     "child-accepted-later",
+		SessionStatus: session.StatusCompleted,
+		FinalText:     "child result",
+	})); err != nil {
+		t.Fatalf("append background notification: %v", err)
+	}
+	var events []string
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) {
+		events = append(events, eventType)
+	})
+
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))
+	if decision.Status != GateBlock || decision.GateID != "parent_background_pending" {
+		t.Fatalf("expected pending background acceptance block, got %#v", decision)
+	}
+	if !containsString(events, "completion.gate.parent_background_pending") {
+		t.Fatalf("expected pending-background event, got %#v", events)
+	}
+
+	notifications, err := store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	notifications[0].DeliveryStatus = session.BackgroundNotificationAccepted
+	if err := store.UpdateBackgroundNotifications(meta.ID, notifications); err != nil {
+		t.Fatalf("accept notification: %v", err)
+	}
+	decision = controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))
+	if decision.Status != GateAllow {
+		t.Fatalf("expected finish to pass after notification acceptance, got %#v", decision)
+	}
+}
+
 func TestParentCoordinationWritesParkedAndResumedEvents(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := addParentChildSession(store, meta.ID, "child-1", "wait-all"); err != nil {

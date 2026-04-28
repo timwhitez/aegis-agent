@@ -18,8 +18,7 @@ var explicitInspectionPathPattern = regexp.MustCompile(`(?i)(?:\./)?[a-z0-9._/-]
 var literalAndSeparatorPattern = regexp.MustCompile(`(?i)\s*,?\s+and\s+`)
 var explicitTargetPhrasePattern = regexp.MustCompile(`(?i)(?:原始目标是|目标是|最新目标是|target(?:\s+url)?\s*(?:is|=)|scope\s*(?:is|=))\s*([^\s，。；;]+)`)
 var pathLikeTargetPattern = regexp.MustCompile(`/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+`)
-var noAuth401Pattern = regexp.MustCompile(`(?is)(去掉\s*authorization|without\s+authorization|no\s+authorization|no\s+auth).{0,120}(401|unauthorized|未授权)`)
-var noClearUnauthorizedPattern = regexp.MustCompile(`(?is)(暂未发现.{0,40}未授权|至少受\s*bearer\s*token\s*保护|protected by bearer|bearer token protected)`)
+var nonZeroExitPattern = regexp.MustCompile(`(?i)(exit(?:ed)?(?: code| status)?|exit_code|non[- ]?zero).{0,20}[1-9][0-9]*`)
 
 func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []skills.Summary, skillTools []skills.CommandTool, state session.State, messages []session.Message, agentContext ...string) string {
 	var builder strings.Builder
@@ -59,6 +58,9 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Tool names are capabilities, not workspace files or shell binaries.\n")
 	builder.WriteString("- Workspace boundary is the current workdir. Do not read `../` or absolute paths outside it unless the user explicitly expands scope.\n")
 	builder.WriteString("- Use `load_skill` only with exact names listed under Available skills; never invent aliases or legacy skill names.\n")
+	builder.WriteString("- Before reporting validation success, inspect actual command results or validation artifacts; if validation failed, was partial, or was not run, say that plainly.\n")
+	builder.WriteString("- Before running project validation, identify the relevant project or build root instead of assuming the initial workdir is always the build root.\n")
+	builder.WriteString("- If you use child or background agents, check their final status and reconcile their durable results before final parent conclusions.\n")
 	if notes := runtimeBehaviorNotes(workdir, mode, messages); len(notes) > 0 {
 		builder.WriteString("\n## Runtime Notes\n")
 		for _, note := range notes {
@@ -578,11 +580,11 @@ func reportConsistencyGuard(workdir string, messages []session.Message, toolName
 	switch toolName {
 	case "write_file", "edit_file":
 		target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
-		if !ok || !looksFinalArtifactPath(target.Path) {
+		if !ok || !validationFactConsistencyTarget(messages, target.Path, target.Content) {
 			return "", ""
 		}
-		if reportContradictsSupportingDocs(workdir, target.Content) {
-			return "report_consistency", "Report-consistency guard: the final report claims unauthenticated or anonymous success, but current reports/progress.md or reports/validation.md record no-Authorization 401 / bearer-token protection. Reconcile the conclusion before writing the report."
+		if evidence, ok := validationSuccessContradiction(workdir, messages, target.Content); ok {
+			return "validation_fact_consistency", "Validation fact-consistency guard: this artifact claims validation succeeded, but durable session evidence records failure: " + evidence + ". Rewrite the artifact with the actual validation status before writing it."
 		}
 		return "", ""
 	case "finish":
@@ -593,8 +595,13 @@ func reportConsistencyGuard(workdir string, messages []session.Message, toolName
 		if !final.Valid || strings.TrimSpace(final.Path) == "" {
 			return "", ""
 		}
-		if data, err := os.ReadFile(final.Path); err == nil && reportContradictsSupportingDocs(workdir, string(data)) {
-			return "report_consistency", "Report-consistency guard: the final report contradicts the current validation/progress conclusion about unauthenticated access. Fix the final report before finishing."
+		if data, err := os.ReadFile(final.Path); err == nil {
+			content := string(data)
+			if validationFactConsistencyTarget(messages, final.Path, content) {
+				if evidence, ok := validationSuccessContradiction(workdir, messages, content); ok {
+					return "validation_fact_consistency", "Validation fact-consistency guard: the final artifact claims validation succeeded, but durable session evidence records failure: " + evidence + ". Fix the artifact before finishing."
+				}
+			}
 		}
 		return "", ""
 	default:
@@ -656,49 +663,258 @@ func positionAfter(left, right writePosition) bool {
 	return left.ResultIndex > right.ResultIndex
 }
 
-func reportContradictsSupportingDocs(workdir, reportContent string) bool {
-	if !containsUnauthorizedSuccessClaim(reportContent) {
+func validationFactConsistencyTarget(messages []session.Message, path, content string) bool {
+	if !hasStrongValidationSuccessClaim(content) {
 		return false
 	}
-	support := readSupportingDocs(workdir)
-	if strings.TrimSpace(support) == "" {
-		return false
-	}
-	return supportingDocsDenyUnauthorized(support)
-}
-
-func readSupportingDocs(workdir string) string {
-	var builder strings.Builder
-	for _, rel := range []string{filepath.Join("reports", "progress.md"), filepath.Join("reports", "validation.md")} {
-		data, err := os.ReadFile(filepath.Join(workdir, rel))
-		if err == nil {
-			builder.WriteString("\n")
-			builder.Write(data)
+	if idx := latestExternalInstructionIndex(messages); idx >= 0 {
+		lowered := strings.ToLower(messages[idx].Text)
+		if explicitNonReviewTaskOptOut(lowered) {
+			return false
+		}
+		if looksAuditOrReviewTask(messages[idx].Text) && looksDeliverablePath(path) {
+			return true
 		}
 	}
-	return builder.String()
+	if isValidationProjectMemoryPath(path) {
+		return true
+	}
+	return looksReviewArtifactCandidate(path, content)
 }
 
-func containsUnauthorizedSuccessClaim(content string) bool {
-	lowered := strings.ToLower(content)
-	authClaim := strings.Contains(lowered, "无认证") ||
-		strings.Contains(lowered, "匿名") ||
-		strings.Contains(lowered, "未授权") ||
-		strings.Contains(lowered, "no authorization") ||
-		strings.Contains(lowered, "no auth") ||
-		strings.Contains(lowered, "anonymous")
-	success := strings.Contains(lowered, "code=0") ||
-		strings.Contains(lowered, `"code":0`) ||
-		strings.Contains(lowered, `"code": 0`) ||
-		strings.Contains(lowered, "200") ||
-		strings.Contains(lowered, "成功") ||
-		strings.Contains(lowered, "可访问")
-	return authClaim && success
+func validationSuccessContradiction(workdir string, messages []session.Message, artifactContent string) (string, bool) {
+	if !hasStrongValidationSuccessClaim(artifactContent) || hasExplicitValidationFailureClaim(artifactContent) {
+		return "", false
+	}
+	if evidence, ok := validationFailureEvidenceFromMessages(messages); ok {
+		return evidence, true
+	}
+	if evidence, ok := validationFailureEvidenceFromSupportingDocs(workdir); ok {
+		return evidence, true
+	}
+	return "", false
 }
 
-func supportingDocsDenyUnauthorized(content string) bool {
+func validationFailureEvidenceFromMessages(messages []session.Message) (string, bool) {
+	start := latestExternalInstructionIndex(messages)
+	if start >= 0 {
+		start++
+	} else {
+		start = 0
+	}
+	for _, msg := range messages[start:] {
+		if msg.Role != "tool" {
+			continue
+		}
+		for _, result := range msg.ToolResults {
+			evidence, ok := validationFailureEvidenceFromToolResult(result)
+			if ok {
+				return evidence, true
+			}
+		}
+	}
+	return "", false
+}
+
+func validationFailureEvidenceFromToolResult(result session.ToolResult) (string, bool) {
+	command, _ := result.Metadata["command"].(string)
+	output := result.DisplayOutput
+	if strings.TrimSpace(output) == "" {
+		output = result.LLMOutput
+	}
+	combined := command + "\n" + output
+	if result.Name == "shell" {
+		if result.IsError && hasValidationEvidenceContext(combined) {
+			return validationShellEvidence(command, result, "failed"), true
+		}
+		if exitCode, ok := metadataExitCode(result.Metadata); ok && exitCode != 0 && hasValidationEvidenceContext(combined) {
+			return validationShellEvidence(command, result, fmt.Sprintf("exited with code %d", exitCode)), true
+		}
+	}
+	if hasValidationEvidenceContext(combined) && hasClearValidationFailureEvidence(combined) {
+		return validationShellEvidence(command, result, "reported validation failure"), true
+	}
+	return "", false
+}
+
+func validationFailureEvidenceFromSupportingDocs(workdir string) (string, bool) {
+	for _, rel := range []string{filepath.Join("reports", "progress.md"), filepath.Join("reports", "validation.md")} {
+		path := filepath.Join(workdir, rel)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if hasValidationEvidenceContext(string(data)) && hasClearValidationFailureEvidence(string(data)) {
+			return rel + " records validation failure", true
+		}
+	}
+	return "", false
+}
+
+func validationShellEvidence(command string, result session.ToolResult, reason string) string {
+	label := strings.TrimSpace(command)
+	if label == "" {
+		label = result.Name
+	}
+	return fmt.Sprintf("%s %s", quoteForPrompt(label, 160), reason)
+}
+
+func metadataExitCode(metadata map[string]any) (int, bool) {
+	if metadata == nil {
+		return 0, false
+	}
+	switch value := metadata["exit_code"].(type) {
+	case int:
+		return value, true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), true
+	case json.Number:
+		parsed, err := value.Int64()
+		return int(parsed), err == nil
+	default:
+		return 0, false
+	}
+}
+
+func isValidationProjectMemoryPath(path string) bool {
+	lowered := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	for _, suffix := range []string{"reports/progress.md", "reports/validation.md"} {
+		if lowered == suffix || strings.HasSuffix(lowered, "/"+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStrongValidationSuccessClaim(content string) bool {
 	lowered := strings.ToLower(content)
-	return noAuth401Pattern.MatchString(lowered) || noClearUnauthorizedPattern.MatchString(lowered)
+	for _, phrase := range []string{
+		"validation passed",
+		"validation succeeded",
+		"validation successful",
+		"validation completed successfully",
+		"verification passed",
+		"verification succeeded",
+		"verification completed successfully",
+		"tests passed",
+		"all tests passed",
+		"test suite passed",
+		"checks passed",
+		"all checks passed",
+		"build passed",
+		"lint passed",
+		"typecheck passed",
+		"green test run",
+		"验证通过",
+		"校验通过",
+		"验证已通过",
+		"测试通过",
+		"全部测试通过",
+		"检查通过",
+		"构建通过",
+		"全部通过",
+	} {
+		if strings.Contains(lowered, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExplicitValidationFailureClaim(content string) bool {
+	lowered := strings.ToLower(content)
+	for _, phrase := range []string{
+		"validation failed",
+		"validation did not pass",
+		"validation was not run",
+		"validation not run",
+		"verification failed",
+		"tests failed",
+		"test failed",
+		"checks failed",
+		"build failed",
+		"lint failed",
+		"typecheck failed",
+		"failed to run",
+		"unable to run",
+		"could not run",
+		"not executed",
+		"non-zero",
+		"exit code",
+		"exit status",
+		"验证失败",
+		"验证未通过",
+		"测试失败",
+		"测试未通过",
+		"检查失败",
+		"未执行",
+		"无法运行",
+		"非零",
+	} {
+		if strings.Contains(lowered, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasValidationEvidenceContext(content string) bool {
+	lowered := strings.ToLower(content)
+	for _, token := range []string{
+		"validation",
+		"validate",
+		"verification",
+		"verify",
+		"test",
+		"check",
+		"build",
+		"lint",
+		"typecheck",
+		"qa",
+		"验证",
+		"校验",
+		"测试",
+		"检查",
+		"构建",
+	} {
+		if strings.Contains(lowered, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClearValidationFailureEvidence(content string) bool {
+	lowered := strings.ToLower(content)
+	for _, phrase := range []string{
+		"validation failed",
+		"validation did not pass",
+		"verification failed",
+		"tests failed",
+		"test failed",
+		"checks failed",
+		"build failed",
+		"lint failed",
+		"typecheck failed",
+		"failed to run",
+		"unable to run",
+		"could not run",
+		"non-zero",
+		"验证失败",
+		"验证未通过",
+		"测试失败",
+		"测试未通过",
+		"检查失败",
+		"无法运行",
+		"非零",
+	} {
+		if strings.Contains(lowered, phrase) {
+			return true
+		}
+	}
+	return nonZeroExitPattern.MatchString(content)
 }
 
 func countToolResults(messages []session.Message) int {

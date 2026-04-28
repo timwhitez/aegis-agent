@@ -1159,7 +1159,7 @@ func taskFilePath(execCtx ExecContext, taskID string) string {
 func defAgentSpawn(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_spawn",
-		Description: "Spawn a child agent when the model decides delegation would improve coverage, independence, or context control. Consider this for broad investigations, code audits, module scans, independent validation, or reviewer passes; keep tiny single-file checks in the parent. Use isolation_mode=auto when the child must write artifacts.",
+		Description: "Spawn a child agent when the model decides delegation would improve coverage, independence, or context control. Consider this for broad investigations, separable long-running slices, code audits, module scans, independent validation, or reviewer/evaluator passes; keep tiny single-file checks in the parent. Child sessions and background jobs are durable facts, and their results should be reconciled before final parent conclusions. Delegation is optional and model-led. Use isolation_mode=auto when the child must write artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1240,7 +1240,7 @@ func defAgentSpawn(control ControlPlane) Definition {
 func defAgentStatus(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_status",
-		Description: "Check a child agent or background job status after agent_spawn. Use this to collect final_text, errors, and workdir before parent synthesis.",
+		Description: "Check current or final child-agent/background-job status after agent_spawn. Use this to collect final_text, last_error, session_status, and effective workdir before parent synthesis or recovery.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1278,7 +1278,7 @@ func defAgentStatus(control ControlPlane) Definition {
 func defAgentList(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_list",
-		Description: "List child agents and background jobs for the current session. Use this to recover delegated work and find unresolved child outputs before final synthesis.",
+		Description: "List child agents and associated background jobs for the current parent session. Use this to recover delegated work, find unresolved outputs, and decide what still needs reconciliation before summarizing.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
