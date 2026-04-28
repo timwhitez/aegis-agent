@@ -1159,13 +1159,13 @@ func taskFilePath(execCtx ExecContext, taskID string) string {
 func defAgentSpawn(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_spawn",
-		Description: "Spawn a child agent for delegated child-agent work. Use this for broad investigations, code audits, module scans, independent validation, or reviewer passes when the parent would otherwise do all slice reads alone; use isolation_mode=auto when the child must write artifacts.",
+		Description: "Spawn a child agent when the model decides delegation would improve coverage, independence, or context control. Consider this for broad investigations, code audits, module scans, independent validation, or reviewer passes; keep tiny single-file checks in the parent. Use isolation_mode=auto when the child must write artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "Self-contained child task prompt. Include objective, scope, boundaries, inputs, expected output, completion criteria, and any inherited rubric for the delegated work.",
+					"description": "Self-contained child task prompt. Include objective, scope, boundaries, inputs, expected output, completion criteria, and any inherited rubric. The parent should preserve synthesis and final decisions.",
 				},
 				"agent_name": map[string]any{
 					"type":        "string",
@@ -1174,7 +1174,7 @@ func defAgentSpawn(control ControlPlane) Definition {
 				"agent_role": map[string]any{
 					"type":        "string",
 					"enum":        []string{"planner", "generator", "evaluator"},
-					"description": "Child role hint. Use evaluator for review, audit, validation, and reviewer work.",
+					"description": "Child role hint. evaluator fits review, audit, validation, and reviewer work; planner fits decomposition; generator fits bounded drafting or implementation.",
 				},
 				"provider": map[string]any{
 					"type":        "string",
@@ -1199,7 +1199,7 @@ func defAgentSpawn(control ControlPlane) Definition {
 				},
 				"background": map[string]any{
 					"type":        "boolean",
-					"description": "Use true for independent or long-running delegated slices so the parent can continue non-overlapping work and collect results later with agent_status or agent_list.",
+					"description": "Set true for independent or long-running delegated slices when the parent can continue non-overlapping work, then collect results later with agent_status or agent_list.",
 				},
 				"wait_mode": map[string]any{
 					"type":        "string",

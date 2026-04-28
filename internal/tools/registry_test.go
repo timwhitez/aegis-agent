@@ -334,7 +334,7 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	}
 }
 
-func TestAgentSpawnGuidesDelegatedAuditSlices(t *testing.T) {
+func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
 	registry, err := NewRegistry(cfg, nil, store, nil)
@@ -345,7 +345,7 @@ func TestAgentSpawnGuidesDelegatedAuditSlices(t *testing.T) {
 	if def == nil {
 		t.Fatal("agent_spawn definition missing")
 	}
-	for _, want := range []string{"delegated child-agent work", "broad investigations", "independent validation"} {
+	for _, want := range []string{"model decides delegation", "broad investigations", "independent validation", "tiny single-file checks"} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("expected agent_spawn description to mention %q, got %q", want, def.Description)
 		}
@@ -356,7 +356,7 @@ func TestAgentSpawnGuidesDelegatedAuditSlices(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"prompt":     "objective, scope, boundaries",
-		"agent_role": "Use evaluator for review",
+		"agent_role": "evaluator fits review",
 		"background": "agent_status or agent_list",
 	} {
 		schema, ok := properties[name].(map[string]any)

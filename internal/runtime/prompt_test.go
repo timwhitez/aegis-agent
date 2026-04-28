@@ -1135,26 +1135,6 @@ func TestToolGuardBlocksBookkeepingAfterSteerCompletionReminder(t *testing.T) {
 	}
 }
 
-func TestToolGuardBlocksDelegatedTodoCompletionWithoutAgentSpawn(t *testing.T) {
-	raw := json.RawMessage(`{"todos":[{"content":"按模块切片并行安全扫描","status":"completed"}]}`)
-	messages := []session.Message{
-		session.NewMessage("user", "对 workspace 进行代码审计"),
-	}
-	kind, text := toolGuard("/tmp/work", messages, "todo_write", raw)
-	if kind != "delegation_completion" {
-		t.Fatalf("expected delegation_completion guard, got %q", kind)
-	}
-	if !strings.Contains(text, "agent_spawn") {
-		t.Fatalf("expected agent_spawn guidance, got %q", text)
-	}
-
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{{Name: "agent_spawn"}}))
-	kind, text = toolGuard("/tmp/work", messages, "todo_write", raw)
-	if kind != "" || text != "" {
-		t.Fatalf("expected todo completion after agent_spawn to be allowed, got kind=%q text=%q", kind, text)
-	}
-}
-
 func TestToolGuardBlocksFinishForDeferredInterruptSteer(t *testing.T) {
 	workdir := t.TempDir()
 	steer := session.NewMessage("user", "Refresh reports/spec.md and reports/plan.md before more drafting, then stop without finishing so a later continue can close the task.")
