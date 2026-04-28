@@ -127,6 +127,60 @@ func TestBuildSystemPromptDoesNotTreatGenericReviewHarnessSynthesisAsAuditTask(t
 	}
 }
 
+func TestBuildSystemPromptOnlyInjectsCurrentWorkdirAgents(t *testing.T) {
+	root := t.TempDir()
+	workdir := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("parent-only instruction: read spec/00-product.md"), 0o600); err != nil {
+		t.Fatalf("write parent agents: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "AGENTS.md"), []byte("workspace-only instruction"), 0o600); err != nil {
+		t.Fatalf("write workspace agents: %v", err)
+	}
+
+	prompt := buildSystemPrompt(
+		workdir,
+		session.ModeExec,
+		"",
+		nil,
+		nil,
+		session.State{},
+		nil,
+	)
+	if !strings.Contains(prompt, "workspace-only instruction") {
+		t.Fatalf("expected current workdir AGENTS.md to be injected, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "parent-only instruction") || strings.Contains(prompt, "spec/00-product.md") {
+		t.Fatalf("expected parent AGENTS.md to be excluded, got:\n%s", prompt)
+	}
+}
+
+func TestBuildSystemPromptDoesNotClimbToParentAgentsWhenWorkdirHasNone(t *testing.T) {
+	root := t.TempDir()
+	workdir := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("parent instruction must not leak"), 0o600); err != nil {
+		t.Fatalf("write parent agents: %v", err)
+	}
+
+	prompt := buildSystemPrompt(
+		workdir,
+		session.ModeExec,
+		"",
+		nil,
+		nil,
+		session.State{},
+		nil,
+	)
+	if strings.Contains(prompt, "parent instruction must not leak") {
+		t.Fatalf("expected parent AGENTS.md to be excluded, got:\n%s", prompt)
+	}
+}
+
 func TestBuildSystemPromptStillTreatsExplicitReviewOnlyTaskAsAuditTask(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",

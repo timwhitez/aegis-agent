@@ -2718,20 +2718,9 @@ func loadAgentsChain(workdir string) []agentsDoc {
 	if err != nil {
 		return nil
 	}
-	var chain []agentsDoc
-	for {
-		path := filepath.Join(current, "AGENTS.md")
-		if data, err := os.ReadFile(path); err == nil {
-			chain = append(chain, agentsDoc{Path: path, Content: strings.TrimSpace(string(data))})
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
+	path := filepath.Join(current, "AGENTS.md")
+	if data, err := os.ReadFile(path); err == nil {
+		return []agentsDoc{{Path: path, Content: strings.TrimSpace(string(data))}}
 	}
-	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
-		chain[i], chain[j] = chain[j], chain[i]
-	}
-	return chain
+	return nil
 }
