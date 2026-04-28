@@ -50,8 +50,8 @@ task graph 是当前 session 的“持久化任务板”。
 说明：
 
 - 对于 large-project / long-horizon 任务，runtime 可以在早期 repo-scale 检索后注入协调型 harness reminder，提示模型先把 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md` 与 durable task state 外置出来，再继续扩张检索或实现。
-- 当后续 source edit、测试或验证动作已经超过最近一次 durable handoff 刷新点时，runtime 可以继续提醒甚至阻断 finish / agent handoff，要求先刷新 `reports/progress.md` 与 `reports/validation.md`，避免 child session 或恢复 session 拿到过期状态。
-- 即使运行在 `yolo` 模式，如果单个 session 已经积累明显长任务级别的工具调用或 compaction 事实、但仍没有任何 `todo_write` / `task_*` 状态，runtime 可以在 `finish` 前阻断一次，要求先写入最小 durable taskboard，避免超长会话以零任务事实源结束。
+- 当后续 source edit、测试或验证动作已经超过最近一次 durable handoff 刷新点时，runtime 可以继续提醒，并在 finish 前要求刷新 `reports/progress.md` 与 `reports/validation.md`，避免恢复 session 拿到过期状态；agent handoff 本身保持模型决策主导，必要时由 parent 在 child prompt 中直接携带当前进度与验证上下文。
+- 即使运行在 `yolo` 模式，如果单个 session 已经积累明显长任务级别的工具调用或 compaction 事实、但仍没有任何 `todo_write` / `task_*` 状态，runtime 只注入协调型 reminder，不在 `finish` 前强制阻断；是否补最小 durable taskboard 由模型结合任务状态决定。
 - 这个 reminder 只是把执行拉回可恢复节奏，不替代 `todo_write` / `task_create` / `task_update` 本身。
 - `task graph` 不承担 artifact 完成判定；显式交付文件由 `contract.json` / `artifact-tracker.json` 与 `CompletionController` 负责。任务系统只提供执行节奏、依赖关系和恢复索引。
 - 长任务 checkpoint 会读取 todo/task 派生统计，写入 `checkpoints/longrun-latest.json`，但 checkpoint 仍是 resume index，不替代 task 文件本身。

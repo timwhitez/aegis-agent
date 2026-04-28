@@ -433,29 +433,6 @@ func TestToolGuardBlocksFinishWhenSupportingDocsChangedAfterFinalReport(t *testi
 	}
 }
 
-func TestToolGuardBlocksLongRunFinishWithoutTaskboardEvenInYolo(t *testing.T) {
-	workdir := t.TempDir()
-	messages := []session.Message{
-		session.NewMessage("user", "Run the full repository audit and finish."),
-	}
-	var results []session.ToolResult
-	for i := 0; i < 80; i++ {
-		results = append(results, session.ToolResult{Name: "read_file"})
-	}
-	messages = append(messages, session.NewToolMessage(results))
-
-	kind, text := toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`), true)
-	if kind != "long_run_taskboard" {
-		t.Fatalf("expected long_run_taskboard guard, got kind=%q text=%q", kind, text)
-	}
-
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{{Name: "todo_write"}}))
-	kind, text = toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`), true)
-	if kind != "" || text != "" {
-		t.Fatalf("expected finish to pass once taskboard exists, got kind=%q text=%q", kind, text)
-	}
-}
-
 func TestBuildSystemPromptCountsReadOnlyShellInspectionAsRetrieval(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",
@@ -675,84 +652,6 @@ func TestNextHarnessReminderRepeatsEscalatedSteerReminderUntilDelivery(t *testin
 	})
 	if reminder.Kind != "steer_completion_escalated" {
 		t.Fatalf("expected escalated reminder to repeat until delivery, got %#v", reminder)
-	}
-}
-
-func TestNextHarnessReminderAddsAuditEvidenceReminderWhenProofIsMissing(t *testing.T) {
-	reminder := nextHarnessReminder("/tmp/work", session.ModeExec, []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "tools", "registry.go"),
-				},
-				DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
-			},
-		}),
-	})
-	if reminder.Kind != "audit_evidence" {
-		t.Fatalf("expected audit_evidence reminder, got %#v", reminder)
-	}
-	if !strings.Contains(reminder.Text, "Reserved names") || !strings.Contains(reminder.Text, "registration or config gate") {
-		t.Fatalf("expected audit reminder text, got %q", reminder.Text)
-	}
-	if !strings.Contains(reminder.Text, "builtinDefinitions(...)") || !strings.Contains(reminder.Text, "cfg.Runtime.MultiAgent.Enabled") {
-		t.Fatalf("expected focused audit follow-up hint, got %q", reminder.Text)
-	}
-}
-
-func TestNextHarnessReminderSkipsAuditEvidenceForGenericArchitectureAudit(t *testing.T) {
-	reminder := nextHarnessReminder("/tmp/work", session.ModeExec, []session.Message{
-		session.NewMessage("user", "Audit the current repository for core v1 readiness. Inspect README.md, AGENTS.md, internal/runtime, and internal/app."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "app", "app.go"),
-				},
-				DisplayOutput: "package app",
-			},
-		}),
-	})
-	if reminder.Kind == "audit_evidence" {
-		t.Fatalf("expected generic architecture audit to avoid audit_evidence reminder, got %#v", reminder)
-	}
-}
-
-func TestNextHarnessReminderSkipsAuditEvidenceReminderWhenGateProofExists(t *testing.T) {
-	reminder := nextHarnessReminder("/tmp/work", session.ModeExec, []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "tools", "registry.go"),
-				},
-				DisplayOutput: "if cfg != nil && cfg.Runtime.MultiAgent.Enabled {\n\tdefs = append(defs, defAgentSpawn(control))\n}",
-			},
-		}),
-	})
-	if reminder.Kind == "audit_evidence" {
-		t.Fatalf("expected no audit_evidence reminder once gate proof exists, got %#v", reminder)
-	}
-}
-
-func TestNextHarnessReminderDoesNotTreatBuiltinDefinitionsCallsiteAsProof(t *testing.T) {
-	reminder := nextHarnessReminder("/tmp/work", session.ModeExec, []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "tools", "registry.go"),
-				},
-				DisplayOutput: "func NewRegistry(...) {\n\tfor _, def := range builtinDefinitions(cfg, control) {\n\t\tregistry.Register(def)\n\t}\n}",
-			},
-		}),
-	})
-	if reminder.Kind != "audit_evidence" {
-		t.Fatalf("expected audit_evidence reminder when only callsite is seen, got %#v", reminder)
 	}
 }
 
@@ -1787,56 +1686,6 @@ func TestToolGuardAllowsFinishAfterExactLiteralArtifactWasWritten(t *testing.T) 
 	}
 }
 
-func TestToolGuardAllowsTargetedGrepForAuditProofFollowup(t *testing.T) {
-	reminder := session.NewMessage("user", "Harness reminder: inspect the owning gate.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "audit_evidence",
-	}
-	messages := []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "tools", "registry.go"),
-				},
-				DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
-			},
-		}),
-		reminder,
-	}
-	kind, text := toolGuard("/tmp/work", messages, "grep", json.RawMessage(`{"path":"internal/tools/registry.go","pattern":"builtinDefinitions"}`))
-	if kind != "" || text != "" {
-		t.Fatalf("expected targeted grep follow-up to be allowed, got kind=%q text=%q", kind, text)
-	}
-}
-
-func TestToolGuardAllowsTargetedReadForAuditProofFollowup(t *testing.T) {
-	reminder := session.NewMessage("user", "Harness reminder: inspect the owning gate.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "audit_evidence",
-	}
-	messages := []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "tools", "registry.go"),
-				},
-				DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
-			},
-		}),
-		reminder,
-	}
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"internal/tools/registry.go","offset":120,"limit":80}`))
-	if kind != "" || text != "" {
-		t.Fatalf("expected targeted read follow-up to be allowed, got kind=%q text=%q", kind, text)
-	}
-}
-
 func TestToolGuardAllowsTargetedReadForReviewArtifactRepair(t *testing.T) {
 	workdir := t.TempDir()
 	inspectedPath := filepath.Join(workdir, "docs", "audit.md")
@@ -1962,7 +1811,7 @@ func TestToolGuardBlocksFinishUntilProjectMemoryRefresh(t *testing.T) {
 	}
 }
 
-func TestToolGuardBlocksAgentSpawnUntilProjectMemoryRefresh(t *testing.T) {
+func TestToolGuardAllowsAgentSpawnDuringProjectMemoryRefresh(t *testing.T) {
 	workdir := t.TempDir()
 	reminder := session.NewMessage("user", "Harness reminder: refresh the durable project-memory stack.")
 	reminder.Meta = map[string]any{
@@ -1980,39 +1829,8 @@ func TestToolGuardBlocksAgentSpawnUntilProjectMemoryRefresh(t *testing.T) {
 		reminder,
 	}
 	kind, text := toolGuard(workdir, messages, "agent_spawn", json.RawMessage(`{"prompt":"Review the latest work.","agent_name":"reviewer"}`))
-	if kind != "project_memory_refresh" {
-		t.Fatalf("expected project_memory_refresh guard, got %q", kind)
-	}
-	if !strings.Contains(text, "before handing work to another agent") {
-		t.Fatalf("expected agent handoff guard text, got %q", text)
-	}
-}
-
-func TestToolGuardBlocksWriteFileUntilAuditProofFollowup(t *testing.T) {
-	reminder := session.NewMessage("user", "Harness reminder: inspect the owning gate.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "audit_evidence",
-	}
-	messages := []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "tools", "registry.go"),
-				},
-				DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
-			},
-		}),
-		reminder,
-	}
-	kind, text := toolGuard("/tmp/work", messages, "write_file", json.RawMessage(`{"path":"reports/audit.md","content":"report"}`))
-	if kind != "audit_proof" {
-		t.Fatalf("expected audit_proof guard, got %q", kind)
-	}
-	if !strings.Contains(text, "inspect /tmp/work/internal/tools/registry.go") && !strings.Contains(text, "inspect internal/tools/registry.go") {
-		t.Fatalf("expected audit proof guard text, got %q", text)
+	if kind != "" || text != "" {
+		t.Fatalf("expected agent_spawn to remain model-led during project-memory refresh, got kind=%q text=%q", kind, text)
 	}
 }
 
@@ -2089,33 +1907,5 @@ func TestToolGuardAllowsFinishWhenInterruptSteerDemandsCurrentEvidenceDelivery(t
 	kind, text := toolGuard("/tmp/work", messages, "finish", json.RawMessage(`{"message":"done"}`))
 	if kind != "" || text != "" {
 		t.Fatalf("expected current-evidence interrupt steer to allow finish after artifact delivery, got kind=%q text=%q", kind, text)
-	}
-}
-
-func TestToolGuardBlocksReadOnlyShellUntilAuditProofFollowup(t *testing.T) {
-	reminder := session.NewMessage("user", "Harness reminder: inspect the owning gate.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "audit_evidence",
-	}
-	messages := []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
-		session.NewToolMessage([]session.ToolResult{
-			{
-				Name: "read_file",
-				Metadata: map[string]any{
-					"path": filepath.Join("/tmp/work", "internal", "tools", "registry.go"),
-				},
-				DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
-			},
-		}),
-		reminder,
-	}
-	kind, text := toolGuard("/tmp/work", messages, "shell", json.RawMessage(`{"command":"grep -n builtinDefinitions internal/tools/registry.go"}`))
-	if kind != "audit_proof" {
-		t.Fatalf("expected audit_proof guard, got %q", kind)
-	}
-	if !strings.Contains(text, "Do not use shell grep/cat to bypass that check") {
-		t.Fatalf("expected audit proof shell guard text, got %q", text)
 	}
 }

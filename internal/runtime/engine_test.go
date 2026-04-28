@@ -766,88 +766,6 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 	}
 }
 
-func TestEngineAppendsAuditEvidenceHarnessReminderBeforeProviderCall(t *testing.T) {
-	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
-	registryPath := filepath.Join(meta.Workdir, "internal", "tools", "registry.go")
-	if err := os.MkdirAll(filepath.Dir(registryPath), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	var builder strings.Builder
-	for i := 0; i < 130; i++ {
-		builder.WriteString("// filler\n")
-	}
-	builder.WriteString("func builtinDefinitions(cfg *config.Config, control ControlPlane) []Definition {\n")
-	builder.WriteString("\tif cfg != nil && cfg.Runtime.MultiAgent.Enabled {\n")
-	builder.WriteString("\t\treturn nil\n")
-	builder.WriteString("\t}\n")
-	builder.WriteString("\treturn nil\n")
-	builder.WriteString("}\n")
-	if err := os.WriteFile(registryPath, []byte(builder.String()), 0o644); err != nil {
-		t.Fatalf("write registry fixture: %v", err)
-	}
-	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries.")); err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{
-		{
-			Name: "read_file",
-			Metadata: map[string]any{
-				"path": registryPath,
-			},
-			DisplayOutput: "var reservedNames = map[string]struct{}{ \"agent_spawn\": {} }",
-		},
-	})); err != nil {
-		t.Fatalf("append read_file tool result: %v", err)
-	}
-	fake := provider.NewFake(
-		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
-			last := req.Messages[len(req.Messages)-1]
-			source, _ := last.Meta["source"].(string)
-			kind, _ := last.Meta["kind"].(string)
-			if last.Role != "user" || source != "harness_reminder" || kind != "audit_evidence" {
-				t.Fatalf("expected audit-evidence harness reminder, got %#v", last)
-			}
-			if !strings.Contains(last.Text, "Reserved names") || !strings.Contains(last.Text, "registration or config gate") {
-				t.Fatalf("expected audit evidence reminder text, got %q", last.Text)
-			}
-			return provider.TurnResult{
-				ToolCalls: []provider.ToolCall{{
-					ID:        "call_1",
-					Name:      "read_file",
-					Arguments: json.RawMessage(`{"path":"internal/tools/registry.go","offset":120,"limit":80}`),
-				}},
-				StopReason: "tool_use",
-			}, nil
-		},
-		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
-			return provider.TurnResult{
-				ToolCalls: []provider.ToolCall{{
-					ID:   "call_2",
-					Name: "write_file",
-					Arguments: json.RawMessage(`{
-						"path":"reports/final-audit.md",
-						"content":"# audit\n\n## findings\n### Finding 1\nSeverity: medium\nConfidence: high\nEvidence: internal/tools/registry.go:132 (\"cfg.Runtime.MultiAgent.Enabled\")\nWhy it matters: default exposure must be behavior-backed\n\n## unresolved questions\n- None"
-					}`),
-				}},
-				StopReason: "tool_use",
-			}, nil
-		},
-		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
-			return provider.TurnResult{
-				ToolCalls:  []provider.ToolCall{{ID: "call_3", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
-				StopReason: "tool_use",
-			}, nil
-		},
-	)
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if result.Status != session.StatusCompleted {
-		t.Fatalf("expected completed, got %s", result.Status)
-	}
-}
-
 func TestEngineAppendsSteerCompletionReminderAndEscalatesAfterBlockedDetour(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	writeEvidenceFile(t, meta.Workdir, "internal/runtime/prompt.go", "package runtime\n\nfunc deliveryNote() string { return \"delivery did not happen immediately after the interrupt steer\" }\n")
@@ -929,7 +847,7 @@ func TestEngineAppendsSteerCompletionReminderAndEscalatesAfterBlockedDetour(t *t
 	}
 }
 
-func TestEngineInterruptSteerAllowsCurrentEvidenceArtifactDeliveryDespiteAuditProofTarget(t *testing.T) {
+func TestEngineInterruptSteerAllowsCurrentEvidenceArtifactDelivery(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	writeEvidenceFile(t, meta.Workdir, "internal/tools/registry.go", "package tools\n\nvar reservedNames = map[string]struct{}{ \"agent_spawn\": {} }\n\nfunc builtinDefinitions(cfg any) []string {\n\tif cfg != nil {\n\t\treturn []string{\"cfg.Runtime.MultiAgent.Enabled\"}\n\t}\n\treturn nil\n}\n")
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries and write reports/steer-audit.md.")); err != nil {
@@ -958,12 +876,6 @@ func TestEngineInterruptSteerAllowsCurrentEvidenceArtifactDeliveryDespiteAuditPr
 	}()
 	fake := provider.NewFake(
 		func(ctx context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
-			last := req.Messages[len(req.Messages)-1]
-			source, _ := last.Meta["source"].(string)
-			kind, _ := last.Meta["kind"].(string)
-			if last.Role != "user" || source != "harness_reminder" || kind != "audit_evidence" {
-				t.Fatalf("expected audit-evidence reminder before the interrupt steer, got %#v", last)
-			}
 			hasReadEvidence := false
 			for _, msg := range req.Messages {
 				if msg.Role != "tool" {
@@ -1023,18 +935,6 @@ func TestEngineInterruptSteerAllowsCurrentEvidenceArtifactDeliveryDespiteAuditPr
 	reportPath := filepath.Join(meta.Workdir, "reports", "steer-audit.md")
 	if _, err := os.Stat(reportPath); err != nil {
 		t.Fatalf("expected steer audit artifact to be written, got stat error: %v", err)
-	}
-	events, err := loadEvents(engine.store, meta.ID)
-	if err != nil {
-		t.Fatalf("events: %v", err)
-	}
-	for _, evt := range events {
-		if evt.Type != "tool.blocked" {
-			continue
-		}
-		if reason, _ := evt.Data["reason"].(string); reason == "audit_proof" {
-			t.Fatalf("expected current-evidence interrupt steer to bypass audit_proof block, got %#v", evt)
-		}
 	}
 }
 

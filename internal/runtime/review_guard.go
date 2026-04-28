@@ -406,7 +406,7 @@ func durableProjectMemoryNote(workdir string, messages []session.Message) string
 	}
 	stack := loadProjectMemoryStack(workdir)
 	if refresh := projectMemoryRefreshNeed(workdir, messages); refresh.Active {
-		return fmt.Sprintf("A durable project-memory stack is available: %s. It is stale relative to %s. %s before more implementation, agent handoff, or finish.", strings.Join(stack.PresentPaths(), ", "), joinPromptItems(refresh.Reasons), projectMemoryRefreshInstruction(refresh))
+		return fmt.Sprintf("A durable project-memory stack is available: %s. It is stale relative to %s. For durable handoff or finalization, %s. If you delegate before refreshing it, include the current progress and validation context directly in the child prompt.", strings.Join(stack.PresentPaths(), ", "), joinPromptItems(refresh.Reasons), projectMemoryRefreshInstruction(refresh))
 	}
 	if present := stack.PresentPaths(); len(present) > 0 {
 		return fmt.Sprintf("A durable project-memory stack is available: %s. Refresh from these files before more implementation or repo-scale rereads, and keep spec, plan, progress, and validation current.", strings.Join(present, ", "))

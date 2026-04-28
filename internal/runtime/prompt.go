@@ -701,20 +701,6 @@ func supportingDocsDenyUnauthorized(content string) bool {
 	return noAuth401Pattern.MatchString(lowered) || noClearUnauthorizedPattern.MatchString(lowered)
 }
 
-func longRunTaskboardGuard(messages []session.Message, toolName string) (string, string) {
-	if toolName != "finish" || !longRunNeedsTaskboard(messages) || hasTaskGraphWriteActivity(messages) {
-		return "", ""
-	}
-	toolResults := countToolResults(messages)
-	compactions := countCompactionSummaries(messages)
-	return "long_run_taskboard", fmt.Sprintf("Taskboard guard: this long run has %d recorded tool result(s) and %d compaction summary turn(s), but no todo/task state. Before finishing, write a concise durable task state with todo_write or task_create/task_update so the session has a recoverable handoff.", toolResults, compactions)
-}
-
-func longRunNeedsTaskboard(messages []session.Message) bool {
-	stats := collectRecentToolStats(messages)
-	return countToolResults(messages) >= 80 || stats.RetrievalCount >= 60 || countCompactionSummaries(messages) >= 10
-}
-
 func countToolResults(messages []session.Message) int {
 	total := 0
 	for _, msg := range messages {
@@ -921,9 +907,6 @@ func nextHarnessReminder(workdir, mode string, messages []session.Message) harne
 	if reminder := artifactCompletionReminder(workdir, mode, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
-	if reminder := auditEvidenceReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
-		return reminder
-	}
 	if reminder := largeProjectCoordinationReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
@@ -976,29 +959,6 @@ func artifactCompletionReminder(workdir, mode string, messages []session.Message
 	}
 }
 
-func auditEvidenceReminder(workdir string, messages []session.Message) harnessReminder {
-	idx := latestExternalInstructionIndex(messages)
-	if idx < 0 {
-		return harnessReminder{}
-	}
-	text := messages[idx].Text
-	if !looksAuditOrReviewTask(text) || !auditTaskNeedsBehaviorProof(text) {
-		return harnessReminder{}
-	}
-	target := auditProofTarget(messages)
-	if !target.Active || auditProofSatisfied(messages, target) {
-		return harnessReminder{}
-	}
-	followup := auditProofFollowupHint(messages)
-	if followup == "" {
-		return harnessReminder{}
-	}
-	return harnessReminder{
-		Kind: "audit_evidence",
-		Text: "Harness reminder: Reserved names and other declaration-level hints are not enough to prove runtime behavior. Before you finalize the audit, verify the owning registration or config gate. " + strings.ReplaceAll(followup, target.Path, displayPromptPath(workdir, target.Path)),
-	}
-}
-
 func largeProjectCoordinationReminder(workdir string, messages []session.Message) harnessReminder {
 	if !looksLargeProjectTask(messages) {
 		return harnessReminder{}
@@ -1026,7 +986,7 @@ func projectMemoryRefreshReminder(workdir string, messages []session.Message) ha
 	}
 	return harnessReminder{
 		Kind: "project_memory_refresh",
-		Text: "Harness reminder: recent implementation or validation work outpaced the durable project-memory stack. Before more repo-scale retrieval, agent handoff, or finish, " + projectMemoryRefreshInstruction(need) + " so the next session inherits current progress and QA state.",
+		Text: "Harness reminder: recent implementation or validation work outpaced the durable project-memory stack. For durable handoff or finalization, " + projectMemoryRefreshInstruction(need) + " so the next session inherits current progress and QA state. If you delegate before refreshing it, include the current progress and validation context directly in the child prompt.",
 	}
 }
 
@@ -1052,62 +1012,6 @@ func steerCompletionReminder(workdir, mode string, messages []session.Message) h
 	}
 }
 
-func auditProofFollowupHint(messages []session.Message) string {
-	if target := auditProofTarget(messages); target.Active {
-		return target.Hint
-	}
-	return ""
-}
-
-type auditProofNeed struct {
-	Active    bool
-	Path      string
-	MinOffset int
-	Hint      string
-}
-
-func auditProofTarget(messages []session.Message) auditProofNeed {
-	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		for _, result := range msg.ToolResults {
-			if result.Name != "read_file" {
-				continue
-			}
-			path, _ := result.Metadata["path"].(string)
-			body := result.DisplayOutput + "\n" + result.LLMOutput
-			cleanPath := filepath.Clean(strings.TrimSpace(path))
-			if cleanPath == "" {
-				continue
-			}
-			if strings.HasSuffix(filepath.ToSlash(cleanPath), "internal/tools/registry.go") && looksRegistrySurfaceClue(body) {
-				return auditProofNeed{
-					Active:    true,
-					Path:      cleanPath,
-					MinOffset: 120,
-					Hint:      "You already saw declaration-level hints in internal/tools/registry.go; next inspect builtinDefinitions(...) and the cfg.Runtime.MultiAgent.Enabled gate in that file before concluding anything about default exposure.",
-				}
-			}
-		}
-	}
-	return auditProofNeed{}
-}
-
-func looksRegistrySurfaceClue(body string) bool {
-	for _, token := range []string{
-		"reservedNames",
-		"builtinDefinitions(",
-		"cfg.Runtime.MultiAgent.Enabled",
-		"defAgentSpawn(",
-	} {
-		if strings.Contains(body, token) {
-			return true
-		}
-	}
-	return false
-}
-
 func retrievalTailReminder(messages []session.Message) harnessReminder {
 	note := retrievalBudgetNote(messages)
 	if note == "" {
@@ -1121,9 +1025,6 @@ func retrievalTailReminder(messages []session.Message) harnessReminder {
 
 func toolGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage, yoloOpt ...bool) (string, string) {
 	yolo := len(yoloOpt) > 0 && yoloOpt[0]
-	if !yolo && auditProofFollowupAllowed(workdir, messages, toolName, rawArgs) {
-		return "", ""
-	}
 	if kind, text := explicitInspectionScopeGuard(workdir, messages, toolName, rawArgs); text != "" {
 		return kind, text
 	}
@@ -1142,13 +1043,7 @@ func toolGuard(workdir string, messages []session.Message, toolName string, rawA
 	if kind, text := reportConsistencyGuard(workdir, messages, toolName, rawArgs); text != "" {
 		return kind, text
 	}
-	if kind, text := longRunTaskboardGuard(messages, toolName); text != "" {
-		return kind, text
-	}
 	if !yolo {
-		if kind, text := auditProofGuard(workdir, messages, toolName, rawArgs); text != "" {
-			return kind, text
-		}
 		if kind, text := reviewArtifactGuard(workdir, messages, toolName, rawArgs); text != "" {
 			return kind, text
 		}
@@ -1264,66 +1159,9 @@ func projectMemoryRefreshGuard(workdir string, messages []session.Message, toolN
 		return "project_memory_refresh", "Project-memory guard: recent implementation or validation work outpaced the durable handoff files. " + projectMemoryRefreshInstruction(need) + " before more read-only retrieval."
 	case toolName == "finish":
 		return "project_memory_refresh", "Project-memory guard: before finishing this large task, " + projectMemoryRefreshInstruction(need) + " so progress and validation handoff state matches the latest work."
-	case toolName == "agent_spawn":
-		return "project_memory_refresh", "Project-memory guard: before handing work to another agent, " + projectMemoryRefreshInstruction(need) + " so the child receives current progress and validation context."
 	default:
 		return "", ""
 	}
-}
-
-func auditProofFollowupAllowed(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) bool {
-	target := auditProofTarget(messages)
-	if !target.Active || auditProofSatisfied(messages, target) {
-		return false
-	}
-	switch toolName {
-	case "read_file":
-		window, ok := requestedReadWindow(workdir, rawArgs)
-		return ok && window.Path == target.Path && window.Offset >= target.MinOffset
-	case "grep":
-		path, ok := requestedGrepPath(workdir, rawArgs)
-		return ok && path == target.Path
-	default:
-		return false
-	}
-}
-
-func auditProofDeliveryAllowed(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) bool {
-	directive := latestInterruptSteerDirective(messages)
-	if !directive.Active || (!directive.UseCurrentEvidence && !directive.WriteArtifact && !directive.Finish) {
-		return false
-	}
-	switch toolName {
-	case "write_file", "edit_file":
-		target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
-		return ok && looksFinalArtifactPath(target.Path)
-	case "finish":
-		return directive.Finish
-	default:
-		return false
-	}
-}
-
-func auditProofGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
-	target := auditProofTarget(messages)
-	if !target.Active || auditProofSatisfied(messages, target) {
-		return "", ""
-	}
-	if auditProofDeliveryAllowed(workdir, messages, toolName, rawArgs) {
-		return "", ""
-	}
-	targetPath := displayPromptPath(workdir, target.Path)
-	if toolName == "write_file" || toolName == "finish" {
-		return "audit_proof", fmt.Sprintf("Audit proof guard: before finalizing this report, inspect %s beyond the opening declarations and verify the owning builtinDefinitions/config gate path.", targetPath)
-	}
-	if toolName == "shell" && requestedShellCommandIsReadOnly(rawArgs) {
-		return "audit_proof", fmt.Sprintf("Audit proof guard: this task still needs the owning gate read in %s. Do not use shell grep/cat to bypass that check; use grep or read_file on that file, then continue.", targetPath)
-	}
-	if isRetrievalTool(toolName) {
-		return "audit_proof", fmt.Sprintf("Audit proof guard: this task still needs the owning gate read in %s. First locate or read builtinDefinitions(...) / cfg.Runtime.MultiAgent.Enabled in that file, then continue.", targetPath)
-	}
-	_ = rawArgs
-	return "", ""
 }
 
 func exactArtifactPathGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
@@ -1691,33 +1529,6 @@ func explicitNonReviewTaskOptOut(lowered string) bool {
 		"不是 audit",
 	} {
 		if strings.Contains(lowered, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func auditTaskNeedsBehaviorProof(text string) bool {
-	lowered := strings.ToLower(text)
-	for _, token := range []string{
-		"default",
-		"surface",
-		"exposure",
-		"exposed",
-		"register",
-		"registration",
-		"gating",
-		"gate",
-		"enabled",
-		"behavior",
-		"default core tool surface",
-		"默认",
-		"暴露",
-		"注册",
-		"门控",
-		"启用",
-	} {
-		if strings.Contains(lowered, token) {
 			return true
 		}
 	}
@@ -2213,105 +2024,6 @@ func isProjectMemoryPath(path string) bool {
 		"reports/validation.md",
 	} {
 		if lowered == suffix || strings.HasSuffix(lowered, "/"+suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasCodeRead(messages []session.Message) bool {
-	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		for _, result := range msg.ToolResults {
-			if result.Name != "read_file" {
-				continue
-			}
-			path, _ := result.Metadata["path"].(string)
-			if isCodePath(path) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hasBehaviorProof(messages []session.Message) bool {
-	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		for _, result := range msg.ToolResults {
-			if result.Name != "read_file" && result.Name != "grep" && result.Name != "grep_files" && result.Name != "shell" {
-				continue
-			}
-			for _, haystack := range []string{result.DisplayOutput, result.LLMOutput} {
-				if strings.TrimSpace(haystack) == "" {
-					continue
-				}
-				if containsBehaviorProofToken(haystack) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func auditProofSatisfied(messages []session.Message, target auditProofNeed) bool {
-	if !target.Active {
-		return hasBehaviorProof(messages)
-	}
-	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		for _, result := range msg.ToolResults {
-			for _, haystack := range []string{result.DisplayOutput, result.LLMOutput} {
-				if strings.TrimSpace(haystack) == "" {
-					continue
-				}
-				if containsAuditProofForTarget(haystack, target) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func containsAuditProofForTarget(text string, target auditProofNeed) bool {
-	if strings.HasSuffix(filepath.ToSlash(target.Path), "internal/tools/registry.go") {
-		for _, token := range []string{
-			"cfg.Runtime.MultiAgent.Enabled",
-			"if cfg != nil && cfg.Runtime.MultiAgent.Enabled",
-			"defs = append(defs, defAgentSpawn",
-		} {
-			if strings.Contains(text, token) {
-				return true
-			}
-		}
-		return false
-	}
-	return containsBehaviorProofToken(text)
-}
-
-func containsBehaviorProofToken(text string) bool {
-	for _, token := range []string{
-		"func builtinDefinitions(",
-		"cfg.Runtime.MultiAgent.Enabled",
-		"Runtime.MultiAgent.Enabled",
-		"enabled by default",
-		"registered by default",
-		"disabled via runtime.multi_agent.enabled=false",
-		"register only when",
-		"registered when",
-		"hidden by default",
-		"TestAgentToolsAreEnabledByDefaultAndCanBeDisabled",
-		"if cfg != nil && cfg.Runtime.MultiAgent.Enabled",
-	} {
-		if strings.Contains(text, token) {
 			return true
 		}
 	}
