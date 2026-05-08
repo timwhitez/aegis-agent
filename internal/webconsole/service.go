@@ -518,6 +518,12 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		writeError(w, status, err)
 		return
 	}
+	if err := s.appendAuditEvent("web.session.delete", map[string]any{
+		"session_id": sessionID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "deleted": true})
 }
 
@@ -536,6 +542,10 @@ func (s *Service) handleClearSessions(w http.ResponseWriter) {
 		return
 	}
 	if err := s.store.ClearHistory(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.appendAuditEvent("web.sessions.clear", nil); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -1178,6 +1188,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		updatedCfg.Runtime.MaxTurnsHard = *req.MaxTurnsHard
 	}
 
+	var apiKeyAudit map[string]any
 	if p, ok := updatedCfg.Providers[req.Provider]; ok {
 		if req.BaseURL != "" {
 			p.BaseURL = req.BaseURL
@@ -1191,9 +1202,15 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			cwd, _ := os.Getwd()
-			if err := config.UpsertEnvFile(config.DefaultEnvFilePath(cwd), p.APIKeyEnv, req.APIKey); err != nil {
+			envPath := config.DefaultEnvFilePath(cwd)
+			if err := config.UpsertEnvFile(envPath, p.APIKeyEnv, req.APIKey); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
+			}
+			apiKeyAudit = map[string]any{
+				"provider": req.Provider,
+				"env_key":  p.APIKeyEnv,
+				"env_file": envPath,
 			}
 		}
 		updatedCfg.Providers[req.Provider] = p
@@ -1209,6 +1226,22 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	*s.cfg = *updatedCfg
+	if err := s.appendAuditEvent("web.config.write", map[string]any{
+		"provider":               updatedCfg.DefaultProvider,
+		"config_path":            configPath,
+		"guardrails_mode":        updatedCfg.Runtime.GuardrailsMode,
+		"max_turns_hard":         updatedCfg.Runtime.MaxTurnsHard,
+		"hard_turn_limit_active": updatedCfg.Runtime.MaxTurnsHard > 0,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if apiKeyAudit != nil {
+		if err := s.appendAuditEvent("web.config.api_key_write", apiKeyAudit); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
@@ -1465,6 +1498,13 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := s.appendAuditEvent("web.skill.install", map[string]any{
+		"skill_dir":       dest,
+		"installed_count": count,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "installed_count": count})
 }
@@ -1494,6 +1534,13 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	os.RemoveAll(targetDir)
+	if err := s.appendAuditEvent("web.skill.uninstall", map[string]any{
+		"skill_id":  skillID,
+		"skill_dir": targetDir,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 

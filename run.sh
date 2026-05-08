@@ -52,6 +52,9 @@ Defaults:
 Environment overrides:
   GO_CLI_AGENT_WEB_CONFIG   Explicit config file passed to `experimental web`.
   GO_CLI_AGENT_LISTEN       Listen address, default `0.0.0.0:3940`.
+                           Non-loopback listen exposes config writes, .env API keys,
+                           session deletion, skill management, and workspace reads
+                           to network-reachable clients; use trusted local networks.
   GO_CLI_AGENT_WEB_WORKERS  Worker count, default `2`.
   GO_CLI_AGENT_BIN          Binary path, default `bin/go-cli-agent`.
   GO_CLI_AGENT_ENV_FILE     Optional .env file to source before start.
@@ -109,6 +112,18 @@ print_urls() {
 	else
 		printf 'URL: http://%s:%s\n' "$host" "$port"
 	fi
+}
+
+print_lan_warning() {
+	local host
+	host="$(listen_host)"
+	case "$host" in
+		127.*|localhost|::1|\[::1\])
+			return 0
+			;;
+	esac
+	echo "WARNING: experimental web is reachable from non-loopback clients."
+	echo "It can write config and .env API keys, delete sessions, manage skills, and read workspace files. Use only on trusted local networks."
 }
 
 ensure_binary() {
@@ -177,6 +192,7 @@ start_background() {
 	fi
 	printf 'Workers: %s\n' "$WORKER_COUNT"
 	printf 'Log: %s\n' "$LOG_FILE"
+	print_lan_warning
 	print_urls
 }
 
@@ -194,6 +210,7 @@ start_foreground() {
 		echo "Config: default search order"
 	fi
 	printf 'Workers: %s\n' "$WORKER_COUNT"
+	print_lan_warning
 	print_urls
 	exec "${cmd[@]}"
 }

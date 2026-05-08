@@ -438,6 +438,119 @@ func TestUpdateConfigRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestAPIKeyWriteDoesNotLogSecretValue(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	cfg := testConfig(t, "")
+	provider := cfg.Providers["openai"]
+	provider.APIKeyEnv = "OPENAI_API_KEY"
+	cfg.Providers["openai"] = provider
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(cwd, "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"api_key":  "sk-test-secret-value",
+	}, http.StatusOK, nil)
+
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if strings.Contains(string(data), "sk-test-secret-value") {
+		t.Fatalf("audit log must not contain secret value: %s", string(data))
+	}
+	events := loadWebAuditEvents(t, auditPath)
+	if !hasWebAuditEvent(events, "web.config.api_key_write") {
+		t.Fatalf("expected api key audit event, got %#v", events)
+	}
+	if !strings.Contains(string(data), "OPENAI_API_KEY") {
+		t.Fatalf("expected env key in audit log, got %s", string(data))
+	}
+}
+
+func TestSensitiveWebActionsEmitAuditEvents(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	deleteMeta := testSessionMetadata(t, "session_delete_audit")
+	if err := svc.store.Create(deleteMeta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create delete session: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/sessions/"+deleteMeta.ID, nil)
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete session request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected delete status: %d", resp.StatusCode)
+	}
+
+	clearMeta := testSessionMetadata(t, "session_clear_audit")
+	if err := svc.store.Create(clearMeta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create clear session: %v", err)
+	}
+	postJSON(t, ts.URL+"/api/sessions/clear", map[string]any{}, http.StatusOK, nil)
+
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	createSkillZip(t, zipPath, "demo-skill", "---\nname: demo-skill\ndescription: uploaded demo\n---\n")
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(zipPath))
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	file, err := os.Open(zipPath)
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		file.Close()
+		t.Fatalf("copy zip: %v", err)
+	}
+	file.Close()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	resp, err = http.Post(ts.URL+"/api/skills/upload", writer.FormDataContentType(), body)
+	if err != nil {
+		t.Fatalf("upload skill: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected upload status: %d", resp.StatusCode)
+	}
+	postJSON(t, ts.URL+"/api/skills/demo-skill/uninstall", map[string]any{}, http.StatusOK, nil)
+
+	events := loadWebAuditEvents(t, webAuditLogPath(cfg.Session.Dir))
+	for _, eventType := range []string{"web.session.delete", "web.sessions.clear", "web.skill.install", "web.skill.uninstall"} {
+		if !hasWebAuditEvent(events, eventType) {
+			t.Fatalf("expected audit event %s, got %#v", eventType, events)
+		}
+	}
+}
+
 func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -1857,6 +1970,35 @@ func postJSONError(t *testing.T, url string, payload any, wantStatus int) ErrorR
 		t.Fatalf("decode error response: %v", err)
 	}
 	return errResp
+}
+
+func loadWebAuditEvents(t *testing.T, path string) []webAuditEvent {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	var events []webAuditEvent
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event webAuditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode audit event %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func hasWebAuditEvent(events []webAuditEvent, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool, describe func() string) {

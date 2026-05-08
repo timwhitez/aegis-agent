@@ -48,6 +48,26 @@ type fakeRunner struct {
 	interruptIDs   []string
 }
 
+func TestWebListenExposesNetwork(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{addr: "127.0.0.1:3940", want: false},
+		{addr: "localhost:3940", want: false},
+		{addr: "[::1]:3940", want: false},
+		{addr: "0.0.0.0:3940", want: true},
+		{addr: ":3940", want: true},
+		{addr: "192.168.1.5:3940", want: true},
+		{addr: "webconsole.local:3940", want: true},
+	}
+	for _, tc := range cases {
+		if got := webListenExposesNetwork(tc.addr); got != tc.want {
+			t.Fatalf("webListenExposesNetwork(%q)=%v want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{bus: events.NewBus()}
 }
