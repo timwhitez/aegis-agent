@@ -18,19 +18,21 @@ func featureListPath(execCtx ExecContext) string {
 func defFeatureListCreate() Definition {
 	return Definition{
 		Name:        "feature_list_create",
-		Description: "Create a feature list for tracking multi-feature tasks",
+		Description: "Create an initializer-mode feature roadmap for a new project or explicit multi-feature bootstrap. Use this early in init mode to capture features and steps before scaffolding; use todo_write or task_create for normal implementation tracking outside initialization.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"features": map[string]any{
-					"type": "array",
+					"type":        "array",
+					"description": "Ordered feature roadmap items to create.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"description": map[string]any{"type": "string"},
+							"description": map[string]any{"type": "string", "description": "Short feature description."},
 							"steps": map[string]any{
-								"type":  "array",
-								"items": map[string]any{"type": "string"},
+								"type":        "array",
+								"description": "Optional implementation or validation steps for this feature.",
+								"items":       map[string]any{"type": "string"},
 							},
 						},
 						"required": []string{"description"},
@@ -87,13 +89,13 @@ func defFeatureListCreate() Definition {
 func defFeatureListUpdate() Definition {
 	return Definition{
 		Name:        "feature_list_update",
-		Description: "Update feature status and passes count",
+		Description: "Update one initializer feature's status or pass count. Use this while working through the bootstrap roadmap created by feature_list_create, and mark a feature completed only after its setup and needed verification are done.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":     map[string]any{"type": "string"},
-				"status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}},
-				"passes": map[string]any{"type": "integer"},
+				"id":     map[string]any{"type": "string", "description": "Feature ID from feature_list_create, for example feature_0001."},
+				"status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}, "description": "Optional new feature status."},
+				"passes": map[string]any{"type": "integer", "description": "Optional count of completed verification or implementation passes."},
 			},
 			"required": []string{"id"},
 		},
@@ -158,7 +160,7 @@ func defFeatureListUpdate() Definition {
 func defFeatureListRead() Definition {
 	return Definition{
 		Name:        "feature_list_read",
-		Description: "Read current feature list",
+		Description: "Read the initializer feature roadmap created for this session. Use before updating bootstrap feature status or when resuming init-mode setup.",
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},

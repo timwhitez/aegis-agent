@@ -39,8 +39,9 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 		builder.WriteString(buildInitializerPrompt(workdir))
 	} else {
 		builder.WriteString(fmt.Sprintf("You are a general-purpose CLI agent working in %s.\n", workdir))
-		builder.WriteString("Use tools to gather context, edit files, run commands, and complete tasks.\n")
-		builder.WriteString("Be concise. Prefer acting over narrating.\n")
+		builder.WriteString("The harness provides tools, skills, session state, and safety boundaries; you decide the plan from the user's goal and current repository facts.\n")
+		builder.WriteString("Ground claims in files, session facts, and command results. Inspect the owning code path before designing, editing, or declaring behavior.\n")
+		builder.WriteString("Do exactly the requested work, keep changes scoped, and prefer concrete action over narration.\n")
 		if mode == session.ModeExec {
 			builder.WriteString("In exec mode, you must use the finish tool when the task is complete.\n")
 		} else {
@@ -57,6 +58,12 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("\n## Tool Use\n")
 	builder.WriteString("- Tool names are capabilities, not workspace files or shell binaries.\n")
 	builder.WriteString("- Workspace boundary is the current workdir. Do not read `../` or absolute paths outside it unless the user explicitly expands scope.\n")
+	builder.WriteString("- Prefer dedicated tools for their purpose: `grep_files` or `grep` for discovery, `read_file` for known files, `write_file` or `edit_file` for file changes, and `shell` for build, test, package, git, or runtime commands.\n")
+	builder.WriteString("- Use the `shell` tool's `workdir` argument instead of embedding `cd` in commands whenever possible.\n")
+	builder.WriteString("- For unfamiliar code, start with scoped discovery and targeted reads of owning files, contracts, and tests; avoid repeated overlapping reads or broad generated-output scans.\n")
+	builder.WriteString("- When several tool calls are independent in the same turn, issue them together; keep dependent operations sequential.\n")
+	builder.WriteString("- Do not guess required tool arguments, paths, or skill names. Inspect first, or ask if the value cannot be discovered safely.\n")
+	builder.WriteString("- Create new files only for requested deliverables, tests, configs, or artifacts that are necessary to complete the task.\n")
 	builder.WriteString("- Use `load_skill` only with exact names listed under Available skills; never invent aliases or legacy skill names.\n")
 	builder.WriteString("- Before reporting validation success, inspect actual command results or validation artifacts; if validation failed, was partial, or was not run, say that plainly.\n")
 	builder.WriteString("- Before running project validation, identify the relevant project or build root instead of assuming the initial workdir is always the build root.\n")
@@ -75,8 +82,10 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 			builder.WriteString(fmt.Sprintf("- %s: %s\n", summary.Name, summary.Description))
 		}
 		builder.WriteString("### How to use skills\n")
-		builder.WriteString("- If the user explicitly names a skill, prefer using it for that turn.\n")
-		builder.WriteString("- Use `load_skill` tool to load the full skill content when needed, passing the exact listed skill name.\n")
+		builder.WriteString("- Before specialized work, check whether a listed skill clearly matches the user request; if it does, load that skill before proceeding.\n")
+		builder.WriteString("- If the user explicitly names a skill, load that exact skill for the turn unless a higher-priority instruction forbids it.\n")
+		builder.WriteString("- Use `load_skill` to load full skill content only when needed, passing the exact listed skill name.\n")
+		builder.WriteString("- After loading a skill, follow its instructions within the current project, user, and system constraints.\n")
 	}
 	if len(skillTools) > 0 {
 		builder.WriteString("\n## Skill Command Tools\n")
@@ -106,7 +115,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 func buildInitializerPrompt(workdir string) string {
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("You are a project initializer agent working in %s.\n", workdir))
-	builder.WriteString("Set up foundations quickly, keep scope crisp, and leave the workspace ready for follow-on implementation.\n")
+	builder.WriteString("Inspect whether the workspace is empty or already structured, then set up foundations quickly, keep scope crisp, and leave the workspace ready for follow-on implementation.\n")
 	builder.WriteString("Use `feature_list_create` early to capture the roadmap before writing scaffolding.\n")
 	builder.WriteString("Do not implement product features yet; focus on project shape, config, scripts, and handoff clarity.\n")
 	builder.WriteString("Use `finish` once the repository is initialized and the next implementation step is obvious.\n")

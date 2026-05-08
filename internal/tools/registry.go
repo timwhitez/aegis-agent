@@ -228,16 +228,18 @@ func todoItemSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"content": map[string]any{"type": "string"},
+			"content": map[string]any{"type": "string", "description": "Concise task text. Keep it specific enough to track progress without duplicating nearby todos."},
 			"status": map[string]any{
-				"type": "string",
-				"enum": []string{"pending", "in_progress", "completed", "cancelled"},
+				"type":        "string",
+				"enum":        []string{"pending", "in_progress", "completed", "cancelled"},
+				"description": "Current task state. Use in_progress for at most one active item and completed only after the work is actually done.",
 			},
 			"priority": map[string]any{
-				"type": "string",
-				"enum": []string{"high", "medium", "low"},
+				"type":        "string",
+				"enum":        []string{"high", "medium", "low"},
+				"description": "Relative importance for this session.",
 			},
-			"updated_at": map[string]any{"type": "string"},
+			"updated_at": map[string]any{"type": "string", "description": "Optional RFC3339 timestamp; omitted values are filled by the runtime."},
 		},
 		"required":             []string{"content", "status"},
 		"additionalProperties": false,
@@ -251,18 +253,36 @@ func stringArraySchema() map[string]any {
 	}
 }
 
+func withDescription(schema map[string]any, description string) map[string]any {
+	out := make(map[string]any, len(schema)+1)
+	for key, value := range schema {
+		out[key] = value
+	}
+	out["description"] = description
+	return out
+}
+
 func defShell() Definition {
 	return Definition{
 		Name:            "shell",
-		Description:     "Run shell command in workspace.",
+		Description:     "Run non-interactive terminal commands in the workspace for build, test, package, git, and runtime operations. Prefer dedicated tools for file search, reading, writing, and editing instead of shell cat/grep/sed/echo. Use the workdir parameter instead of embedding cd when changing directories, quote paths with spaces, and inspect exit_code/output before claiming success.",
 		Ephemeral:       true,
 		EphemeralWindow: 2,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command": map[string]any{"type": "string"},
-				"timeout": map[string]any{"type": "integer"},
-				"workdir": map[string]any{"type": "string"},
+				"command": map[string]any{
+					"type":        "string",
+					"description": "The non-interactive shell command to execute. Avoid cd for directory changes; use workdir instead.",
+				},
+				"timeout": map[string]any{
+					"type":        "integer",
+					"description": "Optional per-command timeout in seconds. Omit to use the configured runtime default.",
+				},
+				"workdir": map[string]any{
+					"type":        "string",
+					"description": "Optional workspace-relative directory for command execution. Must resolve inside the workspace.",
+				},
 			},
 			"required": []string{"command"},
 		},
@@ -378,13 +398,22 @@ func defShell() Definition {
 func defReadFile() Definition {
 	return Definition{
 		Name:        "read_file",
-		Description: "Read file lines with offset/limit (max 120 lines per call).",
+		Description: "Read a known workspace text file with 1-based offset and limit. Each call returns an annotated line window and is capped at 120 lines, so use grep_files or grep first for discovery and then read the owning file slices you need. This reads files only, not directories, and rejects internal generated artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":   map[string]any{"type": "string"},
-				"offset": map[string]any{"type": "integer"},
-				"limit":  map[string]any{"type": "integer"},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Workspace-relative file path to read.",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "1-based starting line. Omit or use 1 to start at the beginning.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum lines to return. Values above 120 are capped to 120.",
+				},
 			},
 			"required": []string{"path"},
 		},
@@ -445,12 +474,18 @@ func defReadFile() Definition {
 func defWriteFile() Definition {
 	return Definition{
 		Name:        "write_file",
-		Description: "Write file to workspace (creates parent dirs).",
+		Description: "Create or overwrite a workspace file with exact content, creating parent directories when needed. Use this for requested artifacts, new tests, configs, or full-file rewrites; prefer edit_file for targeted changes to existing files. The target must stay inside the workspace and pass write-policy checks.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Workspace-relative destination path.",
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "Complete file content to write.",
+				},
 			},
 			"required": []string{"path", "content"},
 		},
@@ -488,13 +523,22 @@ func defWriteFile() Definition {
 func defEditFile() Definition {
 	return Definition{
 		Name:        "edit_file",
-		Description: "Replace exact text in file.",
+		Description: "Replace exact text in an existing workspace file. Use this for surgical edits after reading the relevant file slice; old_text must match the file exactly and should include enough surrounding context to identify the intended occurrence. Prefer this over write_file when only part of an existing file changes.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":     map[string]any{"type": "string"},
-				"old_text": map[string]any{"type": "string"},
-				"new_text": map[string]any{"type": "string"},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Workspace-relative path of the existing file to edit.",
+				},
+				"old_text": map[string]any{
+					"type":        "string",
+					"description": "Exact text currently present in the file. Preserve indentation and surrounding context.",
+				},
+				"new_text": map[string]any{
+					"type":        "string",
+					"description": "Replacement text to write in place of old_text.",
+				},
 			},
 			"required": []string{"path", "old_text", "new_text"},
 		},
@@ -542,13 +586,16 @@ func defEditFile() Definition {
 func defGlob() Definition {
 	return Definition{
 		Name:            "glob",
-		Description:     "Match files by glob pattern.",
+		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Generated, cache, and internal artifact directories are skipped.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string"},
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Glob pattern such as **/*.go or spec/*.md, evaluated inside the workspace.",
+				},
 			},
 			"required": []string{"pattern"},
 		},
@@ -586,12 +633,18 @@ func defGlob() Definition {
 func defGrep() Definition {
 	return Definition{
 		Name:        "grep",
-		Description: "Search file contents recursively (skips build artifacts).",
+		Description: "Search workspace text recursively and return matching lines as path:line:text. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string"},
-				"path":    map[string]any{"type": "string"},
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Regex pattern if it compiles, otherwise literal substring to search for.",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Optional workspace-relative file or directory to search. Omit to search the workspace.",
+				},
 			},
 			"required": []string{"pattern"},
 		},
@@ -662,16 +715,28 @@ func defGrep() Definition {
 func defGrepFiles() Definition {
 	return Definition{
 		Name:            "grep_files",
-		Description:     "Find files matching pattern (returns paths only).",
+		Description:     "Search workspace text recursively and return only files that contain the pattern. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string"},
-				"path":    map[string]any{"type": "string"},
-				"include": map[string]any{"type": "string"},
-				"limit":   map[string]any{"type": "integer"},
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Regex pattern if it compiles, otherwise literal substring to search for.",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Optional workspace-relative file or directory to search. Omit to search the workspace.",
+				},
+				"include": map[string]any{
+					"type":        "string",
+					"description": "Optional glob filter for candidate files, for example **/*.go or spec/*.md.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of matching file paths to return. Defaults to 100.",
+				},
 			},
 			"required": []string{"pattern"},
 		},
@@ -860,11 +925,14 @@ func annotateReadWindow(workdir, path string, offset, end, totalLines, requested
 func defFinish() Definition {
 	return Definition{
 		Name:        "finish",
-		Description: "Mark task complete.",
+		Description: "Signal that the current task is complete and provide the final concise result for the user. Use only after requested work, required artifacts, and necessary validation are complete, or after clearly stating any blocker or unrun/failed validation. Do not call finish merely because the model has no more ideas.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"message": map[string]any{"type": "string"},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "Concise final user-facing summary, including validation status or blockers when relevant.",
+				},
 			},
 			"required": []string{"message"},
 		},
@@ -888,10 +956,10 @@ func defFinish() Definition {
 func defLoadSkill(catalog *skills.Catalog) Definition {
 	availableSkills := catalog.Names()
 	nameSchema := map[string]any{"type": "string"}
-	description := "Load a registered skill definition by exact name."
+	description := "Load the full instructions for one registered skill by exact name. Use this when the user names a skill or an available skill clearly matches the requested task; do not invent aliases or load skills that are not listed."
 	if len(availableSkills) > 0 {
 		nameSchema["enum"] = availableSkills
-		description = fmt.Sprintf("Load a registered skill definition by exact name. Available skills: %s.", strings.Join(availableSkills, ", "))
+		description = fmt.Sprintf("Load the full instructions for one registered skill by exact name. Use this when the user names a skill or an available skill clearly matches the requested task; do not invent aliases or load skills that are not listed. Available skills: %s.", strings.Join(availableSkills, ", "))
 	}
 	return Definition{
 		Name:        "load_skill",
@@ -899,7 +967,7 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": nameSchema,
+				"name": withDescription(nameSchema, "Exact registered skill name from the available-skills list."),
 			},
 			"required":             []string{"name"},
 			"additionalProperties": false,
@@ -941,13 +1009,14 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 func defTodoWrite() Definition {
 	return Definition{
 		Name:        "todo_write",
-		Description: "Write session todo list.",
+		Description: "Replace the session todo list with the current execution plan. Use for non-trivial multi-step work, after new user instructions, or when progress needs durable visibility; skip trivial one-step or purely conversational tasks. Keep at most one item in_progress and mark items completed immediately after the work and relevant verification are done.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"todos": map[string]any{
-					"type":  "array",
-					"items": todoItemSchema(),
+					"type":        "array",
+					"description": "Full replacement snapshot of the session todo list.",
+					"items":       todoItemSchema(),
 				},
 			},
 			"required": []string{"todos"},
@@ -990,7 +1059,7 @@ func defTodoWrite() Definition {
 func defTodoRead() Definition {
 	return Definition{
 		Name:        "todo_read",
-		Description: "Read session todo list.",
+		Description: "Read the current session todo list. Use before updating todos when resuming, avoiding duplicates, checking pending work, or answering progress questions. Returns an empty list if no todos exist.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
 			todo, err := execCtx.Store.LoadTodo(execCtx.SessionID)
@@ -1014,15 +1083,15 @@ func defTodoRead() Definition {
 func defTaskCreate() Definition {
 	return Definition{
 		Name:        "task_create",
-		Description: "Create task node.",
+		Description: "Create a durable task-graph node for long-running, dependent, or resumable work. Use this when a task needs dependency tracking or handoff beyond the short session todo list; do not use it for trivial single-step work. The runtime maintains IDs, dependency edges, and cycle checks.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"subject":     map[string]any{"type": "string"},
-				"description": map[string]any{"type": "string"},
-				"priority":    map[string]any{"type": "string"},
-				"blocked_by":  stringArraySchema(),
-				"labels":      stringArraySchema(),
+				"subject":     map[string]any{"type": "string", "description": "Short task title."},
+				"description": map[string]any{"type": "string", "description": "Optional task detail, expected output, or acceptance notes."},
+				"priority":    map[string]any{"type": "string", "description": "Optional priority: high, medium, or low."},
+				"blocked_by":  withDescription(stringArraySchema(), "Optional task IDs that must complete before this task is ready."),
+				"labels":      withDescription(stringArraySchema(), "Optional grouping labels such as provider, docs, or validation."),
 			},
 			"required": []string{"subject"},
 		},
@@ -1059,21 +1128,21 @@ func defTaskCreate() Definition {
 func defTaskUpdate() Definition {
 	return Definition{
 		Name:        "task_update",
-		Description: "Update task node.",
+		Description: "Update a durable task-graph node, including status, dependency edges, owner, or notes. Use this as long work progresses so resume and handoff state stays fresh. Mark completed only after the task is actually done; dependency edges are kept consistent by the runtime.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"task_id":           map[string]any{"type": "string"},
-				"status":            map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed", "cancelled"}},
-				"subject":           map[string]any{"type": "string"},
-				"description":       map[string]any{"type": "string"},
-				"priority":          map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}},
-				"owner":             map[string]any{"type": "string"},
-				"add_blocked_by":    stringArraySchema(),
-				"remove_blocked_by": stringArraySchema(),
-				"add_blocks":        stringArraySchema(),
-				"remove_blocks":     stringArraySchema(),
-				"append_note":       map[string]any{"type": "string"},
+				"task_id":           map[string]any{"type": "string", "description": "Task ID to update, for example task_0001."},
+				"status":            map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed", "cancelled"}, "description": "Optional new task status."},
+				"subject":           map[string]any{"type": "string", "description": "Optional replacement task title."},
+				"description":       map[string]any{"type": "string", "description": "Optional replacement task detail."},
+				"priority":          map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}, "description": "Optional priority."},
+				"owner":             map[string]any{"type": "string", "description": "Optional owner or role hint for handoff."},
+				"add_blocked_by":    withDescription(stringArraySchema(), "Task IDs to add as blockers for this task."),
+				"remove_blocked_by": withDescription(stringArraySchema(), "Task IDs to remove from this task's blockers."),
+				"add_blocks":        withDescription(stringArraySchema(), "Task IDs that this task should block."),
+				"remove_blocks":     withDescription(stringArraySchema(), "Task IDs that this task should stop blocking."),
+				"append_note":       map[string]any{"type": "string", "description": "Optional note to append without replacing existing notes."},
 			},
 			"required": []string{"task_id"},
 		},
@@ -1110,7 +1179,7 @@ func defTaskUpdate() Definition {
 func defTaskList() Definition {
 	return Definition{
 		Name:        "task_list",
-		Description: "List task graph with ready/blocked views.",
+		Description: "List the durable task graph and derived ready, blocked, and completed views. Use this when resuming long work, choosing the next ready task, or reconciling handoff state. This is not a substitute for checking current files or validation results.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
@@ -1148,11 +1217,11 @@ func defTaskList() Definition {
 func defTaskGet() Definition {
 	return Definition{
 		Name:        "task_get",
-		Description: "Read task node by ID.",
+		Description: "Read one durable task node by ID. Use this when task_list shows a task that needs detail before updating, implementing, or summarizing it.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"task_id": map[string]any{"type": "string"},
+				"task_id": map[string]any{"type": "string", "description": "Task ID to read, for example task_0001."},
 			},
 			"required": []string{"task_id"},
 		},

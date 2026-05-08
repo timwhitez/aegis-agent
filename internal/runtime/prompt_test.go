@@ -25,13 +25,20 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 	)
 
 	checks := []string{
+		"The harness provides tools, skills, session state, and safety boundaries",
+		"Ground claims in files, session facts, and command results",
 		"## Tool Use",
 		"Tool names are capabilities, not workspace files or shell binaries.",
 		"Workspace boundary is the current workdir.",
+		"Prefer dedicated tools for their purpose",
+		"issue them together; keep dependent operations sequential",
+		"Do not guess required tool arguments, paths, or skill names",
 		"Use `load_skill` only with exact names listed under Available skills",
 		"## Skills",
 		"### Available skills",
 		"- repo_audit: Repository audit workflow",
+		"check whether a listed skill clearly matches the user request",
+		"After loading a skill, follow its instructions within the current project, user, and system constraints",
 		"## Skill Command Tools",
 		"- markdown_inventory: List Markdown files",
 	}

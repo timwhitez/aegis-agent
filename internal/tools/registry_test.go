@@ -553,6 +553,35 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	}
 }
 
+func TestCoreToolDescriptionsGuideSelection(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	checks := map[string][]string{
+		"shell":       {"build, test, package, git", "Prefer dedicated tools", "workdir parameter"},
+		"read_file":   {"known workspace text file", "capped at 120 lines", "use grep_files or grep first"},
+		"write_file":  {"Create or overwrite", "prefer edit_file"},
+		"edit_file":   {"Replace exact text", "after reading"},
+		"grep_files":  {"default discovery step", "return only files"},
+		"finish":      {"required artifacts", "unrun/failed validation"},
+		"todo_write":  {"non-trivial multi-step work", "skip trivial one-step"},
+		"task_create": {"durable task-graph node", "do not use it for trivial"},
+	}
+	for name, needles := range checks {
+		def := registry.Get(name)
+		if def == nil {
+			t.Fatalf("%s definition missing", name)
+		}
+		for _, needle := range needles {
+			if !strings.Contains(def.Description, needle) {
+				t.Fatalf("expected %s description to contain %q, got %q", name, needle, def.Description)
+			}
+		}
+	}
+}
+
 func TestFeatureListToolsPersistUpdateAndReadSnapshot(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
