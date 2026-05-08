@@ -773,13 +773,9 @@ async function sendMessage() {
 
   if (state.isGenerating && hasDurableSession()) {
     try {
-      await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/steer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          interrupt: state.nextSendInterrupt
-        })
+      await steerSession(state.sessionId, {
+        message: text,
+        interrupt: state.nextSendInterrupt
       });
       const usedInterrupt = state.nextSendInterrupt;
       state.nextSendInterrupt = false;
@@ -825,13 +821,9 @@ async function sendMessage() {
 
   if (!hasDurableSession() || currentStatus === 'completed') {
     try {
-      const resp = await requestJSON('/api/sessions/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: text,
-          workdir: selectedWorkspaceWorkdir()
-        })
+      const resp = await startSession({
+        prompt: text,
+        workdir: selectedWorkspaceWorkdir()
       });
       adoptSession(resp.session_id, true);
       setGenerating(true, {
@@ -870,9 +862,7 @@ async function requestInterrupt() {
     return;
   }
   try {
-    await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/interrupt`, {
-      method: 'POST'
-    });
+    await interruptSession(state.sessionId);
     state.liveActivity = {
       title: 'Interrupt requested',
       copy: 'The runner will stop at the nearest safe boundary and surface the session state.',
@@ -892,9 +882,7 @@ async function requestStop() {
     return;
   }
   try {
-    await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/stop`, {
-      method: 'POST'
-    });
+    await stopSession(state.sessionId);
     state.liveActivity = {
       title: 'Stopping run',
       copy: 'The current run is being stopped. Partial output and tool results will remain visible.',
@@ -910,11 +898,7 @@ async function requestStop() {
 
 async function requestContinueSession(sessionID, message = '', options = {}) {
   try {
-    await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/continue`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message })
-    });
+    await continueSession(sessionID, { message });
     if (!options.silentToast) {
       showToast('Session continued.', 'success');
     }
@@ -3276,28 +3260,6 @@ function reconcileOptimisticMessages(detail) {
   });
 }
 
-async function requestJSON(url, options = {}) {
-  const response = await fetch(url, options);
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
-  if (!response.ok) {
-    const message = payload?.error || payload?.message || response.statusText || `Request failed: ${response.status}`;
-    throw new Error(message);
-  }
-  return payload;
-}
-
-async function requestFormJSON(url, formData, options = {}) {
-  return requestJSON(url, {
-    ...options,
-    body: formData
-  });
-}
-
 function showToast(message, tone = 'info') {
   const id = `toast-${++state.toastCounter}`;
   const toast = document.createElement('div');
@@ -3423,16 +3385,12 @@ function renderQueueView(opts = {}) {
       submitBtn.innerText = 'Submitting...';
 
       try {
-        await requestJSON('/api/queue/jobs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: prompt,
-            parent_session_id: parentInput.value.trim(),
-            model: modelInput.value.trim(),
-            agent_role: agentInput.value.trim(),
-            workdir: selectedWorkspaceWorkdir()
-          })
+        await submitQueueJob({
+          prompt,
+          parentSessionID: parentInput.value.trim(),
+          model: modelInput.value.trim(),
+          agentRole: agentInput.value.trim(),
+          workdir: selectedWorkspaceWorkdir()
         });
         showToast('Background job submitted.', 'success');
         promptInput.value = '';
@@ -3893,18 +3851,14 @@ async function renderSettings() {
             throw new Error('Hard max turns must be a positive integer, or disable the hard limit.');
           }
         }
-        await requestJSON('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            guardrails_mode: guardrailsSelect.value,
-            max_turns_hard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
-            disable_hard_turn_limit: disableHardTurnLimitInput.checked,
-            provider: providerSelect.value,
-            base_url: baseURLInput.value,
-            model: modelInput.value,
-            api_key: apiKeyInput.value === '••••••••••••••••' && apiKeyInput.dataset.originalHasKey === 'true' ? '' : apiKeyInput.value
-          })
+        await saveConfig({
+          guardrailsMode: guardrailsSelect.value,
+          maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
+          disableHardTurnLimit: disableHardTurnLimitInput.checked,
+          provider: providerSelect.value,
+          baseURL: baseURLInput.value,
+          model: modelInput.value,
+          apiKey: apiKeyInput.value === '••••••••••••••••' && apiKeyInput.dataset.originalHasKey === 'true' ? '' : apiKeyInput.value
         });
         showToast('Settings saved.', 'success');
         // Optimistic update: reflect saved state without full re-render

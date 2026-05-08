@@ -303,6 +303,141 @@ func TestContinueRESTCarriesRuntimeFields(t *testing.T) {
 	}
 }
 
+func TestStartSessionRejectsUnknownField(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt":       "hello",
+		"unknown_flag": true,
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unknown field") {
+		t.Fatalf("expected unknown field error, got %#v", errResp)
+	}
+}
+
+func TestContinueSessionRejectsUnknownField(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_continue_unknown_field")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/continue", map[string]any{
+		"message":       "continue",
+		"unknown_field": "bad",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unknown field") {
+		t.Fatalf("expected unknown field error, got %#v", errResp)
+	}
+}
+
+func TestContinueNonResumableSessionReturnsStructuredError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_continue_completed")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/continue", map[string]any{
+		"message": "continue",
+	}, http.StatusConflict)
+	if errResp.Code != errorCodeSessionNotResumable || errResp.Action == "" {
+		t.Fatalf("expected structured non-resumable error, got %#v", errResp)
+	}
+}
+
+func TestInterruptNonOwnedSessionReturnsStructuredError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_interrupt_not_owned")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/interrupt", map[string]any{}, http.StatusConflict)
+	if errResp.Code != errorCodeActiveHandleNotOwned || errResp.Action == "" {
+		t.Fatalf("expected structured active-handle error, got %#v", errResp)
+	}
+}
+
+func TestStopNonOwnedSessionReturnsStructuredError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_stop_not_owned")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/stop", map[string]any{}, http.StatusConflict)
+	if errResp.Code != errorCodeActiveHandleNotOwned || errResp.Action == "" {
+		t.Fatalf("expected structured active-handle error, got %#v", errResp)
+	}
+}
+
+func TestUpdateConfigRejectsUnknownProvider(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "missing-provider",
+	}, http.StatusBadRequest)
+	if errResp.Code != errorCodeUnknownProvider || errResp.Action == "" {
+		t.Fatalf("expected unknown provider error, got %#v", errResp)
+	}
+	if cfg.DefaultProvider != "openai" {
+		t.Fatalf("unknown provider should not mutate default provider, got %q", cfg.DefaultProvider)
+	}
+}
+
 func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -346,8 +481,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, `data-view="overview"`) || strings.Contains(indexBody, "Overview</span>") || strings.Contains(indexBody, "overview-view") {
 		t.Fatalf("expected standalone overview page to be removed from shell, got shell body: %s", indexBody)
 	}
-	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "utils.js") {
+	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
+	}
+	if !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "app.js") {
+		t.Fatalf("expected shell to load utils/icons/api/app assets, got shell body: %s", indexBody)
 	}
 	iconsBody := checkBody(server.URL + "/icons.js")
 	if !strings.Contains(iconsBody, "window.lucide") || !strings.Contains(iconsBody, "createIcons") {
@@ -356,6 +494,13 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	utilsBody := checkBody(server.URL + "/utils.js")
 	if !strings.Contains(utilsBody, "safeMarkdown") || !strings.Contains(utilsBody, "escapeHTML") || !strings.Contains(utilsBody, "collectShellRedirectPaths") || strings.Contains(utilsBody, "unpkg.com") || strings.Contains(utilsBody, "cdn.jsdelivr.net") {
 		t.Fatalf("unexpected utils.js body: %s", utilsBody)
+	}
+	apiBody := checkBody(server.URL + "/api.js")
+	if !strings.Contains(apiBody, "class APIError") || !strings.Contains(apiBody, "function requestJSON") || !strings.Contains(apiBody, "function startSession") || !strings.Contains(apiBody, "function continueSession") || !strings.Contains(apiBody, "function steerSession") {
+		t.Fatalf("unexpected api.js body: %s", apiBody)
+	}
+	if strings.Contains(apiBody, "unpkg.com") || strings.Contains(apiBody, "cdn.jsdelivr.net") {
+		t.Fatalf("expected api.js to avoid external dependencies, got api.js body: %s", apiBody)
 	}
 
 	jsBody := checkBody(server.URL + "/app.js")
@@ -1542,6 +1687,30 @@ func testConfig(t *testing.T, baseURL string) *config.Config {
 	return cfg
 }
 
+func testSessionMetadata(t *testing.T, id string) session.SessionMetadata {
+	t.Helper()
+	workdir := t.TempDir()
+	return session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               id,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		RequestedWorkdir: workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+}
+
+func testSessionState(status string) session.State {
+	return session.State{
+		Status:    status,
+		Phase:     string(status),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+}
+
 func newFinishServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1665,6 +1834,29 @@ func postJSON(t *testing.T, url string, payload any, wantStatus int, target any)
 			t.Fatalf("decode response: %v", err)
 		}
 	}
+}
+
+func postJSONError(t *testing.T, url string, payload any, wantStatus int) ErrorResponse {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("post %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		var body bytes.Buffer
+		_, _ = body.ReadFrom(resp.Body)
+		t.Fatalf("unexpected status %d want %d body=%s", resp.StatusCode, wantStatus, body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	return errResp
 }
 
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool, describe func() string) {

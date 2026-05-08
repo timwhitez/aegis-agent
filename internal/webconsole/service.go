@@ -675,18 +675,7 @@ func (s *Service) handleTaskBoard(w http.ResponseWriter, sessionID string) {
 }
 
 func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Prompt         string `json:"prompt"`
-		AgentName      string `json:"agent_name"`
-		AgentRole      string `json:"agent_role"`
-		Provider       string `json:"provider"`
-		Model          string `json:"model"`
-		Workdir        string `json:"workdir"`
-		Mode           string `json:"mode"`
-		SystemOverride string `json:"system"`
-		IsolationMode  string `json:"isolation_mode"`
-		IsolationRoot  string `json:"isolation_root"`
-	}
+	var req StartSessionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -759,12 +748,7 @@ func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error)
 }
 
 func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, sessionID string) {
-	var req struct {
-		Message        string `json:"message"`
-		Provider       string `json:"provider"`
-		Model          string `json:"model"`
-		SystemOverride string `json:"system"`
-	}
+	var req ContinueSessionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -781,7 +765,12 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	switch state.Status {
 	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
 	default:
-		writeError(w, http.StatusConflict, errors.New("session is not resumable"))
+		writeError(w, http.StatusConflict, newWebError(
+			errorCodeSessionNotResumable,
+			"session is not resumable",
+			"only paused, awaiting_input, and failed sessions can be continued",
+			"start a new session or choose a resumable session",
+		))
 		return
 	}
 	if s.hasActiveHandle(sessionID) {
@@ -810,10 +799,7 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Service) handleSteerSession(w http.ResponseWriter, r *http.Request, sessionID string) {
-	var req struct {
-		Message   string `json:"message"`
-		Interrupt bool   `json:"interrupt"`
-	}
+	var req SteerSessionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -844,7 +830,12 @@ func (s *Service) handleInterruptSession(w http.ResponseWriter, sessionID string
 	handle, ok := s.handles[sessionID]
 	s.mu.RUnlock()
 	if !ok {
-		writeError(w, http.StatusConflict, errors.New("session is not actively owned by this web console; use steer with interrupt instead"))
+		writeError(w, http.StatusConflict, newWebError(
+			errorCodeActiveHandleNotOwned,
+			"session is not actively owned by this web console; use steer with interrupt instead",
+			"this server process does not own an in-memory cancel handle for the session",
+			"send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles",
+		))
 		return
 	}
 	if err := handle.runner.InterruptWithReason(sessionID, "manual_interrupt"); err != nil {
@@ -859,7 +850,12 @@ func (s *Service) handleStopSession(w http.ResponseWriter, sessionID string) {
 	handle, ok := s.handles[sessionID]
 	s.mu.RUnlock()
 	if !ok {
-		writeError(w, http.StatusConflict, errors.New("session is not actively owned by this web console; it may already be settled"))
+		writeError(w, http.StatusConflict, newWebError(
+			errorCodeActiveHandleNotOwned,
+			"session is not actively owned by this web console; it may already be settled",
+			"this server process does not own an in-memory cancel handle for the session",
+			"refresh the session; if it is still running, send interrupt steer or wait for the run to settle",
+		))
 		return
 	}
 	if err := handle.runner.InterruptWithReason(sessionID, "manual_stop"); err != nil {
@@ -901,20 +897,7 @@ func (s *Service) handleShowJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Prompt          string `json:"prompt"`
-		ParentSessionID string `json:"parent_session_id"`
-		AgentName       string `json:"agent_name"`
-		AgentRole       string `json:"agent_role"`
-		Provider        string `json:"provider"`
-		Model           string `json:"model"`
-		Workdir         string `json:"workdir"`
-		SystemOverride  string `json:"system"`
-		Mode            string `json:"mode"`
-		WaitMode        string `json:"wait_mode"`
-		IsolationMode   string `json:"isolation_mode"`
-		IsolationRoot   string `json:"isolation_root"`
-	}
+	var req QueueJobRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1016,7 +999,7 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{
 				"type": "error",
 				"payload": map[string]any{
-					"code":    "WEBSOCKET_CONTROL_DEPRECATED",
+					"code":    errorCodeWebSocketControlDeprecated,
 					"content": "websocket messages are relay-only; use the REST API for session control",
 					"action":  "call /api/sessions/start, /api/sessions/{id}/continue, /api/sessions/{id}/steer, /api/sessions/{id}/interrupt, or /api/sessions/{id}/stop",
 				},
@@ -1027,7 +1010,7 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func sendWebSocketControlDeprecated(send func(map[string]any), sessionID, messageType string) {
 	payload := map[string]any{
-		"code":    "WEBSOCKET_CONTROL_DEPRECATED",
+		"code":    errorCodeWebSocketControlDeprecated,
 		"content": "websocket session control is deprecated; use the REST API for start, continue, steer, interrupt, and stop",
 		"action":  "use POST /api/sessions/start, /api/sessions/{id}/continue, /api/sessions/{id}/steer, /api/sessions/{id}/interrupt, or /api/sessions/{id}/stop",
 		"type":    messageType,
@@ -1156,15 +1139,7 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Provider             string `json:"provider"`
-		BaseURL              string `json:"base_url"`
-		Model                string `json:"model"`
-		APIKey               string `json:"api_key"`
-		GuardrailsMode       string `json:"guardrails_mode"`
-		MaxTurnsHard         *int   `json:"max_turns_hard"`
-		DisableHardTurnLimit bool   `json:"disable_hard_turn_limit"`
-	}
+	var req UpdateConfigRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1179,6 +1154,15 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Provider != "" {
+		if _, ok := updatedCfg.Providers[req.Provider]; !ok {
+			writeError(w, http.StatusBadRequest, newWebError(
+				errorCodeUnknownProvider,
+				"unknown provider",
+				"provider "+req.Provider+" is not configured",
+				"choose one of the configured providers before saving settings",
+			))
+			return
+		}
 		updatedCfg.DefaultProvider = req.Provider
 	}
 	if strings.TrimSpace(req.GuardrailsMode) != "" {
@@ -2127,7 +2111,14 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]any{"error": err.Error()})
+	resp := ErrorResponse{Error: err.Error()}
+	var coded webError
+	if errors.As(err, &coded) {
+		resp.Code = coded.code
+		resp.Detail = coded.detail
+		resp.Action = coded.action
+	}
+	writeJSON(w, status, resp)
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {
