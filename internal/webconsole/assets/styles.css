@@ -164,6 +164,7 @@ input, textarea, select {
   height: 100%;
   position: relative;
   overflow: hidden;
+  min-height: 0;
 }
 
 header {
@@ -847,6 +848,7 @@ textarea {
   border: none;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-soft);
+  min-height: 0;
 }
 
 .file-tree {
@@ -893,6 +895,7 @@ textarea {
   flex-direction: column;
   border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
   overflow: hidden;
+  min-height: 0;
 }
 
 .editor-header {
@@ -918,6 +921,7 @@ textarea {
   white-space: pre-wrap;
   line-height: 1.7;
   tab-size: 4;
+  min-height: 0;
 }
 
 .compact-title {
