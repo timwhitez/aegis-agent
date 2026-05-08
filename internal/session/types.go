@@ -174,10 +174,22 @@ type LongRunCheckpoint struct {
 	UnresolvedChildSessions  []string           `json:"unresolved_child_sessions,omitempty"`
 	UnresolvedQueueJobs      []string           `json:"unresolved_queue_jobs,omitempty"`
 	BackgroundNotifications  int                `json:"background_notifications,omitempty"`
+	RecentOwner              *ProcessOwnerClue  `json:"recent_owner,omitempty"`
 	ResumeHints              []string           `json:"resume_hints,omitempty"`
 	SourceEventCount         int                `json:"source_event_count,omitempty"`
 	SourceMessageCount       int                `json:"source_message_count,omitempty"`
 	CreatedAt                string             `json:"created_at"`
+}
+
+type ProcessOwnerClue struct {
+	Source         string `json:"source,omitempty"`
+	HandleState    string `json:"handle_state,omitempty"`
+	EventType      string `json:"event_type,omitempty"`
+	ProcessStartID string `json:"process_start_id,omitempty"`
+	PID            int    `json:"pid,omitempty"`
+	StartedAt      string `json:"started_at,omitempty"`
+	ReleasedAt     string `json:"released_at,omitempty"`
+	LastEventAt    string `json:"last_event_at,omitempty"`
 }
 
 type ParentCoordination struct {

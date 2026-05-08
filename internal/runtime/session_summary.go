@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 )
 
@@ -30,6 +31,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	notifications, _ := store.LoadBackgroundNotifications(sessionID)
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	checkpoint, checkpointErr := store.LoadLongRunCheckpoint(sessionID)
+	eventsList, _ := store.LoadEvents(sessionID)
+	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
 
 	var b strings.Builder
 	b.WriteString("# Session Summary\n\n")
@@ -53,6 +56,16 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	}
 	if meta.QueueJobID != "" {
 		b.WriteString(fmt.Sprintf("- queue job: `%s`\n", meta.QueueJobID))
+	}
+	if hasOwnerClue {
+		b.WriteString(fmt.Sprintf("- recent owner: source=`%s` handle=`%s` pid=`%d` process_start_id=`%s` started_at=`%s` last_event_at=`%s`\n",
+			ownerClue.Source,
+			ownerClue.HandleState,
+			ownerClue.PID,
+			ownerClue.ProcessStartID,
+			ownerClue.StartedAt,
+			ownerClue.LastEventAt,
+		))
 	}
 	if meta.Isolation != nil && meta.Isolation.Mode != "" {
 		b.WriteString(fmt.Sprintf("- isolation: `%s` requested `%s`\n", meta.Isolation.Mode, meta.Isolation.RequestedMode))
@@ -190,6 +203,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	messages, _ := store.LoadMessages(sessionID)
 	eventsList, _ := store.LoadEvents(sessionID)
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
+	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
 
 	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, artifacts, tasks, children, jobs, state) {
 		return nil
@@ -217,6 +231,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		SourceEventCount:         len(eventsList),
 		SourceMessageCount:       len(messages),
 		CreatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if hasOwnerClue {
+		ownerCopy := ownerClue
+		checkpoint.RecentOwner = &ownerCopy
 	}
 	if contractErr == nil && contract.ContractID != "" {
 		copyContract := contract
@@ -281,6 +299,54 @@ func latestCompactionArtifact(store *session.Store, sessionID string) string {
 		return ""
 	}
 	return filepath.Join(dir, latest.Name())
+}
+
+func latestProcessOwnerClue(eventsList []events.Event) (session.ProcessOwnerClue, bool) {
+	for i := len(eventsList) - 1; i >= 0; i-- {
+		evt := eventsList[i]
+		if evt.Type != "webconsole.handle.acquired" && evt.Type != "webconsole.handle.released" {
+			continue
+		}
+		handleState := "acquired"
+		if evt.Type == "webconsole.handle.released" {
+			handleState = "released"
+		}
+		return session.ProcessOwnerClue{
+			Source:         eventString(evt.Data, "source"),
+			HandleState:    handleState,
+			EventType:      evt.Type,
+			ProcessStartID: eventString(evt.Data, "process_start_id"),
+			PID:            eventInt(evt.Data, "pid"),
+			StartedAt:      eventString(evt.Data, "started_at"),
+			ReleasedAt:     eventString(evt.Data, "released_at"),
+			LastEventAt:    evt.Time,
+		}, true
+	}
+	return session.ProcessOwnerClue{}, false
+}
+
+func eventString(data map[string]any, key string) string {
+	if data == nil {
+		return ""
+	}
+	value, _ := data[key].(string)
+	return value
+}
+
+func eventInt(data map[string]any, key string) int {
+	if data == nil {
+		return 0
+	}
+	switch value := data[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 func checkpointHints(checkpoint session.LongRunCheckpoint, state session.State) []string {

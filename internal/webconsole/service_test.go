@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 
 	"github.com/gorilla/websocket"
@@ -413,6 +414,63 @@ func TestStopNonOwnedSessionReturnsStructuredError(t *testing.T) {
 	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/stop", map[string]any{}, http.StatusConflict)
 	if errResp.Code != errorCodeActiveHandleNotOwned || errResp.Action == "" {
 		t.Fatalf("expected structured active-handle error, got %#v", errResp)
+	}
+}
+
+func TestSessionDetailReportsActiveHandleOwner(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	current := testSessionMetadata(t, "session_current_owner")
+	if err := svc.store.Create(current, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create current session: %v", err)
+	}
+	svc.addHandle(&launchHandle{
+		sessionID:      current.ID,
+		cancel:         func() {},
+		startedAt:      "2026-05-08T00:00:00Z",
+		processStartID: "current-process",
+		pid:            4242,
+	})
+	var currentDetail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+current.ID, &currentDetail)
+	if !currentDetail.ActiveHandle || currentDetail.ActiveHandleOwner.State != "current_process" || currentDetail.ActiveHandleOwner.ProcessStartID != "current-process" || currentDetail.ActiveHandleOwner.PID != 4242 {
+		t.Fatalf("expected current-process owner detail, got %#v", currentDetail.ActiveHandleOwner)
+	}
+
+	external := testSessionMetadata(t, "session_external_owner")
+	if err := svc.store.Create(external, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create external session: %v", err)
+	}
+	if err := svc.store.AppendEvent(external.ID, events.New(external.ID, "webconsole.handle.acquired", "webconsole", map[string]any{
+		"source":           "webconsole",
+		"process_start_id": "external-process",
+		"pid":              31337,
+		"started_at":       "2026-05-08T00:01:00Z",
+	})); err != nil {
+		t.Fatalf("append external owner event: %v", err)
+	}
+	var externalDetail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+external.ID, &externalDetail)
+	if externalDetail.ActiveHandle || externalDetail.ActiveHandleOwner.State != "running_not_owned" || externalDetail.ActiveHandleOwner.ProcessStartID != "external-process" || externalDetail.ActiveHandleOwner.Action == "" {
+		t.Fatalf("expected running-not-owned owner detail, got %#v", externalDetail.ActiveHandleOwner)
+	}
+
+	settled := testSessionMetadata(t, "session_settled_owner")
+	if err := svc.store.Create(settled, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create settled session: %v", err)
+	}
+	var settledDetail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+settled.ID, &settledDetail)
+	if settledDetail.ActiveHandle || settledDetail.ActiveHandleOwner.State != "settled" {
+		t.Fatalf("expected settled owner detail, got %#v", settledDetail.ActiveHandleOwner)
 	}
 }
 

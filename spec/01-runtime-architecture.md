@@ -207,6 +207,7 @@
 - 维护 queue worker pool，并通过独立 worker `Runner` 支持后台并行消费
 - 提供 overview / session detail / queue / children / task board 的聚合只读视图
 - 对 `steer`、`continue`、`queue submit`、`interrupt` 等控制操作做参数校验与状态映射
+- 将 WebConsole active handle 的 owner/process 线索写入 session events，并在 session detail、`session.md` 与 long-run checkpoint 中展示最近 owner 线索；不得把 in-memory cancel handle 伪持久化
 
 约束：
 

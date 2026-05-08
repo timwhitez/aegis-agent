@@ -30,6 +30,23 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+var webconsoleProcessOwner = newProcessOwner()
+
+type processOwner struct {
+	pid            int
+	processStartID string
+	startedAt      string
+}
+
+func newProcessOwner() processOwner {
+	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	return processOwner{
+		pid:            os.Getpid(),
+		processStartID: strconv.Itoa(os.Getpid()) + ":" + startedAt,
+		startedAt:      startedAt,
+	}
+}
+
 type Options struct {
 	WorkerCount int
 	ConfigPath  string
@@ -47,9 +64,12 @@ type Service struct {
 }
 
 type launchHandle struct {
-	sessionID string
-	runner    *runtime.Runner
-	cancel    context.CancelFunc
+	sessionID      string
+	runner         *runtime.Runner
+	cancel         context.CancelFunc
+	startedAt      string
+	processStartID string
+	pid            int
 }
 
 type workerPool struct {
@@ -131,6 +151,18 @@ type SessionDetailResponse struct {
 	Events                  []events.Event                   `json:"events"`
 	Timeline                []TimelineEntry                  `json:"timeline"`
 	ActiveHandle            bool                             `json:"active_handle"`
+	ActiveHandleOwner       ActiveHandleOwner                `json:"active_handle_owner"`
+}
+
+type ActiveHandleOwner struct {
+	State                 string `json:"state"`
+	OwnedByCurrentProcess bool   `json:"owned_by_current_process"`
+	ProcessStartID        string `json:"process_start_id,omitempty"`
+	PID                   int    `json:"pid,omitempty"`
+	StartedAt             string `json:"started_at,omitempty"`
+	ReleasedAt            string `json:"released_at,omitempty"`
+	LastEventAt           string `json:"last_event_at,omitempty"`
+	Action                string `json:"action,omitempty"`
 }
 
 type ChildrenResponse struct {
@@ -191,11 +223,16 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 func (s *Service) Close() {
 	s.workers.Close()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	handles := make([]*launchHandle, 0, len(s.handles))
 	for _, handle := range s.handles {
-		handle.cancel()
+		handles = append(handles, handle)
 	}
 	s.handles = map[string]*launchHandle{}
+	s.mu.Unlock()
+	for _, handle := range handles {
+		handle.cancel()
+		_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "service_close"})
+	}
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -603,6 +640,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if coordination, err := s.store.LoadParentCoordination(sessionID); err == nil && coordination.ParentSessionID != "" {
 		parentCoordinationPtr = &coordination
 	}
+	ownerEvents := eventsList
 	messages = tailMessages(messages, limit)
 	eventsList = tailEvents(eventsList, limit)
 	background = tailBackground(dedupeBackgroundNotifications(background), limit)
@@ -624,6 +662,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if timeline == nil {
 		timeline = []TimelineEntry{}
 	}
+	activeOwner := s.activeHandleOwner(sessionID, state.Status, ownerEvents)
 	return SessionDetailResponse{
 		Metadata:                meta,
 		State:                   state,
@@ -639,7 +678,8 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		Messages:                messages,
 		Events:                  eventsList,
 		Timeline:                timeline,
-		ActiveHandle:            s.hasActiveHandle(sessionID),
+		ActiveHandle:            activeOwner.OwnedByCurrentProcess,
+		ActiveHandleOwner:       activeOwner,
 	}, nil
 }
 
@@ -741,11 +781,7 @@ func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error)
 		cancel()
 		return LaunchResponse{}, err
 	}
-	handle := &launchHandle{
-		sessionID: sessionID,
-		runner:    runner,
-		cancel:    cancel,
-	}
+	handle := newLaunchHandle(sessionID, runner, cancel)
 	s.addHandle(handle)
 	if early != nil {
 		go s.finishHandle(handle, *early)
@@ -789,11 +825,7 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	}
 	runner := runtime.NewRunner(s.cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
-	handle := &launchHandle{
-		sessionID: sessionID,
-		runner:    runner,
-		cancel:    cancel,
-	}
+	handle := newLaunchHandle(sessionID, runner, cancel)
 	s.addHandle(handle)
 	go func() {
 		result, err := runner.Continue(runCtx, runtime.ContinueRequest{
@@ -955,16 +987,61 @@ func (s *Service) handleScaleWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) addHandle(handle *launchHandle) {
+	if handle.startedAt == "" {
+		handle.startedAt = nowString()
+	}
+	if handle.processStartID == "" {
+		handle.processStartID = webconsoleProcessOwner.processStartID
+	}
+	if handle.pid == 0 {
+		handle.pid = webconsoleProcessOwner.pid
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.handles[handle.sessionID] = handle
+	s.mu.Unlock()
+	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil)
 }
 
-func (s *Service) finishHandle(handle *launchHandle, _ launchOutcome) {
+func (s *Service) finishHandle(handle *launchHandle, outcome launchOutcome) {
 	handle.cancel()
+	data := map[string]any{}
+	if outcome.result.SessionID != "" {
+		data["result_session_id"] = outcome.result.SessionID
+	}
+	if outcome.err != nil {
+		data["error"] = outcome.err.Error()
+	}
+	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", data)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.handles, handle.sessionID)
+}
+
+func newLaunchHandle(sessionID string, runner *runtime.Runner, cancel context.CancelFunc) *launchHandle {
+	return &launchHandle{
+		sessionID:      sessionID,
+		runner:         runner,
+		cancel:         cancel,
+		startedAt:      nowString(),
+		processStartID: webconsoleProcessOwner.processStartID,
+		pid:            webconsoleProcessOwner.pid,
+	}
+}
+
+func (s *Service) recordLaunchHandleEvent(handle *launchHandle, eventType string, extra map[string]any) error {
+	data := map[string]any{
+		"source":           "webconsole",
+		"process_start_id": handle.processStartID,
+		"pid":              handle.pid,
+		"started_at":       handle.startedAt,
+	}
+	if eventType == "webconsole.handle.released" {
+		data["released_at"] = nowString()
+	}
+	for key, value := range extra {
+		data[key] = value
+	}
+	return s.store.AppendEvent(handle.sessionID, events.New(handle.sessionID, eventType, "webconsole", data))
 }
 
 func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -1600,6 +1677,53 @@ func (s *Service) hasActiveHandle(sessionID string) bool {
 	return ok
 }
 
+func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList []events.Event) ActiveHandleOwner {
+	s.pruneInactiveHandles()
+	s.mu.RLock()
+	handle, ok := s.handles[sessionID]
+	s.mu.RUnlock()
+	if ok {
+		return ActiveHandleOwner{
+			State:                 "current_process",
+			OwnedByCurrentProcess: true,
+			ProcessStartID:        handle.processStartID,
+			PID:                   handle.pid,
+			StartedAt:             handle.startedAt,
+			Action:                "interrupt and stop are available from this web console process",
+		}
+	}
+
+	owner := latestActiveOwnerFromEvents(eventsList)
+	if sessionStatus == session.StatusRunning {
+		owner.State = "running_not_owned"
+		owner.OwnedByCurrentProcess = false
+		owner.Action = "send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles"
+		return owner
+	}
+	owner.State = "settled"
+	owner.OwnedByCurrentProcess = false
+	owner.Action = "refresh the session or continue it if the current state is resumable"
+	return owner
+}
+
+func latestActiveOwnerFromEvents(eventsList []events.Event) ActiveHandleOwner {
+	for i := len(eventsList) - 1; i >= 0; i-- {
+		evt := eventsList[i]
+		if evt.Type != "webconsole.handle.acquired" && evt.Type != "webconsole.handle.released" {
+			continue
+		}
+		owner := ActiveHandleOwner{
+			ProcessStartID: eventString(evt.Data, "process_start_id"),
+			PID:            eventInt(evt.Data, "pid"),
+			StartedAt:      eventString(evt.Data, "started_at"),
+			ReleasedAt:     eventString(evt.Data, "released_at"),
+			LastEventAt:    evt.Time,
+		}
+		return owner
+	}
+	return ActiveHandleOwner{}
+}
+
 func (s *Service) hasAnyActiveHandle() bool {
 	s.pruneInactiveHandles()
 	s.mu.RLock()
@@ -2187,6 +2311,33 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func eventString(data map[string]any, key string) string {
+	if data == nil {
+		return ""
+	}
+	value, _ := data[key].(string)
+	return value
+}
+
+func eventInt(data map[string]any, key string) int {
+	if data == nil {
+		return 0
+	}
+	switch value := data[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, _ := strconv.Atoi(value.String())
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func nowString() string {

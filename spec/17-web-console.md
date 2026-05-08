@@ -273,14 +273,15 @@ Web console 通过一个新的 `WebConsoleService` 运行。
 - `runner`
 - `context cancel`
 - `started_at`
-- `done channel`
-- `last result`
+- `process_start_id`
+- `pid`
 
 原因：
 
 - 中断必须打到正确的 in-memory runner
 - 多个并发 session 不能共享单个 interrupt slot
 - Web server 需要知道哪些 session 是自己托管的 active run
+- handle 本身不能伪持久化；只能把 `webconsole.handle.acquired/released` 这类 owner/process 线索写入 `events.jsonl`，供恢复诊断、`session.md` 与 long-run checkpoint 使用
 
 ### 6.3 Worker Pool
 
@@ -352,6 +353,7 @@ worker pool 允许并发 `N >= 1`。
 - children summary
 - linked jobs
 - active handle status（是否被当前 server 托管）
+- `active_handle_owner`：区分 `current_process`、`running_not_owned`、`settled`，并暴露最近的 `process_start_id`、`pid`、`started_at`、`released_at` 线索
 
 ### 7.5 `POST /api/sessions/start`
 

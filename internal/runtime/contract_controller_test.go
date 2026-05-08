@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 )
 
@@ -163,6 +164,43 @@ func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 	}
 	if checkpoint.SessionID != meta.ID || len(checkpoint.ResumeHints) == 0 {
 		t.Fatalf("unexpected checkpoint: %#v", checkpoint)
+	}
+}
+
+func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	meta.ParentSessionID = "parent-session"
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := store.AppendEvent(meta.ID, events.New(meta.ID, "webconsole.handle.acquired", "webconsole", map[string]any{
+		"source":           "webconsole",
+		"process_start_id": "123:2026-05-08T00:00:00Z",
+		"pid":              123,
+		"started_at":       "2026-05-08T00:00:00Z",
+	})); err != nil {
+		t.Fatalf("append owner event: %v", err)
+	}
+	if err := writeSessionSummary(store, meta.ID); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+
+	summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if !strings.Contains(string(summary), "recent owner") || !strings.Contains(string(summary), "123:2026-05-08T00:00:00Z") {
+		t.Fatalf("expected owner clue in summary, got:\n%s", string(summary))
+	}
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if checkpoint.RecentOwner == nil || checkpoint.RecentOwner.ProcessStartID != "123:2026-05-08T00:00:00Z" || checkpoint.RecentOwner.HandleState != "acquired" {
+		t.Fatalf("expected owner clue in checkpoint, got %#v", checkpoint.RecentOwner)
 	}
 }
 
