@@ -139,7 +139,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if e.guardrailsYolo() {
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Runtime retrieval, project-memory, and review-artifact guardrails are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
-		view, compactionInputChars, didCompact, err := e.compactor.BuildWithPolicy(meta.ID, meta.Workdir, state, messages, todo, tasks, e.cfg.Runtime.Compact.InputCharThreshold, e.cfg.Runtime.Compact.KeepRecentToolResults, state.LastCompactionInputChars, e.cfg.Runtime.Compact.HysteresisDeltaChars, func(evt events.Event) {
+		compactionProfile := compactionProfileFromConfig(meta, e.cfg.Runtime.Compact)
+		view, compactionInputChars, didCompact, err := e.compactor.BuildWithProfile(meta.ID, meta.Workdir, state, messages, todo, tasks, compactionProfile, state.LastCompactionInputChars, func(evt events.Event) {
 			_ = e.store.AppendEvent(meta.ID, evt)
 			e.bus.Publish(evt)
 		})

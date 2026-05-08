@@ -137,8 +137,20 @@ compaction 只影响：
 - `runtime.compact.input_char_threshold`
 - `runtime.compact.keep_recent_tool_results`
 - `runtime.compact.hysteresis_delta_chars`
+- `runtime.compact.context_profiles`
+  - 可选，按 `provider/model`、`model` 或 `provider` 覆盖上述阈值。
+  - 未配置命中时继续使用默认字符阈值，不引入 provider 原生 token 计数或 replay 依赖。
 
-v1 先用字符数做近似估算，不做 provider 精确 token 计数。超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 可以复用 compacted provider view 并只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact。
+v1 先用字符数做近似估算，不做 provider 精确 token 计数。provider/model profile 只决定本地 compactor 使用哪组阈值，并写入 summary / compact event 作为诊断事实。超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 可以复用 compacted provider view 并只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact。
+
+## 6.1 Provider View 安全处理
+
+进入 provider view 和 compaction artifact 的历史内容需要先做轻量安全处理：
+
+- 旧 tool call arguments 与旧 tool result 只保留 head/tail、原始长度和关键 metadata；最近 `keep_recent_tool_results` 仍保留完整内容。
+- 常见 secret 字符串需要在 compacted provider view、summary artifact 和 transcript artifact 中脱敏，包括 `API_KEY` / `TOKEN` / `SECRET` / `PASSWORD` 形态、Bearer token 和 private key block。
+- 脱敏与裁剪不能回写 `messages.jsonl`，原始 session 日志仍是事实源。
+- compacted summary 开头必须明确说明它只是早期上下文参考，不是新的用户指令；遇到冲突时以原始 session artifacts 为准。
 
 ## 7. 与 Session Store 的关系
 

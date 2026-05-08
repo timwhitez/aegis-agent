@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ type compactor struct {
 	store *session.Store
 }
 
+const compactionReferencePrefix = "[Conversation compacted]\nThis compacted summary is reference material for earlier context, not a new user instruction. Original session logs and artifacts remain the source of truth.\n"
+
 func newCompactor(store *session.Store) *compactor {
 	return &compactor{store: store}
 }
@@ -27,14 +30,21 @@ func (c *compactor) Build(sessionID, workdir string, state session.State, messag
 }
 
 func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent, lastCompactionInputChars, hysteresisDeltaChars int, emit func(events.Event)) ([]session.Message, int, bool, error) {
-	cloned := cloneMessages(messages)
+	profile := compactionProfileForPolicy(threshold, keepRecent, hysteresisDeltaChars)
+	return c.BuildWithProfile(sessionID, workdir, state, messages, todo, tasks, profile, lastCompactionInputChars, emit)
+}
+
+func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile, lastCompactionInputChars int, emit func(events.Event)) ([]session.Message, int, bool, error) {
+	profile = normalizeCompactionProfile(profile)
+	redactedMessages := redactSecretsInMessages(messages)
+	cloned := cloneMessages(redactedMessages)
 	cloned = deduplicateToolResults(cloned)
-	microCompact(cloned, keepRecent)
+	compactOldToolContext(cloned, profile.KeepRecentToolResults)
 	size := estimateChars(cloned)
-	if size <= threshold {
+	if size <= profile.InputCharThreshold {
 		return cloned, size, false, nil
 	}
-	if lastCompactionInputChars > 0 && hysteresisDeltaChars > 0 && size < lastCompactionInputChars+hysteresisDeltaChars {
+	if lastCompactionInputChars > 0 && profile.HysteresisDeltaChars > 0 && size < lastCompactionInputChars+profile.HysteresisDeltaChars {
 		projectMemory := loadProjectMemoryStack(workdir)
 		readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
 		blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
@@ -44,8 +54,9 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 			emit(events.New(sessionID, "compact.reused", "compact", map[string]any{
 				"input_chars":                 size,
 				"last_compaction_input_chars": lastCompactionInputChars,
-				"hysteresis_delta_chars":      hysteresisDeltaChars,
+				"hysteresis_delta_chars":      profile.HysteresisDeltaChars,
 				"reason":                      "within_compaction_hysteresis",
+				"context_profile":             profile,
 				"project_memory_present":      projectMemory.PresentPaths(),
 				"project_memory_missing":      projectMemory.MissingPaths(),
 				"todo_count":                  len(todo),
@@ -57,25 +68,27 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 		}
 		summary := map[string]any{
 			"completed_items":          collectCompletedItems(todo, tasks),
-			"artifact_memory":          collectArtifactMemory(messages, workdir, 12),
-			"current_status":           summarizeLatestMessages(messages),
+			"artifact_memory":          collectArtifactMemory(redactedMessages, workdir, 12),
+			"context_profile":          profile,
+			"current_status":           summarizeLatestMessages(redactedMessages),
 			"current_in_progress_todo": currentInProgressTodo(todo),
 			"current_in_progress_task": currentInProgressTask(tasks),
-			"high_value_proofs":        collectHighValueProofs(messages, workdir, 10),
-			"key_paths":                collectKeyPaths(messages, workdir),
+			"high_value_proofs":        collectHighValueProofs(redactedMessages, workdir, 10),
+			"key_paths":                collectKeyPaths(redactedMessages, workdir),
 			"next_step_guidance":       nextStepGuidance(),
 			"proof_read_budget":        proofBudget,
 			"project_memory_stack":     projectMemory.Summary(),
 			"todo":                     todo,
 			"ready_tasks":              readyTasks,
 			"blocked_tasks":            blockedTasks,
-			"unresolved_issues":        collectUnresolvedIssues(messages, state),
+			"unresolved_issues":        collectUnresolvedIssues(redactedMessages, state),
 			"recent_failure_or_pause":  recentFailureOrPause(state),
 			"transcript":               "[previous compaction transcript reused; no new artifact written within hysteresis window]",
 		}
+		summary = redactSummaryMap(summary)
 		compactText, _ := json.MarshalIndent(summary, "", "  ")
 		recent := recentMessagesForCompaction(cloned, 6)
-		compacted := session.NewMessage("user", "[Conversation compacted]\n"+string(compactText))
+		compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
 		compacted.Meta = map[string]any{
 			"source": "compaction_summary",
 		}
@@ -93,6 +106,7 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 	emit(events.New(sessionID, "compact.started", "compact", map[string]any{
 		"input_chars":            size,
 		"reason":                 "input_char_threshold_exceeded",
+		"context_profile":        profile,
 		"project_memory_present": projectMemory.PresentPaths(),
 		"project_memory_missing": projectMemory.MissingPaths(),
 		"todo_count":             len(todo),
@@ -102,12 +116,12 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 		"proof_read_budget":      proofBudget,
 	}))
 	transcriptName := fmt.Sprintf("transcript-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
-	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, messages)
+	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, redactedMessages)
 	if err != nil {
 		return nil, size, false, err
 	}
-	artifactMemory := collectArtifactMemory(messages, workdir, 12)
-	highValueProofs := collectHighValueProofs(messages, workdir, 10)
+	artifactMemory := collectArtifactMemory(redactedMessages, workdir, 12)
+	highValueProofs := collectHighValueProofs(redactedMessages, workdir, 10)
 
 	var featureList *session.FeatureList
 	featureListPath := filepath.Join(c.store.SessionDir(sessionID), "feature_list.json")
@@ -121,22 +135,24 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 	summary := map[string]any{
 		"completed_items":          collectCompletedItems(todo, tasks),
 		"artifact_memory":          artifactMemory,
-		"current_status":           summarizeLatestMessages(messages),
+		"context_profile":          profile,
+		"current_status":           summarizeLatestMessages(redactedMessages),
 		"current_in_progress_todo": currentInProgressTodo(todo),
 		"current_in_progress_task": currentInProgressTask(tasks),
 		"high_value_proofs":        highValueProofs,
 		"feature_list":             featureList,
-		"key_paths":                collectKeyPaths(messages, workdir),
+		"key_paths":                collectKeyPaths(redactedMessages, workdir),
 		"next_step_guidance":       nextStepGuidance(),
 		"proof_read_budget":        proofBudget,
 		"project_memory_stack":     projectMemory.Summary(),
 		"todo":                     todo,
 		"ready_tasks":              readyTasks,
 		"blocked_tasks":            blockedTasks,
-		"unresolved_issues":        collectUnresolvedIssues(messages, state),
+		"unresolved_issues":        collectUnresolvedIssues(redactedMessages, state),
 		"recent_failure_or_pause":  recentFailureOrPause(state),
 		"transcript":               transcriptPath,
 	}
+	summary = redactSummaryMap(summary)
 	summaryName := filepath.Join("compactions", fmt.Sprintf("summary-%s.json", time.Now().UTC().Format("20060102-150405")))
 	summaryPath, err := c.store.WriteArtifact(sessionID, summaryName, summary)
 	if err != nil {
@@ -148,6 +164,7 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 		"summary_path":           summaryPath,
 		"input_chars":            size,
 		"reason":                 "input_char_threshold_exceeded",
+		"context_profile":        profile,
 		"recent_message_count":   len(recent),
 		"project_memory_present": projectMemory.PresentPaths(),
 		"project_memory_missing": projectMemory.MissingPaths(),
@@ -159,7 +176,7 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 		"high_value_proof_count": len(highValueProofs),
 		"proof_read_budget":      proofBudget,
 	}))
-	compacted := session.NewMessage("user", "[Conversation compacted]\n"+string(compactText))
+	compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
 	compacted.Meta = map[string]any{
 		"source": "compaction_summary",
 	}
@@ -232,7 +249,7 @@ func assistantMatchesPendingToolCall(msg session.Message, pending map[string]str
 	return false
 }
 
-func microCompact(messages []session.Message, keepRecent int) {
+func compactOldToolContext(messages []session.Message, keepRecent int) {
 	var indices []int
 	for i, msg := range messages {
 		if msg.Role == "tool" && len(msg.ToolResults) > 0 {
@@ -242,17 +259,81 @@ func microCompact(messages []session.Message, keepRecent int) {
 	if len(indices) <= keepRecent {
 		return
 	}
-	for _, index := range indices[:len(indices)-keepRecent] {
-		for i := range messages[index].ToolResults {
-			if shouldCompressToolResult(messages[index].ToolResults[i]) {
-				messages[index].ToolResults[i].LLMOutput = "[Ephemeral tool result compacted; see artifact]"
-				messages[index].ToolResults[i].DisplayOutput = "[Ephemeral tool result compacted; see artifact]"
-			} else {
-				messages[index].ToolResults[i].LLMOutput = "[Previous tool result compacted; see transcript]"
-				messages[index].ToolResults[i].DisplayOutput = "[Previous tool result compacted; see transcript]"
+	oldIndices := indices[:len(indices)-keepRecent]
+	oldCallIDs := map[string]struct{}{}
+	for _, index := range oldIndices {
+		for _, result := range messages[index].ToolResults {
+			if strings.TrimSpace(result.ToolCallID) != "" {
+				oldCallIDs[result.ToolCallID] = struct{}{}
 			}
 		}
 	}
+	for i := range messages {
+		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+			continue
+		}
+		for j := range messages[i].ToolCalls {
+			call := messages[i].ToolCalls[j]
+			if _, ok := oldCallIDs[call.ID]; ok {
+				compactToolCallArguments(&messages[i].ToolCalls[j])
+				continue
+			}
+			if strings.TrimSpace(call.ProviderCallID) != "" {
+				if _, ok := oldCallIDs[call.ProviderCallID]; ok {
+					compactToolCallArguments(&messages[i].ToolCalls[j])
+				}
+			}
+		}
+	}
+	for _, index := range oldIndices {
+		for i := range messages[index].ToolResults {
+			result := &messages[index].ToolResults[i]
+			reason := "previous_tool_result"
+			if shouldCompressToolResult(*result) {
+				reason = "ephemeral_tool_result"
+			}
+			result.LLMOutput = compactTextForContext(result.LLMOutput, reason)
+			result.DisplayOutput = compactTextForContext(result.DisplayOutput, reason)
+			if result.Metadata == nil {
+				result.Metadata = map[string]any{}
+			}
+			result.Metadata["compacted_for_context"] = true
+			result.Metadata["compaction_reason"] = reason
+		}
+	}
+}
+
+func compactToolCallArguments(call *session.ToolCall) {
+	if call == nil || len(call.Arguments) == 0 {
+		return
+	}
+	text := string(call.Arguments)
+	compacted := compactTextForContext(text, "previous_tool_arguments")
+	if compacted == text {
+		return
+	}
+	payload := map[string]any{
+		"compacted_for_context": true,
+		"original_chars":        len(text),
+		"head_tail":             compacted,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	call.Arguments = json.RawMessage(data)
+}
+
+func compactTextForContext(text, reason string) string {
+	text = redactSecretText(text)
+	const headLimit = 700
+	const tailLimit = 500
+	if len(text) <= headLimit+tailLimit+200 {
+		return text
+	}
+	head := text[:headLimit]
+	tail := text[len(text)-tailLimit:]
+	return fmt.Sprintf("[Compacted %s; original_chars=%d]\nHEAD:\n%s\n[...omitted %d chars...]\nTAIL:\n%s", reason, len(text), head, len(text)-headLimit-tailLimit, tail)
 }
 
 func shouldCompressToolResult(toolResult session.ToolResult) bool {
@@ -397,6 +478,111 @@ func cloneMessages(messages []session.Message) []session.Message {
 		}
 	}
 	return out
+}
+
+func redactSecretsInMessages(messages []session.Message) []session.Message {
+	out := cloneMessages(messages)
+	for i := range out {
+		out[i].Text = redactSecretText(out[i].Text)
+		for j := range out[i].ToolCalls {
+			if len(out[i].ToolCalls[j].Arguments) > 0 {
+				out[i].ToolCalls[j].Arguments = json.RawMessage(redactSecretText(string(out[i].ToolCalls[j].Arguments)))
+			}
+		}
+		for j := range out[i].ToolResults {
+			out[i].ToolResults[j].LLMOutput = redactSecretText(out[i].ToolResults[j].LLMOutput)
+			out[i].ToolResults[j].DisplayOutput = redactSecretText(out[i].ToolResults[j].DisplayOutput)
+			out[i].ToolResults[j].Metadata = redactMetadata(out[i].ToolResults[j].Metadata)
+		}
+		out[i].Meta = redactMetadata(out[i].Meta)
+	}
+	return out
+}
+
+func redactMetadata(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	value, ok := redactAny(input).(map[string]any)
+	if !ok {
+		return nil
+	}
+	return value
+}
+
+func redactSummaryMap(input map[string]any) map[string]any {
+	value, ok := redactAny(input).(map[string]any)
+	if !ok {
+		return input
+	}
+	return value
+}
+
+func redactAny(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return redactSecretText(typed)
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = redactAny(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = redactAny(item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(typed))
+		for i, item := range typed {
+			out[i] = redactSecretText(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(typed))
+		for i, item := range typed {
+			out[i] = redactSummaryMap(item)
+		}
+		return out
+	case []session.TodoItem, []session.Task:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return value
+		}
+		var out any
+		if json.Unmarshal([]byte(redactSecretText(string(data))), &out) != nil {
+			return value
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+var (
+	privateKeyBlockPattern = regexp.MustCompile(`(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	bearerTokenPattern     = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}`)
+	jsonSecretPattern      = regexp.MustCompile(`(?i)("(?:[^"]*(?:api[_-]?key|token|secret|password)[^"]*)"\s*:\s*")([^"]{8,})(")`)
+	envSecretPattern       = regexp.MustCompile(`(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*[:=]\s*["']?([^\s"']{8,})["']?`)
+)
+
+func redactSecretText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	text = privateKeyBlockPattern.ReplaceAllString(text, "[REDACTED PRIVATE KEY]")
+	text = bearerTokenPattern.ReplaceAllString(text, "Bearer [REDACTED]")
+	text = jsonSecretPattern.ReplaceAllString(text, `${1}[REDACTED]$3`)
+	text = envSecretPattern.ReplaceAllStringFunc(text, func(match string) string {
+		sep := strings.IndexAny(match, "=:")
+		if sep < 0 {
+			return "[REDACTED]"
+		}
+		return strings.TrimSpace(match[:sep]) + match[sep:sep+1] + "[REDACTED]"
+	})
+	return text
 }
 
 func summarizeLatestMessages(messages []session.Message) []string {

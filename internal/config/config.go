@@ -127,8 +127,15 @@ type ExecPolicyConfig struct {
 }
 
 type CompactConfig struct {
-	InputCharThreshold    int `yaml:"input_char_threshold"`
-	KeepRecentToolResults int `yaml:"keep_recent_tool_results"`
+	InputCharThreshold    int                              `yaml:"input_char_threshold"`
+	KeepRecentToolResults int                              `yaml:"keep_recent_tool_results"`
+	HysteresisDeltaChars  int                              `yaml:"hysteresis_delta_chars,omitempty"`
+	ContextProfiles       map[string]CompactContextProfile `yaml:"context_profiles,omitempty"`
+}
+
+type CompactContextProfile struct {
+	InputCharThreshold    int `yaml:"input_char_threshold,omitempty"`
+	KeepRecentToolResults int `yaml:"keep_recent_tool_results,omitempty"`
 	HysteresisDeltaChars  int `yaml:"hysteresis_delta_chars,omitempty"`
 }
 

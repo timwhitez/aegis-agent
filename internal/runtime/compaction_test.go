@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 )
@@ -261,6 +262,265 @@ func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Fatalf("expected no new compaction artifacts, got %#v", files)
+	}
+}
+
+func TestCompactionAddsReferencePrefix(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", "Keep going."),
+		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+	}
+	profile := compactionContextProfile{
+		Provider:              "openai",
+		Model:                 "gpt-test",
+		Source:                "test-profile",
+		InputCharThreshold:    32,
+		KeepRecentToolResults: 1,
+		HysteresisDeltaChars:  100,
+	}
+	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, func(events.Event) {})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !didCompact {
+		t.Fatal("expected compaction")
+	}
+	if !strings.Contains(view[0].Text, "not a new user instruction") || !strings.Contains(view[0].Text, "source of truth") {
+		t.Fatalf("expected reference prefix, got %q", view[0].Text)
+	}
+	if !strings.Contains(view[0].Text, `"provider": "openai"`) || !strings.Contains(view[0].Text, `"model": "gpt-test"`) {
+		t.Fatalf("expected provider/model context profile in compacted summary, got %q", view[0].Text)
+	}
+}
+
+func TestCompactionProfileFromConfigUsesProviderModelOverride(t *testing.T) {
+	meta := session.SessionMetadata{Provider: "OpenAI", Model: "GPT-Test"}
+	profile := compactionProfileFromConfig(meta, config.CompactConfig{
+		InputCharThreshold:    160000,
+		KeepRecentToolResults: 3,
+		HysteresisDeltaChars:  40000,
+		ContextProfiles: map[string]config.CompactContextProfile{
+			"openai/gpt-test": {
+				InputCharThreshold:    2048,
+				KeepRecentToolResults: 5,
+				HysteresisDeltaChars:  256,
+			},
+		},
+	})
+	if profile.InputCharThreshold != 2048 || profile.KeepRecentToolResults != 5 || profile.HysteresisDeltaChars != 256 {
+		t.Fatalf("expected provider/model override, got %#v", profile)
+	}
+	if profile.Source != "runtime.compact.context_profiles.openai/gpt-test" {
+		t.Fatalf("unexpected profile source: %#v", profile)
+	}
+}
+
+func TestCompactionRedactsSecrets(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		LastError: "TOKEN=tok_secret_123456789",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	apiKey := "sk-testsecret123456789"
+	bearer := "abcdefghijklmnopqrstuvwxyz123456"
+	privateKey := "-----BEGIN PRIVATE KEY-----\nabcdef1234567890\n-----END PRIVATE KEY-----"
+	messages := []session.Message{
+		session.NewMessage("user", "OPENAI_API_KEY="+apiKey),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:          "shell",
+			LLMOutput:     "Authorization: Bearer " + bearer + "\n" + privateKey,
+			DisplayOutput: "Authorization: Bearer " + bearer + "\n" + privateKey,
+			IsError:       true,
+			Metadata: map[string]any{
+				"token": "tok_metadata_123456789",
+			},
+		}}),
+		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+	}
+	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) {})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !didCompact {
+		t.Fatal("expected compaction")
+	}
+	for _, leaked := range []string{apiKey, bearer, privateKey, "tok_secret_123456789", "tok_metadata_123456789"} {
+		if strings.Contains(view[0].Text, leaked) {
+			t.Fatalf("secret leaked in compacted provider view: %q", leaked)
+		}
+	}
+	if !strings.Contains(view[0].Text, "[REDACTED]") || !strings.Contains(view[0].Text, "[REDACTED PRIVATE KEY]") {
+		t.Fatalf("expected redaction markers in compacted view, got %q", view[0].Text)
+	}
+	summaryFiles, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions"))
+	if err != nil {
+		t.Fatalf("read compactions dir: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions", summaryFiles[0].Name()))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	for _, leaked := range []string{apiKey, bearer, privateKey, "tok_secret_123456789", "tok_metadata_123456789"} {
+		if strings.Contains(string(data), leaked) {
+			t.Fatalf("secret leaked in summary artifact: %q", leaked)
+		}
+	}
+}
+
+func TestCompactionTruncatesOldToolOutput(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	oldArgs := `{"command":"` + strings.Repeat("A", 1800) + `MIDDLE` + strings.Repeat("Z", 1800) + `"}`
+	oldOutput := "HEAD-" + strings.Repeat("B", 1800) + "MIDDLE" + strings.Repeat("Y", 1800) + "-TAIL"
+	messages := []session.Message{
+		session.NewMessage("user", "Run tools."),
+		session.NewAssistantMessage("", []session.ToolCall{{
+			ID:        "old_call",
+			Name:      "shell",
+			Arguments: json.RawMessage(oldArgs),
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID:    "old_call",
+			Name:          "shell",
+			LLMOutput:     oldOutput,
+			DisplayOutput: oldOutput,
+		}}),
+		session.NewAssistantMessage("", []session.ToolCall{{
+			ID:        "new_call",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"pwd"}`),
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID:    "new_call",
+			Name:          "shell",
+			LLMOutput:     "new output",
+			DisplayOutput: "new output",
+		}}),
+	}
+	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) {})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if didCompact {
+		t.Fatal("expected micro compaction only")
+	}
+	if !strings.Contains(string(view[1].ToolCalls[0].Arguments), "compacted_for_context") || !strings.Contains(string(view[1].ToolCalls[0].Arguments), "TAIL") {
+		t.Fatalf("expected compacted old tool arguments, got %s", string(view[1].ToolCalls[0].Arguments))
+	}
+	got := view[2].ToolResults[0].LLMOutput
+	if !strings.Contains(got, "[Compacted previous_tool_result") || !strings.Contains(got, "HEAD:") || !strings.Contains(got, "TAIL:") {
+		t.Fatalf("expected head/tail compacted old tool output, got %q", got)
+	}
+	if strings.Contains(got, "MIDDLE") {
+		t.Fatalf("expected middle of old output to be omitted, got %q", got)
+	}
+	if view[4].ToolResults[0].LLMOutput != "new output" {
+		t.Fatalf("expected recent tool output preserved, got %q", view[4].ToolResults[0].LLMOutput)
+	}
+}
+
+func TestCompactionKeepsArtifactProofMemory(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	reportPath := filepath.Join(workdir, "reports", "validation.md")
+	codePath := filepath.Join(workdir, "internal", "runtime", "engine.go")
+	messages := []session.Message{
+		session.NewMessage("user", "Continue."),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:          "read_file",
+			LLMOutput:     "## Validation\nall checks passed",
+			DisplayOutput: "## Validation\nall checks passed",
+			Metadata:      map[string]any{"path": reportPath},
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:          "read_file",
+			LLMOutput:     "func run() { return nil }",
+			DisplayOutput: "func run() { return nil }",
+			Metadata:      map[string]any{"path": codePath, "offset": 12, "end": 20},
+		}}),
+		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+	}
+	if _, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) {}); err != nil {
+		t.Fatalf("build: %v", err)
+	} else if !didCompact {
+		t.Fatal("expected compaction")
+	}
+	summaryFiles, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions"))
+	if err != nil {
+		t.Fatalf("read compactions dir: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions", summaryFiles[0].Name()))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	var summary map[string]any
+	if err := json.Unmarshal(data, &summary); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if len(artifactMemory(summary)) == 0 {
+		t.Fatalf("expected artifact memory, got %#v", summary["artifact_memory"])
+	}
+	if len(highValueProofs(summary)) == 0 {
+		t.Fatalf("expected high-value proofs, got %#v", summary["high_value_proofs"])
 	}
 }
 
