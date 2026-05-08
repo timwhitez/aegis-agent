@@ -72,10 +72,10 @@ function renderCurrentSession() {
   mutated = patchChatSlot(slots.flow, 'flow', sections.flow) || mutated;
   mutated = patchChatSlot(slots.body, 'body', sections.body) || mutated;
   mutated = patchChatSlot(slots.pending, 'pending', sections.pending) || mutated;
-  if (nodes.sessionRail) {
+  if (nodes.sessionRail && window.getComputedStyle(nodes.sessionRail).display !== 'none') {
     mutated = patchAuxSlot(nodes.sessionRail, 'rail', renderSessionRail()) || mutated;
   }
-  if (nodes.inspectorPanel) {
+  if (nodes.inspectorPanel && window.getComputedStyle(nodes.inspectorPanel).display !== 'none') {
     const inspectorHTML = renderInspectorPanel();
     mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', inspectorHTML) || mutated;
     if (isCompactLayout() && nodes.inspectorSlideOut) {

@@ -2139,6 +2139,10 @@ textarea {
   display: none !important;
 }
 
+.interrupt-toggle-btn.is-visible {
+  display: inline-flex !important;
+}
+
 .input-container.is-offline {
   border-color: var(--error);
 }

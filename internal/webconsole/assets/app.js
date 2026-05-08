@@ -9,7 +9,6 @@ const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
 const SHORTCUTS = {
   'escape': 'stop',
   '/': 'command',
-  'ctrl+k': 'search',
   'ctrl+n': 'new_session',
   'ctrl+,': 'settings',
   '?': 'help'
@@ -130,7 +129,7 @@ async function init() {
     };
     updateSessionId();
   } else {
-    resetChatSession({ notifyBackend: false });
+    resetChatSession();
   }
   startPolling();
   refreshMeta().catch(() => {});
@@ -363,7 +362,7 @@ function setupEventListeners() {
   nodes.skillUploadBtn?.addEventListener('click', () => nodes.skillUpload?.click());
   nodes.newSessionBtn?.addEventListener('click', () => {
     const wasGenerating = state.isGenerating;
-    resetChatSession({ notifyBackend: true });
+    resetChatSession();
     showToast(
       wasGenerating
         ? 'Started a new session. The previous run may still settle in the background.'
@@ -628,11 +627,6 @@ function setupEventListeners() {
     event.preventDefault();
 
     switch (action) {
-      case 'submit':
-        if (nodes.chatInput && nodes.chatInput.value.trim()) {
-          sendMessage();
-        }
-        break;
       case 'stop':
         if (state.isGenerating && hasDurableSession()) {
           requestStop();
@@ -647,11 +641,9 @@ function setupEventListeners() {
           }
         }
         break;
-      case 'search':
-        break;
       case 'new_session':
         const wasGenerating = state.isGenerating;
-        resetChatSession({ notifyBackend: true });
+        resetChatSession();
         showToast(
           wasGenerating
             ? 'Started a new session. The previous run may still settle in the background.'
@@ -949,7 +941,7 @@ function adoptSession(sessionID, backed) {
   persistUIState();
 }
 
-function resetChatSession({ notifyBackend }) {
+function resetChatSession() {
   state.sessionId = nextEphemeralSessionId();
   state.sessionBacked = false;
   state.sessionDetail = null;
@@ -965,7 +957,6 @@ function resetChatSession({ notifyBackend }) {
   state.lastInputWasEmpty = !nodes.chatInput.value.trim();
   updateSessionId();
   persistUIState();
-  void notifyBackend;
   renderCurrentSession();
   updateUI();
 }
@@ -1779,7 +1770,7 @@ async function deleteHistorySession(sessionID) {
     });
     const activeMeta = state.sessionDetail?.metadata || {};
     if (state.sessionId === sessionID || activeMeta.parent_session_id === sessionID || activeMeta.root_session_id === sessionID) {
-      resetChatSession({ notifyBackend: false });
+      resetChatSession();
     }
     showToast('Session deleted.', 'success');
     await fetchHistory(state.historyPage);
@@ -1800,7 +1791,7 @@ async function clearHistory() {
     await requestJSON('/api/sessions/clear', {
       method: 'POST'
     });
-    resetChatSession({ notifyBackend: false });
+    resetChatSession();
     state.historyData = null;
     state.historyPage = 1;
     showToast('Sessions cleared.', 'success');
