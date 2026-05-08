@@ -203,6 +203,7 @@ core v1 的默认命令面固定为：
 作用：
 
 - 检查配置、session root、skills、hooks、provider 配置
+- 只读报告 session / queue partial state：缺失 `session.json` / `state.json` / `messages.jsonl`、同一 queue job 出现在多个 status 目录、running job 缺 lease 或 heartbeat stale、queue job 指向不存在的 session
 - 默认可附带一次最小 probe
 - 可 `--skip-probe`
 - 对 OpenAI / `openai-compatible`，诊断输出还应明确当前生效的 `store`、`send_metadata`、timeout policy 与 retry policy，方便 operator 在真实接线前核对 transport 契约

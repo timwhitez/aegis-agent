@@ -757,6 +757,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	})
 	report.Checks = append(report.Checks, checkSessionDirMode(cfg.Session.Dir, cfg.Session.DirMode))
 	report.Checks = append(report.Checks, checkSessionRootStrategy(cfg))
+	report.Checks = append(report.Checks, checkSessionPartialState(cfg.Session.Dir))
 	report.Checks = append(report.Checks, checkWorkspaceWrite(cwd))
 
 	skillCatalog, skillErr := skills.Scan(cfg.Skills.Dirs)

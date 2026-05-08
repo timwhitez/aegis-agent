@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,8 +9,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/session"
 )
 
 var hookCommandLookPath = exec.LookPath
@@ -309,6 +312,283 @@ func checkSessionRootStrategy(cfg *config.Config) doctorCheck {
 		check.Details["advice"] = sessionRootStrategyAdvice(configured.Path, defaultRecommendedDir(recommended))
 	}
 	return check
+}
+
+func checkSessionPartialState(sessionRoot string) doctorCheck {
+	check := doctorCheck{
+		Name:   "session.partial_state",
+		Status: "ok",
+		Details: map[string]any{
+			"dir": sessionRoot,
+		},
+	}
+	missingFiles, err := doctorMissingSessionFiles(sessionRoot)
+	if err != nil {
+		check.Status = "fail"
+		check.Details["error"] = err.Error()
+		return check
+	}
+	queueJobs, unreadableJobs, err := doctorQueueJobRecords(sessionRoot)
+	if err != nil {
+		check.Status = "fail"
+		check.Details["error"] = err.Error()
+		return check
+	}
+	duplicates := doctorDuplicateQueueJobs(queueJobs)
+	runningWithoutLease := doctorRunningJobsWithoutLease(queueJobs)
+	staleRunning := doctorStaleRunningJobs(queueJobs, time.Now().UTC())
+	missingSessionRefs := doctorQueueJobsMissingSessions(sessionRoot, queueJobs)
+
+	check.Details["missing_session_files"] = missingFiles
+	check.Details["duplicate_queue_jobs"] = duplicates
+	check.Details["running_jobs_without_lease"] = runningWithoutLease
+	check.Details["stale_running_jobs"] = staleRunning
+	check.Details["queue_jobs_missing_session"] = missingSessionRefs
+	check.Details["unreadable_queue_jobs"] = unreadableJobs
+	check.Details["counts"] = map[string]int{
+		"missing_session_files":      len(missingFiles),
+		"duplicate_queue_jobs":       len(duplicates),
+		"running_jobs_without_lease": len(runningWithoutLease),
+		"stale_running_jobs":         len(staleRunning),
+		"queue_jobs_missing_session": len(missingSessionRefs),
+		"unreadable_queue_jobs":      len(unreadableJobs),
+	}
+	if len(missingFiles)+len(duplicates)+len(runningWithoutLease)+len(staleRunning)+len(missingSessionRefs)+len(unreadableJobs) > 0 {
+		check.Status = "warn"
+	}
+	return check
+}
+
+func doctorMissingSessionFiles(sessionRoot string) ([]map[string]any, error) {
+	entries, err := os.ReadDir(sessionRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []map[string]any{}, nil
+		}
+		return nil, err
+	}
+	var out []map[string]any
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == "_queue" {
+			continue
+		}
+		sessionID := entry.Name()
+		sessionDir := filepath.Join(sessionRoot, sessionID)
+		var missing []string
+		for _, name := range []string{"session.json", "state.json", "messages.jsonl"} {
+			if _, err := os.Stat(filepath.Join(sessionDir, name)); err != nil {
+				if os.IsNotExist(err) {
+					missing = append(missing, name)
+					continue
+				}
+				return nil, err
+			}
+		}
+		if len(missing) > 0 {
+			out = append(out, map[string]any{
+				"session_id": sessionID,
+				"missing":    missing,
+			})
+		}
+	}
+	return out, nil
+}
+
+type doctorQueueJobRecord struct {
+	Status  string
+	Job     session.QueueJob
+	Path    string
+	ModTime time.Time
+}
+
+func doctorQueueJobRecords(sessionRoot string) ([]doctorQueueJobRecord, []map[string]any, error) {
+	var records []doctorQueueJobRecord
+	var unreadable []map[string]any
+	for _, status := range doctorQueueStatuses() {
+		dir := filepath.Join(sessionRoot, "_queue", status)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, nil, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				unreadable = append(unreadable, map[string]any{"path": path, "error": err.Error()})
+				continue
+			}
+			var job session.QueueJob
+			if err := json.Unmarshal(data, &job); err != nil {
+				unreadable = append(unreadable, map[string]any{"path": path, "error": err.Error()})
+				continue
+			}
+			if job.ID == "" {
+				job.ID = strings.TrimSuffix(entry.Name(), ".json")
+			}
+			info, _ := entry.Info()
+			var modTime time.Time
+			if info != nil {
+				modTime = info.ModTime()
+			}
+			records = append(records, doctorQueueJobRecord{
+				Status:  status,
+				Job:     job,
+				Path:    path,
+				ModTime: modTime,
+			})
+		}
+	}
+	return records, unreadable, nil
+}
+
+func doctorDuplicateQueueJobs(records []doctorQueueJobRecord) []map[string]any {
+	byID := map[string][]doctorQueueJobRecord{}
+	for _, record := range records {
+		byID[record.Job.ID] = append(byID[record.Job.ID], record)
+	}
+	var out []map[string]any
+	for jobID, items := range byID {
+		if len(items) < 2 {
+			continue
+		}
+		var statuses []string
+		var paths []string
+		latestStatus := ""
+		var latestTime time.Time
+		for _, item := range items {
+			statuses = append(statuses, item.Status)
+			paths = append(paths, item.Path)
+			if latestStatus == "" || item.ModTime.After(latestTime) {
+				latestStatus = item.Status
+				latestTime = item.ModTime
+			}
+		}
+		out = append(out, map[string]any{
+			"job_id":        jobID,
+			"statuses":      statuses,
+			"paths":         paths,
+			"latest_status": latestStatus,
+		})
+	}
+	return out
+}
+
+func doctorRunningJobsWithoutLease(records []doctorQueueJobRecord) []map[string]any {
+	var out []map[string]any
+	for _, record := range records {
+		if record.Status != session.QueueStatusRunning {
+			continue
+		}
+		var missing []string
+		if strings.TrimSpace(record.Job.ClaimedBy) == "" {
+			missing = append(missing, "claimed_by")
+		}
+		if strings.TrimSpace(record.Job.ClaimedAt) == "" {
+			missing = append(missing, "claimed_at")
+		}
+		if strings.TrimSpace(record.Job.HeartbeatAt) == "" {
+			missing = append(missing, "heartbeat_at")
+		}
+		if record.Job.WorkerPID == 0 {
+			missing = append(missing, "worker_pid")
+		}
+		if strings.TrimSpace(record.Job.ProcessStartID) == "" {
+			missing = append(missing, "process_start_id")
+		}
+		if len(missing) > 0 {
+			out = append(out, map[string]any{
+				"job_id":  record.Job.ID,
+				"path":    record.Path,
+				"missing": missing,
+			})
+		}
+	}
+	return out
+}
+
+func doctorStaleRunningJobs(records []doctorQueueJobRecord, now time.Time) []map[string]any {
+	var out []map[string]any
+	for _, record := range records {
+		if record.Status != session.QueueStatusRunning {
+			continue
+		}
+		referenceName, reference := doctorQueueHeartbeatReference(record.Job)
+		if strings.TrimSpace(reference) == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, reference)
+		if err != nil {
+			out = append(out, map[string]any{
+				"job_id":    record.Job.ID,
+				"path":      record.Path,
+				"field":     referenceName,
+				"value":     reference,
+				"parse_err": err.Error(),
+			})
+			continue
+		}
+		if now.Sub(parsed) > session.QueueRunningStaleAfter {
+			out = append(out, map[string]any{
+				"job_id":          record.Job.ID,
+				"path":            record.Path,
+				"field":           referenceName,
+				"value":           reference,
+				"stale_after_sec": int(session.QueueRunningStaleAfter.Seconds()),
+			})
+		}
+	}
+	return out
+}
+
+func doctorQueueJobsMissingSessions(sessionRoot string, records []doctorQueueJobRecord) []map[string]any {
+	var out []map[string]any
+	for _, record := range records {
+		sessionID := strings.TrimSpace(record.Job.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		path := filepath.Join(sessionRoot, sessionID, "session.json")
+		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+			out = append(out, map[string]any{
+				"job_id":     record.Job.ID,
+				"status":     record.Status,
+				"session_id": sessionID,
+				"path":       record.Path,
+			})
+		}
+	}
+	return out
+}
+
+func doctorQueueHeartbeatReference(job session.QueueJob) (string, string) {
+	for _, item := range []struct {
+		name  string
+		value string
+	}{
+		{name: "heartbeat_at", value: job.HeartbeatAt},
+		{name: "claimed_at", value: job.ClaimedAt},
+		{name: "updated_at", value: job.UpdatedAt},
+	} {
+		if strings.TrimSpace(item.value) != "" {
+			return item.name, item.value
+		}
+	}
+	return "", ""
+}
+
+func doctorQueueStatuses() []string {
+	return []string{
+		session.QueueStatusQueued,
+		session.QueueStatusRunning,
+		session.QueueStatusCompleted,
+		session.QueueStatusFailed,
+	}
 }
 
 func sessionRootCandidates(configured string) []sessionRootCandidate {

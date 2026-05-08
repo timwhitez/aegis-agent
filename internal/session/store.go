@@ -26,7 +26,9 @@ type Store struct {
 	mu       sync.Mutex
 }
 
-const queueRunningStaleAfter = 15 * time.Minute
+const QueueRunningStaleAfter = 15 * time.Minute
+
+const queueRunningStaleAfter = QueueRunningStaleAfter
 
 var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)

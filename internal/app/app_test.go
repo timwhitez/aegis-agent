@@ -72,6 +72,21 @@ func newFakeRunner() *fakeRunner {
 	return &fakeRunner{bus: events.NewBus()}
 }
 
+func writeDoctorQueueJob(t *testing.T, root, status string, job session.QueueJob) {
+	t.Helper()
+	dir := filepath.Join(root, "_queue", status)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir queue dir: %v", err)
+	}
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal queue job: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, job.ID+".json"), data, 0o600); err != nil {
+		t.Fatalf("write queue job: %v", err)
+	}
+}
+
 func (f *fakeRunner) Start(ctx context.Context, req runtime.StartRequest) (runtime.RunResult, error) {
 	f.startCalls = append(f.startCalls, req)
 	f.bus.Publish(events.New("s1", "session.started", "prepare", map[string]any{}))
@@ -689,6 +704,85 @@ func TestDoctorCommandJSONIncludesEffectiveOpenAICompatibleSettings(t *testing.T
 	}
 	if got := retryPolicy["retry_transport"]; got != true {
 		t.Fatalf("expected retry_transport=true, got %#v", got)
+	}
+}
+
+func TestDoctorReportsMissingSessionState(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "session_missing_state")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "session.json"), []byte(`{"id":"session_missing_state"}`), 0o600); err != nil {
+		t.Fatalf("write session metadata: %v", err)
+	}
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	missing, ok := check.Details["missing_session_files"].([]map[string]any)
+	if !ok || len(missing) != 1 {
+		t.Fatalf("expected missing session files, got %#v", check.Details["missing_session_files"])
+	}
+	if missing[0]["session_id"] != "session_missing_state" {
+		t.Fatalf("unexpected missing session detail: %#v", missing[0])
+	}
+}
+
+func TestDoctorReportsDuplicateQueueJobStatus(t *testing.T) {
+	root := t.TempDir()
+	job := session.QueueJob{ID: "job_duplicate", Status: session.QueueStatusQueued, Prompt: "hi", Mode: session.ModeExec}
+	writeDoctorQueueJob(t, root, session.QueueStatusQueued, job)
+	job.Status = session.QueueStatusRunning
+	writeDoctorQueueJob(t, root, session.QueueStatusRunning, job)
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	duplicates, ok := check.Details["duplicate_queue_jobs"].([]map[string]any)
+	if !ok || len(duplicates) != 1 {
+		t.Fatalf("expected duplicate queue job, got %#v", check.Details["duplicate_queue_jobs"])
+	}
+	if duplicates[0]["job_id"] != "job_duplicate" {
+		t.Fatalf("unexpected duplicate detail: %#v", duplicates[0])
+	}
+}
+
+func TestDoctorReportsQueueLeaseAndMissingSessionRef(t *testing.T) {
+	root := t.TempDir()
+	old := time.Now().UTC().Add(-session.QueueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
+	writeDoctorQueueJob(t, root, session.QueueStatusRunning, session.QueueJob{
+		ID:        "job_running_without_lease",
+		Status:    session.QueueStatusRunning,
+		Prompt:    "hi",
+		Mode:      session.ModeExec,
+		UpdatedAt: old,
+	})
+	writeDoctorQueueJob(t, root, session.QueueStatusCompleted, session.QueueJob{
+		ID:        "job_missing_session_ref",
+		Status:    session.QueueStatusCompleted,
+		Prompt:    "hi",
+		Mode:      session.ModeExec,
+		SessionID: "session_does_not_exist",
+	})
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	withoutLease, ok := check.Details["running_jobs_without_lease"].([]map[string]any)
+	if !ok || len(withoutLease) != 1 {
+		t.Fatalf("expected running job without lease, got %#v", check.Details["running_jobs_without_lease"])
+	}
+	stale, ok := check.Details["stale_running_jobs"].([]map[string]any)
+	if !ok || len(stale) != 1 {
+		t.Fatalf("expected stale running job, got %#v", check.Details["stale_running_jobs"])
+	}
+	missingRefs, ok := check.Details["queue_jobs_missing_session"].([]map[string]any)
+	if !ok || len(missingRefs) != 1 {
+		t.Fatalf("expected missing session ref, got %#v", check.Details["queue_jobs_missing_session"])
 	}
 }
 
