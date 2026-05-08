@@ -262,6 +262,11 @@ header {
   transform: none;
 }
 
+.icon-action-btn.is-busy {
+  opacity: 0.48;
+  pointer-events: none;
+}
+
 .icon-action-btn:not(:disabled):hover {
   background: var(--border);
   transform: none;
@@ -612,6 +617,8 @@ textarea {
 
 .send-btn:hover { background-color: var(--accent-strong); }
 .send-btn:disabled { opacity: 0.4; background-color: var(--text-muted); cursor: not-allowed; }
+.send-btn.is-interrupt { background-color: var(--error); }
+.send-btn.is-interrupt:hover { background-color: #dc2626; }
 
 .send-btn.is-loading svg {
   opacity: 0;
@@ -672,6 +679,15 @@ textarea {
   margin-bottom: 16px;
 }
 
+.skills-header,
+.workspace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
 .view-title {
   font-size: 20px;
   font-weight: 700;
@@ -682,6 +698,8 @@ textarea {
 .view-subtitle {
   font-size: 13px;
   color: var(--text-muted);
+  overflow-wrap: break-word;
+  max-width: 100%;
 }
 
 /* Skills Grid */
@@ -702,6 +720,8 @@ textarea {
   position: relative;
   box-shadow: var(--shadow-soft);
   animation: cardEnter 0.4s ease-out both;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .skill-card:nth-child(1) { animation-delay: 0.02s; }
@@ -800,7 +820,7 @@ textarea {
 
 .skill-name { font-weight: 600; margin-bottom: 4px; }
 .skill-author { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); margin-bottom: 12px; }
-.skill-desc { font-size: 13px; color: var(--text-muted); flex: 1; margin-bottom: 16px; }
+.skill-desc { font-size: 13px; color: var(--text-muted); flex: 1; margin-bottom: 16px; overflow-wrap: anywhere; word-break: break-word; }
 
 .skill-footer {
   display: flex;
@@ -1344,10 +1364,12 @@ textarea {
   gap: 16px;
   padding: 48px 32px;
   text-align: center;
+  max-width: 640px;
+  min-height: 0;
 }
 
 .empty-session-title {
-  font-size: 18px;
+  font-size: 28px;
   font-weight: 600;
   line-height: 1.3;
   color: var(--text-main);
@@ -1358,7 +1380,7 @@ textarea {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.5;
-  max-width: 400px;
+  max-width: 44ch;
 }
 
 .empty-session-grid {
@@ -2974,23 +2996,6 @@ textarea {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.empty-session-state {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-width: 640px;
-  min-height: 0;
-  align-items: flex-start;
-}
-
-.empty-session-title {
-  font-size: 28px;
-}
-
-.empty-session-copy {
-  max-width: 44ch;
 }
 
 .empty-session-note {
