@@ -707,6 +707,75 @@ func TestDoctorCommandJSONIncludesEffectiveOpenAICompatibleSettings(t *testing.T
 	}
 }
 
+func TestTrustedExtensionStatusAppearsInDoctor(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".agent", "reviewer"), 0o700); err != nil {
+		t.Fatalf("mkdir extension: %v", err)
+	}
+	if err := os.Chdir(workdir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+
+	fake := newFakeRunner()
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.Session.Dir = filepath.Join(workdir, ".go-cli-agent", "sessions")
+		cfg.DefaultProvider = "openai-compatible"
+		cfg.Providers["openai-compatible"] = config.Provider{
+			APIKeyEnv: "TEST_MISSING_KEY",
+			BaseURL:   "http://example/v1",
+			Model:     "gpt-5.4",
+			WireAPI:   "responses",
+		}
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+	_ = os.Unsetenv("TEST_MISSING_KEY")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"doctor", "--provider", "openai-compatible", "--json", "--skip-probe"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	var trustCheck *doctorCheck
+	for i := range report.Checks {
+		if report.Checks[i].Name == "extensions.trust" {
+			trustCheck = &report.Checks[i]
+			break
+		}
+	}
+	if trustCheck == nil {
+		t.Fatalf("extensions.trust check missing: %#v", report.Checks)
+	}
+	if trustCheck.Status != "ok" || trustCheck.Details["trusted"] != false {
+		t.Fatalf("unexpected trust check: %#v", trustCheck)
+	}
+	if trustCheck.Details["discovery_path"] != filepath.Join(workdir, ".agent") {
+		t.Fatalf("unexpected discovery path: %#v", trustCheck.Details)
+	}
+	candidates, ok := trustCheck.Details["candidates"].([]any)
+	if !ok || len(candidates) != 1 {
+		t.Fatalf("expected one extension candidate, got %#v", trustCheck.Details["candidates"])
+	}
+	candidate, ok := candidates[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected candidate object, got %#v", candidates[0])
+	}
+	if candidate["qualified_name"] != "workspace/reviewer" || candidate["disabled"] != true || candidate["disabled_reason"] == "" {
+		t.Fatalf("unexpected extension candidate: %#v", candidate)
+	}
+}
+
 func TestDoctorReportsMissingSessionState(t *testing.T) {
 	root := t.TempDir()
 	sessionDir := filepath.Join(root, "session_missing_state")

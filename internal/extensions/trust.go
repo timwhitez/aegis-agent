@@ -17,15 +17,18 @@ const (
 )
 
 type Candidate struct {
-	Name          string    `json:"name"`
-	QualifiedName string    `json:"qualified_name"`
-	Path          string    `json:"path"`
-	Trust         TrustMode `json:"trust"`
-	Disabled      bool      `json:"disabled,omitempty"`
+	Name           string    `json:"name"`
+	QualifiedName  string    `json:"qualified_name"`
+	Path           string    `json:"path"`
+	Trust          TrustMode `json:"trust"`
+	Disabled       bool      `json:"disabled,omitempty"`
+	DisabledReason string    `json:"disabled_reason,omitempty"`
 }
 
 type DiscoveryResult struct {
-	Candidates []Candidate `json:"candidates"`
+	DiscoveryPath string      `json:"discovery_path"`
+	Trusted       bool        `json:"trusted"`
+	Candidates    []Candidate `json:"candidates"`
 }
 
 func Discover(workdir string, trusted bool) (DiscoveryResult, error) {
@@ -34,16 +37,24 @@ func Discover(workdir string, trusted bool) (DiscoveryResult, error) {
 		return DiscoveryResult{}, err
 	}
 	agentDir := filepath.Join(root, ".agent")
+	result := DiscoveryResult{
+		DiscoveryPath: agentDir,
+		Trusted:       trusted,
+	}
 	entries, err := os.ReadDir(agentDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return DiscoveryResult{}, nil
+			return result, nil
 		}
 		return DiscoveryResult{}, err
 	}
 	trust := TrustUntrusted
 	if trusted {
 		trust = TrustExplicit
+	}
+	disabledReason := ""
+	if !trusted {
+		disabledReason = "workspace extensions are discovery-only until explicitly trusted"
 	}
 	var candidates []Candidate
 	for _, entry := range entries {
@@ -56,18 +67,20 @@ func Discover(workdir string, trusted bool) (DiscoveryResult, error) {
 			continue
 		}
 		candidates = append(candidates, Candidate{
-			Name:          entry.Name(),
-			QualifiedName: "workspace/" + entry.Name(),
-			Path:          resolved,
-			Trust:         trust,
-			Disabled:      !trusted,
+			Name:           entry.Name(),
+			QualifiedName:  "workspace/" + entry.Name(),
+			Path:           resolved,
+			Trust:          trust,
+			Disabled:       !trusted,
+			DisabledReason: disabledReason,
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].QualifiedName < candidates[j].QualifiedName })
 	if err := ValidateNoAmbiguousShortNames(candidates); err != nil {
 		return DiscoveryResult{}, err
 	}
-	return DiscoveryResult{Candidates: candidates}, nil
+	result.Candidates = candidates
+	return result, nil
 }
 
 func ValidateNoAmbiguousShortNames(candidates []Candidate) error {

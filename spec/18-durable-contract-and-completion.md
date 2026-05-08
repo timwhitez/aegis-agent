@@ -164,6 +164,7 @@ Required controls:
 - reserved tool-name denial
 - qualified names for workspace extensions
 - disabled state while untrusted
+- read-only trust observability in `doctor` and local WebConsole: discovery path, candidate path, trust mode, disabled state and disabled reason
 - loaded source path recorded in contract/session summary when future loading is enabled
 
 ## 10. Shell Sandbox

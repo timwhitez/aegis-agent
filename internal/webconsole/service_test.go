@@ -1841,6 +1841,45 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	}
 }
 
+func TestListSkillsReportsWorkspaceExtensionTrustStatus(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".agent", "reviewer"), 0o700); err != nil {
+		t.Fatalf("mkdir extension: %v", err)
+	}
+	if err := os.Chdir(workdir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+
+	cfg := testConfig(t, "")
+	cfg.Skills.Dirs = []string{filepath.Join(t.TempDir(), "skills")}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 1 {
+		t.Fatalf("expected one extension card, got %#v", listed)
+	}
+	item := listed[0]
+	if item["id"] != "workspace/reviewer" || item["read_only"] != true || item["trust"] != "untrusted" {
+		t.Fatalf("unexpected extension trust card: %#v", item)
+	}
+	if item["disabled_reason"] == "" || item["extension_path"] == "" || item["discovery_path"] != filepath.Join(workdir, ".agent") {
+		t.Fatalf("expected extension trust details, got %#v", item)
+	}
+}
+
 func testConfig(t *testing.T, baseURL string) *config.Config {
 	t.Helper()
 	cfg := config.Default()

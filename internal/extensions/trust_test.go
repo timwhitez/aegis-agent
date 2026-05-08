@@ -26,8 +26,14 @@ func TestDiscoverRequiresExplicitTrustAndSkipsSymlinkEscape(t *testing.T) {
 	if len(result.Candidates) != 1 {
 		t.Fatalf("expected only safe in-workspace candidate, got %#v", result.Candidates)
 	}
+	if result.DiscoveryPath != filepath.Join(workdir, ".agent") || result.Trusted {
+		t.Fatalf("unexpected discovery status: %#v", result)
+	}
 	if result.Candidates[0].QualifiedName != "workspace/safe-tool" || !result.Candidates[0].Disabled || result.Candidates[0].Trust != TrustUntrusted {
 		t.Fatalf("unexpected untrusted candidate: %#v", result.Candidates[0])
+	}
+	if result.Candidates[0].DisabledReason == "" {
+		t.Fatalf("expected disabled reason for untrusted candidate: %#v", result.Candidates[0])
 	}
 
 	result, err = Discover(workdir, true)
@@ -36,6 +42,30 @@ func TestDiscoverRequiresExplicitTrustAndSkipsSymlinkEscape(t *testing.T) {
 	}
 	if len(result.Candidates) != 1 || result.Candidates[0].Disabled || result.Candidates[0].Trust != TrustExplicit {
 		t.Fatalf("unexpected trusted candidate: %#v", result.Candidates)
+	}
+	if !result.Trusted || result.Candidates[0].DisabledReason != "" {
+		t.Fatalf("unexpected trusted status: %#v", result)
+	}
+}
+
+func TestUntrustedExtensionIsReportedButNotLoaded(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".agent", "reviewer"), 0o700); err != nil {
+		t.Fatalf("mkdir extension: %v", err)
+	}
+	result, err := Discover(workdir, false)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(result.Candidates) != 1 {
+		t.Fatalf("expected one candidate, got %#v", result.Candidates)
+	}
+	candidate := result.Candidates[0]
+	if candidate.Trust != TrustUntrusted || !candidate.Disabled || candidate.DisabledReason == "" {
+		t.Fatalf("expected untrusted disabled candidate, got %#v", candidate)
+	}
+	if candidate.QualifiedName != "workspace/reviewer" {
+		t.Fatalf("expected qualified workspace name, got %#v", candidate)
 	}
 }
 

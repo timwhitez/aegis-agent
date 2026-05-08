@@ -19,6 +19,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/extensions"
 	"go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/tools"
@@ -1334,14 +1335,19 @@ func configMode(value string) string {
 
 func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	type skillMeta struct {
-		ID          string   `json:"id"`
-		Name        string   `json:"name"`
-		Author      string   `json:"author"`
-		Description string   `json:"description"`
-		Icon        string   `json:"icon"`
-		Tags        []string `json:"tags"`
-		Downloads   int      `json:"downloads"`
-		Installed   bool     `json:"installed"`
+		ID             string   `json:"id"`
+		Name           string   `json:"name"`
+		Author         string   `json:"author"`
+		Description    string   `json:"description"`
+		Icon           string   `json:"icon"`
+		Tags           []string `json:"tags"`
+		Downloads      int      `json:"downloads"`
+		Installed      bool     `json:"installed"`
+		ReadOnly       bool     `json:"read_only,omitempty"`
+		Trust          string   `json:"trust,omitempty"`
+		ExtensionPath  string   `json:"extension_path,omitempty"`
+		DiscoveryPath  string   `json:"discovery_path,omitempty"`
+		DisabledReason string   `json:"disabled_reason,omitempty"`
 	}
 
 	var skills []skillMeta
@@ -1391,6 +1397,27 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 				Downloads:   1,
 				Installed:   true,
 			})
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		if discovery, err := extensions.Discover(cwd, false); err == nil {
+			for _, candidate := range discovery.Candidates {
+				skills = append(skills, skillMeta{
+					ID:             candidate.QualifiedName,
+					Name:           candidate.Name,
+					Author:         "Workspace extension",
+					Description:    "Discovery-only workspace extension.",
+					Icon:           "folder-git-2",
+					Tags:           []string{"workspace-extension", string(candidate.Trust)},
+					Downloads:      0,
+					Installed:      false,
+					ReadOnly:       true,
+					Trust:          string(candidate.Trust),
+					ExtensionPath:  candidate.Path,
+					DiscoveryPath:  discovery.DiscoveryPath,
+					DisabledReason: candidate.DisabledReason,
+				})
+			}
 		}
 	}
 

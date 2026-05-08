@@ -3701,21 +3701,35 @@ function renderSkills(skills) {
     }
     return;
   }
-  nodes.skillsGrid.innerHTML = skills.map((skill) => `
-    <div class="skill-card">
-      <div class="skill-icon">
-        <i data-lucide="${skill.icon || 'box'}"></i>
-      </div>
-      <h3 class="skill-name">${escapeHTML(skill.name)}</h3>
-      <p class="skill-author">by ${escapeHTML(skill.author)}</p>
-      <p class="skill-desc">${escapeHTML(skill.description)}</p>
-      <div class="skill-footer">
-        <button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}">
+  nodes.skillsGrid.innerHTML = skills.map((skill) => {
+    const isReadOnly = !!skill.read_only;
+    const trustLine = skill.trust
+      ? `<p class="skill-author">trust: ${escapeHTML(skill.trust)}${skill.disabled_reason ? ` · ${escapeHTML(skill.disabled_reason)}` : ''}</p>`
+      : '';
+    const pathLine = skill.extension_path
+      ? `<p class="skill-desc"><code>${escapeHTML(skill.extension_path)}</code></p>`
+      : '';
+    const button = isReadOnly
+      ? `<button class="skill-btn uninstall" type="button" disabled>Disabled</button>`
+      : `<button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}">
           ${skill.installed ? 'Uninstall' : 'Upload to Install'}
-        </button>
+        </button>`;
+    return `
+      <div class="skill-card">
+        <div class="skill-icon">
+          <i data-lucide="${skill.icon || 'box'}"></i>
+        </div>
+        <h3 class="skill-name">${escapeHTML(skill.name)}</h3>
+        <p class="skill-author">by ${escapeHTML(skill.author)}</p>
+        ${trustLine}
+        <p class="skill-desc">${escapeHTML(skill.description)}</p>
+        ${pathLine}
+        <div class="skill-footer">
+          ${button}
+        </div>
       </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: nodes.skillsGrid });
   }

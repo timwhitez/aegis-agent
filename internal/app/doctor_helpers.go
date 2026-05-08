@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/extensions"
 	"go-cli-agent/internal/session"
 )
 
@@ -310,6 +311,30 @@ func checkSessionRootStrategy(cfg *config.Config) doctorCheck {
 	}
 	if configured != nil && !configured.SupportsOwnerOnly {
 		check.Details["advice"] = sessionRootStrategyAdvice(configured.Path, defaultRecommendedDir(recommended))
+	}
+	return check
+}
+
+func checkWorkspaceExtensionTrust(workdir string) doctorCheck {
+	check := doctorCheck{
+		Name:   "extensions.trust",
+		Status: "ok",
+		Details: map[string]any{
+			"workdir": workdir,
+			"trusted": false,
+		},
+	}
+	result, err := extensions.Discover(workdir, false)
+	if err != nil {
+		check.Status = "warn"
+		check.Details["error"] = err.Error()
+		return check
+	}
+	check.Details["discovery_path"] = result.DiscoveryPath
+	check.Details["trusted"] = result.Trusted
+	check.Details["candidate_count"] = len(result.Candidates)
+	if len(result.Candidates) > 0 {
+		check.Details["candidates"] = result.Candidates
 	}
 	return check
 }
