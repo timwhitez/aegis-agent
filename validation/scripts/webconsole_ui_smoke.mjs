@@ -311,7 +311,7 @@ async function main() {
     await loadPromise;
 
     await waitFor(
-      () => browserClient.evaluate(`document.title === 'Agent Console' && Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('send-btn')) && Boolean(document.getElementById('chat-messages')) && Boolean(document.getElementById('interrupt-session-btn')) && Boolean(document.getElementById('stop-session-btn'))`),
+      () => browserClient.evaluate(`document.title.endsWith('Agent Console') && Boolean(document.getElementById('chat-input')) && Boolean(document.getElementById('send-btn')) && Boolean(document.getElementById('chat-messages')) && Boolean(document.getElementById('interrupt-session-btn')) && Boolean(document.getElementById('stop-session-btn'))`),
       30000,
       'webconsole shell'
     );
@@ -322,6 +322,7 @@ async function main() {
       assets: {
         stylesheet_loaded: await browserClient.evaluate(`Array.from(document.styleSheets).some((sheet) => String(sheet.href || '').includes('/styles.css') || String(sheet.href || '').endsWith('styles.css'))`),
         script_tag_present: await browserClient.evaluate(`Boolean(document.querySelector('script[src="app.js"]'))`),
+        split_modules_loaded: await browserClient.evaluate(`['api.js', 'events.js', 'settings-view.js', 'workspace-view.js', 'session-view.js', 'app.js'].every((src) => Boolean(document.querySelector('script[src="' + src + '"]')))`)
       },
       interactions: {},
       runtime_exceptions: browserClient.exceptions,
