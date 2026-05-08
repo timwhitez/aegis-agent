@@ -79,6 +79,8 @@ v1 内置工具固定为：
 - stdout/stderr 合并截断
 - 返回码与摘要写入 metadata
 - 默认只继承 allowlist 环境变量，避免把整个父进程环境泄露给子进程
+- 轻量 `runtime.exec_policy.mode` 默认 `warn`，对提权命令、明显危险删除、secret path 写入和常见网络出站命令只写 metadata warning；显式设为 `deny` 时才阻断；设为 `off` 时不附加策略 metadata
+- exec policy 只能作为安全/权限边界，不得演变为任务路线、审计路线、委派策略或交互审批 UI
 
 ### 4.2 `read_file`
 

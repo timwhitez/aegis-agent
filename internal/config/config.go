@@ -89,6 +89,7 @@ type RuntimeConfig struct {
 	Isolation          IsolationConfig          `yaml:"isolation"`
 	Queue              QueueConfig              `yaml:"queue"`
 	Shell              ShellConfig              `yaml:"shell"`
+	ExecPolicy         ExecPolicyConfig         `yaml:"exec_policy"`
 	ShellEnvAllowlist  []string                 `yaml:"shell_env_allowlist"`
 	Compact            CompactConfig            `yaml:"compact"`
 	Ephemeral          EphemeralConfig          `yaml:"ephemeral"`
@@ -118,6 +119,10 @@ type QueueConfig struct {
 
 type ShellConfig struct {
 	Sandbox string `yaml:"sandbox,omitempty"`
+}
+
+type ExecPolicyConfig struct {
+	Mode string `yaml:"mode,omitempty"`
 }
 
 type CompactConfig struct {
@@ -292,6 +297,9 @@ func Default() *Config {
 				PollIntervalMS: 1000,
 				AutoWorker:     true,
 			},
+			ExecPolicy: ExecPolicyConfig{
+				Mode: "warn",
+			},
 			ShellEnvAllowlist: []string{"PATH", "HOME", "LANG", "TERM"},
 			Compact: CompactConfig{
 				InputCharThreshold:    160000,
@@ -405,6 +413,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 		cfg.Runtime.Queue.PollIntervalMS = 1000
 	}
 	cfg.Runtime.Shell.Sandbox = strings.ToLower(strings.TrimSpace(cfg.Runtime.Shell.Sandbox))
+	cfg.Runtime.ExecPolicy.Mode = normalizeExecPolicyMode(cfg.Runtime.ExecPolicy.Mode)
 	if cfg.Runtime.Compact.InputCharThreshold <= 0 {
 		cfg.Runtime.Compact.InputCharThreshold = 160000
 	}
@@ -438,6 +447,19 @@ func normalizeGuardrailsMode(value string) string {
 		return "yolo"
 	default:
 		return "standard"
+	}
+}
+
+func normalizeExecPolicyMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "warn", "warning", "warning-only":
+		return "warn"
+	case "deny", "block":
+		return "deny"
+	case "off", "disabled", "none":
+		return "off"
+	default:
+		return "warn"
 	}
 }
 

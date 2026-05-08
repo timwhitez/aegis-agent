@@ -88,6 +88,9 @@ func TestDefaultEnablesMultiAgentTools(t *testing.T) {
 	if cfg.Runtime.GuardrailsMode != "yolo" {
 		t.Fatalf("expected yolo guardrails mode by default, got %q", cfg.Runtime.GuardrailsMode)
 	}
+	if cfg.Runtime.ExecPolicy.Mode != "warn" {
+		t.Fatalf("expected exec policy warn mode by default, got %q", cfg.Runtime.ExecPolicy.Mode)
+	}
 }
 
 func TestNormalizeConfigNormalizesGuardrailsMode(t *testing.T) {
@@ -113,6 +116,30 @@ func TestNormalizeConfigNormalizesGuardrailsMode(t *testing.T) {
 	normalizeConfig(cfg, "/tmp/project")
 	if cfg.Runtime.GuardrailsMode != "standard" {
 		t.Fatalf("expected invalid guardrails mode to fall back to standard, got %q", cfg.Runtime.GuardrailsMode)
+	}
+}
+
+func TestNormalizeConfigNormalizesExecPolicyMode(t *testing.T) {
+	cfg := &Config{
+		Runtime: RuntimeConfig{
+			ExecPolicy: ExecPolicyConfig{Mode: " warning-only "},
+		},
+		Session: SessionConfig{Dir: ".go-cli-agent/sessions"},
+		Skills:  SkillsConfig{Dirs: []string{"./skills"}},
+	}
+	normalizeConfig(cfg, "/tmp/project")
+	if cfg.Runtime.ExecPolicy.Mode != "warn" {
+		t.Fatalf("expected warning-only alias to normalize to warn, got %q", cfg.Runtime.ExecPolicy.Mode)
+	}
+	cfg.Runtime.ExecPolicy.Mode = "block"
+	normalizeConfig(cfg, "/tmp/project")
+	if cfg.Runtime.ExecPolicy.Mode != "deny" {
+		t.Fatalf("expected block alias to normalize to deny, got %q", cfg.Runtime.ExecPolicy.Mode)
+	}
+	cfg.Runtime.ExecPolicy.Mode = "nonsense"
+	normalizeConfig(cfg, "/tmp/project")
+	if cfg.Runtime.ExecPolicy.Mode != "warn" {
+		t.Fatalf("expected invalid mode to fall back to warn, got %q", cfg.Runtime.ExecPolicy.Mode)
 	}
 }
 

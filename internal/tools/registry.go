@@ -306,6 +306,30 @@ func defShell() Definition {
 				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
 			}
 			commandPath, commandArgs, sandboxStatus := shellSandboxCommand(shellSandbox, workdir, command, shellArg, input.Command)
+			policyMode := effectiveExecPolicyMode(execCtx.Config)
+			policyViolations := DetectExecPolicyViolations(input.Command)
+			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
+			metadata := func(exitCode, rawLength int, truncated bool) map[string]any {
+				return attachExecPolicyMetadata(map[string]any{
+					"command":    input.Command,
+					"exit_code":  exitCode,
+					"timeout":    timeout,
+					"workdir":    workdir,
+					"sandbox":    sandboxStatus,
+					"raw_length": rawLength,
+					"truncated":  truncated,
+				}, policyMetadata)
+			}
+			if policyMode == "deny" && len(policyViolations) > 0 {
+				text := "Error: shell command denied by exec policy"
+				return session.ToolResult{
+					Name:          "shell",
+					LLMOutput:     text,
+					DisplayOutput: text,
+					IsError:       true,
+					Metadata:      metadata(0, 0, false),
+				}, nil
+			}
 			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
 			cmd.Dir = workdir
 			cmd.Env = filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist)
@@ -330,15 +354,7 @@ func defShell() Definition {
 						LLMOutput:     "[Tool execution was interrupted]",
 						DisplayOutput: "[Tool execution was interrupted]",
 						IsError:       true,
-						Metadata: map[string]any{
-							"command":    input.Command,
-							"exit_code":  exitCode,
-							"timeout":    timeout,
-							"workdir":    workdir,
-							"sandbox":    sandboxStatus,
-							"raw_length": rawLength,
-							"truncated":  truncated,
-						},
+						Metadata:      metadata(exitCode, rawLength, truncated),
 					}, interruptErr
 				}
 				return session.ToolResult{
@@ -346,30 +362,14 @@ func defShell() Definition {
 					LLMOutput:     text,
 					DisplayOutput: text,
 					IsError:       true,
-					Metadata: map[string]any{
-						"command":    input.Command,
-						"exit_code":  exitCode,
-						"timeout":    timeout,
-						"workdir":    workdir,
-						"sandbox":    sandboxStatus,
-						"raw_length": rawLength,
-						"truncated":  truncated,
-					},
+					Metadata:      metadata(exitCode, rawLength, truncated),
 				}, nil
 			}
 			return session.ToolResult{
 				Name:          "shell",
 				LLMOutput:     text,
 				DisplayOutput: text,
-				Metadata: map[string]any{
-					"command":    input.Command,
-					"exit_code":  exitCode,
-					"timeout":    timeout,
-					"workdir":    workdir,
-					"sandbox":    sandboxStatus,
-					"raw_length": rawLength,
-					"truncated":  truncated,
-				},
+				Metadata:      metadata(exitCode, rawLength, truncated),
 			}, nil
 		},
 	}

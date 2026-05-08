@@ -279,6 +279,87 @@ func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
 	}
 }
 
+func TestShellReturnsExecPolicyMetadataInWarningMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.ExecPolicy.Mode = "warn"
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"command":"echo token > .env"
+	}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("warning mode should not block command, got %#v", result)
+	}
+	policy, ok := result.Metadata["exec_policy"].(map[string]any)
+	if !ok || policy["mode"] != "warn" {
+		t.Fatalf("expected warn exec policy metadata, got %#v", result.Metadata)
+	}
+	violations, ok := policy["violations"].([]ExecPolicyViolation)
+	if !ok || !hasExecPolicyCategory(violations, "secret_path_write") {
+		t.Fatalf("expected secret path violation metadata, got %#v", policy)
+	}
+}
+
+func TestShellBlocksViolationInDenyMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.ExecPolicy.Mode = "deny"
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"command":"echo token > .env"
+	}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.LLMOutput, "shell command denied by exec policy") {
+		t.Fatalf("expected deny result, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("deny mode should not create .env, stat err=%v", err)
+	}
+	policy, ok := result.Metadata["exec_policy"].(map[string]any)
+	if !ok || policy["mode"] != "deny" {
+		t.Fatalf("expected deny exec policy metadata, got %#v", result.Metadata)
+	}
+}
+
 func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
