@@ -652,11 +652,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, `data-view="overview"`) || strings.Contains(indexBody, "Overview</span>") || strings.Contains(indexBody, "overview-view") {
 		t.Fatalf("expected standalone overview page to be removed from shell, got shell body: %s", indexBody)
 	}
-	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") {
+	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "app.js") {
-		t.Fatalf("expected shell to load utils/icons/api/events/app assets, got shell body: %s", indexBody)
+	if !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "app.js") {
+		t.Fatalf("expected shell to load utils/icons/api/events/settings/app assets, got shell body: %s", indexBody)
 	}
 	iconsBody := checkBody(server.URL + "/icons.js")
 	if !strings.Contains(iconsBody, "window.lucide") || !strings.Contains(iconsBody, "createIcons") {
@@ -676,6 +676,10 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	eventsBody := checkBody(server.URL + "/events.js")
 	if !strings.Contains(eventsBody, "describeTimelineItem") || !strings.Contains(eventsBody, "describeEventDescriptor") || !strings.Contains(eventsBody, "shouldRefreshAfterEvent") || !strings.Contains(eventsBody, "Background results accepted") {
 		t.Fatalf("unexpected events.js body: %s", eventsBody)
+	}
+	settingsBody := checkBody(server.URL + "/settings-view.js")
+	if !strings.Contains(settingsBody, "renderSettings") || !strings.Contains(settingsBody, "saveConfig") || !strings.Contains(settingsBody, "settings-provider") {
+		t.Fatalf("unexpected settings-view.js body: %s", settingsBody)
 	}
 
 	jsBody := checkBody(server.URL + "/app.js")
