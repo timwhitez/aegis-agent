@@ -3,11 +3,8 @@
   --surface: #ffffff;
   --surface-hover: #f0f2f7;
   --surface-strong: #f9fafb;
-  --surface-deep: #1a2332;
   --border: #e2e6ef;
-  --border-strong: #c9cdd8;
   --primary: #1e293b;
-  --primary-hover: #0f172a;
   --accent: #0d9488;
   --accent-soft: rgba(13, 148, 136, 0.08);
   --accent-strong: #0f766e;
@@ -673,6 +670,7 @@ textarea {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding-bottom: 32px;
+  min-height: 0;
 }
 
 .view-header {

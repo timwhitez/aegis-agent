@@ -116,6 +116,7 @@ async function renderSettings() {
         });
         showToast('Settings saved.', 'success');
         saveButton.innerText = 'Saved';
+        saveButton.disabled = false;
         if (apiKeyInput.value !== '••••••••••••••••') {
           apiKeyInput.value = '••••••••••••••••';
           apiKeyInput.dataset.originalHasKey = 'true';
@@ -127,11 +128,8 @@ async function renderSettings() {
         }, 1500);
       } catch (err) {
         showToast(err.message || 'Failed to save configuration.', 'error');
-      } finally {
-        if (document.body.contains(saveButton)) {
-          saveButton.innerText = 'Save Changes';
-          saveButton.disabled = false;
-        }
+        saveButton.innerText = 'Save Changes';
+        saveButton.disabled = false;
       }
     });
   } catch (err) {
