@@ -221,6 +221,64 @@ func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	}
 }
 
+func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".go-cli-agent"), 0o700); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, ".go-cli-agent", "config.yaml"), []byte("old"), 0o600); err != nil {
+		t.Fatalf("write state file: %v", err)
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	writeResult, err := registry.Execute(context.Background(), "write_file", execCtx, json.RawMessage(`{
+		"path":".git/config",
+		"content":"bad"
+	}`))
+	if err != nil {
+		t.Fatalf("write_file: %v", err)
+	}
+	if !writeResult.IsError || !strings.Contains(writeResult.LLMOutput, "write denied: path '.git/config' matches deny pattern '.git/'") {
+		t.Fatalf("expected write deny result, got %#v", writeResult)
+	}
+
+	editResult, err := registry.Execute(context.Background(), "edit_file", execCtx, json.RawMessage(`{
+		"path":".go-cli-agent/config.yaml",
+		"old_text":"old",
+		"new_text":"new"
+	}`))
+	if err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if !editResult.IsError || !strings.Contains(editResult.LLMOutput, "write denied: path '.go-cli-agent/config.yaml' matches deny pattern '.go-cli-agent/'") {
+		t.Fatalf("expected edit deny result, got %#v", editResult)
+	}
+}
+
 func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

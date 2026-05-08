@@ -466,6 +466,9 @@ func defWriteFile() Definition {
 			if err != nil {
 				return errorResult("write_file", err), nil
 			}
+			if err := CheckWorkspaceWriteAllowed(execCtx.Workdir, path); err != nil {
+				return errorResult("write_file", err), nil
+			}
 			if err := writeAtomically(path, []byte(input.Content), 0o600); err != nil {
 				return errorResult("write_file", err), nil
 			}
@@ -506,6 +509,9 @@ func defEditFile() Definition {
 			}
 			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
 			if err != nil {
+				return errorResult("edit_file", err), nil
+			}
+			if err := CheckWorkspaceWriteAllowed(execCtx.Workdir, path); err != nil {
 				return errorResult("edit_file", err), nil
 			}
 			content, err := os.ReadFile(path)

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,4 +65,52 @@ func isWithin(base, target string) bool {
 		return false
 	}
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+}
+
+var deniedWorkspaceWriteDirs = []string{
+	".git",
+	".go-cli-agent",
+	".ssh",
+	".aws",
+	".gnupg",
+	".kube",
+	".docker",
+}
+
+var deniedWorkspaceWriteFiles = []string{
+	".env",
+	"id_rsa",
+	"id_ed25519",
+	"credentials",
+}
+
+func CheckWorkspaceWriteAllowed(workdir, resolvedPath string) error {
+	base, err := filepath.Abs(workdir)
+	if err != nil {
+		return err
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(base, resolvedPath)
+	if err != nil {
+		return err
+	}
+	displayPath := filepath.ToSlash(rel)
+	parts := strings.Split(displayPath, "/")
+	for _, part := range parts {
+		for _, denied := range deniedWorkspaceWriteDirs {
+			if part == denied {
+				return fmt.Errorf("write denied: path '%s' matches deny pattern '%s/'", displayPath, denied)
+			}
+		}
+	}
+	baseName := filepath.Base(resolvedPath)
+	for _, denied := range deniedWorkspaceWriteFiles {
+		if baseName == denied {
+			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, denied)
+		}
+	}
+	return nil
 }
