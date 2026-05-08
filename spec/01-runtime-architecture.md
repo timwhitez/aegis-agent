@@ -186,9 +186,12 @@
 
 - 管理后台自治 job 持久化
 - claim queued jobs
+- claim 时写入 durable lease：`claimed_by`、`claimed_at`、`heartbeat_at`、`worker_pid`、`process_start_id`
 - 拉起真实 child session 并回写结果
+- worker 处理 job 期间刷新 `heartbeat_at`，使 running job 的 owner/liveness 可由文件事实解释
 - 在活跃 CLI 进程内提供 auto worker
 - 将 child 完成/失败结果投递回 parent session 的控制通知
+- reconcile running job 时只做文件事实可证明的收敛：已完成/失败的 linked session 可修复为完成/失败；recent heartbeat 且未结算的 job 保持 running；stale 且找不到 linked session 的 job 可标记 failed 并记录 orphan/stale error
 
 ### 2.19 TerminalDashboard
 

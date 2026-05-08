@@ -358,6 +358,86 @@ func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	}
 }
 
+func TestQueueWorkerRefreshesHeartbeat(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Runtime.Queue.PollIntervalMS = 20
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_heartbeat",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"heartbeat done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+	provider := cfg.Providers["openai-compatible"]
+	provider.BaseURL = server.URL
+	cfg.Providers["openai-compatible"] = provider
+
+	runner := NewRunner(cfg)
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		Prompt:        "finish the queued task slowly",
+		IsolationMode: "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+
+	done := make(chan struct{})
+	var processed session.QueueJob
+	var ok bool
+	var processErr error
+	go func() {
+		processed, ok, processErr = runner.ProcessNextJob(context.Background())
+		close(done)
+	}()
+
+	firstHeartbeat := ""
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		loaded, err := runner.store.LoadJob(job.ID)
+		if err == nil && loaded.Status == session.QueueStatusRunning && loaded.HeartbeatAt != "" {
+			firstHeartbeat = loaded.HeartbeatAt
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if firstHeartbeat == "" {
+		t.Fatal("expected initial running heartbeat")
+	}
+	heartbeatUpdated := false
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		loaded, err := runner.store.LoadJob(job.ID)
+		if err == nil && loaded.HeartbeatAt != "" && loaded.HeartbeatAt != firstHeartbeat {
+			heartbeatUpdated = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !heartbeatUpdated {
+		t.Fatal("expected queue heartbeat to refresh while job runs")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queue worker did not finish")
+	}
+	if processErr != nil || !ok || processed.Status != session.QueueStatusCompleted {
+		t.Fatalf("unexpected processed job ok=%t err=%v job=%#v", ok, processErr, processed)
+	}
+	if processed.HeartbeatAt == "" || processed.ClaimedBy == "" || processed.ProcessStartID == "" || processed.WorkerPID == 0 {
+		t.Fatalf("expected lease fields on completed job, got %#v", processed)
+	}
+}
+
 func TestRunnerQueueSubmitResolvesRelativeWorkdirAgainstParent(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

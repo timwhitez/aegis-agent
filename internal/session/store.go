@@ -26,6 +26,11 @@ type Store struct {
 	mu       sync.Mutex
 }
 
+const queueRunningStaleAfter = 15 * time.Minute
+
+var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)
+
 func NewStore(root string) *Store {
 	return NewStoreWithDirMode(root, 0o700)
 }
@@ -803,14 +808,39 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 			return QueueJob{}, false, err
 		}
 		job := candidate.job
+		now := time.Now().UTC().Format(time.RFC3339Nano)
 		job.Status = QueueStatusRunning
-		job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		job.UpdatedAt = now
+		applyQueueLease(&job, now)
 		if err := s.writeJSONFile(to, job); err != nil {
 			return QueueJob{}, false, err
 		}
 		return job, true, nil
 	}
 	return QueueJob{}, false, nil
+}
+
+func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureQueueDirs(); err != nil {
+		return QueueJob{}, err
+	}
+	path := s.queueJobPath(QueueStatusRunning, jobID)
+	var job QueueJob
+	if err := readJSONFile(path, &job); err != nil {
+		return QueueJob{}, err
+	}
+	if job.Status != QueueStatusRunning {
+		return QueueJob{}, fmt.Errorf("queue job %s is not running", jobID)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job.UpdatedAt = now
+	applyQueueLease(&job, now)
+	if err := s.writeJSONFile(path, job); err != nil {
+		return QueueJob{}, err
+	}
+	return job, nil
 }
 
 func (s *Store) WriteArtifact(sessionID, relativePath string, payload any) (string, error) {
@@ -844,6 +874,22 @@ func NewSessionID() string {
 
 func NewQueueJobID() string {
 	return newRecordID("job")
+}
+
+func applyQueueLease(job *QueueJob, now string) {
+	if job.ClaimedBy == "" {
+		job.ClaimedBy = "process:" + queueProcessStartID
+	}
+	if job.ClaimedAt == "" {
+		job.ClaimedAt = now
+	}
+	job.HeartbeatAt = now
+	if job.WorkerPID == 0 {
+		job.WorkerPID = os.Getpid()
+	}
+	if job.ProcessStartID == "" {
+		job.ProcessStartID = queueProcessStartID
+	}
 }
 
 func NewMessage(role, text string) Message {
@@ -1012,20 +1058,29 @@ func (s *Store) reconcileStaleRunningJob(job QueueJob) (QueueJob, bool) {
 	}
 	meta, state, messages, ok := s.findSessionForQueueJob(job.ID)
 	if !ok {
-		return job, false
+		if !queueJobIsStale(job, time.Now().UTC()) {
+			return job, false
+		}
+		job.Status = QueueStatusFailed
+		job.SessionStatus = StatusFailed
+		job.LastError = "queue job stale: running job has no linked session and heartbeat is stale"
+		_ = s.SaveJob(job)
+		if job.ParentSessionID != "" {
+			s.ensureBackgroundNotification(job)
+			s.ensureQueueLifecycleEvent(job, "queue.job.notified")
+			s.ensureQueueLifecycleEvent(job, "queue.job.failed")
+		}
+		return job, true
+	}
+	if changed := syncRunningQueueJobSession(&job, meta, state, messages); changed && state.Status != StatusCompleted && state.Status != StatusFailed {
+		_ = s.SaveJob(job)
+		return job, true
 	}
 	switch state.Status {
 	case StatusCompleted, StatusFailed:
 	default:
 		return job, false
 	}
-	job.SessionID = meta.ID
-	job.SessionStatus = state.Status
-	job.FinalText = state.LastAssistantExcerpt
-	job.LastError = state.LastError
-	job.EffectiveWorkdir = meta.Workdir
-	job.VisiblePaths = collectQueueVisiblePaths(meta.Workdir, messages)
-	job.VisiblePaths = syncQueueVisiblePaths(job.RequestedWorkdir, meta.Workdir, job.VisiblePaths)
 	if state.Status == StatusFailed {
 		job.Status = QueueStatusFailed
 	} else {
@@ -1042,6 +1097,70 @@ func (s *Store) reconcileStaleRunningJob(job QueueJob) (QueueJob, bool) {
 		}
 	}
 	return job, true
+}
+
+func syncRunningQueueJobSession(job *QueueJob, meta SessionMetadata, state State, messages []Message) bool {
+	changed := false
+	if job.SessionID != meta.ID {
+		job.SessionID = meta.ID
+		changed = true
+	}
+	if job.SessionStatus != state.Status {
+		job.SessionStatus = state.Status
+		changed = true
+	}
+	if job.FinalText != state.LastAssistantExcerpt {
+		job.FinalText = state.LastAssistantExcerpt
+		changed = true
+	}
+	if job.LastError != state.LastError {
+		job.LastError = state.LastError
+		changed = true
+	}
+	if job.EffectiveWorkdir != meta.Workdir {
+		job.EffectiveWorkdir = meta.Workdir
+		changed = true
+	}
+	visiblePaths := collectQueueVisiblePaths(meta.Workdir, messages)
+	visiblePaths = syncQueueVisiblePaths(job.RequestedWorkdir, meta.Workdir, visiblePaths)
+	if !equalStringSlices(job.VisiblePaths, visiblePaths) {
+		job.VisiblePaths = visiblePaths
+		changed = true
+	}
+	return changed
+}
+
+func queueJobIsStale(job QueueJob, now time.Time) bool {
+	reference := firstNonEmpty(job.HeartbeatAt, job.ClaimedAt, job.UpdatedAt)
+	if reference == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, reference)
+	if err != nil {
+		return false
+	}
+	return now.Sub(parsed) > queueRunningStaleAfter
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) findSessionForQueueJob(jobID string) (SessionMetadata, State, []Message, bool) {

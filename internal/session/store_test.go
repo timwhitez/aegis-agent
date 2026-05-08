@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -244,7 +245,90 @@ func TestStoreClaimNextQueuedJobIsAtomicAcrossStores(t *testing.T) {
 	}
 }
 
-func TestStoreLoadJobRepairsCompletedChildSessionState(t *testing.T) {
+func TestClaimNextQueuedJobWritesLease(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_lease",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected queued job to be claimed")
+	}
+	if claimed.Status != QueueStatusRunning || claimed.ClaimedBy == "" || claimed.ClaimedAt == "" || claimed.HeartbeatAt == "" || claimed.WorkerPID == 0 || claimed.ProcessStartID == "" {
+		t.Fatalf("expected running lease fields, got %#v", claimed)
+	}
+	if claimed.HeartbeatAt != claimed.ClaimedAt {
+		t.Fatalf("expected initial heartbeat to match claimed_at, got %#v", claimed)
+	}
+}
+
+func TestReconcileStaleRunningJobWithoutSessionFailsJob(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_stale_orphan",
+		Status:        QueueStatusRunning,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+		ClaimedBy:     "process:test",
+		ClaimedAt:     oldHeartbeat,
+		HeartbeatAt:   oldHeartbeat,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load reconciled job: %v", err)
+	}
+	if reconciled.Status != QueueStatusFailed || !strings.Contains(reconciled.LastError, "stale") || !strings.Contains(reconciled.LastError, "no linked session") {
+		t.Fatalf("expected stale orphan job to fail, got %#v", reconciled)
+	}
+}
+
+func TestReconcileKeepsRecentHeartbeatRunningJob(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_recent_orphan",
+		Status:        QueueStatusRunning,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+		ClaimedBy:     "process:test",
+		ClaimedAt:     now,
+		HeartbeatAt:   now,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load reconciled job: %v", err)
+	}
+	if reconciled.Status != QueueStatusRunning || reconciled.LastError != "" {
+		t.Fatalf("expected recent orphan job to remain running, got %#v", reconciled)
+	}
+}
+
+func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)
 

@@ -329,10 +329,14 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	}
 	if job.ParentSessionID != "" {
 		r.emit(job.ParentSessionID, "queue.job.claimed", "queue", map[string]any{
-			"job_id": job.ID,
+			"job_id":           job.ID,
+			"claimed_by":       job.ClaimedBy,
+			"process_start_id": job.ProcessStartID,
+			"worker_pid":       job.WorkerPID,
 		})
 	}
 	childRunner := NewRunner(r.cfg)
+	stopHeartbeat := r.startQueueJobHeartbeat(ctx, job.ID)
 	result, runErr := childRunner.Start(ctx, StartRequest{
 		Prompt:          job.Prompt,
 		Provider:        job.Provider,
@@ -347,6 +351,10 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		IsolationMode:   job.IsolationMode,
 		IsolationRoot:   job.IsolationRoot,
 	})
+	stopHeartbeat()
+	if heartbeatJob, heartbeatErr := r.store.RefreshQueueJobHeartbeat(job.ID); heartbeatErr == nil {
+		copyQueueLeaseFields(&job, heartbeatJob)
+	}
 	job.SessionID = result.SessionID
 	job.SessionStatus = result.Status
 	job.FinalText = result.FinalText
@@ -405,6 +413,56 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	// Failed jobs are part of normal queue lifecycle. Persist the failure on the
 	// job record and let the worker keep polling unless queue I/O itself failed.
 	return job, true, nil
+}
+
+func (r *Runner) startQueueJobHeartbeat(ctx context.Context, jobID string) func() {
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	interval := r.queueJobHeartbeatInterval()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			default:
+			}
+			_, _ = r.store.RefreshQueueJobHeartbeat(jobID)
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func (r *Runner) queueJobHeartbeatInterval() time.Duration {
+	interval := time.Duration(r.cfg.Runtime.Queue.PollIntervalMS) * time.Millisecond
+	if interval <= 0 {
+		interval = time.Second
+	}
+	if interval < 50*time.Millisecond {
+		return 50 * time.Millisecond
+	}
+	if interval > 5*time.Second {
+		return 5 * time.Second
+	}
+	return interval
+}
+
+func copyQueueLeaseFields(target *session.QueueJob, source session.QueueJob) {
+	target.ClaimedBy = source.ClaimedBy
+	target.ClaimedAt = source.ClaimedAt
+	target.HeartbeatAt = source.HeartbeatAt
+	target.WorkerPID = source.WorkerPID
+	target.ProcessStartID = source.ProcessStartID
 }
 
 func retryQueuePersistence(label string, fn func() error) error {

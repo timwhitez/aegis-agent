@@ -175,7 +175,7 @@ Session 工作区是新用户的默认落点，展示：
 
 - Background Jobs 视图默认是后台任务提交入口与状态计数面，不再展示 worker pool 调参、raw durable payload、完整 jobs 列表或 selected job detail
 - queue job 的 status、prompt、child session、parent session、final text、last error 等细节仍可由当前 session detail、background notification 链接、后端 API 与文件事实追溯，但默认前端不强行展开为独立监控页面
-- queue job 的 provider、workdir、raw payload 等内部事实仍可由 API 与文件事实追溯
+- queue job 的 provider、workdir、lease owner、heartbeat、raw payload 等内部事实仍可由 API 与文件事实追溯
 - queue submit 保留为“高级后台任务”入口，并用文案提示普通任务应回到 Session 执行
 
 ### 4.5 右侧动作区

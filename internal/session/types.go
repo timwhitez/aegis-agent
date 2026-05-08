@@ -344,6 +344,11 @@ type QueueJob struct {
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
 	Status           string   `json:"status"`
+	ClaimedBy        string   `json:"claimed_by,omitempty"`
+	ClaimedAt        string   `json:"claimed_at,omitempty"`
+	HeartbeatAt      string   `json:"heartbeat_at,omitempty"`
+	WorkerPID        int      `json:"worker_pid,omitempty"`
+	ProcessStartID   string   `json:"process_start_id,omitempty"`
 	ParentSessionID  string   `json:"parent_session_id,omitempty"`
 	RootSessionID    string   `json:"root_session_id,omitempty"`
 	AgentName        string   `json:"agent_name,omitempty"`
