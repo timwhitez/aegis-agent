@@ -2,87 +2,32 @@
 
 `go-cli-agent` 是一个用 Go 编写的极简通用 CLI agent harness。
 
-它的主目标不是做一个复杂的终端 UI，而是把最小但完整的 agent loop、provider adapter、tools、skills、hooks、session 持久化、任务系统、运行中补充输入与恢复语义组织成一个干净的 CLI 基座。它既可以做 coding agent，也可以做审计、文档、运维、整理型 agent。真正决定“它做什么”的，是 `skills/`、工作目录里的 `AGENTS.md`、以及用户给它的 prompt。
-
-在保持 CLI-first 的前提下，仓库现在也允许显式 `experimental web` 控制台：它提供本地单页前端，用于 session / task / queue / children / timeline 观测，以及 `start` / `steer` / `continue` / background queue 的低门槛交互，但不会替代默认 core CLI 叙事。
-当前内嵌前端采用 session-first 控制台壳层：进入页面就是简洁的 session 执行工作区，左侧 session rail、中间执行流、右侧 inspector tracker 同时存在，但不再提供独立 Overview 首页。
-当前 Web 控制台的 start / queue 表单支持 role-aware 运行入口，方便在大型任务里直接从浏览器发起 planner / generator / evaluator 风格的任务。
-当前 session detail 还会把 execution / recovery / output / provider options、contract、required artifacts、provider attempts 与 checkpoint 线索直接放在详情数据里，并允许从 queue job、child session、background notification 卡片直接跳回相关 session，减少在列表与详情之间来回找上下文的成本。
-当前前端还保留轻量的 session rail、Sessions、Background Jobs、Skills、Workspace 与 Settings，但默认不把 worker pool 调参、raw queue payload 或 KPI 数字墙暴露给普通操作流。
-Background Jobs 主视图现在定位为后台任务提交入口和状态计数面：默认不展开完整 jobs 列表或 selected job 详情；已有作业仍可通过 session detail、background notification、后端 API 与文件事实追溯。worker 并发请通过启动参数或后端 API 管理。
+它的主目标不是做复杂 UI，而是把最小但完整的 agent loop、provider adapter、tools、skills、hooks、session 持久化、任务系统、运行中补充输入与恢复语义组织成一个干净的 CLI 基座。它可以做 coding、审计、文档、运维、整理型 agent；真正决定任务行为的是 `skills/`、工作目录里的 `AGENTS.md`、system/user prompt 和 provider 能力。
 
 ## 当前定位
 
-- Core v1 的默认验收口径锁定在 Phase 0-10：`init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`
-- `Esc` 暂停、`continue` 恢复、外部 `steer` 热插入输入、`exec` 零交互完成策略，都是主路径能力
-- provider 目前原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
+- Core v1 默认围绕 `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`
+- `run` 支持交互式执行和 `Esc` 暂停
+- `exec` 适合脚本或 CI，默认要求模型显式 `finish`
+- `steer` 通过文件控制队列向运行中 session 追加输入，`--interrupt` 是 best-effort 抢占
+- `continue` 恢复 `paused`、`awaiting_input`、`failed` session
+- session / state / messages / events / todo / tasks 是本地文件事实源
+- provider 原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - `openai-compatible` 作为 OpenAI Responses 形状的兼容部署模式提供
-- generation / reasoning / store 等 provider 选项会进入 runtime 和 session metadata，而不是只停留在 CLI
-- 大型项目 profile 额外验证了 `experimental delegate|children|queue|tui|web` 与 `--isolation auto|copy`，用于 child 执行、后台队列、隔离编辑、parent-child 观测、终端 TUI，以及本地 Web 控制台
-
-以下能力仍保留在仓库里，但当前仍不是默认日常交互面：
-
-- terminal TUI snapshot
-- local Web console
+- `experimental delegate|children|queue|web`、`tui` 和 `--isolation auto|copy` 仍是显式扩展面，不是默认 core 叙事
 
 ## 快速开始
 
 ```sh
 ./build.sh
 ./test.sh
-./run.sh
 
 ./bin/go-cli-agent init --force
 ./bin/go-cli-agent doctor --skip-probe
 ./bin/go-cli-agent sessions
 ```
 
-若未显式传 `--workdir`，新的 root session 默认会使用当前目录下的 `workspace/` 作为工作目录；目录不存在时会自动创建。
-
-如果要连真实 provider，需要先准备环境变量：
-
-```sh
-export OPENAI_API_KEY=...
-export ANTHROPIC_API_KEY=...
-export GEMINI_API_KEY=...
-```
-
-如果想一键启动本地 Web 控制台前后端服务：
-
-```sh
-./run.sh
-```
-
-它默认会：
-
-- 自动执行 `./build.sh`
-- 启动同一个 `experimental web` Go 进程，同时提供内嵌前端静态资源和后端 API
-- 默认监听 `0.0.0.0:3940`，方便从 WSL 里的服务直接被 Windows 浏览器访问
-- 把 PID 和日志写到 `.go-cli-agent/runtime/`
-
-常用子命令：
-
-```sh
-./run.sh status
-./run.sh logs
-./run.sh stop
-./run.sh foreground
-```
-
-如果只想手动启动底层 web 进程，也可以直接运行：
-
-```sh
-./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
-```
-
-浏览器里会看到：
-
-- 左侧：固定的 Session / Background Jobs / Sessions / Skills / Workspace / Settings 导航和 session rail
-- 中央：默认 session chat/timeline 执行流；Background Jobs 仅作为可选后台任务提交与状态面
-- 右侧：Summary / Tasks / Background / Timeline 固定 inspector tracker
-
-其中 session detail 会额外显示执行摘要、provider 选项、contract、required artifact、provider attempts、long-run checkpoint 和 parent coordination；queue / children / queue-links 卡片则支持直接打开相关 session，方便在 parent、child 和 background job 之间跳转。
-Background Jobs 页面默认隐藏 Worker Pool 配置、raw durable payload、完整 job 列表和 selected job 详情，只保留状态计数与一个明确标注的 background job 提交框；job 细节通过 session detail、notification 链接、API 或文件事实查看。
+若未显式传 `--workdir`，新的 root session 默认使用当前目录下的 `workspace/` 作为工作目录；目录不存在时会自动创建。
 
 ## 核心命令
 
@@ -98,7 +43,7 @@ Background Jobs 页面默认隐藏 Worker Pool 配置、raw durable payload、�
 ./bin/go-cli-agent run --provider openai --model gpt-5.4 "Audit this repo and suggest the smallest safe fix."
 ```
 
-零交互执行，默认要求显式 `finish`：
+零交互执行，适合脚本或 CI：
 
 ```sh
 ./bin/go-cli-agent exec --provider anthropic --model claude-sonnet-4-6 "Summarize the current repository and call finish when done."
@@ -111,59 +56,36 @@ Background Jobs 页面默认隐藏 Worker Pool 配置、raw durable payload、�
 ./bin/go-cli-agent steer <session-id> --message "Switch to provider contract validation." --interrupt
 ```
 
-`steer` 会在入队前拒绝空消息和超长输入，避免把无效控制消息写进 session 控制队列。
-
 恢复暂停或自然停顿的 session：
 
 ```sh
 ./bin/go-cli-agent continue <session-id> --message "Proceed with the next step."
 ```
 
-查看 session 与任务板：
+查看 session、任务板和 provider 状态：
 
 ```sh
 ./bin/go-cli-agent sessions
 ./bin/go-cli-agent tasks --all <session-id>
-```
-
-探活和诊断 provider：
-
-```sh
 ./bin/go-cli-agent probe-provider --provider openai
 ./bin/go-cli-agent doctor --provider openai --skip-probe
 ```
 
 ## Provider 配置
 
-默认配置文件是 `.go-cli-agent/config.yaml`。当前项目默认使用 `runtime.guardrails_mode: yolo`，也就是关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理；如果你要更保守的行为，可以改回 `standard`，或者直接在 `experimental web` 的 Settings 页面里切换。CLI / Web 启动时还会自动读取仓库根目录 `.env`（或 `GO_CLI_AGENT_ENV_FILE` 指向的 env 文件），因此在 Settings 页面保存的 API key 会在后续重启时继续生效；同一个 Settings 页面还会把 `max_turns_hard` 等 runtime 设置持久化回当前生效的 config 文件。
+如果要连真实 provider，需要先准备环境变量：
 
-OpenAI / `openai-compatible` 默认走 `Responses API`。为了保持本地 session 是唯一事实源，adapter 会默认发送 `store: false`，不依赖服务端持久化来续跑。
+```sh
+export OPENAI_API_KEY=...
+export ANTHROPIC_API_KEY=...
+export GEMINI_API_KEY=...
+```
 
-如果需要面向部署或运维的单页说明，优先看 [`docs/openai-compatible-operator-guide.md`](./docs/openai-compatible-operator-guide.md)。
+默认配置文件是 `.go-cli-agent/config.yaml`。CLI / Web 启动时还会自动读取仓库根目录 `.env`，或 `GO_CLI_AGENT_ENV_FILE` 指向的 env 文件。
 
-provider 可选 generation 字段目前支持：
+OpenAI / `openai-compatible` 默认走 Responses API。为了保持本地 session 是唯一事实源，adapter 默认发送 `store: false`，不依赖服务端持久化续跑。
 
-- `temperature`
-- `top_p`
-- `max_output_tokens`
-- `reasoning_effort`
-- `text_verbosity`
-- `thinking_budget`
-- `include_thoughts`
-- `store`
-- `send_metadata`
-
-provider 还支持可持久化的 timeout 与 transport retry 配置，用来吸收长任务里的暂时性 `429` / `5xx` / header timeout，并避免长文本生成被单一短总超时截断：
-
-- `request_timeout_sec`
-- `stream_idle_timeout_ms`
-- `retry.max_attempts`
-- `retry.base_delay_ms`
-- `retry.retry_429`
-- `retry.retry_5xx`
-- `retry.retry_transport`
-
-示例：
+常用配置示例：
 
 ```yaml
 default_provider: openai
@@ -186,72 +108,48 @@ providers:
     text_verbosity: low
 ```
 
-说明：
+provider generation / reasoning 字段会进入 runtime 和 session metadata，而不是只停留在一次性 CLI 参数里。当前支持 `temperature`、`top_p`、`max_output_tokens`、`reasoning_effort`、`text_verbosity`、`thinking_budget`、`include_thoughts`、`store`、`send_metadata`，以及 provider timeout / retry 配置。
 
-- OpenAI / `openai-compatible` 会把这些选项映射到 `reasoning`、`text`、`max_output_tokens`
-- `send_metadata=false` 可用于不兼容 `metadata` 字段的非官方 `openai-compatible` 网关；默认仍会发送 metadata，保持 runtime/session 到 adapter 的契约完整
-- `runtime.max_turns_hard: -1` 表示禁用硬性 turn 上限；在 Web Settings 里可直接勾选关闭
-- `timeout_sec` 仍作为旧配置兼容字段保留；新配置优先使用 `request_timeout_sec` 和 `stream_idle_timeout_ms`
-- 当前 session metadata 还会持久化 effective provider timeout/retry policy，方便在 `session.json` 中直接追溯这次运行实际采用的请求超时、stream idle 超时和 retry 预算，而不是只靠 HTTP adapter 的隐式默认值
-- provider HTTP 调用会按 `retry` 配置对 `429`、`5xx` 和 transport timeout 做有限重试，并写出 `provider.retry` 事件
-- provider call 如果在没有新工具副作用前遇到 `upstream_timeout`，runtime 会按 `runtime.provider_auto_resume` 做有界自动续跑，并写出 `provider.auto_resume` 事件
-- `doctor --provider openai-compatible --json` 会直接暴露当前生效的 `store`、`send_metadata`、`request_timeout_sec`、`stream_idle_timeout_ms` 和 `retry_policy`，方便 operator 在连真实网关前先核对配置
-- Anthropic 当前支持 `temperature`、`top_p`、`max_tokens`，以及基于 `thinking_budget` 的 `thinking`
-- Google 当前支持 `generationConfig`，以及基于 `thinking_budget` / `include_thoughts` 的 `thinkingConfig`
-- v1 仍不持久化 OpenAI reasoning items 和 Gemini thought signatures，所以 provider-native reasoning/思维产物 replay 不是当前主路径能力
+如果需要面向部署或运维的单页说明，优先看 [`docs/openai-compatible-operator-guide.md`](./docs/openai-compatible-operator-guide.md)。
 
-## 设计原则
+## Experimental Web
 
-- 模型是 agent，harness 只提供循环、工具、上下文和权限边界
-- CLI 是适配层，不把关键状态藏在终端里
-- core / experimental / store 入口在 app-facing 边界上保持独立 facade，不再复用同一个 concrete runner type
-- session / state / messages / events 是文件事实源
-- session contract、required artifact tracker、provider attempts、session summary 与 long-run checkpoint 都是围绕本地文件事实源生成的 durable 辅助面；它们不替代 messages/events/state，也不引入固定 workflow engine
-- compaction 只压缩发给模型的上下文视图，不覆盖原始日志
-- compaction summary 会尽量保留 `artifact_memory`、`project_memory_stack`、`high_value_proofs` 和保留给最终证据复核的 targeted read 预算；同一次 compaction 后增长未超过 hysteresis delta 时会复用 compacted view，避免每轮重写 summary artifact
-- review/audit 产物不只校验 Markdown 结构；runtime validator 还会核对 cited path:line 是否可读，并要求 snippet-level evidence support
-- 当任务对交付文件要求固定开头、精确标题或 section 顺序时，runtime 会把这些 exact-template 约束当成一等 guard，而不是继续被默认 findings-first 习惯带偏
-- 当任务明确要求写出某个 artifact 时，runtime 会记录 baseline 并要求本 session 真实写入或改动该文件后才能通过 finish gate
-- 大任务优先把 durable memory 外置到文件。推荐在工作目录下维护 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md`
-- 当大型任务在运行中被 `steer` 改变方向时，runtime 会优先提醒并在必要时阻断，要求先刷新 `reports/spec.md` / `reports/plan.md`，再继续实现、handoff 或 finish
-- 默认主路径优先于扩展能力，先把 Phase 0-10 做实，再谈 Phase 11+
-
-## 脚本
-
-- `build.sh`: 构建 `bin/go-cli-agent`；支持通过 `GO_CLI_AGENT_BUILD_OUT`、`GO_CLI_AGENT_GOOS`、`GO_CLI_AGENT_GOARCH` 覆盖输出路径和目标平台
-- `run.sh`: 一键启动或停止本地 Web 控制台前后端服务；默认启动内嵌 frontend+backend 的 `experimental web` 进程，并提供 `status|logs|stop|restart|foreground`
-- `test.sh`: 检查 `gofmt` 漂移并执行 `go test ./cmd/... ./internal/... ./pkg/...`，把默认仓库测试面限制在受控模块包上，不把 `validation/` 下的历史 run/workspace 副本扫进主路径验收
-- `live_smoke.sh`: 真实 provider 的在线探活脚本；如果目标是会拒绝 `metadata` 字段的非官方 `openai-compatible` 网关，可先设置 `GO_CLI_AGENT_LIVE_SEND_METADATA=false`
-- `validation/run_round31_complex_real_matrix.sh`: 当前最完整的 26 场景真实矩阵入口；现在会额外产出 RT21 gap-proof preflight evidence，直接覆盖 provider metadata durability、review artifact enforcement、report path hardening 三条 proof-completeness 缺口
-- `validation/run_round61_task_heavy_real_matrix.sh`: 面向真实复杂开发任务族的 task-heavy live 矩阵入口；它围绕多语言修复、same-task steer、interrupt->resume->completion、role-aware delegate/children、role-aware queue、retry/webconsole operator proof 组织约 20 个场景，并把每个场景单独落到 `validation/runs/<run-id>/cases/<case-id>/`。该入口还会把 task-heavy + RT21 gap-proof preflight 收敛到 `notes/preflight-task-heavy-proof-tests.md` 与 `notes/preflight-gap-proof-summary.md`，让 provider metadata/retry durability、artifact/path guard、exact-template guard、interrupt/queue/delegate/project-memory refresh 等 proof 在进入 live cases 前就有脚本层锚点
-- `validation/run_openai_compatible_acceptance_stack.sh`: 当前长期稳定的一键 acceptance 入口；在 provider 连通性已经确认后，它会串行执行 `round31` 主矩阵和 focused webconsole follow-up，并产出 bundle 级 summary/notes
-- `validation/run_experimental_webconsole_followup_validation.sh`: `experimental web` 的 focused live 验证入口，覆盖 durable retry restore、queue background notification 去重、embedded shell/assets，以及 headless Chrome 的真实浏览器交互 smoke；当前默认 UI 口径以 session-first 首页、session rail、timeline event filter、Tasks/Background/Timeline tracker、continue、queue submit、queue 视图、queue-links 通知与 manual refresh 为主。worker 缩放和 overview 聚合仍保留服务层/API 测试，不再作为默认页面交互。retry proof 以 durable retry metadata + 真实 `provider.retry` 为准，即使 bounded finish nudges 后 session 仍是 `awaiting_input` 也只记为备注；需要 `OPENAI_API_KEY`、`node` 和本地 Chrome/Chromium，可通过 `CHROME_BIN` 指定浏览器
-
-## 扩展能力
-
-仓库里仍保留 `delegate` / `children` / `queue` / `tui` / `web` 相关代码和 spec，用于把项目扩到 multi-agent、后台作业或可视观测面。当前区分两条口径：
-
-- minimal core: 仍围绕 `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`
-- large-project / console profile: `experimental delegate|children|queue|web` 与 `--isolation auto|copy` 继续保留，但仍通过显式入口保持与默认帮助面分离
-- large-project profile 现在还支持显式 `--role planner|generator|evaluator` / `agent_role`，并把该 role 持久化到 session、queue job、background notification 和 provider metadata，方便 handoff 与验证追踪
-
-扩展入口统一挂在：
-
-```sh
-./bin/go-cli-agent experimental <delegate|children|queue|tui|web> ...
-```
-
-本地 Web 控制台示例：
+本地 Web 控制台只作为显式实验入口存在，用来观察 session、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
 
 ```sh
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
 ```
 
-当前 Web 控制台里的 Workspace 面板默认只浏览服务进程当前 `cwd` 下的 `workspace/` 子目录；它还不是一个可切换 workspace root 的文件管理器。
+也可以用 `run.sh` 管理同一个内嵌 frontend+backend 进程：
 
-默认 `go-cli-agent` 帮助文本只展示 core v1 命令；只有显式进入 `experimental` 子树时，才展示这些扩展入口。
+```sh
+./run.sh
+./run.sh status
+./run.sh logs
+./run.sh stop
+```
 
-当前默认会向 session 工具面暴露 `agent_spawn` / `agent_status` / `agent_list`，让 master agent 自己决定是否需要新建 child agent；若部署方明确不希望暴露这些能力，可显式设置 `runtime.multi_agent.enabled=false`。
+`run.sh` 为 WSL / Windows 浏览器访问默认监听 `0.0.0.0:3940`。这个本地控制台可以写配置和 `.env` API key、删除 session、管理 skill、读取 workspace 文件；只在可信本机网络使用，暴露到非 loopback 地址前先确认风险。
+
+WebConsole 的页面结构、Background Jobs 简化口径、API 契约和浏览器验证要求写在 [`spec/17-web-console.md`](./spec/17-web-console.md)。
+
+## 设计原则
+
+- 模型是 agent，harness 只提供 loop、工具、上下文、权限边界、事实记录和恢复能力
+- CLI 是主适配层，不把关键状态藏在终端或浏览器内存里
+- core runtime、sdk facade、cli adapter 分层保持清晰
+- provider 差异留在 adapter 层，CLI / tool / Web 层不承载 provider-specific replay 逻辑
+- compaction 只改变发给模型的上下文视图，不覆盖原始日志
+- session contract、required artifact tracker、provider attempts、session summary 与 long-run checkpoint 都是围绕本地文件事实源生成的辅助面，不引入固定 workflow engine
+- 默认主路径优先于扩展能力，先把 Phase 0-10 做实，再评估 Phase 11+
+
+## 脚本
+
+- `build.sh`: 构建 `bin/go-cli-agent`
+- `test.sh`: 检查 `gofmt` 漂移并执行 `go test ./cmd/... ./internal/... ./pkg/...`
+- `run.sh`: 启动、停止或查看本地 `experimental web` 进程
+- `live_smoke.sh`: 真实 provider 的在线探活脚本
+- `validation/run_openai_compatible_acceptance_stack.sh`: provider 连通性确认后的长期 acceptance 入口
 
 ## 目录
 
@@ -266,7 +164,7 @@ providers:
 - `internal/hooks`: 轻量 hooks
 - `internal/skills`: 本地 skill catalog
 - `internal/webconsole`: local Web console service、API、embedded frontend
-- `pkg/agent`: 当前 core-only SDK facade；experimental/store-only surfaces 继续留在内部路径，待稳定后再单独暴露
+- `pkg/agent`: 当前 core-only SDK facade
 
 ## Spec 导航
 

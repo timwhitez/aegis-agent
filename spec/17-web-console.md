@@ -21,6 +21,8 @@ Web console 解决三类问题：
 
 ## 2. 产品边界
 
+根 `README.md` 只保留 `experimental web` 的短入口和 LAN 安全提示；页面结构、UX 细节、API 契约与浏览器验收口径以本文档为准，避免 WebConsole 叙事反向主导 core CLI 入口。
+
 ### 2.1 明确要做
 
 - 本地单进程 HTTP 服务
@@ -28,7 +30,7 @@ Web console 解决三类问题：
 - 基于本地 session 文件事实的只读视图
 - 基于 runtime / queue 的真实控制操作
 - 后台 worker pool 并发执行
-- 默认首页直接进入 Session 执行工作区，不再单独设置 Overview 落点
+- 默认首页直接进入 Session 执行工作区，不再单独设置独立总览落点
 
 ### 2.2 明确不做
 
@@ -87,7 +89,7 @@ Web console 解决三类问题：
 - Workspace
 - Settings
 
-当前实现的左栏不再提供 Overview 入口；进入页面即是 Session 执行工作区。
+当前实现的左栏不再提供独立总览入口；进入页面即是 Session 执行工作区。
 session 工作区采用三栏：左侧 session rail、中间 chat/timeline、右侧 inspector panel。Tasks / Background / Timeline / Summary 这类 tracker 固定在当前 session 上下文中，而不是拆成独立总览页。
 小屏幕下三栏必须按 session rail -> chat -> inspector 顺序纵向堆叠，不能因横向挤压导致输入区或 tracker 不可用。
 
@@ -200,7 +202,7 @@ Session 工作区是新用户的默认落点，展示：
 - 不显示 worker pool 并发调节控件
 - 不默认显示完整 queue jobs 列表或 selected job 详情
 
-当前实现不再提供单独 Overview 页面，也不再把 Worker Pool 当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、Sessions 和可选 Background Jobs。
+当前实现不再提供单独总览页面，也不再把 worker 并发调参当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、Sessions 和可选 Background Jobs。
 
 ## 5. 视觉系统
 
@@ -221,7 +223,7 @@ Session 工作区是新用户的默认落点，展示：
 - semantic success：绿色用于完成与健康状态
 - neutral：暖灰用于背景、弱分割和信息层级
 
-为避免纯黑压迫感和过密 dashboard 感，页面使用“暖浅背景 + 白色纸面 + 蓝色主强调 + 语义状态色”的本地控制台风格，而不是全黑监控墙或多边框管理后台。
+为避免纯黑压迫感和过密监控墙感，页面使用“暖浅背景 + 白色纸面 + 蓝色主强调 + 语义状态色”的本地控制台风格，而不是全黑监控墙或多边框管理后台。
 
 ### 5.3 组件要求
 
@@ -283,7 +285,7 @@ Web console 通过一个新的 `WebConsoleService` 运行。
 - Web server 需要知道哪些 session 是自己托管的 active run
 - handle 本身不能伪持久化；只能把 `webconsole.handle.acquired/released` 这类 owner/process 线索写入 `events.jsonl`，供恢复诊断、`session.md` 与 long-run checkpoint 使用
 
-### 6.3 Worker Pool
+### 6.3 Worker 并发池
 
 worker pool 允许并发 `N >= 1`。
 
@@ -324,7 +326,7 @@ worker pool 允许并发 `N >= 1`。
 
 ### 7.2 `GET /api/overview`
 
-返回供 Session rail 和后台摘要复用的聚合数据；当前前端不再提供独立 Overview 页面。
+返回供 Session rail 和后台摘要复用的聚合数据；当前前端不再提供独立总览页面。
 
 - session counters by status
 - queue counters by status
@@ -603,7 +605,7 @@ worker pool 允许并发 `N >= 1`。
 - embedded shell 与前端 assets 能由同一进程本地服务直接提供
 - 页面可在无外部网络资源时加载；缺失 CDN 不得导致 `lucide is not defined` 或 `marked is not defined`
 - 用户无需记忆 CLI 全命令，也能完成 session 启动、追加输入、继续执行和后台排队
-- queue worker pool 支持真实并发消费，但默认 UI 不暴露 Worker Pool 配置卡
+- queue worker pool 支持真实并发消费，但默认 UI 不暴露 worker 并发配置卡
 - retry-resume proof 以 durable retry metadata 加真实 `provider.retry` 事件作为主要通过条件；若 proof 已成立，session 是否最终落成 `completed` 只作为附带运行状态记录
 - 浏览器可以完成核心交互链且无前端运行时错误
 - 页面能清晰展示 session、tasks、queue、children、errors 的最新状态
