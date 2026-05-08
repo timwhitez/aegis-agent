@@ -51,6 +51,7 @@ type Provider struct {
 	IncludeThoughts     *bool    `yaml:"include_thoughts,omitempty"`
 	Store               *bool    `yaml:"store,omitempty"`
 	SendMetadata        *bool    `yaml:"send_metadata,omitempty"`
+	RawSidecar          *bool    `yaml:"raw_sidecar,omitempty"`
 }
 
 func (p Provider) ResolvedAPIKey() string {

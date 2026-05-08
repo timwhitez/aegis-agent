@@ -63,6 +63,7 @@ type ProviderOptions struct {
 	IncludeThoughts *bool                  `json:"include_thoughts,omitempty"`
 	Store           *bool                  `json:"store,omitempty"`
 	SendMetadata    *bool                  `json:"send_metadata,omitempty"`
+	RawSidecar      *bool                  `json:"raw_sidecar,omitempty"`
 	RetryPolicy     *ProviderRetryPolicy   `json:"retry_policy,omitempty"`
 	TimeoutPolicy   *ProviderTimeoutPolicy `json:"timeout_policy,omitempty"`
 }
@@ -153,6 +154,17 @@ type ProviderAttempt struct {
 	ProviderResponseID  string `json:"provider_response_id,omitempty"`
 	Error               string `json:"error,omitempty"`
 	CreatedAt           string `json:"created_at"`
+}
+
+type ProviderRawSidecar struct {
+	SchemaVersion      int            `json:"schema_version"`
+	Provider           string         `json:"provider"`
+	Model              string         `json:"model"`
+	Turn               int            `json:"turn"`
+	Timestamp          string         `json:"timestamp"`
+	ProviderResponseID string         `json:"provider_response_id,omitempty"`
+	StopReason         string         `json:"stop_reason,omitempty"`
+	SelectedRawItems   map[string]any `json:"selected_raw_items,omitempty"`
 }
 
 type LongRunCheckpoint struct {

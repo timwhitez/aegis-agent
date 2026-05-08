@@ -40,11 +40,13 @@ func TestRunnerSupportsOpenAICompatibleResponses(t *testing.T) {
 }
 
 func TestProviderOptionsFromConfigIncludesRetryPolicy(t *testing.T) {
+	rawSidecar := true
 	opts := providerOptionsFromConfig("openai-compatible", config.Provider{
 		ReasoningEffort:     "medium",
 		TimeoutSec:          90,
 		RequestTimeoutSec:   180,
 		StreamIdleTimeoutMS: 45000,
+		RawSidecar:          &rawSidecar,
 		Retry: config.Retry{
 			MaxAttempts:    3,
 			BaseDelayMS:    250,
@@ -73,6 +75,9 @@ func TestProviderOptionsFromConfigIncludesRetryPolicy(t *testing.T) {
 	}
 	if !reflect.DeepEqual(opts.TimeoutPolicy, wantTimeout) {
 		t.Fatalf("unexpected timeout policy: %#v", opts.TimeoutPolicy)
+	}
+	if opts.RawSidecar == nil || !*opts.RawSidecar {
+		t.Fatalf("expected raw_sidecar to be recorded in provider options, got %#v", opts.RawSidecar)
 	}
 }
 
@@ -121,6 +126,7 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 	cfg.DefaultProvider = "openai-compatible"
 	store := false
 	sendMetadata := false
+	rawSidecar := true
 	cfg.Providers["openai-compatible"] = config.Provider{
 		APIKeyEnv:           "OPENAI_API_KEY",
 		BaseURL:             server.URL + "/v1",
@@ -131,6 +137,7 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 		WireAPI:             "responses",
 		Store:               &store,
 		SendMetadata:        &sendMetadata,
+		RawSidecar:          &rawSidecar,
 		ReasoningEffort:     "medium",
 		Retry: config.Retry{
 			MaxAttempts:    3,
@@ -169,6 +176,9 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 	}
 	if meta.ProviderOptions.SendMetadata == nil || *meta.ProviderOptions.SendMetadata {
 		t.Fatalf("expected send_metadata=false in session metadata, got %#v", meta.ProviderOptions.SendMetadata)
+	}
+	if meta.ProviderOptions.RawSidecar == nil || !*meta.ProviderOptions.RawSidecar {
+		t.Fatalf("expected raw_sidecar=true in session metadata, got %#v", meta.ProviderOptions.RawSidecar)
 	}
 	wantRetry := &session.ProviderRetryPolicy{
 		MaxAttempts:    3,

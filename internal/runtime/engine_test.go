@@ -75,6 +75,72 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 }
 
+func TestProviderRawSidecarDisabledByDefault(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			Text:               "done_candidate",
+			StopReason:         "done_candidate",
+			ProviderResponseID: "resp_test_1",
+			RawProvider: map[string]any{
+				"provider_stop_reason": "completed",
+				"status":               "completed",
+			},
+		}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, err := os.Stat(engine.store.ProviderRawSidecarPath(meta.ID, 1)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no provider raw sidecar by default, stat err=%v", err)
+	}
+}
+
+func TestProviderRawSidecarWritesEnvelopeWhenEnabled(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	enabled := true
+	meta.ProviderOptions.RawSidecar = &enabled
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			Text:               "done_candidate",
+			StopReason:         "done_candidate",
+			ProviderResponseID: "resp_test_1",
+			RawProvider: map[string]any{
+				"provider_stop_reason": "completed",
+				"status":               "completed",
+			},
+		}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	sidecar, err := engine.store.LoadProviderRawSidecar(meta.ID, 1)
+	if err != nil {
+		t.Fatalf("load sidecar: %v", err)
+	}
+	if sidecar.SchemaVersion != 1 || sidecar.Provider != meta.Provider || sidecar.Model != meta.Model || sidecar.Turn != 1 {
+		t.Fatalf("unexpected sidecar envelope: %#v", sidecar)
+	}
+	if sidecar.ProviderResponseID != "resp_test_1" || sidecar.StopReason != "done_candidate" {
+		t.Fatalf("unexpected sidecar provider metadata: %#v", sidecar)
+	}
+	if sidecar.SelectedRawItems["status"] != "completed" || sidecar.SelectedRawItems["provider_stop_reason"] != "completed" {
+		t.Fatalf("unexpected selected raw items: %#v", sidecar.SelectedRawItems)
+	}
+	if strings.TrimSpace(sidecar.Timestamp) == "" {
+		t.Fatalf("expected timestamp in sidecar: %#v", sidecar)
+	}
+}
+
 func writeEvidenceFile(t *testing.T, workdir, rel, content string) {
 	t.Helper()
 	path := filepath.Join(workdir, filepath.FromSlash(rel))

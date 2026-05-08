@@ -191,6 +191,28 @@ func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error
 	return out, err
 }
 
+func (s *Store) SaveProviderRawSidecar(sessionID string, sidecar ProviderRawSidecar) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sidecar.SchemaVersion == 0 {
+		sidecar.SchemaVersion = 1
+	}
+	if strings.TrimSpace(sidecar.Timestamp) == "" {
+		sidecar.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return s.writeJSONFile(s.ProviderRawSidecarPath(sessionID, sidecar.Turn), sidecar)
+}
+
+func (s *Store) LoadProviderRawSidecar(sessionID string, turn int) (ProviderRawSidecar, error) {
+	var sidecar ProviderRawSidecar
+	err := readJSONFile(s.ProviderRawSidecarPath(sessionID, turn), &sidecar)
+	return sidecar, err
+}
+
+func (s *Store) ProviderRawSidecarPath(sessionID string, turn int) string {
+	return filepath.Join(s.SessionDir(sessionID), "provider-raw", fmt.Sprintf("%d.json", turn))
+}
+
 func (s *Store) LoadLongRunCheckpoint(sessionID string) (LongRunCheckpoint, error) {
 	var checkpoint LongRunCheckpoint
 	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "checkpoints", "longrun-latest.json"), &checkpoint)

@@ -77,6 +77,54 @@ func TestStoreAppendMessageReappliesParentAndFileModes(t *testing.T) {
 	}
 }
 
+func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sidecar := ProviderRawSidecar{
+		Provider:           "openai",
+		Model:              "gpt-test",
+		Turn:               2,
+		ProviderResponseID: "resp_2",
+		StopReason:         "done_candidate",
+		SelectedRawItems: map[string]any{
+			"status": "completed",
+		},
+	}
+	if err := store.SaveProviderRawSidecar(meta.ID, sidecar); err != nil {
+		t.Fatalf("save sidecar: %v", err)
+	}
+	loaded, err := store.LoadProviderRawSidecar(meta.ID, 2)
+	if err != nil {
+		t.Fatalf("load sidecar: %v", err)
+	}
+	if loaded.SchemaVersion != 1 || strings.TrimSpace(loaded.Timestamp) == "" {
+		t.Fatalf("expected default schema version and timestamp, got %#v", loaded)
+	}
+	if loaded.Provider != "openai" || loaded.Model != "gpt-test" || loaded.ProviderResponseID != "resp_2" || loaded.StopReason != "done_candidate" {
+		t.Fatalf("unexpected sidecar: %#v", loaded)
+	}
+	if loaded.SelectedRawItems["status"] != "completed" {
+		t.Fatalf("unexpected raw items: %#v", loaded.SelectedRawItems)
+	}
+	if filepath.Base(store.ProviderRawSidecarPath(meta.ID, 2)) != "2.json" {
+		t.Fatalf("unexpected sidecar path: %s", store.ProviderRawSidecarPath(meta.ID, 2))
+	}
+}
+
 func TestStoreHonorsConfiguredDirModeForDirectories(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o750)

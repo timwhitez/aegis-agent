@@ -907,6 +907,7 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 		IncludeThoughts: cfg.IncludeThoughts,
 		Store:           defaultStoreForProvider(name, cfg.Store),
 		SendMetadata:    cfg.SendMetadata,
+		RawSidecar:      cfg.RawSidecar,
 		RetryPolicy:     providerRetryPolicy(cfg),
 		TimeoutPolicy:   providerTimeoutPolicy(cfg),
 	}

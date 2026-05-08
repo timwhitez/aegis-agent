@@ -13,6 +13,8 @@ providers:
     reasoning_effort: high
     text_verbosity: low
     store: false
+    # Diagnostic only: when true, writes provider-raw/<turn>.json sidecars.
+    # raw_sidecar: false
 
   anthropic:
     api_key_env: ANTHROPIC_API_KEY

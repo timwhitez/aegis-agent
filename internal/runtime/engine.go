@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
@@ -224,6 +225,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			_ = writeSessionSummary(e.store, meta.ID)
 			_ = writeLongRunCheckpoint(e.store, meta.ID)
 			return RunResult{SessionID: meta.ID, Status: state.Status, LastError: err.Error()}, WrapProviderError(err)
+		}
+		if providerRawSidecarEnabled(meta) {
+			if err := e.store.SaveProviderRawSidecar(meta.ID, providerRawSidecarEnvelope(meta, state.Turn, result)); err != nil {
+				return RunResult{}, err
+			}
 		}
 		recordProviderSuccess(e.store, meta, state.Turn, result)
 		_ = writeSessionSummary(e.store, meta.ID)
@@ -915,6 +921,9 @@ func providerRequestPreparedEventData(meta session.SessionMetadata, requestMetad
 	if meta.ProviderOptions.SendMetadata != nil {
 		data["send_metadata"] = *meta.ProviderOptions.SendMetadata
 	}
+	if meta.ProviderOptions.RawSidecar != nil {
+		data["raw_sidecar"] = *meta.ProviderOptions.RawSidecar
+	}
 	if meta.ProviderOptions.RetryPolicy != nil {
 		data["retry_policy"] = map[string]any{
 			"max_attempts":    meta.ProviderOptions.RetryPolicy.MaxAttempts,
@@ -979,6 +988,30 @@ func providerTurnMessageMeta(result provider.TurnResult) map[string]any {
 		return nil
 	}
 	return meta
+}
+
+func providerRawSidecarEnabled(meta session.SessionMetadata) bool {
+	return meta.ProviderOptions.RawSidecar != nil && *meta.ProviderOptions.RawSidecar
+}
+
+func providerRawSidecarEnvelope(meta session.SessionMetadata, turn int, result provider.TurnResult) session.ProviderRawSidecar {
+	selected := map[string]any{}
+	for key, value := range result.RawProvider {
+		selected[key] = value
+	}
+	if len(selected) == 0 {
+		selected = nil
+	}
+	return session.ProviderRawSidecar{
+		SchemaVersion:      1,
+		Provider:           meta.Provider,
+		Model:              meta.Model,
+		Turn:               turn,
+		Timestamp:          time.Now().UTC().Format(time.RFC3339Nano),
+		ProviderResponseID: strings.TrimSpace(result.ProviderResponseID),
+		StopReason:         strings.TrimSpace(result.StopReason),
+		SelectedRawItems:   selected,
+	}
 }
 
 func contextLoadedEventData(meta session.SessionMetadata, turn int, stack projectMemoryStack, todo []session.TodoItem, tasks []session.Task) map[string]any {
