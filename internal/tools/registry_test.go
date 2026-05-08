@@ -16,6 +16,36 @@ import (
 	"go-cli-agent/internal/skills"
 )
 
+func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	for _, def := range registry.Definitions() {
+		assertObjectSchemasClosed(t, def.Name, def.InputSchema)
+	}
+}
+
+func assertObjectSchemasClosed(t *testing.T, path string, value any) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		if schemaType, _ := typed["type"].(string); schemaType == "object" {
+			if typed["additionalProperties"] != false {
+				t.Fatalf("%s object schema must set additionalProperties=false, got %#v", path, typed["additionalProperties"])
+			}
+		}
+		for key, child := range typed {
+			assertObjectSchemasClosed(t, path+"."+key, child)
+		}
+	case []any:
+		for i, child := range typed {
+			assertObjectSchemasClosed(t, fmt.Sprintf("%s[%d]", path, i), child)
+		}
+	}
+}
+
 func TestTodoAndTaskToolsEmitStructuredEvents(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

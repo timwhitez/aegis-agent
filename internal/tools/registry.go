@@ -189,7 +189,39 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 			defAgentList(control),
 		)
 	}
+	for i := range defs {
+		defs[i].InputSchema = closeObjectSchemas(defs[i].InputSchema)
+	}
 	return defs
+}
+
+func closeObjectSchemas(schema map[string]any) map[string]any {
+	closed, _ := closeSchemaValue(schema).(map[string]any)
+	return closed
+}
+
+func closeSchemaValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed)+1)
+		for key, child := range typed {
+			out[key] = closeSchemaValue(child)
+		}
+		if schemaType, _ := out["type"].(string); schemaType == "object" {
+			if _, exists := out["additionalProperties"]; !exists {
+				out["additionalProperties"] = false
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, child := range typed {
+			out[i] = closeSchemaValue(child)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func todoItemSchema() map[string]any {
