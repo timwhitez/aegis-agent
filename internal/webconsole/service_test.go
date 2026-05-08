@@ -199,6 +199,110 @@ func TestServiceStartSessionPersistsAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestContinueRESTCarriesRuntimeFields(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		select {
+		case captured <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"continued"}]},
+				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"continued\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_continue_rest",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		RequestedWorkdir: workdir,
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	state := session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "awaiting_input",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/continue", map[string]any{
+		"message":  "continue with the requested runtime fields",
+		"provider": "openai",
+		"model":    "gpt-5.5",
+		"system":   "Prefer concise answers for this resumed turn.",
+	}, http.StatusAccepted, nil)
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(meta.ID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string {
+		state, err := svc.store.LoadState(meta.ID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+
+	updatedMeta, err := svc.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if updatedMeta.Provider != "openai" || updatedMeta.Model != "gpt-5.5" {
+		t.Fatalf("expected REST continue to persist provider/model override, got provider=%q model=%q", updatedMeta.Provider, updatedMeta.Model)
+	}
+
+	var body map[string]any
+	select {
+	case body = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for provider request")
+	}
+	if body["model"] != "gpt-5.5" {
+		t.Fatalf("expected provider request model override, got %#v", body)
+	}
+	instructions, _ := body["instructions"].(string)
+	if !strings.Contains(instructions, "Prefer concise answers for this resumed turn.") {
+		t.Fatalf("expected system override in provider instructions, got %q", instructions)
+	}
+	input, ok := body["input"].([]any)
+	if !ok || len(input) == 0 {
+		t.Fatalf("expected continued user input in provider request, got %#v", body)
+	}
+}
+
 func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -261,6 +365,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(jsBody, "renderOverviewView") || strings.Contains(jsBody, "data-worker-scale") || strings.Contains(jsBody, "Worker Pool") {
 		t.Fatalf("expected default UI to hide overview and worker-pool controls, got app.js body: %s", jsBody)
 	}
+	if strings.Contains(jsBody, "type: 'chat'") || strings.Contains(jsBody, `type: "chat"`) {
+		t.Fatalf("expected frontend session control to avoid websocket chat payloads, got app.js body: %s", jsBody)
+	}
 	if strings.Contains(jsBody, "marked.parse") || strings.Contains(jsBody, "unpkg.com") || strings.Contains(jsBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected app.js to avoid external markdown/icon dependencies, got app.js body: %s", jsBody)
 	}
@@ -321,11 +428,8 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 }
 
-func TestServiceWebSocketChatReusesSessionAndStreamsAssistantMessage(t *testing.T) {
-	server := newTextReplyServer("chat reply")
-	defer server.Close()
-
-	cfg := testConfig(t, server.URL)
+func TestServiceWebSocketRejectsChatControl(t *testing.T) {
+	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
@@ -342,168 +446,35 @@ func TestServiceWebSocketChatReusesSessionAndStreamsAssistantMessage(t *testing.
 	}
 	defer conn.Close()
 
-	sendChat := func(sessionID, message string) {
-		t.Helper()
-		if err := conn.WriteJSON(map[string]any{
-			"type":      "chat",
-			"sessionId": sessionID,
-			"message":   message,
-		}); err != nil {
-			t.Fatalf("write websocket message: %v", err)
-		}
+	if err := conn.WriteJSON(map[string]any{
+		"type":      "chat",
+		"sessionId": "0xWSCHAT",
+		"message":   "hello",
+	}); err != nil {
+		t.Fatalf("write websocket chat: %v", err)
 	}
-
-	readUntil := func(deadline time.Duration, fn func(map[string]any) bool) {
-		t.Helper()
-		if err := conn.SetReadDeadline(time.Now().Add(deadline)); err != nil {
-			t.Fatalf("set read deadline: %v", err)
-		}
-		for {
-			var msg map[string]any
-			if err := conn.ReadJSON(&msg); err != nil {
-				t.Fatalf("read websocket message: %v", err)
-			}
-			if fn(msg) {
-				return
-			}
-		}
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
 	}
-
-	clientSessionID := "0xWSCHAT"
-	assistantMessages := 0
-	backendSessionID := ""
-
-	sendChat(clientSessionID, "hello")
-	readUntil(5*time.Second, func(msg map[string]any) bool {
-		switch msg["type"] {
-		case "session":
-			payload, _ := msg["payload"].(map[string]any)
-			backendSessionID, _ = payload["sessionId"].(string)
-		case "message":
-			payload, _ := msg["payload"].(map[string]any)
-			if payload["role"] == "assistant" && payload["content"] == "chat reply" {
-				assistantMessages++
-			}
-		}
-		return backendSessionID != "" && assistantMessages == 1
-	})
-
-	waitFor(t, 4*time.Second, func() bool {
-		state, err := svc.store.LoadState(backendSessionID)
-		return err == nil && state.Status == session.StatusAwaitingInput
-	}, func() string {
-		state, err := svc.store.LoadState(backendSessionID)
-		if err != nil {
-			return err.Error()
-		}
-		data, marshalErr := json.Marshal(state)
-		if marshalErr != nil {
-			return marshalErr.Error()
-		}
-		return string(data)
-	})
-
-	sendChat(backendSessionID, "again")
-	readUntil(5*time.Second, func(msg map[string]any) bool {
-		if msg["type"] != "message" {
-			return false
-		}
-		payload, _ := msg["payload"].(map[string]any)
-		if payload["role"] == "assistant" && payload["content"] == "chat reply" {
-			assistantMessages++
-		}
-		return assistantMessages == 2
-	})
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read websocket error: %v", err)
+	}
+	if msg["type"] != "error" {
+		t.Fatalf("expected error message, got %#v", msg)
+	}
+	payload, _ := msg["payload"].(map[string]any)
+	if payload["code"] != "WEBSOCKET_CONTROL_DEPRECATED" {
+		t.Fatalf("expected deprecated control code, got %#v", msg)
+	}
 
 	items, err := svc.store.List(10)
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("expected one backend session, got %#v", items)
+	if len(items) != 0 {
+		t.Fatalf("websocket chat must not create sessions, got %#v", items)
 	}
-	if items[0].ID != backendSessionID {
-		t.Fatalf("expected backend session %q, got %#v", backendSessionID, items)
-	}
-}
-
-func TestServiceWebSocketDisconnectDuringActiveRunDoesNotBreakSession(t *testing.T) {
-	server := newDelayedFinishServer(150 * time.Millisecond)
-	defer server.Close()
-
-	cfg := testConfig(t, server.URL)
-	svc, err := New(cfg, Options{WorkerCount: 0})
-	if err != nil {
-		t.Fatalf("new service: %v", err)
-	}
-	defer svc.Close()
-
-	ts := httptest.NewServer(svc)
-	defer ts.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
-	if err := conn.WriteJSON(map[string]any{
-		"type":      "chat",
-		"sessionId": "0xDISCONNECT",
-		"message":   "finish after the client disconnects",
-	}); err != nil {
-		_ = conn.Close()
-		t.Fatalf("write websocket message: %v", err)
-	}
-
-	backendSessionID := ""
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		_ = conn.Close()
-		t.Fatalf("set read deadline: %v", err)
-	}
-	for backendSessionID == "" {
-		var msg map[string]any
-		if err := conn.ReadJSON(&msg); err != nil {
-			_ = conn.Close()
-			t.Fatalf("read websocket message: %v", err)
-		}
-		if msg["type"] != "session" {
-			continue
-		}
-		payload, _ := msg["payload"].(map[string]any)
-		backendSessionID, _ = payload["sessionId"].(string)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("close websocket: %v", err)
-	}
-
-	waitFor(t, 4*time.Second, func() bool {
-		state, err := svc.store.LoadState(backendSessionID)
-		return err == nil && state.Status == session.StatusCompleted
-	}, func() string {
-		state, err := svc.store.LoadState(backendSessionID)
-		if err != nil {
-			return err.Error()
-		}
-		data, marshalErr := json.Marshal(state)
-		if marshalErr != nil {
-			return marshalErr.Error()
-		}
-		return string(data)
-	})
-	waitFor(t, 4*time.Second, func() bool {
-		_, ok := svc.handleForSession(backendSessionID)
-		return !ok
-	}, func() string {
-		state, err := svc.store.LoadState(backendSessionID)
-		if err != nil {
-			return "session handle still active; state error: " + err.Error()
-		}
-		data, marshalErr := json.Marshal(state)
-		if marshalErr != nil {
-			return "session handle still active; state marshal error: " + marshalErr.Error()
-		}
-		return "session handle still active; state=" + string(data)
-	})
 }
 
 func TestServiceQueueWorkersProcessJob(t *testing.T) {

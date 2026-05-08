@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go-cli-agent/internal/config"
@@ -982,127 +981,8 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	sendQueue := make(chan map[string]any, 128)
-	stop := make(chan struct{})
-	var stopped atomic.Bool
-	var writeWG sync.WaitGroup
-	writeWG.Add(1)
-	go func() {
-		defer writeWG.Done()
-		for {
-			select {
-			case msg := <-sendQueue:
-				if err := conn.WriteJSON(msg); err != nil {
-					return
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
-
 	send := func(msg map[string]any) {
-		if stopped.Load() {
-			return
-		}
-		select {
-		case sendQueue <- msg:
-		case <-stop:
-		}
-	}
-
-	var watched sync.Map
-	attachRunner := func(runner *runtime.Runner, sessionID string) {
-		if runner == nil {
-			return
-		}
-		if _, loaded := watched.LoadOrStore(runner, struct{}{}); loaded {
-			return
-		}
-		sub := runner.Bus().Subscribe(64)
-		s.relayWebSocketEvents(sub, sessionID, send, stop)
-	}
-
-	currentSessionID := ""
-
-	processChat := func(frontendSessionID, text string) {
-		text = strings.TrimSpace(text)
-		if text == "" {
-			send(map[string]any{
-				"type": "error",
-				"payload": map[string]any{
-					"content": "message is required",
-				},
-			})
-			return
-		}
-
-		startNewSession := func() {
-			sessionID, err := s.startWebSocketSession(frontendSessionID, text, send, stop)
-			if err != nil {
-				send(map[string]any{
-					"type": "error",
-					"payload": map[string]any{
-						"content": err.Error(),
-					},
-				})
-				return
-			}
-			currentSessionID = sessionID
-		}
-
-		if currentSessionID == "" {
-			startNewSession()
-			return
-		}
-
-		state, err := s.store.LoadState(currentSessionID)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				startNewSession()
-				return
-			}
-			send(map[string]any{
-				"type": "error",
-				"payload": map[string]any{
-					"content": err.Error(),
-				},
-			})
-			return
-		}
-		state = s.settleWebSocketChatState(currentSessionID, state)
-
-		switch state.Status {
-		case session.StatusRunning:
-			handle, ok := s.handleForSession(currentSessionID)
-			if !ok {
-				send(map[string]any{
-					"type": "error",
-					"payload": map[string]any{
-						"content": "session is running but is not actively owned by this web console",
-					},
-				})
-				return
-			}
-			attachRunner(handle.runner, currentSessionID)
-			if _, err := handle.runner.Steer(context.Background(), runtime.SteerRequest{
-				SessionID: currentSessionID,
-				Message:   text,
-				Source:    "web",
-			}); err != nil {
-				send(map[string]any{
-					"type": "error",
-					"payload": map[string]any{
-						"sessionId": currentSessionID,
-						"content":   err.Error(),
-					},
-				})
-			}
-		case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
-			s.continueWebSocketSession(currentSessionID, text, send, stop)
-		default:
-			startNewSession()
-		}
+		_ = conn.WriteJSON(msg)
 	}
 
 	for {
@@ -1127,48 +1007,38 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		switch data.Type {
 		case "chat":
-			if data.SessionID != "" && currentSessionID == "" {
-				currentSessionID = data.SessionID
-			}
-			processChat(data.SessionID, data.Message)
+			sendWebSocketControlDeprecated(send, data.SessionID, "chat")
 		case "reset_session":
-			currentSessionID = ""
+			// Client-local reset only; WebSocket is no longer a session control path.
 		case "stop":
-			if currentSessionID == "" {
-				send(map[string]any{
-					"type": "error",
-					"payload": map[string]any{
-						"content": "no active session to interrupt",
-					},
-				})
-				continue
-			}
-			handle, ok := s.handleForSession(currentSessionID)
-			if !ok {
-				send(map[string]any{
-					"type": "error",
-					"payload": map[string]any{
-						"sessionId": currentSessionID,
-						"content":   "session is not actively owned by this web console",
-					},
-				})
-				continue
-			}
-			if err := handle.runner.InterruptWithReason(currentSessionID, "manual_interrupt"); err != nil {
-				send(map[string]any{
-					"type": "error",
-					"payload": map[string]any{
-						"sessionId": currentSessionID,
-						"content":   err.Error(),
-					},
-				})
-			}
+			sendWebSocketControlDeprecated(send, data.SessionID, "stop")
+		default:
+			send(map[string]any{
+				"type": "error",
+				"payload": map[string]any{
+					"code":    "WEBSOCKET_CONTROL_DEPRECATED",
+					"content": "websocket messages are relay-only; use the REST API for session control",
+					"action":  "call /api/sessions/start, /api/sessions/{id}/continue, /api/sessions/{id}/steer, /api/sessions/{id}/interrupt, or /api/sessions/{id}/stop",
+				},
+			})
 		}
 	}
+}
 
-	stopped.Store(true)
-	close(stop)
-	writeWG.Wait()
+func sendWebSocketControlDeprecated(send func(map[string]any), sessionID, messageType string) {
+	payload := map[string]any{
+		"code":    "WEBSOCKET_CONTROL_DEPRECATED",
+		"content": "websocket session control is deprecated; use the REST API for start, continue, steer, interrupt, and stop",
+		"action":  "use POST /api/sessions/start, /api/sessions/{id}/continue, /api/sessions/{id}/steer, /api/sessions/{id}/interrupt, or /api/sessions/{id}/stop",
+		"type":    messageType,
+	}
+	if sessionID != "" {
+		payload["sessionId"] = sessionID
+	}
+	send(map[string]any{
+		"type":    "error",
+		"payload": payload,
+	})
 }
 
 func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
@@ -1955,95 +1825,6 @@ func (s *Service) translateWebSocketEvent(evt events.Event) []map[string]any {
 	}
 
 	return messages
-}
-
-func (s *Service) startWebSocketSession(frontendSessionID, prompt string, send func(map[string]any), done <-chan struct{}) (string, error) {
-	runner := runtime.NewRunner(s.cfg)
-	sub := runner.Bus().Subscribe(64)
-	runCtx, cancel := context.WithCancel(context.Background())
-	outcomeCh := make(chan launchOutcome, 1)
-	go func() {
-		result, err := runner.Start(runCtx, runtime.StartRequest{
-			Prompt: prompt,
-		})
-		outcomeCh <- launchOutcome{result: result, err: err}
-	}()
-
-	sessionID, early, err := waitForSessionID(sub, outcomeCh)
-	if err != nil {
-		cancel()
-		return "", err
-	}
-
-	handle := &launchHandle{
-		sessionID: sessionID,
-		runner:    runner,
-		cancel:    cancel,
-	}
-	s.addHandle(handle)
-	send(map[string]any{
-		"type": "session",
-		"payload": map[string]any{
-			"clientSessionId": frontendSessionID,
-			"sessionId":       sessionID,
-		},
-	})
-	s.relayWebSocketEvents(sub, sessionID, send, done)
-
-	if early != nil {
-		go s.finishHandle(handle, *early)
-	} else {
-		go func() {
-			s.finishHandle(handle, <-outcomeCh)
-		}()
-	}
-	return sessionID, nil
-}
-
-func (s *Service) continueWebSocketSession(sessionID, message string, send func(map[string]any), done <-chan struct{}) {
-	runner := runtime.NewRunner(s.cfg)
-	sub := runner.Bus().Subscribe(64)
-	runCtx, cancel := context.WithCancel(context.Background())
-	handle := &launchHandle{
-		sessionID: sessionID,
-		runner:    runner,
-		cancel:    cancel,
-	}
-	s.addHandle(handle)
-	s.relayWebSocketEvents(sub, sessionID, send, done)
-	go func() {
-		result, err := runner.Continue(runCtx, runtime.ContinueRequest{
-			SessionID: sessionID,
-			Message:   message,
-		})
-		s.finishHandle(handle, launchOutcome{result: result, err: err})
-	}()
-}
-
-func (s *Service) settleWebSocketChatState(sessionID string, state session.State) session.State {
-	if state.Status != session.StatusRunning {
-		return state
-	}
-	switch state.Phase {
-	case "provider_call", "assistant_output", "turn_decide":
-	default:
-		return state
-	}
-
-	deadline := time.Now().Add(500 * time.Millisecond)
-	current := state
-	for time.Now().Before(deadline) {
-		time.Sleep(40 * time.Millisecond)
-		next, err := s.store.LoadState(sessionID)
-		if err != nil {
-			return current
-		}
-		current = next
-		if current.Status != session.StatusRunning {
-			return current
-		}
-	}
-	return current
 }
 
 func stringValue(value any) string {

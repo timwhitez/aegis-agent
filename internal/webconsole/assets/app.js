@@ -759,11 +759,6 @@ async function sendMessage() {
   if (!text) {
     return;
   }
-  if (!state.isConnected) {
-    showToast('The local agent connection is offline. Wait for reconnection and try again.', 'error');
-    updateUI();
-    return;
-  }
 
   const optimisticID = appendOptimisticMessage('user', text, {
     source: state.isGenerating ? 'steer' : 'user',
@@ -807,8 +802,28 @@ async function sendMessage() {
     return;
   }
 
-  // Use POST /api/sessions/start for new sessions instead of ws 'chat'
-  if (!hasDurableSession()) {
+  const currentStatus = state.sessionDetail?.state?.status || '';
+  if (hasDurableSession() && ['awaiting_input', 'paused', 'failed'].includes(currentStatus)) {
+    try {
+      await requestContinueSession(state.sessionId, text, { silentToast: true });
+      setGenerating(true, {
+        title: 'Continuing session',
+        copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
+        tone: 'live'
+      });
+      showToast('Session continued.', 'success');
+      queueSessionRefresh(60);
+      queueOverviewRefresh(220);
+    } catch (err) {
+      removeOptimisticMessage(optimisticID);
+      showToast(err.message || 'Failed to continue session.', 'error');
+      updateUI();
+      renderCurrentSession();
+    }
+    return;
+  }
+
+  if (!hasDurableSession() || currentStatus === 'completed') {
     try {
       const resp = await requestJSON('/api/sessions/start', {
         method: 'POST',
@@ -835,25 +850,10 @@ async function sendMessage() {
     return;
   }
 
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
-    removeOptimisticMessage(optimisticID);
-    showToast('The agent connection is offline. Wait for reconnection and try again.', 'error');
-    updateUI();
-    renderCurrentSession();
-    return;
-  }
-
-  state.ws.send(JSON.stringify({
-    type: 'chat',
-    message: text,
-    sessionId: state.sessionId
-  }));
-  setGenerating(true, {
-    title: 'Continuing session',
-    copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
-    tone: 'live'
-  });
-  queueOverviewRefresh(220);
+  removeOptimisticMessage(optimisticID);
+  showToast('This session is not ready to continue. Refresh the session state and try again.', 'error');
+  updateUI();
+  renderCurrentSession();
 }
 
 function toggleInterruptArm() {
@@ -908,21 +908,28 @@ async function requestStop() {
   renderCurrentSession();
 }
 
-async function requestContinueSession(sessionID) {
+async function requestContinueSession(sessionID, message = '', options = {}) {
   try {
     await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/continue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: '' })
+      body: JSON.stringify({ message })
     });
-    showToast('Session continued.', 'success');
+    if (!options.silentToast) {
+      showToast('Session continued.', 'success');
+    }
     queueSessionRefresh(120);
     queueOverviewRefresh(180);
     if (state.currentView === 'queue') {
       await fetchQueue();
     }
   } catch (err) {
-    showToast(err.message || 'Failed to continue session.', 'error');
+    if (!options.silentToast) {
+      showToast(err.message || 'Failed to continue session.', 'error');
+    }
+    if (options.silentToast) {
+      throw err;
+    }
   }
 }
 
@@ -974,12 +981,7 @@ function resetChatSession({ notifyBackend }) {
   state.lastInputWasEmpty = !nodes.chatInput.value.trim();
   updateSessionId();
   persistUIState();
-  if (notifyBackend && state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify({
-      type: 'reset_session',
-      sessionId: state.sessionId
-    }));
-  }
+  void notifyBackend;
   renderCurrentSession();
   updateUI();
 }
@@ -1019,7 +1021,7 @@ function updateSessionId() {
 
 function updateUI() {
   const hasDraft = nodes.chatInput.value.trim().length > 0;
-  nodes.sendBtn.disabled = !state.isConnected || !hasDraft;
+  nodes.sendBtn.disabled = !hasDraft;
   nodes.sendBtn.classList.toggle('is-loading', state.isGenerating && hasDraft);
   nodes.sendBtn.classList.toggle('is-interrupt', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
   nodes.inputContainer.classList.toggle('is-busy', state.isGenerating);
@@ -1036,13 +1038,11 @@ function updateUI() {
   if (nodes.interruptSessionBtn) {
     nodes.interruptSessionBtn.disabled = !state.isGenerating || !hasDurableSession();
   }
-  nodes.chatInput.placeholder = !state.isConnected
-    ? 'Waiting for the local agent connection…'
-    : state.isGenerating && hasDurableSession()
-      ? state.nextSendInterrupt
-        ? 'Send an interrupt steer message to the running session...'
-        : 'Send a steer message into the running session...'
-      : 'Ask anything...';
+  nodes.chatInput.placeholder = state.isGenerating && hasDurableSession()
+    ? state.nextSendInterrupt
+      ? 'Send an interrupt steer message to the running session...'
+      : 'Send a steer message into the running session...'
+    : 'Ask anything...';
 
   nodes.inputStatusText.textContent = inputActionLabel();
 
@@ -1055,7 +1055,7 @@ function updateUI() {
 
 function inputActionLabel() {
   if (!state.isConnected) {
-    return 'Reconnecting to the local agent...';
+    return 'Live event relay reconnecting; REST session actions remain available.';
   }
   const status = state.sessionDetail?.state?.status || '';
   if (state.isGenerating && hasDurableSession()) {
