@@ -652,11 +652,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, `data-view="overview"`) || strings.Contains(indexBody, "Overview</span>") || strings.Contains(indexBody, "overview-view") {
 		t.Fatalf("expected standalone overview page to be removed from shell, got shell body: %s", indexBody)
 	}
-	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") {
+	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "session-view.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "app.js") {
-		t.Fatalf("expected shell to load utils/icons/api/events/settings/workspace/app assets, got shell body: %s", indexBody)
+	if !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "session-view.js") || !strings.Contains(indexBody, "app.js") {
+		t.Fatalf("expected shell to load utils/icons/api/events/settings/workspace/session/app assets, got shell body: %s", indexBody)
 	}
 	iconsBody := checkBody(server.URL + "/icons.js")
 	if !strings.Contains(iconsBody, "window.lucide") || !strings.Contains(iconsBody, "createIcons") {
@@ -685,9 +685,16 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "fetchWorkspace") || !strings.Contains(workspaceBody, "renderFileTree") || !strings.Contains(workspaceBody, "selectedWorkspaceWorkdir") {
 		t.Fatalf("unexpected workspace-view.js body: %s", workspaceBody)
 	}
+	sessionBody := checkBody(server.URL + "/session-view.js")
+	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
+		t.Fatalf("unexpected session-view.js body: %s", sessionBody)
+	}
+	if strings.Contains(sessionBody, "marked.parse") || strings.Contains(sessionBody, "unpkg.com") || strings.Contains(sessionBody, "cdn.jsdelivr.net") {
+		t.Fatalf("expected session-view.js to avoid external markdown/icon dependencies, got session-view.js body: %s", sessionBody)
+	}
 
 	jsBody := checkBody(server.URL + "/app.js")
-	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "renderPendingStageCard") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "renderQueueView") {
+	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "renderQueueView") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "renderOverviewView") || strings.Contains(jsBody, "data-worker-scale") || strings.Contains(jsBody, "Worker Pool") {
@@ -705,17 +712,17 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "shouldInsertChatNewline") || !strings.Contains(jsBody, "insertChatInputNewline") {
 		t.Fatalf("expected explicit Ctrl+Enter newline helpers, got app.js body: %s", jsBody)
 	}
-	if !strings.Contains(jsBody, "renderMessageText") || !strings.Contains(jsBody, "message-bubble-plaintext") {
-		t.Fatalf("expected explicit plaintext user-message renderer, got app.js body: %s", jsBody)
+	if !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "message-bubble-plaintext") {
+		t.Fatalf("expected explicit plaintext user-message renderer, got session-view.js body: %s", sessionBody)
 	}
-	if !strings.Contains(jsBody, "renderBackgroundResultsMessage") || !strings.Contains(jsBody, "messageSource") || !strings.Contains(jsBody, "Background agents") {
-		t.Fatalf("expected background agent results to have a dedicated renderer, got app.js body: %s", jsBody)
+	if !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "messageSource") || !strings.Contains(sessionBody, "Background agents") {
+		t.Fatalf("expected background agent results to have a dedicated renderer, got session-view.js body: %s", sessionBody)
 	}
-	if !strings.Contains(jsBody, "Click to open queue job") || !strings.Contains(jsBody, "data-open-job") {
-		t.Fatalf("expected orphan background jobs to open queue jobs instead of child sessions, got app.js body: %s", jsBody)
+	if !strings.Contains(sessionBody, "Click to open queue job") || !strings.Contains(sessionBody, "data-open-job") {
+		t.Fatalf("expected orphan background jobs to open queue jobs instead of child sessions, got session-view.js body: %s", sessionBody)
 	}
-	if !strings.Contains(jsBody, "collectShellRedirectPaths(parsed?.command)") {
-		t.Fatalf("expected files panel to include shell-created workspace files, got app.js body: %s", jsBody)
+	if !strings.Contains(sessionBody, "collectShellRedirectPaths(parsed?.command)") {
+		t.Fatalf("expected files panel to include shell-created workspace files, got session-view.js body: %s", sessionBody)
 	}
 	if strings.Contains(jsBody, "Ctrl+Enter', 'Submit message") || strings.Contains(jsBody, "'ctrl+enter': 'submit'") {
 		t.Fatalf("expected Ctrl+Enter submit shortcut to be removed, got app.js body: %s", jsBody)
