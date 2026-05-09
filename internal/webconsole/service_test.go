@@ -692,6 +692,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(sessionBody, "renderSessionStopButton") || !strings.Contains(sessionBody, "data-stop-session-id") {
 		t.Fatalf("expected session and sub-session cards to expose inline stop controls, got session-view.js body: %s", sessionBody)
 	}
+	if !strings.Contains(sessionBody, "Session is not running") {
+		t.Fatalf("expected non-running session stop controls to render disabled explanatory text, got session-view.js body: %s", sessionBody)
+	}
 	if strings.Contains(sessionBody, "marked.parse") || strings.Contains(sessionBody, "unpkg.com") || strings.Contains(sessionBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected session-view.js to avoid external markdown/icon dependencies, got session-view.js body: %s", sessionBody)
 	}

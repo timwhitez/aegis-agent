@@ -1582,13 +1582,15 @@ function renderQueueJobCard(job) {
 }
 
 function renderSessionStopButton(sessionID, status, label = 'Stop') {
-  if (!sessionID || !isStoppableSessionStatus(status)) {
+  if (!sessionID) {
     return '';
   }
+  const stoppable = isStoppableSessionStatus(status);
   const busy = isStoppingSession(sessionID);
   const text = label ? `<span>${escapeHTML(label)}</span>` : '';
+  const title = stoppable ? 'Stop session' : 'Session is not running';
   return `
-    <button class="mini-link-btn danger" type="button" data-stop-session-id="${escapeAttr(sessionID)}" aria-label="Stop session ${escapeAttr(shortId(sessionID))}" title="Stop session" ${busy ? 'disabled' : ''}>
+    <button class="mini-link-btn danger" type="button" data-stop-session-id="${escapeAttr(sessionID)}" aria-label="Stop session ${escapeAttr(shortId(sessionID))}" title="${escapeAttr(title)}" ${busy || !stoppable ? 'disabled' : ''}>
       <i data-lucide="square"></i>
       ${text}
     </button>
