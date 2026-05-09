@@ -106,24 +106,37 @@ type SteerResult struct {
 }
 
 type ProbeRequest struct {
-	Provider  string
-	Model     string
-	BaseURL   string
-	APIKeyEnv string
-	WireAPI   string
-	Prompt    string
+	Provider         string
+	Model            string
+	BaseURL          string
+	APIKeyEnv        string
+	APIProvider      string
+	WireAPI          string
+	Prompt           string
+	ThinkingProbe    bool
+	ReasoningSummary string
 }
 
 type ProbeResult struct {
-	Provider      string         `json:"provider"`
-	Model         string         `json:"model"`
-	BaseURL       string         `json:"base_url"`
-	WireAPI       string         `json:"wire_api,omitempty"`
-	StopReason    string         `json:"stop_reason"`
-	Text          string         `json:"text,omitempty"`
-	ToolCallNames []string       `json:"tool_call_names,omitempty"`
-	FinishMessage string         `json:"finish_message,omitempty"`
-	Usage         provider.Usage `json:"usage,omitempty"`
+	Provider                   string         `json:"provider"`
+	Model                      string         `json:"model"`
+	BaseURL                    string         `json:"base_url"`
+	APIProvider                string         `json:"api_provider,omitempty"`
+	WireAPI                    string         `json:"wire_api,omitempty"`
+	StopReason                 string         `json:"stop_reason"`
+	Text                       string         `json:"text,omitempty"`
+	Thinking                   string         `json:"thinking,omitempty"`
+	ThinkingVisibleObserved    bool           `json:"thinking_visible_observed,omitempty"`
+	ThinkingReplayObserved     bool           `json:"thinking_replay_observed,omitempty"`
+	ThinkingDetail             string         `json:"thinking_detail,omitempty"`
+	ThinkingStrategy           string         `json:"thinking_strategy,omitempty"`
+	ReasoningSummary           string         `json:"reasoning_summary,omitempty"`
+	ReasoningSummaryObserved   bool           `json:"reasoning_summary_observed,omitempty"`
+	ReasoningEncryptedObserved bool           `json:"reasoning_encrypted_observed,omitempty"`
+	ReasoningTokens            int            `json:"reasoning_tokens,omitempty"`
+	ToolCallNames              []string       `json:"tool_call_names,omitempty"`
+	FinishMessage              string         `json:"finish_message,omitempty"`
+	Usage                      provider.Usage `json:"usage,omitempty"`
 }
 
 func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error) {
@@ -162,6 +175,9 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	}
 	providerCfg, err := r.cfg.ProviderConfig(providerName)
 	if err != nil {
+		return RunResult{}, WrapConfigError(err)
+	}
+	if _, err := config.EffectiveAPIProvider(providerName, providerCfg); err != nil {
 		return RunResult{}, WrapConfigError(err)
 	}
 	effectiveWorkdir := requestedWorkdir
@@ -490,7 +506,7 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 	if providerName == "" {
 		providerName = r.cfg.DefaultProvider
 	}
-	providerCfg, err := r.providerConfig(providerName, req.BaseURL, req.APIKeyEnv, req.WireAPI, req.Model)
+	providerCfg, err := r.providerConfig(providerName, req.BaseURL, req.APIKeyEnv, req.APIProvider, req.WireAPI, req.Model)
 	if err != nil {
 		return ProbeResult{}, WrapConfigError(err)
 	}
@@ -504,16 +520,15 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 	}
 	prompt := req.Prompt
 	if strings.TrimSpace(prompt) == "" {
-		prompt = "Return exactly one finish tool call with message: provider probe ok"
+		if req.ThinkingProbe {
+			prompt = "Answer in one short sentence: what is 2+2? Use your configured reasoning summary or thinking mode if available."
+		} else {
+			prompt = "Return exactly one finish tool call with message: provider probe ok"
+		}
 	}
-	result, err := adapter.RunTurn(ctx, provider.TurnRequest{
-		SessionID:    "probe",
-		Model:        model,
-		SystemPrompt: "You are a provider probe. Follow the user instruction exactly.",
-		Messages: []session.Message{
-			session.NewMessage("user", prompt),
-		},
-		Tools: []provider.ToolSchema{
+	tools := []provider.ToolSchema(nil)
+	if !req.ThinkingProbe {
+		tools = []provider.ToolSchema{
 			{
 				Name:        "finish",
 				Description: "Explicitly mark the current task as complete.",
@@ -525,28 +540,48 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 					"required": []string{"message"},
 				},
 			},
+		}
+	}
+	reasoningSummary := strings.TrimSpace(firstNonEmpty(req.ReasoningSummary, providerCfg.ReasoningSummary))
+	result, err := adapter.RunTurn(ctx, provider.TurnRequest{
+		SessionID:    "probe",
+		Model:        model,
+		SystemPrompt: "You are a provider probe. Follow the user instruction exactly.",
+		Messages: []session.Message{
+			session.NewMessage("user", prompt),
 		},
-		Temperature:     providerCfg.Temperature,
-		TopP:            providerCfg.TopP,
-		MaxOutputTokens: providerCfg.MaxOutputTokens,
-		ReasoningEffort: strings.TrimSpace(providerCfg.ReasoningEffort),
-		TextVerbosity:   strings.TrimSpace(providerCfg.TextVerbosity),
-		ThinkingBudget:  providerCfg.ThinkingBudget,
-		IncludeThoughts: providerCfg.IncludeThoughts,
-		Store:           defaultStoreForProvider(providerName, providerCfg.Store),
+		Tools:            tools,
+		Temperature:      providerCfg.Temperature,
+		TopP:             providerCfg.TopP,
+		MaxOutputTokens:  providerCfg.MaxOutputTokens,
+		APIProvider:      strings.TrimSpace(providerCfg.APIProvider),
+		ReasoningEffort:  strings.TrimSpace(providerCfg.ReasoningEffort),
+		ReasoningSummary: reasoningSummary,
+		TextVerbosity:    strings.TrimSpace(providerCfg.TextVerbosity),
+		ThinkingBudget:   providerCfg.ThinkingBudget,
+		IncludeThoughts:  providerCfg.IncludeThoughts,
+		Store:            defaultStoreForProvider(providerName, providerCfg.Store),
 	}, func(string, map[string]any) {})
 	if err != nil {
 		return ProbeResult{}, WrapProviderError(err)
 	}
 
+	apiProvider, _ := config.EffectiveAPIProvider(providerName, providerCfg)
 	out := ProbeResult{
-		Provider:   providerName,
-		Model:      model,
-		BaseURL:    providerCfg.BaseURL,
-		WireAPI:    providerCfg.WireAPI,
-		StopReason: result.StopReason,
-		Text:       result.Text,
-		Usage:      result.Usage,
+		Provider:         providerName,
+		Model:            model,
+		BaseURL:          providerCfg.BaseURL,
+		APIProvider:      apiProvider,
+		WireAPI:          providerCfg.WireAPI,
+		StopReason:       result.StopReason,
+		Text:             result.Text,
+		Thinking:         result.Thinking,
+		ReasoningSummary: reasoningSummary,
+		Usage:            result.Usage,
+	}
+	annotateThinkingProbeResult(&out, result)
+	if req.ThinkingProbe {
+		return out, nil
 	}
 	for _, call := range result.ToolCalls {
 		out.ToolCallNames = append(out.ToolCallNames, call.Name)
@@ -563,6 +598,52 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		return out, errors.New("probe failed: provider did not return exactly one finish tool call")
 	}
 	return out, nil
+}
+
+func annotateThinkingProbeResult(out *ProbeResult, result provider.TurnResult) {
+	if out == nil {
+		return
+	}
+	out.ThinkingVisibleObserved = strings.TrimSpace(result.Thinking) != ""
+	out.ReasoningSummaryObserved = intFromRaw(result.RawProvider, "reasoning_summary_count") > 0 || intFromRaw(result.RawProvider, "reasoning_text_count") > 0
+	out.ReasoningEncryptedObserved = intFromRaw(result.RawProvider, "reasoning_encrypted_count") > 0
+	out.ReasoningTokens = intFromRaw(result.RawProvider, "reasoning_tokens")
+	out.ThinkingStrategy = stringFromRaw(result.RawProvider, "thinking_strategy")
+	out.ThinkingReplayObserved = out.ReasoningEncryptedObserved || boolFromRaw(result.RawProvider, "thinking_replay_observed")
+	if boolFromRaw(result.RawProvider, "thinking_visible_observed") {
+		out.ThinkingVisibleObserved = true
+	}
+	switch {
+	case out.ThinkingVisibleObserved:
+		out.ThinkingDetail = "readable thinking returned"
+	case out.ThinkingReplayObserved:
+		out.ThinkingDetail = "replay-only thinking returned"
+	default:
+		out.ThinkingDetail = "provider accepted request but returned no readable thinking in this probe"
+	}
+}
+
+func stringFromRaw(raw map[string]any, key string) string {
+	value, _ := raw[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func intFromRaw(raw map[string]any, key string) int {
+	switch value := raw[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
+}
+
+func boolFromRaw(raw map[string]any, key string) bool {
+	value, _ := raw[key].(bool)
+	return value
 }
 
 func (r *Runner) Interrupt(sessionID string) error {
@@ -768,7 +849,7 @@ func (r *Runner) adapterForSession(meta session.SessionMetadata) (provider.Adapt
 	return r.adapterFromConfig(meta.Provider, cfg)
 }
 
-func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, wireAPI, model string) (config.Provider, error) {
+func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, apiProvider, wireAPI, model string) (config.Provider, error) {
 	cfg, err := r.cfg.ProviderConfig(name)
 	if err != nil {
 		return config.Provider{}, WrapConfigError(err)
@@ -778,6 +859,9 @@ func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, wireAPI, model string)
 	}
 	if apiKeyEnv != "" {
 		cfg.APIKeyEnv = apiKeyEnv
+	}
+	if apiProvider != "" {
+		cfg.APIProvider = apiProvider
 	}
 	if wireAPI != "" {
 		cfg.WireAPI = wireAPI
@@ -791,23 +875,22 @@ func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, wireAPI, model string)
 func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.Adapter, error) {
 	client := &http.Client{}
 	retryCfg := providerRetryConfig(cfg)
-	switch name {
-	case "openai":
+	apiProvider, err := config.EffectiveAPIProvider(name, cfg)
+	if err != nil {
+		return nil, WrapConfigError(err)
+	}
+	switch apiProvider {
+	case "openai-compatible":
 		if cfg.WireAPI != "" && cfg.WireAPI != "responses" {
-			return nil, WrapConfigError(errors.New("unsupported openai wire_api: " + cfg.WireAPI))
+			return nil, WrapConfigError(errors.New("unsupported openai-compatible wire_api: " + cfg.WireAPI))
 		}
 		return provider.NewOpenAIWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
-	case "anthropic":
+	case "anthropic-compatible":
 		return provider.NewAnthropicWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), cfg.AnthropicVersion, client, retryCfg), nil
 	case "google":
 		return provider.NewGoogleWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
-	case "openai-compatible":
-		if cfg.WireAPI == "" || cfg.WireAPI == "responses" {
-			return provider.NewOpenAIWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
-		}
-		return nil, WrapConfigError(errors.New("unsupported openai-compatible wire_api: " + cfg.WireAPI))
 	default:
-		return nil, WrapConfigError(errors.New("unsupported provider: " + name))
+		return nil, WrapConfigError(fmt.Errorf("unsupported api_provider for %s: %s", name, apiProvider))
 	}
 }
 
@@ -875,6 +958,24 @@ func providerTimeoutPolicy(cfg config.Provider) *session.ProviderTimeoutPolicy {
 }
 
 func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptions) config.Provider {
+	if strings.TrimSpace(opts.APIProvider) != "" {
+		cfg.APIProvider = opts.APIProvider
+	}
+	cfg.Temperature = opts.Temperature
+	cfg.TopP = opts.TopP
+	if opts.MaxOutputTokens > 0 {
+		cfg.MaxOutputTokens = opts.MaxOutputTokens
+	}
+	cfg.ReasoningEffort = opts.ReasoningEffort
+	cfg.ReasoningSummary = opts.ReasoningSummary
+	cfg.TextVerbosity = opts.TextVerbosity
+	if opts.ThinkingBudget > 0 {
+		cfg.ThinkingBudget = opts.ThinkingBudget
+	}
+	cfg.IncludeThoughts = opts.IncludeThoughts
+	cfg.Store = opts.Store
+	cfg.SendMetadata = opts.SendMetadata
+	cfg.RawSidecar = opts.RawSidecar
 	if opts.RetryPolicy != nil {
 		cfg.Retry = config.Retry{
 			MaxAttempts:    opts.RetryPolicy.MaxAttempts,
@@ -897,19 +998,22 @@ func stringsTrim(value string) string {
 }
 
 func providerOptionsFromConfig(name string, cfg config.Provider) session.ProviderOptions {
+	apiProvider, _ := config.EffectiveAPIProvider(name, cfg)
 	return session.ProviderOptions{
-		Temperature:     cfg.Temperature,
-		TopP:            cfg.TopP,
-		MaxOutputTokens: cfg.MaxOutputTokens,
-		ReasoningEffort: strings.TrimSpace(cfg.ReasoningEffort),
-		TextVerbosity:   strings.TrimSpace(cfg.TextVerbosity),
-		ThinkingBudget:  cfg.ThinkingBudget,
-		IncludeThoughts: cfg.IncludeThoughts,
-		Store:           defaultStoreForProvider(name, cfg.Store),
-		SendMetadata:    cfg.SendMetadata,
-		RawSidecar:      cfg.RawSidecar,
-		RetryPolicy:     providerRetryPolicy(cfg),
-		TimeoutPolicy:   providerTimeoutPolicy(cfg),
+		APIProvider:      apiProvider,
+		Temperature:      cfg.Temperature,
+		TopP:             cfg.TopP,
+		MaxOutputTokens:  cfg.MaxOutputTokens,
+		ReasoningEffort:  strings.TrimSpace(cfg.ReasoningEffort),
+		ReasoningSummary: strings.TrimSpace(cfg.ReasoningSummary),
+		TextVerbosity:    strings.TrimSpace(cfg.TextVerbosity),
+		ThinkingBudget:   cfg.ThinkingBudget,
+		IncludeThoughts:  cfg.IncludeThoughts,
+		Store:            defaultStoreForProvider(name, cfg.Store),
+		SendMetadata:     cfg.SendMetadata,
+		RawSidecar:       cfg.RawSidecar,
+		RetryPolicy:      providerRetryPolicy(cfg),
+		TimeoutPolicy:    providerTimeoutPolicy(cfg),
 	}
 }
 
@@ -917,7 +1021,8 @@ func defaultStoreForProvider(name string, configured *bool) *bool {
 	if configured != nil {
 		return configured
 	}
-	if name == "openai" || name == "openai-compatible" {
+	apiProvider, err := config.EffectiveAPIProvider(name, config.Provider{})
+	if err == nil && apiProvider == "openai-compatible" {
 		value := false
 		return &value
 	}

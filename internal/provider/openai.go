@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"go-cli-agent/internal/session"
@@ -29,7 +30,7 @@ func NewOpenAIWithRetry(baseURL, apiKey string, httpClient *http.Client, retry R
 func (a *OpenAIAdapter) Name() string { return "openai" }
 
 func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
-	input, err := openAIInput(req.Messages)
+	input, err := openAIInput(req.Messages, req.Model)
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -48,11 +49,18 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	if req.MaxOutputTokens > 0 {
 		body["max_output_tokens"] = req.MaxOutputTokens
 	}
+	reasoning := map[string]any{}
 	if strings.TrimSpace(req.ReasoningEffort) != "" {
-		body["reasoning"] = map[string]any{
-			"effort": req.ReasoningEffort,
-		}
+		reasoning["effort"] = req.ReasoningEffort
 	}
+	if summary := normalizeOpenAIReasoningSummary(req.ReasoningSummary); summary != "" && summary != "none" {
+		reasoning["summary"] = summary
+	}
+	if len(reasoning) > 0 {
+		body["reasoning"] = reasoning
+		body["include"] = []string{"reasoning.encrypted_content"}
+	}
+	thinkingStrategy := openAIThinkingStrategy(req)
 	if strings.TrimSpace(req.TextVerbosity) != "" {
 		body["text"] = map[string]any{
 			"verbosity": req.TextVerbosity,
@@ -68,19 +76,22 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		ID     string `json:"id"`
 		Status string `json:"status"`
 		Output []struct {
-			Type      string `json:"type"`
-			CallID    string `json:"call_id"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-			Role      string `json:"role"`
-			Content   []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
+			ID               string                `json:"id"`
+			Type             string                `json:"type"`
+			CallID           string                `json:"call_id"`
+			Name             string                `json:"name"`
+			Arguments        string                `json:"arguments"`
+			Role             string                `json:"role"`
+			EncryptedContent string                `json:"encrypted_content"`
+			Content          []openAIReasoningText `json:"content"`
+			Summary          []openAIReasoningText `json:"summary"`
 		} `json:"output"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens         int `json:"input_tokens"`
+			OutputTokens        int `json:"output_tokens"`
+			OutputTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"output_tokens_details"`
 		} `json:"usage"`
 		IncompleteDetails struct {
 			Reason string `json:"reason"`
@@ -93,8 +104,13 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		return TurnResult{}, err
 	}
 	var textParts []string
+	var thinkingParts []string
+	var providerBlocks []session.ProviderContentBlock
 	var calls []ToolCall
-	for _, item := range resp.Output {
+	reasoningSummaryCount := 0
+	reasoningTextCount := 0
+	reasoningEncryptedCount := 0
+	for index, item := range resp.Output {
 		switch item.Type {
 		case "message":
 			for _, content := range item.Content {
@@ -109,9 +125,33 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				Arguments:      json.RawMessage(item.Arguments),
 				ProviderCallID: item.CallID,
 			})
+		case "reasoning":
+			summaryParts := reasoningSummaryTexts(item.Summary)
+			if len(summaryParts) > 0 {
+				thinkingParts = append(thinkingParts, summaryParts...)
+				reasoningSummaryCount += len(summaryParts)
+			}
+			contentParts := reasoningContentTexts(item.Content)
+			if len(contentParts) > 0 {
+				thinkingParts = append(thinkingParts, contentParts...)
+				reasoningTextCount += len(contentParts)
+			}
+			if strings.TrimSpace(item.EncryptedContent) != "" {
+				reasoningEncryptedCount++
+				providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+					Provider: "openai",
+					Type:     "reasoning",
+					ID:       item.ID,
+					Data:     item.EncryptedContent,
+					Summary:  summaryParts,
+					Sequence: index + 1,
+					Model:    req.Model,
+				})
+			}
 		}
 	}
 	text := strings.Join(textParts, "\n")
+	thinking := strings.Join(thinkingParts, "\n")
 	if text != "" {
 		emit("assistant.delta", map[string]any{"text": text})
 	}
@@ -125,16 +165,89 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		stopReason = "done_candidate"
 	}
 	return TurnResult{
-		Text:               text,
-		ToolCalls:          calls,
-		StopReason:         stopReason,
-		ProviderResponseID: resp.ID,
+		Text:                  text,
+		Thinking:              thinking,
+		ProviderContentBlocks: providerBlocks,
+		ToolCalls:             calls,
+		StopReason:            stopReason,
+		ProviderResponseID:    resp.ID,
 		Usage: Usage{
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
 		},
-		RawProvider: rawProviderEnvelope("status", resp.Status, nil),
+		RawProvider: rawProviderEnvelope("status", resp.Status, map[string]any{
+			"reasoning_summary_count":   reasoningSummaryCount,
+			"reasoning_text_count":      reasoningTextCount,
+			"reasoning_encrypted_count": reasoningEncryptedCount,
+			"reasoning_tokens":          resp.Usage.OutputTokensDetails.ReasoningTokens,
+			"thinking_visible_observed": len(thinkingParts) > 0,
+			"thinking_replay_observed":  reasoningEncryptedCount > 0,
+			"thinking_strategy":         thinkingStrategy,
+		}),
 	}, nil
+}
+
+func openAIThinkingStrategy(req TurnRequest) string {
+	summary := normalizeOpenAIReasoningSummary(req.ReasoningSummary)
+	effort := strings.TrimSpace(req.ReasoningEffort)
+	switch {
+	case effort != "" && summary != "" && summary != "none":
+		return "responses_reasoning_summary"
+	case effort != "":
+		return "responses_reasoning"
+	case summary != "" && summary != "none":
+		return "responses_summary"
+	case summary == "none":
+		return "responses_summary_off"
+	default:
+		return "provider_default"
+	}
+}
+
+func normalizeOpenAIReasoningSummary(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "concise", "detailed", "none":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "off":
+		return "none"
+	default:
+		return ""
+	}
+}
+
+type openAIReasoningText struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+func reasoningSummaryTexts(parts []openAIReasoningText) []string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		text := strings.TrimSpace(part.Text)
+		if text == "" {
+			continue
+		}
+		switch part.Type {
+		case "", "summary_text", "text":
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func reasoningContentTexts(parts []openAIReasoningText) []string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		text := strings.TrimSpace(part.Text)
+		if text == "" {
+			continue
+		}
+		switch part.Type {
+		case "", "reasoning_text", "text":
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func openAITools(tools []ToolSchema) []map[string]any {
@@ -150,7 +263,7 @@ func openAITools(tools []ToolSchema) []map[string]any {
 	return out
 }
 
-func openAIInput(messages []session.Message) ([]any, error) {
+func openAIInput(messages []session.Message, model string) ([]any, error) {
 	var input []any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -162,6 +275,9 @@ func openAIInput(messages []session.Message) ([]any, error) {
 				},
 			})
 		case "assistant":
+			for _, item := range openAIReasoningReplayItems(msg, model) {
+				input = append(input, item)
+			}
 			if msg.Text != "" {
 				input = append(input, map[string]any{
 					"role": "assistant",
@@ -196,4 +312,52 @@ func openAIInput(messages []session.Message) ([]any, error) {
 		}
 	}
 	return input, nil
+}
+
+func openAIReasoningReplayItems(msg session.Message, model string) []map[string]any {
+	if msg.Text != "" && len(msg.ToolCalls) > 0 {
+		return nil
+	}
+	type replayBlock struct {
+		sequence int
+		item     map[string]any
+	}
+	var blocks []replayBlock
+	for _, block := range msg.ProviderContentBlocks {
+		if block.Provider != "openai" || block.Type != "reasoning" {
+			continue
+		}
+		if strings.TrimSpace(block.ID) == "" || strings.TrimSpace(block.Data) == "" {
+			continue
+		}
+		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
+			continue
+		}
+		item := map[string]any{
+			"type":              "reasoning",
+			"id":                block.ID,
+			"encrypted_content": block.Data,
+		}
+		if len(block.Summary) > 0 {
+			summary := make([]map[string]any, 0, len(block.Summary))
+			for _, text := range block.Summary {
+				if strings.TrimSpace(text) == "" {
+					continue
+				}
+				summary = append(summary, map[string]any{"type": "summary_text", "text": text})
+			}
+			if len(summary) > 0 {
+				item["summary"] = summary
+			}
+		}
+		blocks = append(blocks, replayBlock{sequence: block.Sequence, item: item})
+	}
+	sort.SliceStable(blocks, func(i, j int) bool {
+		return blocks[i].sequence < blocks[j].sequence
+	})
+	out := make([]map[string]any, 0, len(blocks))
+	for _, block := range blocks {
+		out = append(out, block.item)
+	}
+	return out
 }

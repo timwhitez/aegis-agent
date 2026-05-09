@@ -116,9 +116,11 @@ function saveConfig(payload) {
     max_turns_hard: payload.maxTurnsHard,
     disable_hard_turn_limit: payload.disableHardTurnLimit,
     provider: payload.provider,
+    api_provider: payload.apiProvider,
     base_url: payload.baseURL,
     model: payload.model,
     reasoning_mode: payload.reasoningMode,
+    reasoning_summary: payload.reasoningSummary,
     api_key: payload.apiKey
   }));
 }
@@ -126,9 +128,11 @@ function saveConfig(payload) {
 function testConfig(payload) {
   return requestJSON('/api/config/test', jsonRequest({
     provider: payload.provider,
+    api_provider: payload.apiProvider,
     base_url: payload.baseURL,
     model: payload.model,
     reasoning_mode: payload.reasoningMode,
+    reasoning_summary: payload.reasoningSummary,
     api_key: payload.apiKey
   }));
 }

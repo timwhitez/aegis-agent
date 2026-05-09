@@ -39,6 +39,67 @@ func TestRunnerSupportsOpenAICompatibleResponses(t *testing.T) {
 	}
 }
 
+func TestCustomAnthropicAPIProviderUsesAnthropicAdapter(t *testing.T) {
+	var seenPath string
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		defer r.Body.Close()
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(data, &seenBody); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_1",
+			"stop_reason":"tool_use",
+			"content":[
+				{"type":"tool_use","id":"toolu_1","name":"finish","input":{"message":"provider probe ok"}}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "deepseek"
+	includeThoughts := true
+	cfg.Providers["deepseek"] = config.Provider{
+		APIProvider:       "anthropic-compatible",
+		APIKeyEnv:         "DEEPSEEK_API_KEY",
+		BaseURL:           server.URL,
+		Model:             "deepseek-chat",
+		TimeoutSec:        3,
+		ThinkingBudget:    1024,
+		IncludeThoughts:   &includeThoughts,
+		MaxOutputTokens:   2048,
+		AnthropicVersion:  "2023-06-01",
+		RequestTimeoutSec: 3,
+	}
+	t.Setenv("DEEPSEEK_API_KEY", "test-key")
+
+	result, err := NewRunner(cfg).Probe(context.Background(), ProbeRequest{Provider: "deepseek"})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if result.APIProvider != "anthropic-compatible" || result.FinishMessage != "provider probe ok" {
+		t.Fatalf("unexpected probe result: %#v", result)
+	}
+	if seenPath != "/v1/messages" {
+		t.Fatalf("expected Anthropic Messages path, got %q", seenPath)
+	}
+	if seenBody["model"] != "deepseek-chat" || seenBody["input"] != nil {
+		t.Fatalf("expected Anthropic request body, got %#v", seenBody)
+	}
+	thinking, _ := seenBody["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" || int(thinking["budget_tokens"].(float64)) != 1024 {
+		t.Fatalf("expected configured thinking budget, got %#v", seenBody)
+	}
+}
+
 func TestProviderOptionsFromConfigIncludesRetryPolicy(t *testing.T) {
 	rawSidecar := true
 	opts := providerOptionsFromConfig("openai-compatible", config.Provider{

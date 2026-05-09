@@ -31,6 +31,7 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	notifications, _ := store.LoadBackgroundNotifications(sessionID)
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	checkpoint, checkpointErr := store.LoadLongRunCheckpoint(sessionID)
+	messages, _ := store.LoadMessages(sessionID)
 	eventsList, _ := store.LoadEvents(sessionID)
 	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
 
@@ -117,6 +118,25 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		if len(tasks) > 0 {
 			ready, blocked, completed := taskCounts(tasks)
 			b.WriteString(fmt.Sprintf("- tasks: ready=%d blocked=%d completed=%d total=%d\n", ready, blocked, completed, len(tasks)))
+		}
+	}
+
+	b.WriteString("\n## Tool Repetition\n\n")
+	repetition := summarizeToolRepetition(messages)
+	if len(repetition.TopTools) == 0 && len(repetition.TopReadPaths) == 0 && repetition.TodoNoopCount == 0 {
+		b.WriteString("not observed\n")
+	} else {
+		if len(state.LoadedSkills) > 0 {
+			b.WriteString(fmt.Sprintf("- loaded skills: `%s`\n", strings.Join(state.LoadedSkills, "`, `")))
+		}
+		for _, item := range repetition.TopTools {
+			b.WriteString(fmt.Sprintf("- repeated tool `%s`: %d\n", item.Key, item.Count))
+		}
+		for _, item := range repetition.TopReadPaths {
+			b.WriteString(fmt.Sprintf("- repeated read `%s`: %d\n", item.Key, item.Count))
+		}
+		if repetition.TodoNoopCount > 0 {
+			b.WriteString(fmt.Sprintf("- todo no-op writes: %d\n", repetition.TodoNoopCount))
 		}
 	}
 

@@ -268,6 +268,7 @@ default_provider: openai
 
 providers:
   openai:
+    api_provider: openai-compatible
     api_key_env: OPENAI_API_KEY
     base_url: https://api.openai.com/v1
     model: gpt-5.4
@@ -281,6 +282,7 @@ providers:
     wire_api: responses
     max_output_tokens: 8192
     reasoning_effort: xhigh
+    reasoning_summary: auto
     text_verbosity: low
 
 session:
@@ -329,14 +331,15 @@ hooks:
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
-- `experimental web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、provider reasoning / thinking mode 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里
-- Settings 页面必须用受支持值的下拉选择暴露 provider reasoning / thinking mode，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 provider probe，但不得持久化配置
+- `experimental web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里
+- Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置
 
 ## 8. Provider 配置字段
 
 ### 8.1 通用字段
 
 - `api_key_env`
+- `api_provider`：协议 / adapter family，例如 `openai-compatible`、`anthropic-compatible`、`google`；Provider map key 只是 Provider Profile 名称
 - `base_url`
 - `model`
 - `timeout_sec`
@@ -355,11 +358,12 @@ hooks:
 - `top_p`
 - `max_output_tokens`
 - `reasoning_effort`：Settings mode `default | low | medium | high | xhigh`，其中 `xhigh` 持久化为 `reasoning_effort: xhigh`
+- `reasoning_summary`：Settings summary `Provider default | Auto | Concise | Detailed | Off`，其中 `auto|concise|detailed` 映射到 Responses `reasoning.summary`，`off` 持久化为 `none`
 - `text_verbosity`
 - `store`
 - `send_metadata`
 
-### 8.3 Anthropic
+### 8.3 Anthropic-Compatible Messages
 
 - `anthropic_version`
 - `temperature`
@@ -368,6 +372,22 @@ hooks:
 - `thinking_budget`
 - `include_thoughts`
 - Settings mode `default | standard | max | off`；`max` 持久化为 `include_thoughts: true`、`thinking_budget: 32000`，并把 `max_output_tokens` 提高到至少 `32768`
+- 任意自定义 Provider Profile 只要显式配置 `api_provider: anthropic-compatible`，就使用同一 Messages adapter；未知自定义 profile 若没有 `api_provider` 必须报错，不按名称猜协议
+
+示例：
+
+```yaml
+providers:
+  kimi:
+    api_provider: anthropic-compatible
+    api_key_env: KIMI_API_KEY
+    base_url: https://<kimi-anthropic-compatible-endpoint>
+    model: <kimi-model>
+    anthropic_version: 2023-06-01
+    thinking_budget: 32000
+    include_thoughts: true
+    max_output_tokens: 32768
+```
 
 ### 8.4 Google
 
@@ -381,10 +401,12 @@ hooks:
 约束：
 
 - provider 选项必须进入 runtime，并写入 session metadata
+- session metadata 需要记录 effective `api_provider` 和 `reasoning_summary`，使 continue / probe / doctor 能解释实际 adapter family
 - `timeout_sec` 是旧配置兼容字段；新实现优先使用 `request_timeout_sec` 与 `stream_idle_timeout_ms`
 - effective timeout/retry policy 也必须写入 session metadata，便于从 durable session 事实中追溯本次运行采用的请求超时、stream idle 超时、retry 预算与开关
 - `continue` 不能因为配置漂移而丢失已选择的 generation 语义
 - OpenAI / `openai-compatible` 默认 `store: false`，保持本地 session 是唯一事实源
+- `wire_api` 只作为 OpenAI-compatible Responses 的 legacy / advanced compatibility 字段保留；默认交互和 Settings 以 `api_provider` 命名解释 adapter family
 - `send_metadata` 默认为主契约路径；只有某个非官方 `openai-compatible` 部署明确不兼容 `metadata` 字段时，才应显式设置 `send_metadata: false`
 - provider retry 只允许有限次数的 transport / rate-limit / upstream 重试；认证错误、请求格式错误、响应解析错误不能被自动吞掉
 - provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，可以按 `runtime.provider_auto_resume` 做有界自动续跑；每次自动续跑必须写入 durable event

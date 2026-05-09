@@ -144,6 +144,8 @@
 - 请求可包含 `instructions`、`input`、`tools`
 - generation 选项可映射为 `temperature`、`top_p`、`max_output_tokens`
 - reasoning 选项可映射为 `reasoning.effort`
+- reasoning summary 可映射为 `reasoning.summary`
+- encrypted reasoning item 可通过 `include: ["reasoning.encrypted_content"]` 请求，并作为 OpenAI adapter-owned replay fact 保存
 - 文本 verbosity 可映射为 `text.verbosity`
 - 工具调用是 `function_call`
 - 工具结果回放是 `function_call_output`
@@ -152,6 +154,7 @@
 
 - `openai-compatible` + `wire_api=responses` 继续复用同一 adapter
 - 默认 `store: false`，保持本地 session 是唯一事实源
+- `wire_api` 是 legacy / advanced compatibility 字段；产品语义上用 Provider Profile + `api_provider` 区分配置项和 adapter family
 
 ### 3.2 Anthropic Messages
 
@@ -223,11 +226,16 @@
 - `temperature`
 - `top_p`
 - `max_output_tokens`
+- `api_provider`
 - `reasoning_effort`
+- `reasoning_summary`
 - `text_verbosity`
 - `thinking_budget`
 - `include_thoughts`
 - `store`
+- `thinking_strategy`
+- `thinking_visible_observed`
+- `thinking_replay_observed`
 
 这些字段必须从 config 进入 runtime，并写入 session metadata。
 
@@ -242,9 +250,9 @@
 
 当前明确承认：
 
-- 不持久化 OpenAI reasoning items
-- 不持久化 Gemini thought signatures
-- 因此 provider-native reasoning replay 不是当前主路径承诺
+- OpenAI encrypted reasoning、Anthropic thinking signature / redacted data、Gemini thoughtSignature 都是 provider-native continuation fact，只能由对应 adapter replay。
+- `Message.thinking` 只保存 provider 明确返回的可读 summary/text；opaque/encrypted/signature 数据不得进入 UI 文本、toast、普通 events 文本或报告正文。
+- Chat-compatible `reasoning_content` / `reasoning_details` / `reasoning_opaque` 不是当前已实现能力；若后续支持，必须通过显式 adapter family 实现。
 
 ## 5. Spec 完成判定
 

@@ -197,8 +197,8 @@ Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。R
 ### 7.2 v1 当前限制
 
 - 不做真正 SSE / WebSocket 多路流式 UI
-- 不持久化 OpenAI reasoning items 供后续 replay
-- Gemini / Anthropic 的 provider-native thinking replay facts 仅由 provider adapter 保存和解释，不作为跨 provider 公共消息语义
+- OpenAI Responses 的可 replay encrypted reasoning item、Anthropic thinking signature / redacted block、Gemini thoughtSignature 都可以作为 provider-owned `provider_content_blocks` 落盘；可读 summary/text 才进入 `Message.thinking`
+- provider-native thinking / reasoning replay facts 仅由对应 adapter 保存和解释，不作为跨 provider 公共消息语义，也不由 CLI / Web 层解析
 - 不做跨 provider context handoff
 - 不做 provider fallback routing
 - 不把 child agent / queue / TUI 作为当前主路径

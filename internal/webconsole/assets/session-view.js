@@ -698,6 +698,9 @@ function summarizeToolResult(result, parsed, payloadText) {
     return truncateText(payloadText, 140);
   }
   if (result.name === 'todo_write' && Array.isArray(parsed)) {
+    if (result.metadata?.noop) {
+      return `${parsed.length} todo item${parsed.length === 1 ? '' : 's'} unchanged`;
+    }
     return `${parsed.length} todo item${parsed.length === 1 ? '' : 's'} saved`;
   }
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -1176,7 +1179,7 @@ function renderTodoFloat() {
     <div class="tf-inner ${expanded ? 'is-expanded' : ''}">
       <div class="tf-header" data-todo-float-toggle>
         <div class="tf-header-left">
-          <span class="tf-title">Tasks</span>
+          <span class="tf-title">Todo / Tasks</span>
           <div class="tf-progress-bar"><div class="tf-progress-fill" style="width:${progressPct}%"></div></div>
           <span class="tf-progress-label">${progressPct}%</span>
         </div>

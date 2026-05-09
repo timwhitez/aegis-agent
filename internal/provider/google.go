@@ -33,7 +33,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{{"text": req.SystemPrompt}},
 		},
-		"contents": googleContents(req.Messages),
+		"contents": googleContents(req.Messages, req.Model),
 		"tools": []map[string]any{
 			{"functionDeclarations": googleTools(req.Tools)},
 		},
@@ -41,6 +41,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	if generationConfig := googleGenerationConfig(req); len(generationConfig) > 0 {
 		body["generationConfig"] = generationConfig
 	}
+	thinkingStrategy := googleThinkingStrategy(req)
 	var resp struct {
 		ResponseID   string `json:"responseId"`
 		ModelVersion string `json:"modelVersion"`
@@ -79,10 +80,16 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	var thinkingParts []string
 	var providerBlocks []session.ProviderContentBlock
 	var calls []ToolCall
+	thoughtPartCount := 0
+	thoughtSignatureCount := 0
 	for _, part := range candidate.Content.Parts {
 		if part.Thought {
+			thoughtPartCount++
 			if part.Text != "" {
 				thinkingParts = append(thinkingParts, part.Text)
+			}
+			if part.ThoughtSig != "" {
+				thoughtSignatureCount++
 			}
 			thought := true
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
@@ -91,19 +98,27 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				Text:             part.Text,
 				Thought:          &thought,
 				ThoughtSignature: part.ThoughtSig,
+				Model:            req.Model,
 			})
 			continue
 		}
 		if part.Text != "" {
+			if part.ThoughtSig != "" {
+				thoughtSignatureCount++
+			}
 			textParts = append(textParts, part.Text)
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider:         "google",
 				Type:             "part",
 				Text:             part.Text,
 				ThoughtSignature: part.ThoughtSig,
+				Model:            req.Model,
 			})
 		}
 		if part.FunctionCall.Name != "" {
+			if part.ThoughtSig != "" {
+				thoughtSignatureCount++
+			}
 			callID := part.FunctionCall.ID
 			if callID == "" {
 				callID = "call_" + part.FunctionCall.Name
@@ -115,6 +130,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				ID:               callID,
 				Args:             part.FunctionCall.Args,
 				ThoughtSignature: part.ThoughtSig,
+				Model:            req.Model,
 			})
 			calls = append(calls, ToolCall{
 				ID:             callID,
@@ -149,7 +165,12 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
 		},
 		RawProvider: rawProviderEnvelope("finish_reason", candidate.FinishReason, map[string]any{
-			"model_version": resp.ModelVersion,
+			"model_version":             resp.ModelVersion,
+			"thought_part_count":        thoughtPartCount,
+			"thought_signature_count":   thoughtSignatureCount,
+			"thinking_visible_observed": len(thinkingParts) > 0,
+			"thinking_replay_observed":  thoughtSignatureCount > 0,
+			"thinking_strategy":         thinkingStrategy,
 		}),
 	}, nil
 }
@@ -184,6 +205,23 @@ func googleThinkingConfig(budget int, includeThoughts *bool) map[string]any {
 	}
 }
 
+func googleThinkingStrategy(req TurnRequest) string {
+	if req.IncludeThoughts != nil && !*req.IncludeThoughts {
+		return "off"
+	}
+	includeThoughts := req.IncludeThoughts != nil && *req.IncludeThoughts
+	switch {
+	case req.ThinkingBudget > 0 && includeThoughts:
+		return "thinking_budget_include_thoughts"
+	case req.ThinkingBudget > 0:
+		return "thinking_budget"
+	case includeThoughts:
+		return "include_thoughts"
+	default:
+		return "provider_default"
+	}
+}
+
 func googleTools(tools []ToolSchema) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
@@ -196,7 +234,7 @@ func googleTools(tools []ToolSchema) []map[string]any {
 	return out
 }
 
-func googleContents(messages []session.Message) []map[string]any {
+func googleContents(messages []session.Message, model string) []map[string]any {
 	var out []map[string]any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -207,7 +245,7 @@ func googleContents(messages []session.Message) []map[string]any {
 			})
 		case "assistant":
 			parts := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if googleBlocks := googleProviderParts(msg.ProviderContentBlocks); len(googleBlocks) > 0 {
+			if googleBlocks := googleProviderParts(msg.ProviderContentBlocks, model); len(googleBlocks) > 0 {
 				parts = googleBlocks
 			} else if msg.Text != "" {
 				parts = append(parts, map[string]any{"text": msg.Text})
@@ -270,15 +308,22 @@ func googleContents(messages []session.Message) []map[string]any {
 	return out
 }
 
-func googleProviderParts(blocks []session.ProviderContentBlock) []map[string]any {
+func googleProviderParts(blocks []session.ProviderContentBlock, model string) []map[string]any {
 	var parts []map[string]any
+	hasAnchor := false
 	for _, block := range blocks {
 		if block.Provider != "google" {
+			continue
+		}
+		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
 			continue
 		}
 		part := map[string]any{}
 		if block.Text != "" {
 			part["text"] = block.Text
+			if block.Thought == nil || !*block.Thought {
+				hasAnchor = true
+			}
 		}
 		if block.Thought != nil {
 			part["thought"] = *block.Thought
@@ -294,10 +339,14 @@ func googleProviderParts(blocks []session.ProviderContentBlock) []map[string]any
 				"id":   block.ID,
 				"args": args,
 			}
+			hasAnchor = true
 		}
 		if len(part) > 0 {
 			parts = append(parts, part)
 		}
+	}
+	if !hasAnchor {
+		return nil
 	}
 	return parts
 }

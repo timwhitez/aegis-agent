@@ -92,6 +92,7 @@ default_provider: openai
 
 providers:
   openai:
+    api_provider: openai-compatible
     api_key_env: OPENAI_API_KEY
     base_url: https://api.openai.com/v1
     model: gpt-5.4
@@ -105,10 +106,26 @@ providers:
     wire_api: responses
     max_output_tokens: 8192
     reasoning_effort: xhigh
+    reasoning_summary: auto
     text_verbosity: low
 ```
 
-provider generation / reasoning 字段会进入 runtime 和 session metadata，而不是只停留在一次性 CLI 参数里。当前支持 `temperature`、`top_p`、`max_output_tokens`、`reasoning_effort`、`text_verbosity`、`thinking_budget`、`include_thoughts`、`store`、`send_metadata`，以及 provider timeout / retry 配置。
+`api_provider` 表示实际 adapter family；Provider map key 只是 Provider Profile 名称。`wire_api` 仅作为 OpenAI-compatible Responses 的 legacy / advanced compatibility 字段保留。provider generation / reasoning 字段会进入 runtime 和 session metadata，而不是只停留在一次性 CLI 参数里。当前支持 `api_provider`、`temperature`、`top_p`、`max_output_tokens`、`reasoning_effort`、`reasoning_summary`、`text_verbosity`、`thinking_budget`、`include_thoughts`、`store`、`send_metadata`，以及 provider timeout / retry 配置。
+
+DeepSeek / Kimi 这类自定义 profile 如果通过 Anthropic-compatible Messages 接入，应显式配置 adapter family，而不是改名伪装成 `anthropic`：
+
+```yaml
+providers:
+  kimi:
+    api_provider: anthropic-compatible
+    api_key_env: KIMI_API_KEY
+    base_url: https://<kimi-anthropic-compatible-endpoint>
+    model: <kimi-model>
+    anthropic_version: 2023-06-01
+    thinking_budget: 32000
+    include_thoughts: true
+    max_output_tokens: 32768
+```
 
 如果需要面向部署或运维的单页说明，优先看 [`docs/openai-compatible-operator-guide.md`](./docs/openai-compatible-operator-guide.md)。
 
@@ -132,7 +149,14 @@ provider generation / reasoning 字段会进入 runtime 和 session metadata，�
 `run.sh` 为 WSL / Windows 浏览器访问默认监听 `0.0.0.0:3940`。这个本地控制台可以写配置和 `.env` API key、删除 session、管理 skill、读取 workspace 文件；只在可信本机网络使用，暴露到非 loopback 地址前先确认风险。
 
 WebConsole 的页面结构、Background Jobs 简化口径、API 契约和浏览器验证要求写在 [`spec/17-web-console.md`](./spec/17-web-console.md)。
-Settings 页面提供 provider reasoning 下拉选择和测试按钮：OpenAI / `openai-compatible` 可以选择 `xhigh`，Anthropic / Google 这类 thinking provider 可以选择 `max`，测试按钮会用当前表单值做一次 provider probe，成功后再保存配置。
+Settings 页面提供 Provider Profile、API Provider、provider reasoning / thinking 下拉、OpenAI reasoning summary 下拉和测试按钮：OpenAI / `openai-compatible` 可以选择 `xhigh` + `Auto` summary，Anthropic-compatible / Google 这类 thinking provider 可以选择 `max`。测试按钮会用当前表单值做一次 thinking-observation probe，并回显 adapter 采用的 `thinking_strategy`；结果会区分“请求成功”和“本次实际返回可读 thinking / summary”，成功测试不会自动保存配置。
+
+## Troubleshooting
+
+- `provider.retry` / `provider.auto_resume` 说明 adapter 或 runtime 在处理上游超时/重试；查看 `.go-cli-agent/sessions/<id>/provider-attempts.jsonl` 和 `session.md`。
+- session 长时间运行但 provider attempts 持续成功、同时反复 `load_skill`、同一路径 `read_file` 或 `todo_write` no-op，通常是工具循环退化；`session.md` 的 `Tool Repetition` 小节会列出重复工具、重复读取路径和 no-op todo 次数。
+- 重复 `load_skill` 默认返回 `already_loaded`，需要重新读取 skill 文件时显式使用 `force_reload=true`。
+- todo 是当前 session 的执行节奏板；durable tasks 在 `tasks/` 目录中。空 `tasks/` 不代表 todo 刷新就是持久任务进展。
 
 ## 设计原则
 

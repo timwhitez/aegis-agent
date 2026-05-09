@@ -54,18 +54,20 @@ type ProviderTimeoutPolicy struct {
 }
 
 type ProviderOptions struct {
-	Temperature     *float64               `json:"temperature,omitempty"`
-	TopP            *float64               `json:"top_p,omitempty"`
-	MaxOutputTokens int                    `json:"max_output_tokens,omitempty"`
-	ReasoningEffort string                 `json:"reasoning_effort,omitempty"`
-	TextVerbosity   string                 `json:"text_verbosity,omitempty"`
-	ThinkingBudget  int                    `json:"thinking_budget,omitempty"`
-	IncludeThoughts *bool                  `json:"include_thoughts,omitempty"`
-	Store           *bool                  `json:"store,omitempty"`
-	SendMetadata    *bool                  `json:"send_metadata,omitempty"`
-	RawSidecar      *bool                  `json:"raw_sidecar,omitempty"`
-	RetryPolicy     *ProviderRetryPolicy   `json:"retry_policy,omitempty"`
-	TimeoutPolicy   *ProviderTimeoutPolicy `json:"timeout_policy,omitempty"`
+	APIProvider      string                 `json:"api_provider,omitempty"`
+	Temperature      *float64               `json:"temperature,omitempty"`
+	TopP             *float64               `json:"top_p,omitempty"`
+	MaxOutputTokens  int                    `json:"max_output_tokens,omitempty"`
+	ReasoningEffort  string                 `json:"reasoning_effort,omitempty"`
+	ReasoningSummary string                 `json:"reasoning_summary,omitempty"`
+	TextVerbosity    string                 `json:"text_verbosity,omitempty"`
+	ThinkingBudget   int                    `json:"thinking_budget,omitempty"`
+	IncludeThoughts  *bool                  `json:"include_thoughts,omitempty"`
+	Store            *bool                  `json:"store,omitempty"`
+	SendMetadata     *bool                  `json:"send_metadata,omitempty"`
+	RawSidecar       *bool                  `json:"raw_sidecar,omitempty"`
+	RetryPolicy      *ProviderRetryPolicy   `json:"retry_policy,omitempty"`
+	TimeoutPolicy    *ProviderTimeoutPolicy `json:"timeout_policy,omitempty"`
 }
 
 type SessionMetadata struct {
@@ -257,9 +259,12 @@ type ProviderContentBlock struct {
 	Type             string          `json:"type"`
 	Text             string          `json:"text,omitempty"`
 	Thinking         string          `json:"thinking,omitempty"`
+	Summary          []string        `json:"summary,omitempty"`
 	Signature        string          `json:"signature,omitempty"`
 	Data             string          `json:"data,omitempty"`
 	ID               string          `json:"id,omitempty"`
+	Sequence         int             `json:"sequence,omitempty"`
+	Model            string          `json:"model,omitempty"`
 	Name             string          `json:"name,omitempty"`
 	Input            json.RawMessage `json:"input,omitempty"`
 	Args             json.RawMessage `json:"args,omitempty"`

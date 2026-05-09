@@ -140,6 +140,7 @@ active `run` / `exec` 进程启动后，需要额外启动一个 control watcher
   - `meta.source = harness_reminder`
 - 若 steer 之后模型仍持续做只读探索，runtime 可以对继续的 read-only tool call 写入 guard 错误结果，强制把执行拉回到写入、任务更新或 `finish`
 - 若最新 interrupt steer 已经明确要求“立即写产物 / finish”，runtime 还可以阻断继续的 `todo_write` / `task_*` / `load_skill` 这类 completion detour，避免多耗一个 bookkeeping turn
+- 当用户发现 session 陷入重复 `load_skill`、重复读取同一批 spec/plan/reference 或重复 no-op `todo_write` 时，可以用 interrupt steer 明确要求停止 discovery、复用当前证据、写入 progress/validation/final 或声明 blocker。runtime 可把这类 steer 作为最新外部约束进入 reminder / completion guard，但不得把它泛化成固定审计 workflow。
 - 若最新 interrupt steer 明确要求“不要 finish，留给 later continue / resume 收尾”，runtime 必须抑制 finish-oriented reminder，并在该 run 内阻断 `finish`，确保 session 仍保持可恢复
 - 这类 guard 应优先把模型拉回 `write_file` / `edit_file` / `finish`，而不是继续 repo-scale overread
 - 这类 guard 不能吞掉 steer 本身，也不能代替新的外部 user message；新的 steer / continue / background input 一旦到达，应重新计算优先级

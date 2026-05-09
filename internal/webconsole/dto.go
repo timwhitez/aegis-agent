@@ -51,26 +51,38 @@ type QueueJobRequest struct {
 
 type UpdateConfigRequest struct {
 	Provider             string `json:"provider"`
+	APIProvider          string `json:"api_provider"`
 	BaseURL              string `json:"base_url"`
 	Model                string `json:"model"`
 	APIKey               string `json:"api_key"`
 	ReasoningMode        string `json:"reasoning_mode"`
+	ReasoningSummary     string `json:"reasoning_summary"`
 	GuardrailsMode       string `json:"guardrails_mode"`
 	MaxTurnsHard         *int   `json:"max_turns_hard"`
 	DisableHardTurnLimit bool   `json:"disable_hard_turn_limit"`
 }
 
 type TestConfigResponse struct {
-	Success         bool   `json:"success"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	ReasoningMode   string `json:"reasoning_mode"`
-	StopReason      string `json:"stop_reason,omitempty"`
-	FinishMessage   string `json:"finish_message,omitempty"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	ThinkingBudget  int    `json:"thinking_budget,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
-	IncludeThoughts *bool  `json:"include_thoughts,omitempty"`
+	Success                    bool   `json:"success"`
+	Provider                   string `json:"provider"`
+	APIProvider                string `json:"api_provider,omitempty"`
+	EffectiveAPIProvider       string `json:"effective_api_provider,omitempty"`
+	Model                      string `json:"model"`
+	ReasoningMode              string `json:"reasoning_mode"`
+	ReasoningSummary           string `json:"reasoning_summary,omitempty"`
+	StopReason                 string `json:"stop_reason,omitempty"`
+	FinishMessage              string `json:"finish_message,omitempty"`
+	ReasoningEffort            string `json:"reasoning_effort,omitempty"`
+	ReasoningSummaryObserved   bool   `json:"reasoning_summary_observed,omitempty"`
+	ReasoningEncryptedObserved bool   `json:"reasoning_encrypted_observed,omitempty"`
+	ReasoningTokens            int    `json:"reasoning_tokens,omitempty"`
+	ThinkingBudget             int    `json:"thinking_budget,omitempty"`
+	ThinkingVisibleObserved    bool   `json:"thinking_visible_observed,omitempty"`
+	ThinkingReplayObserved     bool   `json:"thinking_replay_observed,omitempty"`
+	ThinkingDetail             string `json:"thinking_detail,omitempty"`
+	ThinkingStrategy           string `json:"thinking_strategy,omitempty"`
+	MaxOutputTokens            int    `json:"max_output_tokens,omitempty"`
+	IncludeThoughts            *bool  `json:"include_thoughts,omitempty"`
 }
 
 type ErrorResponse struct {

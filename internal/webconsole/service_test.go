@@ -1715,6 +1715,63 @@ func TestServiceConfigRoutesPersistThinkingMaxMode(t *testing.T) {
 	}
 }
 
+func TestServiceConfigCustomAnthropicProviderGetsThinkingModes(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Providers["kimi"] = config.Provider{
+		APIProvider:      "anthropic-compatible",
+		APIKeyEnv:        "KIMI_API_KEY",
+		BaseURL:          "http://example.invalid",
+		Model:            "kimi-test",
+		TimeoutSec:       3,
+		AnthropicVersion: "2023-06-01",
+	}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var payload map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &payload)
+	providers, _ := payload["providers"].(map[string]any)
+	kimiProvider, _ := providers["kimi"].(map[string]any)
+	if kimiProvider["api_provider"] != "anthropic-compatible" || kimiProvider["effective_api_provider"] != "anthropic-compatible" {
+		t.Fatalf("expected custom provider to expose anthropic-compatible API provider, got %#v", kimiProvider)
+	}
+	modes, _ := kimiProvider["reasoning_modes"].([]any)
+	if got := anySliceStrings(modes); strings.Join(got, ",") != "default,standard,max,off" {
+		t.Fatalf("expected thinking modes for custom anthropic-compatible provider, got %#v", kimiProvider)
+	}
+}
+
+func TestServiceConfigRejectsCustomProviderWithoutAPIProvider(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Providers["vendor-x"] = config.Provider{
+		APIKeyEnv:  "VENDOR_X_API_KEY",
+		BaseURL:    "http://example.invalid",
+		Model:      "vendor-test",
+		TimeoutSec: 3,
+	}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+		"provider": "vendor-x",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "requires api_provider") {
+		t.Fatalf("expected api_provider error, got %#v", errResp)
+	}
+}
+
 func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 	seenRequest := make(chan map[string]any, 1)
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1751,13 +1808,14 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 
 	var result TestConfigResponse
 	postJSON(t, ts.URL+"/api/config/test", map[string]any{
-		"provider":       "openai",
-		"base_url":       providerServer.URL,
-		"model":          "gpt-test",
-		"reasoning_mode": "xhigh",
+		"provider":          "openai",
+		"base_url":          providerServer.URL,
+		"model":             "gpt-test",
+		"reasoning_mode":    "xhigh",
+		"reasoning_summary": "auto",
 	}, http.StatusOK, &result)
 
-	if !result.Success || result.Provider != "openai" || result.Model != "gpt-test" || result.ReasoningMode != "xhigh" || result.ReasoningEffort != "xhigh" {
+	if !result.Success || result.Provider != "openai" || result.EffectiveAPIProvider != "openai-compatible" || result.Model != "gpt-test" || result.ReasoningMode != "xhigh" || result.ReasoningEffort != "xhigh" || result.ReasoningSummary != "auto" || result.ThinkingStrategy != "responses_reasoning_summary" {
 		t.Fatalf("unexpected test config response: %#v", result)
 	}
 	seen := <-seenRequest
@@ -1767,6 +1825,13 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 	reasoning, _ := seen["reasoning"].(map[string]any)
 	if reasoning["effort"] != "xhigh" {
 		t.Fatalf("expected provider probe to send reasoning effort xhigh, got %#v", seen)
+	}
+	if reasoning["summary"] != "auto" {
+		t.Fatalf("expected provider probe to send reasoning summary auto, got %#v", seen)
+	}
+	include, _ := seen["include"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected provider probe to request encrypted reasoning include, got %#v", seen)
 	}
 	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("config test should not persist config; stat err=%v", err)
@@ -2160,6 +2225,15 @@ func testConfig(t *testing.T, baseURL string) *config.Config {
 	cfg.Runtime.Queue.PollIntervalMS = 20
 	cfg.Runtime.Queue.AutoWorker = false
 	return cfg
+}
+
+func anySliceStrings(values []any) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		text, _ := value.(string)
+		out = append(out, text)
+	}
+	return out
 }
 
 func testSessionMetadata(t *testing.T, id string) session.SessionMetadata {

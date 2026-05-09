@@ -21,20 +21,22 @@ type ToolSchema struct {
 }
 
 type TurnRequest struct {
-	SessionID       string
-	Model           string
-	SystemPrompt    string
-	Messages        []session.Message
-	Tools           []ToolSchema
-	Metadata        map[string]any
-	Temperature     *float64
-	TopP            *float64
-	MaxOutputTokens int
-	ReasoningEffort string
-	TextVerbosity   string
-	ThinkingBudget  int
-	IncludeThoughts *bool
-	Store           *bool
+	SessionID        string
+	Model            string
+	SystemPrompt     string
+	Messages         []session.Message
+	Tools            []ToolSchema
+	Metadata         map[string]any
+	Temperature      *float64
+	TopP             *float64
+	MaxOutputTokens  int
+	APIProvider      string
+	ReasoningEffort  string
+	ReasoningSummary string
+	TextVerbosity    string
+	ThinkingBudget   int
+	IncludeThoughts  *bool
+	Store            *bool
 }
 
 type ToolCall struct {

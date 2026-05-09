@@ -87,6 +87,101 @@ func TestOpenAIAdapterSerializesAndParses(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesReasoningSummaryEncryptedAndReplay(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_reasoning_1",
+			"status":"completed",
+			"output":[
+				{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"checked constraints"}],"content":[{"type":"reasoning_text","text":"visible reasoning text"}],"encrypted_content":"enc_opaque"},
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":3}}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:        "s1",
+		Model:            "gpt-5.4",
+		SystemPrompt:     "system",
+		Messages:         []session.Message{session.NewMessage("user", "hello")},
+		ReasoningEffort:  "xhigh",
+		ReasoningSummary: "auto",
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "xhigh" || reasoning["summary"] != "auto" {
+		t.Fatalf("expected reasoning effort+summary in request, got %#v", body)
+	}
+	include, _ := body["include"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected encrypted reasoning include, got %#v", body["include"])
+	}
+	if !strings.Contains(result.Thinking, "checked constraints") || !strings.Contains(result.Thinking, "visible reasoning text") {
+		t.Fatalf("expected readable reasoning to enter Thinking, got %q", result.Thinking)
+	}
+	if strings.Contains(result.Thinking, "enc_opaque") {
+		t.Fatalf("encrypted content leaked into Thinking: %q", result.Thinking)
+	}
+	if len(result.ProviderContentBlocks) != 1 {
+		t.Fatalf("expected one reasoning provider block, got %#v", result.ProviderContentBlocks)
+	}
+	block := result.ProviderContentBlocks[0]
+	if block.Provider != "openai" || block.Type != "reasoning" || block.ID != "rs_1" || block.Data != "enc_opaque" || block.Model != "gpt-5.4" {
+		t.Fatalf("unexpected reasoning provider block: %#v", block)
+	}
+	if len(block.Summary) != 1 || block.Summary[0] != "checked constraints" || block.Sequence != 1 {
+		t.Fatalf("expected summary binding and sequence, got %#v", block)
+	}
+	if result.RawProvider["reasoning_tokens"] != 3 || result.RawProvider["thinking_visible_observed"] != true || result.RawProvider["thinking_replay_observed"] != true || result.RawProvider["thinking_strategy"] != "responses_reasoning_summary" {
+		t.Fatalf("expected non-sensitive reasoning observations, got %#v", result.RawProvider)
+	}
+}
+
+func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
+	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "openai", Type: "reasoning", ID: "rs_1", Data: "enc_opaque", Summary: []string{"summary"}, Sequence: 1, Model: "gpt-5.4"},
+		{Provider: "openai", Type: "reasoning", ID: "rs_old", Data: "old", Summary: []string{"old"}, Sequence: 2, Model: "other-model"},
+	}
+	input, err := openAIInput([]session.Message{assistant}, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("input: %v", err)
+	}
+	if len(input) != 2 {
+		t.Fatalf("expected reasoning item plus function call, got %#v", input)
+	}
+	reasoning, _ := input[0].(map[string]any)
+	if reasoning["type"] != "reasoning" || reasoning["id"] != "rs_1" || reasoning["encrypted_content"] != "enc_opaque" {
+		t.Fatalf("unexpected replay reasoning item: %#v", reasoning)
+	}
+	summary, _ := reasoning["summary"].([]map[string]any)
+	if len(summary) != 1 || summary[0]["text"] != "summary" {
+		t.Fatalf("expected same-id summary replay, got %#v", reasoning["summary"])
+	}
+
+	mixed := assistant
+	mixed.Text = "visible"
+	input, err = openAIInput([]session.Message{mixed}, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("input mixed: %v", err)
+	}
+	for _, item := range input {
+		if obj, ok := item.(map[string]any); ok && obj["type"] == "reasoning" {
+			t.Fatalf("mixed text+reasoning+tool_call replay should be disabled until order is verified: %#v", input)
+		}
+	}
+}
+
 func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +239,41 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	}
 	if result.RawProvider["provider_stop_reason"] != "tool_use" {
 		t.Fatalf("expected normalized provider stop reason, got %#v", result.RawProvider)
+	}
+}
+
+func TestAnthropicReplayDropsReasoningOnlyAssistantBlocks(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		rawBody = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_2",
+			"stop_reason":"end_turn",
+			"content":[{"type":"text","text":"done"}],
+			"usage":{"input_tokens":8,"output_tokens":4}
+		}`))
+	}))
+	defer server.Close()
+
+	assistant := session.NewAssistantMessage("", "", nil)
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "anthropic", Type: "thinking", Thinking: "reasoning", Signature: "sig_thinking_1", Model: "claude-sonnet-4-6"},
+		{Provider: "anthropic", Type: "redacted_thinking", Data: "opaque_redacted_data", Model: "claude-sonnet-4-6"},
+	}
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	if _, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{assistant},
+	}, func(string, map[string]any) {}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(rawBody, "redacted_thinking") || strings.Contains(rawBody, "sig_thinking_1") {
+		t.Fatalf("reasoning-only anthropic assistant blocks should not be replayed: %s", rawBody)
 	}
 }
 
@@ -293,6 +423,40 @@ func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
 		if !strings.Contains(rawBody, want) {
 			t.Fatalf("expected %s in google replay body: %s", want, rawBody)
 		}
+	}
+}
+
+func TestGoogleReplayDropsThoughtOnlyAssistantBlocks(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		rawBody = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_2",
+			"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}
+		}`))
+	}))
+	defer server.Close()
+
+	thought := true
+	assistant := session.NewAssistantMessage("", "", nil)
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "google", Type: "part", Text: "reasoning", Thought: &thought, ThoughtSignature: "sig_thought_1", Model: "gemini-2.5-flash"},
+	}
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	if _, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{assistant},
+	}, func(string, map[string]any) {}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(rawBody, "sig_thought_1") || strings.Contains(rawBody, `"thought":true`) {
+		t.Fatalf("thought-only google assistant parts should not be replayed: %s", rawBody)
 	}
 }
 

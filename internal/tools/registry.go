@@ -418,7 +418,8 @@ func defReadFile() Definition {
 					"description": "Maximum lines to return. Values above 120 are capped to 120.",
 				},
 			},
-			"required": []string{"path"},
+			"required":             []string{"path"},
+			"additionalProperties": false,
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
@@ -465,6 +466,13 @@ func defReadFile() Definition {
 				"offset":      offset,
 				"end":         end,
 				"path_source": source,
+			}
+			if repeat := readFileRepeatObservation(execCtx, path, offset, end); repeat.Count > 1 {
+				metadata["repeat_count"] = repeat.Count
+				metadata["first_seen_at"] = repeat.FirstSeenAt
+				metadata["last_seen_at"] = repeat.LastSeenAt
+				metadata["warning"] = "repeated read_file call for the same path and line window; use existing evidence unless you need a precise recheck"
+				selected += fmt.Sprintf("\n[read_file warning repeat_count=%d same path/range was already read in this session]", repeat.Count)
 			}
 			if skillName != "" {
 				metadata["skill"] = skillName
@@ -1199,19 +1207,47 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 			"type": "object",
 			"properties": map[string]any{
 				"name": withDescription(nameSchema, "Exact registered skill name from the available-skills list."),
+				"force_reload": map[string]any{
+					"type":        "boolean",
+					"description": "When true, reload the full skill body even if this session already loaded it. Use only when the skill file may have changed or the user explicitly asks to reload it.",
+				},
 			},
 			"required":             []string{"name"},
 			"additionalProperties": false,
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
-				Name string `json:"name"`
+				Name        string `json:"name"`
+				ForceReload bool   `json:"force_reload"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("load_skill", err), nil
 			}
 			if execCtx.Catalog == nil {
 				return errorResult("load_skill", errors.New("skill catalog not available")), nil
+			}
+			skill, skillErr := execCtx.Catalog.Load(input.Name)
+			if skillErr != nil {
+				if available := execCtx.Catalog.Names(); len(available) > 0 {
+					skillErr = fmt.Errorf("%w; available skills: %s", skillErr, strings.Join(available, ", "))
+				}
+				return errorResult("load_skill", skillErr), nil
+			}
+			skillDir := filepath.Dir(skill.Path)
+			shellWorkdir := relativeOrAbsolute(execCtx.Workdir, skillDir)
+			if !input.ForceReload && skillLoaded(execCtx, input.Name) {
+				output := fmt.Sprintf("<skill name=%q path=%q already_loaded=true shell_workdir=%q>\nThis skill has already been loaded in this session. Reuse the prior instructions; call load_skill again with force_reload=true only if the skill file changed or the user explicitly asks to reload it.\nAvailable bundle files can still be inspected with read_file using paths like `skills/%s/references/...` or skill-relative links.\n</skill>", skill.Name, skill.Path, shellWorkdir, skill.Name)
+				return session.ToolResult{
+					Name:          "load_skill",
+					LLMOutput:     output,
+					DisplayOutput: fmt.Sprintf("Skill already loaded: %s", input.Name),
+					Metadata: map[string]any{
+						"path":           skill.Path,
+						"shell_workdir":  shellWorkdir,
+						"already_loaded": true,
+						"force_reload":   false,
+					},
+				}, nil
 			}
 			body, err := execCtx.Catalog.LoadBody(input.Name)
 			if err != nil {
@@ -1220,9 +1256,7 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 				}
 				return errorResult("load_skill", err), nil
 			}
-			skill, _ := execCtx.Catalog.Load(input.Name)
-			skillDir := filepath.Dir(skill.Path)
-			shellWorkdir := relativeOrAbsolute(execCtx.Workdir, skillDir)
+			markSkillLoaded(execCtx, input.Name)
 			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect referenced skill files, call read_file with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
 			return session.ToolResult{
 				Name:          "load_skill",
@@ -1231,6 +1265,7 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 				Metadata: map[string]any{
 					"path":          skill.Path,
 					"shell_workdir": shellWorkdir,
+					"force_reload":  input.ForceReload,
 				},
 			}, nil
 		},
@@ -1250,7 +1285,8 @@ func defTodoWrite() Definition {
 					"items":       todoItemSchema(),
 				},
 			},
-			"required": []string{"todos"},
+			"required":             []string{"todos"},
+			"additionalProperties": false,
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
@@ -1265,12 +1301,40 @@ func defTodoWrite() Definition {
 					input.Todos[i].UpdatedAt = now
 				}
 			}
+			if err := validateTodoSnapshot(input.Todos); err != nil {
+				return errorResult("todo_write", err), nil
+			}
+			existing, _ := execCtx.Store.LoadTodo(execCtx.SessionID)
+			changed := !normalizedTodosEqual(existing, input.Todos)
+			if !changed {
+				if execCtx.Emit != nil {
+					execCtx.Emit("todo.updated", map[string]any{
+						"count":   len(existing),
+						"changed": false,
+						"noop":    true,
+					})
+				}
+				data, _ := json.MarshalIndent(existing, "", "  ")
+				return session.ToolResult{
+					Name:          "todo_write",
+					LLMOutput:     string(data),
+					DisplayOutput: string(data),
+					Metadata: map[string]any{
+						"path":    todoFilePath(execCtx),
+						"count":   len(existing),
+						"changed": false,
+						"noop":    true,
+					},
+				}, nil
+			}
 			if err := execCtx.Store.SaveTodo(execCtx.SessionID, input.Todos); err != nil {
 				return errorResult("todo_write", err), nil
 			}
 			if execCtx.Emit != nil {
 				execCtx.Emit("todo.updated", map[string]any{
-					"count": len(input.Todos),
+					"count":   len(input.Todos),
+					"changed": true,
+					"noop":    false,
 				})
 			}
 			data, _ := json.MarshalIndent(input.Todos, "", "  ")
@@ -1279,8 +1343,10 @@ func defTodoWrite() Definition {
 				LLMOutput:     string(data),
 				DisplayOutput: string(data),
 				Metadata: map[string]any{
-					"path":  todoFilePath(execCtx),
-					"count": len(input.Todos),
+					"path":    todoFilePath(execCtx),
+					"count":   len(input.Todos),
+					"changed": true,
+					"noop":    false,
 				},
 			}, nil
 		},
@@ -1308,6 +1374,123 @@ func defTodoRead() Definition {
 				},
 			}, nil
 		},
+	}
+}
+
+type readRepeatObservation struct {
+	Count       int
+	FirstSeenAt string
+	LastSeenAt  string
+}
+
+func readFileRepeatObservation(execCtx ExecContext, path string, offset, end int) readRepeatObservation {
+	if execCtx.Store == nil || strings.TrimSpace(execCtx.SessionID) == "" {
+		return readRepeatObservation{Count: 1}
+	}
+	messages, err := execCtx.Store.LoadMessages(execCtx.SessionID)
+	if err != nil {
+		return readRepeatObservation{Count: 1}
+	}
+	obs := readRepeatObservation{Count: 1}
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults {
+			if result.Name != "read_file" {
+				continue
+			}
+			if strings.TrimSpace(metadataString(result.Metadata, "path")) != strings.TrimSpace(path) {
+				continue
+			}
+			if metadataInt(result.Metadata, "offset") != offset || metadataInt(result.Metadata, "end") != end {
+				continue
+			}
+			obs.Count++
+			if obs.FirstSeenAt == "" {
+				obs.FirstSeenAt = msg.CreatedAt
+			}
+			obs.LastSeenAt = msg.CreatedAt
+		}
+	}
+	return obs
+}
+
+func skillLoaded(execCtx ExecContext, name string) bool {
+	if execCtx.Store == nil || strings.TrimSpace(execCtx.SessionID) == "" {
+		return false
+	}
+	state, err := execCtx.Store.LoadState(execCtx.SessionID)
+	if err != nil {
+		return false
+	}
+	for _, loaded := range state.LoadedSkills {
+		if loaded == name {
+			return true
+		}
+	}
+	return false
+}
+
+func markSkillLoaded(execCtx ExecContext, name string) {
+	if execCtx.Store == nil || strings.TrimSpace(execCtx.SessionID) == "" {
+		return
+	}
+	state, err := execCtx.Store.LoadState(execCtx.SessionID)
+	if err != nil {
+		return
+	}
+	for _, loaded := range state.LoadedSkills {
+		if loaded == name {
+			return
+		}
+	}
+	state.LoadedSkills = append(state.LoadedSkills, name)
+	_ = execCtx.Store.SaveState(execCtx.SessionID, state)
+}
+
+func validateTodoSnapshot(todos []session.TodoItem) error {
+	inProgress := 0
+	for _, item := range todos {
+		switch item.Status {
+		case "", "pending", "in_progress", "completed", "cancelled":
+		default:
+			return fmt.Errorf("invalid todo status: %s", item.Status)
+		}
+		if item.Status == "in_progress" {
+			inProgress++
+		}
+	}
+	if inProgress > 1 {
+		return errors.New("todo_write allows at most one in_progress item")
+	}
+	return nil
+}
+
+func normalizedTodosEqual(a, b []session.TodoItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Content != b[i].Content || a[i].Status != b[i].Status || a[i].Priority != b[i].Priority {
+			return false
+		}
+	}
+	return true
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	value, _ := metadata[key].(string)
+	return value
+}
+
+func metadataInt(metadata map[string]any, key string) int {
+	switch value := metadata[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
 	}
 }
 

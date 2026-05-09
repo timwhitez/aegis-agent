@@ -1284,16 +1284,21 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.RUnlock()
 	provs := map[string]any{}
 	for name, p := range s.cfg.Providers {
+		effectiveAPIProvider, _ := config.EffectiveAPIProvider(name, p)
 		provs[name] = map[string]any{
-			"base_url":          p.BaseURL,
-			"model":             p.Model,
-			"has_key":           s.cfg.APIKey(name) != "",
-			"reasoning_mode":    providerReasoningMode(name, p),
-			"reasoning_modes":   providerReasoningModes(name),
-			"reasoning_effort":  strings.TrimSpace(p.ReasoningEffort),
-			"thinking_budget":   p.ThinkingBudget,
-			"include_thoughts":  p.IncludeThoughts,
-			"max_output_tokens": p.MaxOutputTokens,
+			"api_provider":            strings.TrimSpace(p.APIProvider),
+			"effective_api_provider":  effectiveAPIProvider,
+			"base_url":                p.BaseURL,
+			"model":                   p.Model,
+			"has_key":                 s.cfg.APIKey(name) != "",
+			"reasoning_mode":          providerReasoningMode(name, p),
+			"reasoning_modes":         providerReasoningModes(name, p),
+			"reasoning_summary":       providerReasoningSummary(p),
+			"reasoning_summary_modes": providerReasoningSummaryModes(name, p),
+			"reasoning_effort":        strings.TrimSpace(p.ReasoningEffort),
+			"thinking_budget":         p.ThinkingBudget,
+			"include_thoughts":        p.IncludeThoughts,
+			"max_output_tokens":       p.MaxOutputTokens,
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1353,11 +1358,24 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if req.Model != "" {
 			p.Model = req.Model
 		}
+		if strings.TrimSpace(req.APIProvider) != "" {
+			p.APIProvider = strings.TrimSpace(req.APIProvider)
+		}
 		if strings.TrimSpace(req.ReasoningMode) != "" {
 			if err := applyProviderReasoningMode(req.Provider, &p, req.ReasoningMode); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
+		}
+		if strings.TrimSpace(req.ReasoningSummary) != "" {
+			if err := applyProviderReasoningSummary(req.Provider, &p, req.ReasoningSummary); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		if _, err := config.EffectiveAPIProvider(req.Provider, p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 		if req.APIKey != "" && req.APIKey != maskedAPIKey {
 			if err := os.Setenv(p.APIKeyEnv, req.APIKey); err != nil {
@@ -1395,7 +1413,9 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"guardrails_mode":        updatedCfg.Runtime.GuardrailsMode,
 		"max_turns_hard":         updatedCfg.Runtime.MaxTurnsHard,
 		"hard_turn_limit_active": updatedCfg.Runtime.MaxTurnsHard > 0,
+		"api_provider":           updatedCfg.Providers[updatedCfg.DefaultProvider].APIProvider,
 		"reasoning_mode":         providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
+		"reasoning_summary":      providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1445,13 +1465,27 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Model) != "" {
 		p.Model = req.Model
 	}
+	if strings.TrimSpace(req.APIProvider) != "" {
+		p.APIProvider = strings.TrimSpace(req.APIProvider)
+	}
 	if strings.TrimSpace(req.ReasoningMode) != "" {
 		if err := applyProviderReasoningMode(providerName, &p, req.ReasoningMode); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 	}
-	probeReq := runtime.ProbeRequest{Provider: providerName}
+	if strings.TrimSpace(req.ReasoningSummary) != "" {
+		if err := applyProviderReasoningSummary(providerName, &p, req.ReasoningSummary); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	effectiveAPIProvider, err := config.EffectiveAPIProvider(providerName, p)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	probeReq := runtime.ProbeRequest{Provider: providerName, APIProvider: p.APIProvider, ThinkingProbe: true, ReasoningSummary: p.ReasoningSummary}
 	if req.APIKey != "" && req.APIKey != maskedAPIKey {
 		apiKeyEnv := fmt.Sprintf("GO_CLI_AGENT_SETTINGS_TEST_API_KEY_%d", time.Now().UnixNano())
 		if err := os.Setenv(apiKeyEnv, req.APIKey); err != nil {
@@ -1471,16 +1505,26 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, TestConfigResponse{
-		Success:         true,
-		Provider:        result.Provider,
-		Model:           result.Model,
-		ReasoningMode:   providerReasoningMode(providerName, p),
-		StopReason:      result.StopReason,
-		FinishMessage:   result.FinishMessage,
-		ReasoningEffort: strings.TrimSpace(p.ReasoningEffort),
-		ThinkingBudget:  p.ThinkingBudget,
-		MaxOutputTokens: p.MaxOutputTokens,
-		IncludeThoughts: p.IncludeThoughts,
+		Success:                    true,
+		Provider:                   result.Provider,
+		APIProvider:                strings.TrimSpace(p.APIProvider),
+		EffectiveAPIProvider:       effectiveAPIProvider,
+		Model:                      result.Model,
+		ReasoningMode:              providerReasoningMode(providerName, p),
+		ReasoningSummary:           providerReasoningSummary(p),
+		StopReason:                 result.StopReason,
+		FinishMessage:              result.FinishMessage,
+		ReasoningEffort:            strings.TrimSpace(p.ReasoningEffort),
+		ReasoningSummaryObserved:   result.ReasoningSummaryObserved,
+		ReasoningEncryptedObserved: result.ReasoningEncryptedObserved,
+		ReasoningTokens:            result.ReasoningTokens,
+		ThinkingBudget:             p.ThinkingBudget,
+		ThinkingVisibleObserved:    result.ThinkingVisibleObserved,
+		ThinkingReplayObserved:     result.ThinkingReplayObserved,
+		ThinkingDetail:             result.ThinkingDetail,
+		ThinkingStrategy:           result.ThinkingStrategy,
+		MaxOutputTokens:            p.MaxOutputTokens,
+		IncludeThoughts:            p.IncludeThoughts,
 	})
 }
 
@@ -1493,8 +1537,8 @@ func configMode(value string) string {
 	}
 }
 
-func providerReasoningModes(providerName string) []string {
-	switch providerReasoningFamily(providerName) {
+func providerReasoningModes(providerName string, provider config.Provider) []string {
+	switch providerReasoningFamily(providerName, provider) {
 	case "openai":
 		return []string{"default", "low", "medium", "high", "xhigh"}
 	case "thinking":
@@ -1505,7 +1549,7 @@ func providerReasoningModes(providerName string) []string {
 }
 
 func providerReasoningMode(providerName string, provider config.Provider) string {
-	switch providerReasoningFamily(providerName) {
+	switch providerReasoningFamily(providerName, provider) {
 	case "openai":
 		switch strings.ToLower(strings.TrimSpace(provider.ReasoningEffort)) {
 		case "low", "medium", "high", "xhigh":
@@ -1534,7 +1578,7 @@ func applyProviderReasoningMode(providerName string, provider *config.Provider, 
 	if normalized == "" {
 		return nil
 	}
-	switch providerReasoningFamily(providerName) {
+	switch providerReasoningFamily(providerName, *provider) {
 	case "openai":
 		switch normalized {
 		case "default", "off":
@@ -1578,11 +1622,58 @@ func applyProviderReasoningMode(providerName string, provider *config.Provider, 
 	return nil
 }
 
-func providerReasoningFamily(providerName string) string {
-	switch strings.ToLower(strings.TrimSpace(providerName)) {
-	case "openai", "openai-compatible":
+func providerReasoningSummaryModes(providerName string, provider config.Provider) []string {
+	if providerReasoningFamily(providerName, provider) == "openai" {
+		return []string{"default", "auto", "concise", "detailed", "off"}
+	}
+	return []string{"default"}
+}
+
+func providerReasoningSummary(provider config.Provider) string {
+	switch strings.ToLower(strings.TrimSpace(provider.ReasoningSummary)) {
+	case "auto", "concise", "detailed":
+		return strings.ToLower(strings.TrimSpace(provider.ReasoningSummary))
+	case "none":
+		return "off"
+	default:
+		return "default"
+	}
+}
+
+func applyProviderReasoningSummary(providerName string, provider *config.Provider, summary string) error {
+	normalized := strings.ToLower(strings.TrimSpace(summary))
+	if normalized == "" {
+		return nil
+	}
+	if providerReasoningFamily(providerName, *provider) != "openai" {
+		if normalized == "default" {
+			provider.ReasoningSummary = ""
+			return nil
+		}
+		return fmt.Errorf("provider %s does not support reasoning summary %s", providerName, summary)
+	}
+	switch normalized {
+	case "default":
+		provider.ReasoningSummary = ""
+	case "auto", "concise", "detailed":
+		provider.ReasoningSummary = normalized
+	case "off", "none":
+		provider.ReasoningSummary = "none"
+	default:
+		return fmt.Errorf("unsupported reasoning summary for %s: %s", providerName, summary)
+	}
+	return nil
+}
+
+func providerReasoningFamily(providerName string, provider config.Provider) string {
+	apiProvider, err := config.EffectiveAPIProvider(providerName, provider)
+	if err != nil {
+		return ""
+	}
+	switch apiProvider {
+	case "openai-compatible":
 		return "openai"
-	case "anthropic", "google":
+	case "anthropic-compatible", "google":
 		return "thinking"
 	default:
 		return ""

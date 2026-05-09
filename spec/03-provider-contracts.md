@@ -41,7 +41,9 @@ ProviderAdapter
 - `temperature`
 - `top_p`
 - `max_output_tokens`
+- `api_provider`
 - `reasoning_effort`
+- `reasoning_summary`
 - `text_verbosity`
 - `thinking_budget`
 - `include_thoughts`
@@ -71,8 +73,9 @@ ProviderAdapter
 
 - `provider_response_id` 在上游响应提供稳定 id 时应尽量填充；若协议形状确实没有，则允许为空，但不要默默丢掉已存在的上游 id。
 - `thinking` 是面向本地 UI / session 浏览的可读推理摘要；不得把它当成跨 provider 的 replay 原语。
-- `provider_content_blocks` 保存 provider adapter 认为后续 replay 必须原样带回的 provider-native content blocks，例如 Anthropic thinking signature / redacted thinking block、Gemini thoughtSignature 等；它是 session 文件事实的一部分，但仍由 adapter 独占解释，CLI / Web / tool 层不得硬编码 provider replay 逻辑。
+- `provider_content_blocks` 保存 provider adapter 认为后续 replay 必须原样带回的 provider-native content blocks，例如 OpenAI encrypted reasoning item、Anthropic thinking signature / redacted thinking block、Gemini thoughtSignature 等；它是 session 文件事实的一部分，但仍由 adapter 独占解释，CLI / Web / tool 层不得硬编码 provider replay 逻辑。
 - `raw_provider` 至少应保留一个统一键 `provider_stop_reason`，并保留原始来源键（例如 `status`、`stop_reason`、`finish_reason`）供跨 provider 诊断。
+- `raw_provider.thinking_strategy` 记录 adapter 本轮实际采用的 thinking / reasoning 请求策略，例如 OpenAI Responses summary、Anthropic-compatible manual budget、Google thinking budget 或 provider default；它是诊断观测字段，不要求 CLI / Web 层据此构造 replay。
 - 当 session metadata 中的 `provider_options.raw_sidecar=true` 时，runtime 会把本次 turn 的诊断 envelope 另存为 `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json`。该 sidecar 只包含 provider、model、turn、timestamp、provider_response_id、内部归一化 `stop_reason` 和 adapter 已选择的 raw provider items；它只用于 replay 诊断和审计，不替代 `messages.jsonl` / `events.jsonl`，也不要求 CLI 或 Web 用 provider-native item 续跑。
 
 ### 2.3 EventSink
@@ -158,6 +161,7 @@ adapter 负责转换为：
 - `top_p` -> `top_p`
 - `max_output_tokens` -> `max_output_tokens`
 - `reasoning_effort` -> `reasoning.effort`
+- `reasoning_summary=auto|concise|detailed` -> `reasoning.summary`
 - `text_verbosity` -> `text.verbosity`
 - `store` -> `store`
 
@@ -166,6 +170,7 @@ adapter 负责转换为：
 - OpenAI / `openai-compatible` 默认 `store: false`
 - 原因是 session / messages / events 的唯一事实源必须是本地文件，而不是服务端存储
 - provider HTTP 层允许按配置做有限 retry，默认面向 `5xx` 和 transport timeout；认证错误与请求错误直接失败
+- 当 `reasoning` 对象非空时，请求包含 `include: ["reasoning.encrypted_content"]`，用于无状态 Responses replay；`reasoning_summary=none` 表示显式不请求可读 summary。
 
 ### 6.3 响应映射
 
@@ -173,6 +178,8 @@ adapter 负责转换为：
 
 - `output` 中的 message 文本
 - `output` 中的 `function_call`
+- `output` 中的 `reasoning.summary[]` 与兼容 readable reasoning content，进入 `TurnResult.thinking`
+- `output` 中的 `reasoning.encrypted_content`，进入 OpenAI 专用 `provider_content_blocks`，并和同一 reasoning id 的 summary parts、provider output sequence 绑定，供后续 Responses replay 使用
 - `status`
 - `incomplete_details`
 - `usage`
@@ -185,12 +192,14 @@ adapter 负责转换为：
 - cancel -> `cancelled`
 - HTTP / parse error -> `error`
 
-### 6.5 当前限制
+### 6.5 Replay 约束
 
-- v1 不持久化 OpenAI reasoning items
-- 因此不依赖服务端 `previous_response_id` 或 reasoning-item replay 来续跑
+- 只 replay 同时具备 reasoning `id` 与 `encrypted_content` 的 OpenAI reasoning item。
+- summary 只有在它来自同一 reasoning id 并随 encrypted content 一起落盘时才带回；不得从 `Message.thinking` 反向伪造 summary。
+- 如果 provider profile、effective API provider 或 model 已改变，默认剥离旧 opaque reasoning continuation fact。
+- 对 text + reasoning + tool_call 混合顺序尚未验证的形态，adapter 必须有明确安全降级，避免构造 provider 可能拒绝的 replay history。
 
-## 7. Anthropic Contract
+## 7. Anthropic-Compatible Messages Contract
 
 ### 7.1 接口与鉴权
 
@@ -247,6 +256,9 @@ adapter 负责转换为：
 
 - 当 provider 返回 `thinking` / `redacted_thinking` 且本轮包含 tool use 时，adapter 必须保存 replay 所需的原始块信息，包括 `signature` 与 `data`，并在后续 Messages API replay 中原样带回。
 - `Message.thinking` 只承载可读摘要；`signature` / `redacted_thinking.data` 这类 provider-native 续跑事实必须保存在 provider content blocks 中。
+- 本 contract 适用于 effective `api_provider: anthropic-compatible`，不要求 provider profile 名称必须是 `anthropic`。DeepSeek/Kimi 等 custom URL profile 只有显式配置为该 API Provider 时才走 Messages adapter。
+- 只有 thinking/redacted、没有 text/tool_use 锚点的 assistant message 不应构造成 Anthropic replay history；它可以作为本地诊断事实保留。
+- `RawProvider` / message meta 只记录非敏感计数与布尔观测，例如 `thinking_block_count`、`redacted_thinking_count`、`thinking_visible_observed`、`thinking_replay_observed`。
 
 ## 8. Google Contract
 
@@ -307,6 +319,8 @@ adapter 负责转换为：
 
 - `thought=true` 的 part 表示 thought summary，其可读内容在同一 part 的 `text` 字段中；它应进入 `TurnResult.thinking`，不得混入最终 `TurnResult.text`。
 - Gemini thought signatures 只作为 provider-native replay 事实保存在 provider content blocks 中，不由 Web / CLI 解释。
+- 只有 thoughtSignature / thought、没有普通 text 或 functionCall 锚点的 assistant message 不应构造成 Gemini replay history；它可以作为本地诊断事实保留。
+- `RawProvider` / message meta 只记录非敏感计数与布尔观测，例如 `thought_part_count`、`thought_signature_count`、`thinking_visible_observed`、`thinking_replay_observed`。
 
 ## 9. 错误分类
 
@@ -357,4 +371,5 @@ adapter 至少要把 provider 错误归类为：
 - 不做多模态文件上传
 - 不做跨 provider context handoff
 - 不做 provider fallback routing
-- 不把 provider-native reasoning artifact replay 当作当前默认承诺
+- 不把 provider-native reasoning artifact 当作跨 provider 公共语义；OpenAI / Anthropic / Google 的 replay 只在各自 adapter 内处理。
+- 当前不实现 Chat-compatible `reasoning_content` / `reasoning_details` / `reasoning_opaque` adapter；这类 provider 必须等显式 `chat-compatible` adapter，而不能伪装成 OpenAI Responses 或 Anthropic-compatible。

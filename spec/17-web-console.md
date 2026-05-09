@@ -315,14 +315,14 @@ worker pool 允许并发 `N >= 1`。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
 - 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取 workspace 文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
 - 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录 env key 与路径，不记录 secret 值。
-- Settings 必须用 provider-specific 下拉选择暴露 reasoning / thinking mode：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh`，Anthropic / Google 支持 `default | standard | max | off`；`max` 映射到 thinking budget profile，不能要求用户手写 token budget。
-- `POST /api/config/test` 使用当前 Settings 表单值执行一次 provider probe，用于确认 provider、model、base URL、API key 与 reasoning / thinking mode 能被上游接受；该接口不得持久化 config 或 `.env`。
+- Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh` 和 summary `default | auto | concise | detailed | off`，Anthropic-compatible / Google 支持 `default | standard | max | off`；`max` 映射到 thinking budget profile，不能要求用户手写 token budget。
+- `POST /api/config/test` 使用当前 Settings 表单值执行一次 thinking-observation probe，用于确认 provider、model、base URL、API key、API Provider 与 reasoning / thinking 配置能被上游接受，并区分“请求成功”和“本次实际返回可读 thinking / summary”；该接口不得持久化 config 或 `.env`。
 
 Settings API：
 
-- `GET /api/config` 返回当前默认 provider、guardrails、hard turn limit，以及每个 provider 的 `base_url`、`model`、`has_key`、`reasoning_mode`、`reasoning_modes`、`reasoning_effort`、`thinking_budget`、`include_thoughts`、`max_output_tokens`
-- `POST /api/config` 保存 provider 默认值、base URL、model、API key、guardrails、hard turn limit 和 reasoning / thinking mode，并写入审计事件
-- `POST /api/config/test` 接收同一 provider 表单子集，执行 probe 后返回 `success`、`provider`、`model`、`reasoning_mode`、`finish_message` 与实际 provider option 摘要
+- `GET /api/config` 返回当前默认 provider、guardrails、hard turn limit，以及每个 provider 的 `api_provider`、`effective_api_provider`、`base_url`、`model`、`has_key`、`reasoning_mode`、`reasoning_modes`、`reasoning_summary`、`reasoning_summary_modes`、`reasoning_effort`、`thinking_budget`、`include_thoughts`、`max_output_tokens`
+- `POST /api/config` 保存 provider 默认值、API Provider、base URL、model、API key、guardrails、hard turn limit、reasoning / thinking mode 和 reasoning summary，并写入审计事件
+- `POST /api/config/test` 接收同一 provider 表单子集，执行 probe 后返回 `success`、`provider`、`api_provider`、`effective_api_provider`、`model`、`reasoning_mode`、`reasoning_summary`、`thinking_visible_observed`、`thinking_replay_observed`、`reasoning_summary_observed`、`reasoning_encrypted_observed`、`reasoning_tokens`、`thinking_strategy`、`thinking_detail` 与实际 provider option 摘要
 
 ### 7.1 `GET /api/meta`
 

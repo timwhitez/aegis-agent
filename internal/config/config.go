@@ -33,6 +33,7 @@ type Config struct {
 }
 
 type Provider struct {
+	APIProvider         string   `yaml:"api_provider,omitempty"`
 	APIKeyEnv           string   `yaml:"api_key_env"`
 	BaseURL             string   `yaml:"base_url"`
 	Model               string   `yaml:"model"`
@@ -46,6 +47,7 @@ type Provider struct {
 	TopP                *float64 `yaml:"top_p,omitempty"`
 	MaxOutputTokens     int      `yaml:"max_output_tokens,omitempty"`
 	ReasoningEffort     string   `yaml:"reasoning_effort,omitempty"`
+	ReasoningSummary    string   `yaml:"reasoning_summary,omitempty"`
 	TextVerbosity       string   `yaml:"text_verbosity,omitempty"`
 	ThinkingBudget      int      `yaml:"thinking_budget,omitempty"`
 	IncludeThoughts     *bool    `yaml:"include_thoughts,omitempty"`
@@ -211,6 +213,7 @@ func Default() *Config {
 		DefaultProvider: "openai",
 		Providers: map[string]Provider{
 			"openai": {
+				APIProvider:         "openai-compatible",
 				APIKeyEnv:           "OPENAI_API_KEY",
 				BaseURL:             "https://api.openai.com/v1",
 				Model:               "gpt-5.4",
@@ -227,6 +230,7 @@ func Default() *Config {
 				Store:   boolPtr(false),
 			},
 			"anthropic": {
+				APIProvider:         "anthropic-compatible",
 				APIKeyEnv:           "ANTHROPIC_API_KEY",
 				BaseURL:             "https://api.anthropic.com",
 				Model:               "claude-sonnet-4-6",
@@ -242,6 +246,7 @@ func Default() *Config {
 				AnthropicVersion: "2023-06-01",
 			},
 			"google": {
+				APIProvider:         "google",
 				APIKeyEnv:           "GEMINI_API_KEY",
 				BaseURL:             "https://generativelanguage.googleapis.com",
 				Model:               "gemini-2.5-flash",
@@ -256,6 +261,7 @@ func Default() *Config {
 				},
 			},
 			"openai-compatible": {
+				APIProvider:         "openai-compatible",
 				APIKeyEnv:           "OPENAI_API_KEY",
 				BaseURL:             "http://localhost:3000/v1",
 				Model:               "gpt-5.4",
@@ -393,9 +399,11 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	cfg.Runtime.GuardrailsMode = normalizeGuardrailsMode(cfg.Runtime.GuardrailsMode)
 	for name, provider := range cfg.Providers {
+		provider.APIProvider = normalizeAPIProvider(provider.APIProvider)
+		provider.ReasoningSummary = normalizeReasoningSummary(provider.ReasoningSummary)
 		normalizeProviderTimeouts(&provider)
 		normalizeProviderRetry(&provider)
-		if provider.WireAPI == "" && (name == "openai" || name == "openai-compatible") {
+		if apiProvider, err := EffectiveAPIProvider(name, provider); err == nil && apiProvider == "openai-compatible" && provider.WireAPI == "" {
 			provider.WireAPI = "responses"
 		}
 		cfg.Providers[name] = provider
@@ -533,6 +541,50 @@ func (c *Config) APIKey(providerName string) string {
 		return ""
 	}
 	return provider.ResolvedAPIKey()
+}
+
+func EffectiveAPIProvider(name string, provider Provider) (string, error) {
+	if normalized := normalizeAPIProvider(provider.APIProvider); normalized != "" {
+		return normalized, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "openai", "openai-compatible":
+		return "openai-compatible", nil
+	case "anthropic":
+		return "anthropic-compatible", nil
+	case "google":
+		return "google", nil
+	default:
+		return "", fmt.Errorf("custom provider %q requires api_provider", name)
+	}
+}
+
+func normalizeAPIProvider(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default":
+		return ""
+	case "openai-compatible", "responses":
+		return "openai-compatible"
+	case "anthropic-compatible", "anthropic":
+		return "anthropic-compatible"
+	case "google", "gemini":
+		return "google"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func normalizeReasoningSummary(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default", "provider_default":
+		return ""
+	case "auto", "concise", "detailed", "none":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "off":
+		return "none"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
 }
 
 func ParseFileMode(value string, fallback fs.FileMode) (fs.FileMode, error) {

@@ -481,6 +481,7 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 		configPath   = fs.String("config", "", "")
 		baseURL      = fs.String("base-url", "", "")
 		apiKeyEnv    = fs.String("api-key-env", "", "")
+		apiProvider  = fs.String("api-provider", "", "")
 		wireAPI      = fs.String("wire-api", "", "")
 		prompt       = fs.String("prompt", "", "")
 		jsonMode     = fs.Bool("json", false, "")
@@ -494,12 +495,13 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 		return err
 	}
 	req := runtime.ProbeRequest{
-		Provider:  *providerName,
-		Model:     *model,
-		BaseURL:   *baseURL,
-		APIKeyEnv: *apiKeyEnv,
-		WireAPI:   *wireAPI,
-		Prompt:    *prompt,
+		Provider:    *providerName,
+		Model:       *model,
+		BaseURL:     *baseURL,
+		APIKeyEnv:   *apiKeyEnv,
+		APIProvider: *apiProvider,
+		WireAPI:     *wireAPI,
+		Prompt:      *prompt,
 	}
 	result, err := runner.Probe(ctx, req)
 	if *jsonMode {
@@ -510,6 +512,9 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 		return nil
 	}
 	fmt.Fprintf(stdout, "provider: %s\nmodel: %s\nbase_url: %s\n", result.Provider, result.Model, result.BaseURL)
+	if result.APIProvider != "" {
+		fmt.Fprintf(stdout, "api_provider: %s\n", result.APIProvider)
+	}
 	if result.WireAPI != "" {
 		fmt.Fprintf(stdout, "wire_api: %s\n", result.WireAPI)
 	}
@@ -533,6 +538,7 @@ type probeProviderJSON struct {
 	Provider      string         `json:"provider,omitempty"`
 	Model         string         `json:"model,omitempty"`
 	BaseURL       string         `json:"base_url,omitempty"`
+	APIProvider   string         `json:"api_provider,omitempty"`
 	WireAPI       string         `json:"wire_api,omitempty"`
 	StopReason    string         `json:"stop_reason,omitempty"`
 	ToolCallNames []string       `json:"tool_call_names,omitempty"`
@@ -579,6 +585,7 @@ func probeProviderJSONPayload(cfg *config.Config, req runtime.ProbeRequest, resu
 		Provider:      result.Provider,
 		Model:         result.Model,
 		BaseURL:       result.BaseURL,
+		APIProvider:   result.APIProvider,
 		WireAPI:       result.WireAPI,
 		StopReason:    result.StopReason,
 		ToolCallNames: result.ToolCallNames,
@@ -614,6 +621,13 @@ func probeProviderJSONPayload(cfg *config.Config, req runtime.ProbeRequest, resu
 					payload.WireAPI = strings.TrimSpace(req.WireAPI)
 				} else {
 					payload.WireAPI = strings.TrimSpace(providerCfg.WireAPI)
+				}
+			}
+			if payload.APIProvider == "" {
+				if strings.TrimSpace(req.APIProvider) != "" {
+					payload.APIProvider = strings.TrimSpace(req.APIProvider)
+				} else if effective, effectiveErr := config.EffectiveAPIProvider(providerName, providerCfg); effectiveErr == nil {
+					payload.APIProvider = effective
 				}
 			}
 		}
@@ -854,8 +868,11 @@ func renderDoctorReport(stdout io.Writer, report doctorReport, jsonMode, failed 
 }
 
 func doctorProviderConfigDetails(providerName string, providerCfg config.Provider) map[string]any {
+	effectiveAPIProvider, _ := config.EffectiveAPIProvider(providerName, providerCfg)
 	details := map[string]any{
 		"provider":               providerName,
+		"api_provider":           providerCfg.APIProvider,
+		"effective_api_provider": effectiveAPIProvider,
 		"model":                  providerCfg.Model,
 		"base_url":               providerCfg.BaseURL,
 		"api_key_env":            providerCfg.APIKeyEnv,
@@ -865,7 +882,7 @@ func doctorProviderConfigDetails(providerName string, providerCfg config.Provide
 		"stream_idle_timeout_ms": doctorStreamIdleTimeoutMS(providerCfg),
 		"retry_policy":           doctorRetryPolicyDetails(providerCfg),
 	}
-	if isOpenAIResponsesLikeProvider(providerName) {
+	if effectiveAPIProvider == "openai-compatible" {
 		storeValue, storeSource := doctorStoreDetails(providerName, providerCfg.Store)
 		sendMetadataValue, sendMetadataSource := doctorSendMetadataDetails(providerCfg.SendMetadata)
 		details["store"] = storeValue

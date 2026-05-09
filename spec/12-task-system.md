@@ -55,6 +55,7 @@ task graph 是当前 session 的“持久化任务板”。
 - 这个 reminder 只是把执行拉回可恢复节奏，不替代 `todo_write` / `task_create` / `task_update` 本身。
 - `task graph` 不承担 artifact 完成判定；显式交付文件由 `contract.json` / `artifact-tracker.json` 与 `CompletionController` 负责。任务系统只提供执行节奏、依赖关系和恢复索引。
 - 长任务 checkpoint 会读取 todo/task 派生统计，写入 `checkpoints/longrun-latest.json`，但 checkpoint 仍是 resume index，不替代 task 文件本身。
+- WebConsole 和 session summary 必须区分三种状态：ephemeral todo 刷新、durable task graph 进展、artifact/progress 文件推进。`todo_write` 的语义 no-op 不能显示成 durable task graph 进展；当 `tasks/` 为空时，应明确表达没有持久任务。
 
 ## 4. 存储布局
 
@@ -193,6 +194,7 @@ task 满足以下条件时视为 blocked：
 - 全量替换 `todo.json`
 - 校验最多一个 `in_progress`
 - 写 `todo.updated` 事件
+- 当 normalized todo snapshot（content/status/priority/order）未变化时，返回 `noop=true` / `changed=false`，保留原 `todo.json` 的 `updated_at`，避免把自动更新时间戳误当成进展
 
 ### 9.2 `todo_read`
 

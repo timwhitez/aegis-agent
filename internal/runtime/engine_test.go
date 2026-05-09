@@ -75,6 +75,44 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 }
 
+func TestEnginePersistsOpenAIReasoningOnlyProviderBlockWhenReplayValid(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ProviderContentBlocks: []session.ProviderContentBlock{
+				{Provider: "openai", Type: "reasoning", ID: "rs_1", Data: "enc_opaque", Summary: []string{"summary"}, Sequence: 1, Model: "gpt-5.4"},
+			},
+			StopReason: "done_candidate",
+			RawProvider: map[string]any{
+				"reasoning_encrypted_count": 1,
+				"thinking_replay_observed":  true,
+			},
+		}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var assistant *session.Message
+	for i := range messages {
+		if messages[i].Role == "assistant" {
+			assistant = &messages[i]
+		}
+	}
+	if assistant == nil || len(assistant.ProviderContentBlocks) != 1 {
+		t.Fatalf("expected assistant reasoning block to persist, got %#v", messages)
+	}
+	if assistant.Thinking != "" || assistant.ProviderContentBlocks[0].Data != "enc_opaque" {
+		t.Fatalf("expected encrypted-only block without visible thinking, got %#v", assistant)
+	}
+}
+
 func TestProviderRawSidecarDisabledByDefault(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {

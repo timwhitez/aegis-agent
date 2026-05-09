@@ -32,7 +32,7 @@ func (a *AnthropicAdapter) Name() string { return "anthropic" }
 func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
 	body := map[string]any{
 		"model":      req.Model,
-		"messages":   anthropicMessages(req.Messages),
+		"messages":   anthropicMessages(req.Messages, req.Model),
 		"tools":      anthropicTools(req.Tools),
 		"max_tokens": anthropicMaxTokens(req.MaxOutputTokens),
 	}
@@ -47,6 +47,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	if req.TopP != nil {
 		body["top_p"] = *req.TopP
 	}
+	thinkingStrategy := anthropicThinkingStrategy(req.ThinkingBudget, req.IncludeThoughts)
 	if thinking := anthropicThinking(req.ThinkingBudget, req.IncludeThoughts); thinking != nil {
 		body["thinking"] = thinking
 	}
@@ -79,6 +80,9 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	var thinkingParts []string
 	var providerBlocks []session.ProviderContentBlock
 	var calls []ToolCall
+	thinkingBlockCount := 0
+	redactedThinkingCount := 0
+	thinkingReplayObserved := false
 	for _, item := range resp.Content {
 		switch item.Type {
 		case "text":
@@ -87,22 +91,33 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				Provider: "anthropic",
 				Type:     "text",
 				Text:     item.Text,
+				Model:    req.Model,
 			})
 		case "thinking":
+			thinkingBlockCount++
 			if item.Thinking != "" {
 				thinkingParts = append(thinkingParts, item.Thinking)
+			}
+			if item.Signature != "" {
+				thinkingReplayObserved = true
 			}
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider:  "anthropic",
 				Type:      "thinking",
 				Thinking:  item.Thinking,
 				Signature: item.Signature,
+				Model:     req.Model,
 			})
 		case "redacted_thinking":
+			redactedThinkingCount++
+			if item.Data != "" {
+				thinkingReplayObserved = true
+			}
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider: "anthropic",
 				Type:     "redacted_thinking",
 				Data:     item.Data,
+				Model:    req.Model,
 			})
 		case "tool_use":
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
@@ -111,6 +126,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				ID:       item.ID,
 				Name:     item.Name,
 				Input:    item.Input,
+				Model:    req.Model,
 			})
 			calls = append(calls, ToolCall{
 				ID:             item.ID,
@@ -144,7 +160,13 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
 		},
-		RawProvider: rawProviderEnvelope("stop_reason", resp.StopReason, nil),
+		RawProvider: rawProviderEnvelope("stop_reason", resp.StopReason, map[string]any{
+			"thinking_block_count":      thinkingBlockCount,
+			"redacted_thinking_count":   redactedThinkingCount,
+			"thinking_visible_observed": len(thinkingParts) > 0,
+			"thinking_replay_observed":  thinkingReplayObserved,
+			"thinking_strategy":         thinkingStrategy,
+		}),
 	}, nil
 }
 
@@ -168,6 +190,16 @@ func anthropicThinking(budget int, includeThoughts *bool) map[string]any {
 	}
 }
 
+func anthropicThinkingStrategy(budget int, includeThoughts *bool) string {
+	if includeThoughts != nil && !*includeThoughts {
+		return "off"
+	}
+	if budget > 0 {
+		return "manual_budget"
+	}
+	return "provider_default"
+}
+
 func anthropicTools(tools []ToolSchema) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
@@ -180,7 +212,7 @@ func anthropicTools(tools []ToolSchema) []map[string]any {
 	return out
 }
 
-func anthropicMessages(messages []session.Message) []map[string]any {
+func anthropicMessages(messages []session.Message, model string) []map[string]any {
 	var out []map[string]any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -196,7 +228,7 @@ func anthropicMessages(messages []session.Message) []map[string]any {
 			})
 		case "assistant":
 			content := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if anthropicBlocks := anthropicProviderContent(msg.ProviderContentBlocks); len(anthropicBlocks) > 0 {
+			if anthropicBlocks := anthropicProviderContent(msg.ProviderContentBlocks, model); len(anthropicBlocks) > 0 {
 				content = anthropicBlocks
 			} else {
 				if msg.Text != "" {
@@ -242,10 +274,14 @@ func anthropicMessages(messages []session.Message) []map[string]any {
 	return out
 }
 
-func anthropicProviderContent(blocks []session.ProviderContentBlock) []map[string]any {
+func anthropicProviderContent(blocks []session.ProviderContentBlock, model string) []map[string]any {
 	var content []map[string]any
+	hasAnchor := false
 	for _, block := range blocks {
 		if block.Provider != "anthropic" {
+			continue
+		}
+		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
 			continue
 		}
 		switch block.Type {
@@ -267,6 +303,7 @@ func anthropicProviderContent(blocks []session.ProviderContentBlock) []map[strin
 		case "text":
 			if block.Text != "" {
 				content = append(content, map[string]any{"type": "text", "text": block.Text})
+				hasAnchor = true
 			}
 		case "tool_use":
 			var input any
@@ -277,7 +314,11 @@ func anthropicProviderContent(blocks []session.ProviderContentBlock) []map[strin
 				"name":  block.Name,
 				"input": input,
 			})
+			hasAnchor = true
 		}
+	}
+	if !hasAnchor {
+		return nil
 	}
 	return content
 }

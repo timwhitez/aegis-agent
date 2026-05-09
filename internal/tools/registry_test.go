@@ -1456,3 +1456,154 @@ func TestLoadSkillIncludesShellWorkdirHint(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadSkillReturnsAlreadyLoadedOnRepeatAndForceReload(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nFULL SKILL BODY\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg, Catalog: catalog}
+
+	first, err := registry.Execute(context.Background(), "load_skill", execCtx, json.RawMessage(`{"name":"helpers"}`))
+	if err != nil || first.IsError {
+		t.Fatalf("first load_skill err=%v result=%#v", err, first)
+	}
+	if !strings.Contains(first.LLMOutput, "FULL SKILL BODY") {
+		t.Fatalf("expected first load to return full body, got %q", first.LLMOutput)
+	}
+	loaded, err := store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if fmt.Sprint(loaded.LoadedSkills) != "[helpers]" {
+		t.Fatalf("expected state loaded skill, got %#v", loaded.LoadedSkills)
+	}
+
+	second, err := registry.Execute(context.Background(), "load_skill", execCtx, json.RawMessage(`{"name":"helpers"}`))
+	if err != nil || second.IsError {
+		t.Fatalf("second load_skill err=%v result=%#v", err, second)
+	}
+	if second.Metadata["already_loaded"] != true || strings.Contains(second.LLMOutput, "FULL SKILL BODY") {
+		t.Fatalf("expected compact already_loaded result, got %#v output=%q", second.Metadata, second.LLMOutput)
+	}
+
+	reloaded, err := registry.Execute(context.Background(), "load_skill", execCtx, json.RawMessage(`{"name":"helpers","force_reload":true}`))
+	if err != nil || reloaded.IsError {
+		t.Fatalf("force reload err=%v result=%#v", err, reloaded)
+	}
+	if reloaded.Metadata["force_reload"] != true || !strings.Contains(reloaded.LLMOutput, "FULL SKILL BODY") {
+		t.Fatalf("expected force reload to return full body, got %#v output=%q", reloaded.Metadata, reloaded.LLMOutput)
+	}
+}
+
+func TestReadFileRepeatObservation(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}
+	args := json.RawMessage(`{"path":"notes.txt","offset":1,"limit":2}`)
+	first, err := registry.Execute(context.Background(), "read_file", execCtx, args)
+	if err != nil || first.IsError {
+		t.Fatalf("first read_file err=%v result=%#v", err, first)
+	}
+	if err := store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{first})); err != nil {
+		t.Fatalf("append first result: %v", err)
+	}
+	second, err := registry.Execute(context.Background(), "read_file", execCtx, args)
+	if err != nil || second.IsError {
+		t.Fatalf("second read_file err=%v result=%#v", err, second)
+	}
+	if second.Metadata["repeat_count"] != 2 || !strings.Contains(second.LLMOutput, "repeat_count=2") {
+		t.Fatalf("expected repeat observation, got metadata=%#v output=%q", second.Metadata, second.LLMOutput)
+	}
+}
+
+func TestTodoWriteNoopDoesNotLookLikeProgress(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}
+	first, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high","updated_at":"original"}]}`))
+	if err != nil || first.IsError {
+		t.Fatalf("first todo_write err=%v result=%#v", err, first)
+	}
+	second, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high"}]}`))
+	if err != nil || second.IsError {
+		t.Fatalf("second todo_write err=%v result=%#v", err, second)
+	}
+	if second.Metadata["noop"] != true || second.Metadata["changed"] != false {
+		t.Fatalf("expected noop metadata, got %#v", second.Metadata)
+	}
+	todo, err := store.LoadTodo(meta.ID)
+	if err != nil {
+		t.Fatalf("load todo: %v", err)
+	}
+	if len(todo) != 1 || todo[0].UpdatedAt != "original" {
+		t.Fatalf("expected no-op write to preserve original timestamp, got %#v", todo)
+	}
+}

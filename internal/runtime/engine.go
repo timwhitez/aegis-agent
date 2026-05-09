@@ -118,6 +118,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err != nil {
 			return RunResult{}, err
 		}
+		messages, err = e.maybeAppendToolLoopReminder(meta, messages)
+		if err != nil {
+			return RunResult{}, err
+		}
 		if !e.guardrailsYolo() {
 			messages, err = e.maybeAppendHarnessReminder(meta, messages)
 			if err != nil {
@@ -167,20 +171,22 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		callCtx, cancel := context.WithCancel(ctx)
 		e.control.setCancel(cancel)
 		result, err := adapter.RunTurn(callCtx, provider.TurnRequest{
-			SessionID:       meta.ID,
-			Model:           meta.Model,
-			SystemPrompt:    systemPrompt,
-			Messages:        view,
-			Tools:           providerTools(registry),
-			Metadata:        requestMetadata,
-			Temperature:     meta.ProviderOptions.Temperature,
-			TopP:            meta.ProviderOptions.TopP,
-			MaxOutputTokens: meta.ProviderOptions.MaxOutputTokens,
-			ReasoningEffort: meta.ProviderOptions.ReasoningEffort,
-			TextVerbosity:   meta.ProviderOptions.TextVerbosity,
-			ThinkingBudget:  meta.ProviderOptions.ThinkingBudget,
-			IncludeThoughts: meta.ProviderOptions.IncludeThoughts,
-			Store:           meta.ProviderOptions.Store,
+			SessionID:        meta.ID,
+			Model:            meta.Model,
+			SystemPrompt:     systemPrompt,
+			Messages:         view,
+			Tools:            providerTools(registry),
+			Metadata:         requestMetadata,
+			Temperature:      meta.ProviderOptions.Temperature,
+			TopP:             meta.ProviderOptions.TopP,
+			MaxOutputTokens:  meta.ProviderOptions.MaxOutputTokens,
+			APIProvider:      meta.ProviderOptions.APIProvider,
+			ReasoningEffort:  meta.ProviderOptions.ReasoningEffort,
+			ReasoningSummary: meta.ProviderOptions.ReasoningSummary,
+			TextVerbosity:    meta.ProviderOptions.TextVerbosity,
+			ThinkingBudget:   meta.ProviderOptions.ThinkingBudget,
+			IncludeThoughts:  meta.ProviderOptions.IncludeThoughts,
+			Store:            meta.ProviderOptions.Store,
 		}, func(eventType string, data map[string]any) {
 			e.emit(meta.ID, eventType, "provider_call", data)
 			if eventType == "provider.retry" {
@@ -243,7 +249,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		e.emit(meta.ID, "turn.stopped", "provider_call", providerTurnEventData(result))
 
-		if strings.TrimSpace(result.Text) != "" || strings.TrimSpace(result.Thinking) != "" || len(result.ToolCalls) > 0 {
+		if shouldPersistAssistantResult(result) {
 			assistantPayload, err := hookManager.Trigger(ctx, "assistant.message", map[string]any{
 				"session_id": meta.ID,
 				"text":       result.Text,
@@ -659,6 +665,18 @@ func (e *Engine) appendHarnessReminder(meta session.SessionMetadata, phase, text
 	return msg, nil
 }
 
+func (e *Engine) maybeAppendToolLoopReminder(meta session.SessionMetadata, messages []session.Message) ([]session.Message, error) {
+	text := toolLoopReminderText(messages)
+	if text == "" {
+		return messages, nil
+	}
+	msg, err := e.appendHarnessReminder(meta, "prepare", text, "tool_loop_observation")
+	if err != nil {
+		return nil, err
+	}
+	return append(messages, msg), nil
+}
+
 func (e *Engine) deferPendingInterrupts(sessionID string) error {
 	if !e.control.consumeSteerInterrupt() {
 		return nil
@@ -873,6 +891,9 @@ func providerRequestMetadata(meta session.SessionMetadata) map[string]any {
 		"session_id": meta.ID,
 		"mode":       meta.Mode,
 	}
+	if strings.TrimSpace(meta.ProviderOptions.APIProvider) != "" {
+		data["api_provider"] = meta.ProviderOptions.APIProvider
+	}
 	for key, value := range sessionIdentityEventData(meta) {
 		data[key] = value
 	}
@@ -896,6 +917,9 @@ func providerRequestPreparedEventData(meta session.SessionMetadata, requestMetad
 		sort.Strings(keys)
 		data["metadata_keys"] = keys
 	}
+	if strings.TrimSpace(meta.ProviderOptions.APIProvider) != "" {
+		data["api_provider"] = meta.ProviderOptions.APIProvider
+	}
 	if meta.ProviderOptions.Temperature != nil {
 		data["temperature"] = *meta.ProviderOptions.Temperature
 	}
@@ -907,6 +931,9 @@ func providerRequestPreparedEventData(meta session.SessionMetadata, requestMetad
 	}
 	if strings.TrimSpace(meta.ProviderOptions.ReasoningEffort) != "" {
 		data["reasoning_effort"] = meta.ProviderOptions.ReasoningEffort
+	}
+	if strings.TrimSpace(meta.ProviderOptions.ReasoningSummary) != "" {
+		data["reasoning_summary"] = meta.ProviderOptions.ReasoningSummary
 	}
 	if strings.TrimSpace(meta.ProviderOptions.TextVerbosity) != "" {
 		data["text_verbosity"] = meta.ProviderOptions.TextVerbosity
@@ -956,6 +983,18 @@ func translateToolCalls(calls []provider.ToolCall) []session.ToolCall {
 		})
 	}
 	return out
+}
+
+func shouldPersistAssistantResult(result provider.TurnResult) bool {
+	if strings.TrimSpace(result.Text) != "" || strings.TrimSpace(result.Thinking) != "" || len(result.ToolCalls) > 0 {
+		return true
+	}
+	for _, block := range result.ProviderContentBlocks {
+		if block.Provider == "openai" && block.Type == "reasoning" && strings.TrimSpace(block.ID) != "" && strings.TrimSpace(block.Data) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func providerTurnEventData(result provider.TurnResult) map[string]any {

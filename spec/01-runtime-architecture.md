@@ -319,6 +319,7 @@ while true:
     - 请求的 artifact 已经写出，需要优先收尾
     - 最新 interrupt steer 已明确要求“use current evidence / write artifact / finish”，需要把执行直接拉回交付
     - 大型多步骤工程/评审任务已经开始 repo-scale 检索，但还没有把 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md` 与 durable task state 外置出来，需要先补齐协调面再继续扩张检索
+    - 同一 session 内 `load_skill`、同一路径/range `read_file` 或语义 no-op `todo_write` 出现重复短模式；此时 reminder 只提示复用现有证据、推进 artifact 或声明 blocker，不指定固定读取顺序、审计路线或委派策略
 - 构造 system prompt
 - 拼接 skills 摘要和 AGENTS 指令链
 - 生成本轮 provider 输入视图
@@ -360,8 +361,11 @@ while true:
 3. 执行工具
 4. 触发 `tool.after`
 5. 成功的 `write_file` / `edit_file` 会更新 `artifact-tracker.json`，使 required-artifact gate 能区分“文件本来存在”和“本 session 确实写过或改过”
-6. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
-7. 落盘最终 tool result
+6. `load_skill` 默认基于 session state 做幂等：同一 skill 已加载时返回 compact `already_loaded`，只有显式 `force_reload` 才再次注入完整 skill 正文
+7. `read_file` 对同一路径与同一 line window 的重复读取写入 repeat metadata / warning，但默认不阻断
+8. `todo_write` 对 content/status/priority/order 未变化的 snapshot 标记 `noop=true` / `changed=false`，不刷新 `todo.json` 时间戳
+9. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
+10. 落盘最终 tool result
 
 ### 5.6 turn_decide
 

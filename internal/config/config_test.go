@@ -103,6 +103,34 @@ func TestNormalizeConfigPreservesExplicitSendMetadata(t *testing.T) {
 	}
 }
 
+func TestEffectiveAPIProviderDefaultsAndCustomValidation(t *testing.T) {
+	for name, want := range map[string]string{
+		"openai":            "openai-compatible",
+		"openai-compatible": "openai-compatible",
+		"anthropic":         "anthropic-compatible",
+		"google":            "google",
+	} {
+		got, err := EffectiveAPIProvider(name, Provider{})
+		if err != nil {
+			t.Fatalf("EffectiveAPIProvider(%q): %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("EffectiveAPIProvider(%q)=%q want %q", name, got, want)
+		}
+	}
+
+	got, err := EffectiveAPIProvider("deepseek", Provider{APIProvider: "anthropic-compatible"})
+	if err != nil {
+		t.Fatalf("custom anthropic-compatible provider: %v", err)
+	}
+	if got != "anthropic-compatible" {
+		t.Fatalf("expected custom provider to use anthropic-compatible, got %q", got)
+	}
+	if _, err := EffectiveAPIProvider("vendor-x", Provider{}); err == nil || !strings.Contains(err.Error(), "requires api_provider") {
+		t.Fatalf("expected custom provider without api_provider to fail clearly, got %v", err)
+	}
+}
+
 func TestDefaultEnablesMultiAgentTools(t *testing.T) {
 	cfg := Default()
 	if !cfg.Runtime.MultiAgent.Enabled {
