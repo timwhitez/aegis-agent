@@ -3139,6 +3139,64 @@ textarea {
   color: var(--text-muted);
 }
 
+/* ── History page button refinements ── */
+
+/* Row action buttons — more visible with subtle border and refined hover */
+.history-row-actions .mini-link-btn {
+  border: 1px solid var(--border);
+  padding: 0 12px;
+  transition: all 0.18s ease;
+}
+.history-row-actions .mini-link-btn:hover {
+  background: var(--surface-hover);
+  border-color: rgba(100, 116, 139, 0.28);
+}
+
+/* Delete button — visible danger outline */
+.history-row-actions .mini-link-btn.danger {
+  border-color: rgba(239, 68, 68, 0.16);
+  color: var(--error);
+}
+.history-row-actions .mini-link-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.06);
+  border-color: rgba(239, 68, 68, 0.28);
+}
+
+/* Pagination area — visual grouping */
+.history-pager {
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  gap: 4px;
+}
+
+/* Pagination buttons — more presence */
+.history-pager .ghost-action-btn {
+  background: transparent;
+  min-width: 32px;
+  border-radius: var(--radius-sm);
+}
+.history-pager .ghost-action-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.history-pager .ghost-action-btn:disabled {
+  opacity: 0.4;
+}
+
+/* Expand/collapse toggle — better alignment in row */
+.history-expand-toggle {
+  min-height: 28px;
+}
+
+/* Clear sessions — red outline instead of solid background */
+.history-toolbar .ghost-action-btn.danger {
+  border: 1px solid rgba(239, 68, 68, 0.18);
+}
+.history-toolbar .ghost-action-btn.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.07);
+}
+
 /* ── History Tree ── */
 .history-tree-children {
   display: none;

@@ -1849,8 +1849,14 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
       <div class="history-row-actions">
         ${expandToggle}
         ${renderSessionStopButton(item.id, item.status)}
-        <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">Open session</button>
-        <button class="mini-link-btn danger" type="button" data-delete-session="${escapeAttr(item.id)}">Delete</button>
+        <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">
+          <i data-lucide="external-link"></i>
+          <span>Open</span>
+        </button>
+        <button class="mini-link-btn danger" type="button" data-delete-session="${escapeAttr(item.id)}">
+          <i data-lucide="trash-2"></i>
+          <span>Delete</span>
+        </button>
       </div>
     </div>
   `;
