@@ -124,6 +124,62 @@ async function renderSettings() {
     const testButton = document.getElementById('settings-test-btn');
     const saveButton = document.getElementById('settings-save-btn');
 
+    const selectedAPIProvider = (provider) => apiProviderSelect.value || provider?.effective_api_provider || provider?.api_provider || '';
+    const reasoningFamilyForAPIProvider = (value) => {
+      switch (value) {
+        case 'openai-compatible':
+          return 'openai';
+        case 'anthropic-compatible':
+        case 'google':
+          return 'thinking';
+        default:
+          return '';
+      }
+    };
+    const reasoningModesForAPIProvider = (value) => {
+      switch (reasoningFamilyForAPIProvider(value)) {
+        case 'openai':
+          return ['default', 'low', 'medium', 'high', 'xhigh'];
+        case 'thinking':
+          return ['default', 'standard', 'max', 'off'];
+        default:
+          return ['default'];
+      }
+    };
+    const reasoningSummaryModesForAPIProvider = (value) => (
+      reasoningFamilyForAPIProvider(value) === 'openai'
+        ? ['default', 'auto', 'concise', 'detailed', 'off']
+        : ['default']
+    );
+    const syncReasoningControls = (provider, preferredMode, preferredSummary) => {
+      const apiProvider = selectedAPIProvider(provider);
+      apiProviderHelp.textContent = `Effective adapter: ${apiProviderLabel(apiProvider)}.`;
+
+      const modes = reasoningModesForAPIProvider(apiProvider);
+      reasoningModeSelect.innerHTML = modes.map((mode) => `
+        <option value="${escapeAttr(mode)}">${escapeHTML(modeLabel(mode))}</option>
+      `).join('');
+      reasoningModeSelect.value = modes.includes(preferredMode) ? preferredMode : 'default';
+      if (modes.includes('xhigh')) {
+        reasoningHelp.textContent = 'GPT-compatible providers send reasoning_effort with the selected level.';
+      } else if (modes.includes('max')) {
+        reasoningHelp.textContent = 'Thinking providers set include_thoughts and a budget profile.';
+      } else {
+        reasoningHelp.textContent = 'This provider only exposes its default reasoning behavior.';
+      }
+
+      const summaryModes = reasoningSummaryModesForAPIProvider(apiProvider);
+      reasoningSummarySelect.innerHTML = summaryModes.map((mode) => `
+        <option value="${escapeAttr(mode)}">${escapeHTML(modeLabel(mode))}</option>
+      `).join('');
+      reasoningSummarySelect.value = summaryModes.includes(preferredSummary) ? preferredSummary : 'default';
+      if (summaryModes.includes('auto')) {
+        reasoningSummaryHelp.textContent = 'Visible thinking requires a summary setting and an upstream response that actually returns readable summary text.';
+      } else {
+        reasoningSummaryHelp.textContent = 'Reasoning summaries are not exposed for this adapter.';
+      }
+    };
+
     const syncProviderFields = () => {
       const provider = providers[providerSelect.value];
       if (!provider) {
@@ -132,38 +188,15 @@ async function renderSettings() {
       baseURLInput.value = provider.base_url || '';
       modelInput.value = provider.model || '';
       apiProviderSelect.value = provider.api_provider || '';
-      apiProviderHelp.textContent = `Effective adapter: ${apiProviderLabel(provider.effective_api_provider || provider.api_provider || '')}.`;
       apiKeyInput.value = provider.has_key ? maskedKey : '';
       apiKeyInput.dataset.originalHasKey = provider.has_key ? 'true' : 'false';
-      const modes = Array.isArray(provider.reasoning_modes) && provider.reasoning_modes.length > 0 ? provider.reasoning_modes : ['default'];
-      reasoningModeSelect.innerHTML = modes.map((mode) => `
-        <option value="${escapeAttr(mode)}" ${mode === provider.reasoning_mode ? 'selected' : ''}>${escapeHTML(modeLabel(mode))}</option>
-      `).join('');
-      if (!modes.includes(reasoningModeSelect.value)) {
-        reasoningModeSelect.value = modes[0] || 'default';
-      }
-      if (modes.includes('xhigh')) {
-        reasoningHelp.textContent = 'GPT-compatible providers send reasoning_effort with the selected level.';
-      } else if (modes.includes('max')) {
-        reasoningHelp.textContent = 'Thinking providers set include_thoughts and a budget profile.';
-      } else {
-        reasoningHelp.textContent = 'This provider only exposes its default reasoning behavior.';
-      }
-      const summaryModes = Array.isArray(provider.reasoning_summary_modes) && provider.reasoning_summary_modes.length > 0 ? provider.reasoning_summary_modes : ['default'];
-      reasoningSummarySelect.innerHTML = summaryModes.map((mode) => `
-        <option value="${escapeAttr(mode)}" ${mode === provider.reasoning_summary ? 'selected' : ''}>${escapeHTML(modeLabel(mode))}</option>
-      `).join('');
-      if (!summaryModes.includes(reasoningSummarySelect.value)) {
-        reasoningSummarySelect.value = summaryModes[0] || 'default';
-      }
-      if (summaryModes.includes('auto')) {
-        reasoningSummaryHelp.textContent = 'Visible thinking requires a summary setting and an upstream response that actually returns readable summary text.';
-      } else {
-        reasoningSummaryHelp.textContent = 'Reasoning summaries are not exposed for this adapter.';
-      }
+      syncReasoningControls(provider, provider.reasoning_mode || 'default', provider.reasoning_summary || 'default');
     };
 
     providerSelect.addEventListener('change', syncProviderFields);
+    apiProviderSelect.addEventListener('change', () => {
+      syncReasoningControls(providers[providerSelect.value], reasoningModeSelect.value, reasoningSummarySelect.value);
+    });
     syncProviderFields();
     maxTurnsHardInput.value = maxTurnsHard > 0 ? String(maxTurnsHard) : '40';
     disableHardTurnLimitInput.checked = disableHardTurnLimit;

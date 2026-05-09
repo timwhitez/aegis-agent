@@ -681,6 +681,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(settingsBody, "renderSettings") || !strings.Contains(settingsBody, "saveConfig") || !strings.Contains(settingsBody, "testConfig") || !strings.Contains(settingsBody, "settings-provider") || !strings.Contains(settingsBody, "settings-reasoning-mode") || !strings.Contains(settingsBody, "settings-test-btn") {
 		t.Fatalf("unexpected settings-view.js body: %s", settingsBody)
 	}
+	if !strings.Contains(settingsBody, "apiProviderSelect.addEventListener('change'") || !strings.Contains(settingsBody, "reasoningModesForAPIProvider") || !strings.Contains(settingsBody, "reasoningSummaryModesForAPIProvider") {
+		t.Fatalf("expected settings view to refresh reasoning controls when API Provider changes, got settings-view.js body: %s", settingsBody)
+	}
 	workspaceBody := checkBody(server.URL + "/workspace-view.js")
 	if !strings.Contains(workspaceBody, "fetchWorkspace") || !strings.Contains(workspaceBody, "renderFileTree") || !strings.Contains(workspaceBody, "selectedWorkspaceWorkdir") {
 		t.Fatalf("unexpected workspace-view.js body: %s", workspaceBody)
