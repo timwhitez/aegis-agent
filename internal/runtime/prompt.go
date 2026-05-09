@@ -578,10 +578,9 @@ func reportConsistencyReminder(workdir string, messages []session.Message) harne
 	if !finalArtifactStaleAfterSupportingDocs(messages) {
 		return harnessReminder{}
 	}
-	path := latestFinalArtifactWritePosition(messages).Path
 	return harnessReminder{
 		Kind: "report_consistency",
-		Text: fmt.Sprintf("Harness reminder: supporting docs under reports/progress.md or reports/validation.md changed after the final report %s. Reconcile and rewrite the final report before finish.", displayPromptPath(workdir, path)),
+		Text: "Harness reminder: " + reportConsistencyRecoveryInstruction(workdir, messages),
 	}
 }
 
@@ -598,7 +597,7 @@ func reportConsistencyGuard(workdir string, messages []session.Message, toolName
 		return "", ""
 	case "finish":
 		if finalArtifactStaleAfterSupportingDocs(messages) {
-			return "report_consistency", "Report-consistency guard: reports/progress.md or reports/validation.md changed after the final deliverable. Rewrite or edit the final report so the conclusion matches the latest supporting docs before finishing."
+			return "report_consistency", "Report-consistency guard: " + reportConsistencyRecoveryInstruction(workdir, messages)
 		}
 		final := latestFinalArtifactWritePosition(messages)
 		if !final.Valid || strings.TrimSpace(final.Path) == "" {
@@ -624,6 +623,66 @@ func finalArtifactStaleAfterSupportingDocs(messages []session.Message) bool {
 	return final.Valid && support.Valid && positionAfter(support, final)
 }
 
+func reportConsistencyRecoveryInstruction(workdir string, messages []session.Message) string {
+	final := latestFinalArtifactWritePosition(messages)
+	finalPath := displayPromptPath(workdir, final.Path)
+	staleDocs := displayWritePositionPaths(workdir, supportingDocWritesAfterFinal(messages))
+	if len(staleDocs) == 0 {
+		staleDocs = []string{"reports/progress.md or reports/validation.md"}
+	}
+	if strings.TrimSpace(finalPath) == "" {
+		finalPath = "the final deliverable"
+	}
+	return fmt.Sprintf("supporting docs changed after the final deliverable %s: %s. Reading files again will not clear this guard. Edit or rewrite %s after those supporting docs so the final conclusion is newest, then call finish. Do not restart broad exploration.", finalPath, strings.Join(staleDocs, ", "), finalPath)
+}
+
+func supportingDocWritesAfterFinal(messages []session.Message) []writePosition {
+	final := latestFinalArtifactWritePosition(messages)
+	if !final.Valid {
+		return nil
+	}
+	var out []writePosition
+	for i, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		for j, result := range msg.ToolResults {
+			if result.Name != "write_file" && result.Name != "edit_file" {
+				continue
+			}
+			path, _ := result.Metadata["path"].(string)
+			if strings.TrimSpace(path) == "" || !isSupportingReportDocPath(path) {
+				continue
+			}
+			pos := writePosition{
+				Valid:        true,
+				MessageIndex: i,
+				ResultIndex:  j,
+				Path:         path,
+				Result:       result,
+			}
+			if positionAfter(pos, final) {
+				out = append(out, pos)
+			}
+		}
+	}
+	return out
+}
+
+func displayWritePositionPaths(workdir string, positions []writePosition) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, pos := range positions {
+		display := displayPromptPath(workdir, pos.Path)
+		if strings.TrimSpace(display) == "" || seen[display] {
+			continue
+		}
+		seen[display] = true
+		out = append(out, display)
+	}
+	return out
+}
+
 func latestFinalArtifactWritePosition(messages []session.Message) writePosition {
 	return latestWritePosition(messages, func(path string, _ session.ToolResult) bool {
 		return looksFinalArtifactPath(path)
@@ -632,8 +691,18 @@ func latestFinalArtifactWritePosition(messages []session.Message) writePosition 
 
 func latestSupportingDocWritePosition(messages []session.Message) writePosition {
 	return latestWritePosition(messages, func(path string, _ session.ToolResult) bool {
-		return isProjectMemoryPath(path) && !strings.HasSuffix(strings.ToLower(filepath.ToSlash(path)), "/reports/spec.md") && !strings.HasSuffix(strings.ToLower(filepath.ToSlash(path)), "/reports/plan.md")
+		return isSupportingReportDocPath(path)
 	})
+}
+
+func isSupportingReportDocPath(path string) bool {
+	lowered := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	for _, suffix := range []string{"reports/progress.md", "reports/validation.md"} {
+		if lowered == suffix || strings.HasSuffix(lowered, "/"+suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func latestWritePosition(messages []session.Message, predicate func(string, session.ToolResult) bool) writePosition {

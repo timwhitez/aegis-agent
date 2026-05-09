@@ -7,7 +7,13 @@ providers:
     api_key_env: OPENAI_API_KEY
     base_url: https://api.openai.com/v1
     model: gpt-5.4
-    timeout_sec: 120
+    request_timeout_sec: 300
+    stream_idle_timeout_ms: 300000
+    retry:
+      max_attempts: 5
+      base_delay_ms: 1000
+      retry_5xx: true
+      retry_transport: true
     wire_api: responses
     max_output_tokens: 8192
     reasoning_effort: high
@@ -20,20 +26,38 @@ providers:
     api_key_env: ANTHROPIC_API_KEY
     base_url: https://api.anthropic.com
     model: claude-sonnet-4-6
-    timeout_sec: 120
+    request_timeout_sec: 300
+    stream_idle_timeout_ms: 300000
+    retry:
+      max_attempts: 5
+      base_delay_ms: 1000
+      retry_5xx: true
+      retry_transport: true
     anthropic_version: 2023-06-01
 
   google:
     api_key_env: GEMINI_API_KEY
     base_url: https://generativelanguage.googleapis.com
     model: gemini-2.5-flash
-    timeout_sec: 120
+    request_timeout_sec: 300
+    stream_idle_timeout_ms: 300000
+    retry:
+      max_attempts: 5
+      base_delay_ms: 1000
+      retry_5xx: true
+      retry_transport: true
 
   openai-compatible:
     api_key_env: OPENAI_API_KEY
     base_url: http://localhost:3000/v1
     model: gpt-5.4
-    timeout_sec: 120
+    request_timeout_sec: 300
+    stream_idle_timeout_ms: 300000
+    retry:
+      max_attempts: 5
+      base_delay_ms: 1000
+      retry_5xx: true
+      retry_transport: true
     wire_api: responses
     store: false
 
@@ -53,6 +77,9 @@ runtime:
   max_turns_soft: 24
   max_turns_hard: 40
   command_timeout_sec: 120
+  provider_auto_resume:
+    enabled: true
+    max_attempts: 2
   exec_policy:
     # warn: attach shell policy violations to tool metadata without blocking
     # deny: block matching shell commands

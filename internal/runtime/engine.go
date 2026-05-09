@@ -625,7 +625,7 @@ func (e *Engine) emitProviderAutoResume(sessionID string, err error, attempt int
 }
 
 func providerAutoResumePrompt(err error, attempt, maxAttempts int) string {
-	return fmt.Sprintf("Harness reminder: the provider request timed out (%s). The runtime is retrying automatically (%d/%d) before failing the session. Continue from the existing durable evidence; do not restart broad exploration just because the provider timed out. If the current task is report finalization, repair the report or call finish with the current evidence.", err.Error(), attempt, maxAttempts)
+	return fmt.Sprintf("Harness reminder: the provider request timed out while waiting for the model (%s). This is a provider/gateway timeout, not a shell or tool hang; the session is still running and the runtime is auto-resuming (%d/%d). Continue from existing durable evidence. Do not restart broad exploration because of this timeout. If the current task is report finalization, fix the specific finish guard or call finish with current evidence.", err.Error(), attempt, maxAttempts)
 }
 
 func (e *Engine) maybeAppendHarnessReminder(meta session.SessionMetadata, messages []session.Message) ([]session.Message, error) {

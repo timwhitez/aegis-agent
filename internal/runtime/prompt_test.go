@@ -594,6 +594,17 @@ func TestToolGuardBlocksFinishWhenSupportingDocsChangedAfterFinalReport(t *testi
 	if kind != "report_consistency" {
 		t.Fatalf("expected report_consistency finish guard, got kind=%q text=%q", kind, text)
 	}
+	for _, want := range []string{
+		"reports/assessment-report.md",
+		"reports/validation.md",
+		"Reading files again will not clear this guard",
+		"Edit or rewrite reports/assessment-report.md",
+		"Do not restart broad exploration",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected report_consistency guard to contain %q, got %q", want, text)
+		}
+	}
 }
 
 func TestBuildSystemPromptCountsReadOnlyShellInspectionAsRetrieval(t *testing.T) {

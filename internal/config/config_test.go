@@ -50,6 +50,29 @@ func TestNormalizeConfigSetsProviderRetryDefaults(t *testing.T) {
 	}
 }
 
+func TestExampleConfigUsesCurrentProviderTimeoutAndRetryDefaults(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config", "config.example.yaml"), t.TempDir())
+	if err != nil {
+		t.Fatalf("load example config: %v", err)
+	}
+
+	for _, name := range []string{"openai", "openai-compatible", "anthropic", "google"} {
+		provider := cfg.Providers[name]
+		if provider.RequestTimeoutSec != 300 {
+			t.Fatalf("expected %s request_timeout_sec 300, got %d", name, provider.RequestTimeoutSec)
+		}
+		if provider.StreamIdleTimeoutMS != 300000 {
+			t.Fatalf("expected %s stream_idle_timeout_ms 300000, got %d", name, provider.StreamIdleTimeoutMS)
+		}
+		if provider.Retry.MaxAttempts != 5 || provider.Retry.BaseDelayMS != 1000 || !provider.Retry.Retry5xx || !provider.Retry.RetryTransport {
+			t.Fatalf("unexpected %s retry policy: %#v", name, provider.Retry)
+		}
+	}
+	if !cfg.Runtime.ProviderAutoResume.Enabled || cfg.Runtime.ProviderAutoResume.MaxAttempts != 2 {
+		t.Fatalf("unexpected provider_auto_resume example config: %#v", cfg.Runtime.ProviderAutoResume)
+	}
+}
+
 func TestNormalizeConfigPreservesExplicitSendMetadata(t *testing.T) {
 	cfg := &Config{
 		Providers: map[string]Provider{

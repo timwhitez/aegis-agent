@@ -378,6 +378,16 @@ func TestEngineAutoResumesProviderTimeoutBeforeFailing(t *testing.T) {
 			if last.Role != "user" || source != "harness_reminder" || kind != "provider_auto_resume" {
 				t.Fatalf("expected provider auto-resume reminder, got %#v", last)
 			}
+			for _, want := range []string{
+				"provider/gateway timeout, not a shell or tool hang",
+				"session is still running",
+				"auto-resuming (1/2)",
+				"fix the specific finish guard",
+			} {
+				if !strings.Contains(last.Text, want) {
+					t.Fatalf("expected auto-resume reminder to contain %q, got %q", want, last.Text)
+				}
+			}
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
 				StopReason: "tool_use",
