@@ -98,6 +98,7 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 			"id":"msg_1",
 			"stop_reason":"tool_use",
 			"content":[
+				{"type":"thinking","thinking":"inspect prior tool result","signature":"sig_thinking_1"},
 				{"type":"text","text":"check"},
 				{"type":"tool_use","id":"toolu_1","name":"shell","input":{"command":"pwd"}}
 			],
@@ -112,7 +113,7 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 		Model:        "claude-sonnet-4-6",
 		SystemPrompt: "system",
 		Messages: []session.Message{
-			session.NewAssistantMessage("", []session.ToolCall{{ID: "toolu_0", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}}),
+			session.NewAssistantMessage("", "", []session.ToolCall{{ID: "toolu_0", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}}),
 			session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_0", Name: "shell", LLMOutput: "ok"}}),
 		},
 	}, func(string, map[string]any) {})
@@ -132,11 +133,64 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	if result.StopReason != "tool_use" || len(result.ToolCalls) != 1 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
+	if result.Thinking != "inspect prior tool result" {
+		t.Fatalf("expected anthropic thinking text, got %q", result.Thinking)
+	}
+	if len(result.ProviderContentBlocks) != 3 || result.ProviderContentBlocks[0].Signature != "sig_thinking_1" {
+		t.Fatalf("expected anthropic provider content blocks, got %#v", result.ProviderContentBlocks)
+	}
 	if result.RawProvider["stop_reason"] != "tool_use" {
 		t.Fatalf("expected anthropic raw provider stop_reason, got %#v", result.RawProvider)
 	}
 	if result.RawProvider["provider_stop_reason"] != "tool_use" {
 		t.Fatalf("expected normalized provider stop reason, got %#v", result.RawProvider)
+	}
+}
+
+func TestAnthropicAdapterReplaysThinkingBlocks(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		rawBody = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_2",
+			"stop_reason":"end_turn",
+			"content":[{"type":"text","text":"done"}],
+			"usage":{"input_tokens":8,"output_tokens":4}
+		}`))
+	}))
+	defer server.Close()
+
+	assistant := session.NewAssistantMessage("visible", "reasoning", []session.ToolCall{{ID: "toolu_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "anthropic", Type: "thinking", Thinking: "reasoning", Signature: "sig_thinking_1"},
+		{Provider: "anthropic", Type: "redacted_thinking", Data: "opaque_redacted_data"},
+		{Provider: "anthropic", Type: "text", Text: "visible"},
+		{Provider: "anthropic", Type: "tool_use", ID: "toolu_1", Name: "shell", Input: json.RawMessage(`{"command":"pwd"}`)},
+	}
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	if _, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{assistant, session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_1", Name: "shell", LLMOutput: "ok"}})},
+	}, func(string, map[string]any) {}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	for _, want := range []string{
+		`"type":"thinking"`,
+		`"signature":"sig_thinking_1"`,
+		`"type":"redacted_thinking"`,
+		`"data":"opaque_redacted_data"`,
+		`"type":"tool_use"`,
+	} {
+		if !strings.Contains(rawBody, want) {
+			t.Fatalf("expected %s in anthropic replay body: %s", want, rawBody)
+		}
 	}
 }
 
@@ -152,8 +206,9 @@ func TestGoogleAdapterSerializesAndParses(t *testing.T) {
 			"modelVersion":"gemini-2.5-flash",
 			"candidates":[{
 				"content":{"parts":[
+					{"text":"think first","thought":true,"thoughtSignature":"sig_thought_1"},
 					{"text":"ok"},
-					{"functionCall":{"name":"shell","id":"call_1","args":{"command":"pwd"}}}
+					{"functionCall":{"name":"shell","id":"call_1","args":{"command":"pwd"}},"thoughtSignature":"sig_call_1"}
 				]},
 				"finishReason":"STOP"
 			}],
@@ -179,6 +234,12 @@ func TestGoogleAdapterSerializesAndParses(t *testing.T) {
 	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "shell" {
 		t.Fatalf("unexpected tool calls: %#v", result.ToolCalls)
 	}
+	if result.Text != "ok" || result.Thinking != "think first" {
+		t.Fatalf("expected google thought summary to stay out of final text, got text=%q thinking=%q", result.Text, result.Thinking)
+	}
+	if len(result.ProviderContentBlocks) != 3 || result.ProviderContentBlocks[0].Thought == nil || !*result.ProviderContentBlocks[0].Thought || result.ProviderContentBlocks[0].ThoughtSignature != "sig_thought_1" || result.ProviderContentBlocks[2].ThoughtSignature != "sig_call_1" {
+		t.Fatalf("expected google provider content blocks with thought signatures, got %#v", result.ProviderContentBlocks)
+	}
 	if result.ProviderResponseID != "resp_google_1" {
 		t.Fatalf("expected google provider response id, got %#v", result.ProviderResponseID)
 	}
@@ -187,6 +248,51 @@ func TestGoogleAdapterSerializesAndParses(t *testing.T) {
 	}
 	if result.RawProvider["provider_stop_reason"] != "STOP" {
 		t.Fatalf("expected normalized google provider stop reason, got %#v", result.RawProvider)
+	}
+}
+
+func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		rawBody = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_2",
+			"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}
+		}`))
+	}))
+	defer server.Close()
+
+	thought := true
+	assistant := session.NewAssistantMessage("visible", "reasoning", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "google", Type: "part", Text: "reasoning", Thought: &thought, ThoughtSignature: "sig_thought_1"},
+		{Provider: "google", Type: "part", Text: "visible"},
+		{Provider: "google", Type: "function_call", ID: "call_1", Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`), ThoughtSignature: "sig_call_1"},
+	}
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	if _, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{assistant},
+	}, func(string, map[string]any) {}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	for _, want := range []string{
+		`"thought":true`,
+		`"thoughtSignature":"sig_thought_1"`,
+		`"thoughtSignature":"sig_call_1"`,
+		`"functionCall"`,
+	} {
+		if !strings.Contains(rawBody, want) {
+			t.Fatalf("expected %s in google replay body: %s", want, rawBody)
+		}
 	}
 }
 

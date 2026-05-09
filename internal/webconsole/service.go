@@ -158,6 +158,7 @@ type SessionDetailResponse struct {
 	BackgroundNotifications []session.BackgroundNotification `json:"background_notifications"`
 	SteerRequests           []session.SteerRequest           `json:"steer_requests"`
 	Messages                []session.Message                `json:"messages"`
+	HasMoreMessages         bool                             `json:"has_more_messages"`
 	Events                  []events.Event                   `json:"events"`
 	Timeline                []TimelineEntry                  `json:"timeline"`
 	ActiveHandle            bool                             `json:"active_handle"`
@@ -539,6 +540,12 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleChildren(w, sessionID, queryInt(r, "limit", 50))
+	case "messages":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		s.handleSessionMessages(w, sessionID, r)
 	case "tasks":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -656,6 +663,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		parentCoordinationPtr = &coordination
 	}
 	ownerEvents := eventsList
+	hasMoreMessages := limit > 0 && len(messages) > limit
 	messages = tailMessages(messages, limit)
 	eventsList = tailEvents(eventsList, limit)
 	background = tailBackground(dedupeBackgroundNotifications(background), limit)
@@ -691,6 +699,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		BackgroundNotifications: background,
 		SteerRequests:           steers,
 		Messages:                messages,
+		HasMoreMessages:         hasMoreMessages,
 		Events:                  eventsList,
 		Timeline:                timeline,
 		ActiveHandle:            activeOwner.OwnedByCurrentProcess,
@@ -737,6 +746,56 @@ func (s *Service) handleTaskBoard(w http.ResponseWriter, sessionID string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, session.BuildTaskBoard(todo, tasks))
+}
+
+func (s *Service) handleSessionMessages(w http.ResponseWriter, sessionID string, r *http.Request) {
+	messages, err := s.store.LoadMessages(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if messages == nil {
+		messages = []session.Message{}
+	}
+
+	limit := queryBoundedInt(r, "limit", 40, 1, 200)
+	beforeID := strings.TrimSpace(r.URL.Query().Get("before_id"))
+
+	var page []session.Message
+	hasMore := false
+
+	if beforeID == "" {
+		page = tailMessages(messages, limit)
+		hasMore = len(messages) > limit
+	} else {
+		var beforeIdx int = -1
+		for i := range messages {
+			if messages[i].ID == beforeID {
+				beforeIdx = i
+				break
+			}
+		}
+		if beforeIdx < 0 {
+			page = []session.Message{}
+		} else {
+			start := beforeIdx - limit
+			if start < 0 {
+				start = 0
+			} else {
+				hasMore = start > 0
+			}
+			page = messages[start:beforeIdx]
+		}
+	}
+
+	if page == nil {
+		page = []session.Message{}
+	}
+
+	writeJSON(w, http.StatusOK, MessagesResponse{
+		Messages: page,
+		HasMore:  hasMore,
+	})
 }
 
 func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
@@ -2526,6 +2585,14 @@ func queryInt(r *http.Request, key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func queryBoundedInt(r *http.Request, key string, fallback, minValue, maxValue int) int {
+	value := queryInt(r, key, fallback)
+	if value < minValue || value > maxValue {
+		return fallback
+	}
+	return value
 }
 
 func firstNonEmpty(values ...string) string {

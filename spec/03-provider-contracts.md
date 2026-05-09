@@ -59,6 +59,8 @@ ProviderAdapter
 字段：
 
 - `text`
+- `thinking`
+- `provider_content_blocks`
 - `tool_calls`
 - `stop_reason`
 - `usage`
@@ -68,6 +70,8 @@ ProviderAdapter
 约束：
 
 - `provider_response_id` 在上游响应提供稳定 id 时应尽量填充；若协议形状确实没有，则允许为空，但不要默默丢掉已存在的上游 id。
+- `thinking` 是面向本地 UI / session 浏览的可读推理摘要；不得把它当成跨 provider 的 replay 原语。
+- `provider_content_blocks` 保存 provider adapter 认为后续 replay 必须原样带回的 provider-native content blocks，例如 Anthropic thinking signature / redacted thinking block、Gemini thoughtSignature 等；它是 session 文件事实的一部分，但仍由 adapter 独占解释，CLI / Web / tool 层不得硬编码 provider replay 逻辑。
 - `raw_provider` 至少应保留一个统一键 `provider_stop_reason`，并保留原始来源键（例如 `status`、`stop_reason`、`finish_reason`）供跨 provider 诊断。
 - 当 session metadata 中的 `provider_options.raw_sidecar=true` 时，runtime 会把本次 turn 的诊断 envelope 另存为 `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json`。该 sidecar 只包含 provider、model、turn、timestamp、provider_response_id、内部归一化 `stop_reason` 和 adapter 已选择的 raw provider items；它只用于 replay 诊断和审计，不替代 `messages.jsonl` / `events.jsonl`，也不要求 CLI 或 Web 用 provider-native item 续跑。
 
@@ -218,6 +222,8 @@ adapter 负责转换为：
 解析 content blocks：
 
 - `text`
+- `thinking`
+- `redacted_thinking`
 - `tool_use`
 - `usage`
 - `stop_reason`
@@ -239,8 +245,8 @@ adapter 负责转换为：
 
 ### 7.6 当前限制
 
-- v1 不持久化返回的 thinking blocks 作为单独 replay 事实
-- 因此 extended thinking 不是当前默认主路径能力
+- 当 provider 返回 `thinking` / `redacted_thinking` 且本轮包含 tool use 时，adapter 必须保存 replay 所需的原始块信息，包括 `signature` 与 `data`，并在后续 Messages API replay 中原样带回。
+- `Message.thinking` 只承载可读摘要；`signature` / `redacted_thinking.data` 这类 provider-native 续跑事实必须保存在 provider content blocks 中。
 
 ## 8. Google Contract
 
@@ -275,6 +281,8 @@ adapter 负责转换为：
 
 - 顶层 `responseId`（若存在）
 - `candidates[].content.parts[].text`
+- `candidates[].content.parts[].thought`
+- `candidates[].content.parts[].thoughtSignature`
 - `candidates[].content.parts[].functionCall`
 - `finishReason`
 - `usageMetadata`
@@ -283,6 +291,7 @@ adapter 负责转换为：
 
 - 工具结果通过 `functionResponse` 回传
 - 若 provider 返回了 `functionCall.id`，应尽量原样带回
+- 若 provider 返回了 `thoughtSignature`，adapter 应在 session provider content blocks 中保留，并在后续 `contents` replay 中随原 part 带回
 - v1 当前使用 `ToolCallID` 保存回放所需的 function id
 
 ### 8.5 stop_reason 映射
@@ -296,8 +305,8 @@ adapter 负责转换为：
 
 ### 8.6 当前限制
 
-- v1 不持久化 Gemini thought signatures
-- 因此开启 provider-native thinking 后，不把手工 history replay 当作主路径承诺
+- `thought=true` 的 part 表示 thought summary，其可读内容在同一 part 的 `text` 字段中；它应进入 `TurnResult.thinking`，不得混入最终 `TurnResult.text`。
+- Gemini thought signatures 只作为 provider-native replay 事实保存在 provider content blocks 中，不由 Web / CLI 解释。
 
 ## 9. 错误分类
 

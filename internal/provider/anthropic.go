@@ -54,11 +54,14 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		ID         string `json:"id"`
 		StopReason string `json:"stop_reason"`
 		Content    []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+			Type      string          `json:"type"`
+			Text      string          `json:"text"`
+			Thinking  string          `json:"thinking"`
+			Signature string          `json:"signature"`
+			Data      string          `json:"data"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
 		Usage struct {
 			InputTokens  int `json:"input_tokens"`
@@ -73,12 +76,42 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		return TurnResult{}, err
 	}
 	var textParts []string
+	var thinkingParts []string
+	var providerBlocks []session.ProviderContentBlock
 	var calls []ToolCall
 	for _, item := range resp.Content {
 		switch item.Type {
 		case "text":
 			textParts = append(textParts, item.Text)
+			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+				Provider: "anthropic",
+				Type:     "text",
+				Text:     item.Text,
+			})
+		case "thinking":
+			if item.Thinking != "" {
+				thinkingParts = append(thinkingParts, item.Thinking)
+			}
+			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+				Provider:  "anthropic",
+				Type:      "thinking",
+				Thinking:  item.Thinking,
+				Signature: item.Signature,
+			})
+		case "redacted_thinking":
+			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+				Provider: "anthropic",
+				Type:     "redacted_thinking",
+				Data:     item.Data,
+			})
 		case "tool_use":
+			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+				Provider: "anthropic",
+				Type:     "tool_use",
+				ID:       item.ID,
+				Name:     item.Name,
+				Input:    item.Input,
+			})
 			calls = append(calls, ToolCall{
 				ID:             item.ID,
 				Name:           item.Name,
@@ -101,10 +134,12 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		stopReason = "error"
 	}
 	return TurnResult{
-		Text:               text,
-		ToolCalls:          calls,
-		StopReason:         stopReason,
-		ProviderResponseID: resp.ID,
+		Text:                  text,
+		Thinking:              strings.Join(thinkingParts, "\n"),
+		ProviderContentBlocks: providerBlocks,
+		ToolCalls:             calls,
+		StopReason:            stopReason,
+		ProviderResponseID:    resp.ID,
 		Usage: Usage{
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
@@ -161,18 +196,22 @@ func anthropicMessages(messages []session.Message) []map[string]any {
 			})
 		case "assistant":
 			content := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if msg.Text != "" {
-				content = append(content, map[string]any{"type": "text", "text": msg.Text})
-			}
-			for _, call := range msg.ToolCalls {
-				var input any
-				_ = json.Unmarshal(call.Arguments, &input)
-				content = append(content, map[string]any{
-					"type":  "tool_use",
-					"id":    call.ID,
-					"name":  call.Name,
-					"input": input,
-				})
+			if anthropicBlocks := anthropicProviderContent(msg.ProviderContentBlocks); len(anthropicBlocks) > 0 {
+				content = anthropicBlocks
+			} else {
+				if msg.Text != "" {
+					content = append(content, map[string]any{"type": "text", "text": msg.Text})
+				}
+				for _, call := range msg.ToolCalls {
+					var input any
+					_ = json.Unmarshal(call.Arguments, &input)
+					content = append(content, map[string]any{
+						"type":  "tool_use",
+						"id":    call.ID,
+						"name":  call.Name,
+						"input": input,
+					})
+				}
 			}
 			if len(content) == 0 {
 				continue
@@ -201,4 +240,44 @@ func anthropicMessages(messages []session.Message) []map[string]any {
 		}
 	}
 	return out
+}
+
+func anthropicProviderContent(blocks []session.ProviderContentBlock) []map[string]any {
+	var content []map[string]any
+	for _, block := range blocks {
+		if block.Provider != "anthropic" {
+			continue
+		}
+		switch block.Type {
+		case "thinking":
+			item := map[string]any{
+				"type":     "thinking",
+				"thinking": block.Thinking,
+			}
+			if block.Signature != "" {
+				item["signature"] = block.Signature
+			}
+			content = append(content, item)
+		case "redacted_thinking":
+			item := map[string]any{"type": "redacted_thinking"}
+			if block.Data != "" {
+				item["data"] = block.Data
+			}
+			content = append(content, item)
+		case "text":
+			if block.Text != "" {
+				content = append(content, map[string]any{"type": "text", "text": block.Text})
+			}
+		case "tool_use":
+			var input any
+			_ = json.Unmarshal(block.Input, &input)
+			content = append(content, map[string]any{
+				"type":  "tool_use",
+				"id":    block.ID,
+				"name":  block.Name,
+				"input": input,
+			})
+		}
+	}
+	return content
 }

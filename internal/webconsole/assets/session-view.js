@@ -65,6 +65,7 @@ function renderCurrentSession() {
   const previousScrollTop = nodes.chatContainer.scrollTop;
   const previousScrollHeight = nodes.chatContainer.scrollHeight;
   const shouldStick = isChatNearBottom(nodes.chatContainer) || !state.chatRenderCache.body;
+  const prependScrollHeight = state.preserveScrollAfterRender;
   const sections = renderMessageStream();
   let mutated = false;
 
@@ -87,6 +88,11 @@ function renderCurrentSession() {
   }
 
   if (!mutated) {
+    return;
+  }
+
+  if (prependScrollHeight !== null) {
+    nodes.chatContainer.scrollTop = nodes.chatContainer.scrollHeight - prependScrollHeight;
     return;
   }
 
@@ -277,7 +283,15 @@ function renderMessageStream() {
     };
   }
 
-  const bodyHTML = stream.map((message) => renderMessage(message)).join('');
+  const loadEarlierHTML = state.hasMoreMessages ? `
+    <div class="load-earlier-bar">
+      <button class="load-earlier-btn" type="button" data-load-earlier ${state.loadingEarlier ? 'disabled' : ''}>
+        ${state.loadingEarlier ? 'Loading...' : 'Load earlier messages'}
+      </button>
+    </div>
+  ` : '';
+
+  const bodyHTML = loadEarlierHTML + stream.map((message) => renderMessage(message)).join('');
 
   return {
     activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
@@ -367,6 +381,7 @@ function renderMessage(message) {
   const visualRole = backgroundResults ? 'assistant background-results' : role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
   const actor = actorNameForMessage(message);
   const icon = backgroundResults ? 'git-branch' : iconForRole(role);
+  const thinkingHTML = message.thinking ? renderThinkingBlock(message.thinking) : '';
   const textHTML = message.text ? renderMessageText(message) : '';
   const toolLaneHTML = renderToolLane(message);
 
@@ -382,6 +397,7 @@ function renderMessage(message) {
         </div>
       </div>
       <div class="message-body">
+        ${thinkingHTML}
         ${textHTML}
         ${toolLaneHTML}
       </div>
@@ -397,6 +413,20 @@ function renderMessageText(message) {
     return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
   }
   return `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`;
+}
+
+function renderThinkingBlock(thinking) {
+  const preview = truncateText(thinking, 200);
+  return `
+    <details class="thinking-block">
+      <summary class="thinking-summary">
+        <i data-lucide="sparkles" class="thinking-icon"></i>
+        <span>Thinking (${thinking.length} chars)</span>
+        <span class="thinking-preview">${escapeHTML(preview)}</span>
+      </summary>
+      <div class="thinking-body">${safeMarkdown(thinking)}</div>
+    </details>
+  `;
 }
 
 function messageMeta(message) {

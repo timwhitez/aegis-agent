@@ -162,11 +162,12 @@
 - `tool_use` / `tool_result` 配对必须正确
 - `tool_result` 在后续 `user` 消息里回放
 - `thinking` 可通过 `budget_tokens` 启用
+- 带工具调用的 extended thinking 需要保留 `thinking.signature` 与 `redacted_thinking.data` 等 provider-native 块，后续 replay 由 Anthropic adapter 原样带回
 
 设计结论：
 
 - v1 允许把 `thinking_budget` 映射到 `thinking`
-- 但不把返回 thinking blocks 的持久化 replay 作为当前默认承诺
+- 可读 `Message.thinking` 只用于 UI / session 浏览；provider-native thinking blocks 作为 adapter-owned replay facts 存入 `provider_content_blocks`
 
 ### 3.3 Google Gemini `generateContent`
 
@@ -178,11 +179,13 @@
 - `functionCall` / `functionResponse` 表达工具调用与结果
 - `generationConfig` 可包含 `temperature`、`topP`、`maxOutputTokens`
 - `thinkingConfig` 可承载 `includeThoughts`、`thinkingBudget`
+- `thought` 是 part 上的 boolean 标记；thought summary 的可读内容仍在同一 part 的 `text` 字段中
+- `thoughtSignature` 属于 provider-native replay fact，需要随原 part 保留并由 Google adapter 在后续 `contents` replay 中带回
 
 设计结论：
 
 - v1 允许 generation / thinking 选项映射到 `generationConfig`
-- 但不把 Gemini thought signatures 的持久化 replay 作为当前默认承诺
+- Gemini thought summary 进入 `Message.thinking` 展示，`thoughtSignature` 保存在 `provider_content_blocks`，不由 CLI / Web 层解释
 
 ## 4. 当前锁定的产品决策
 

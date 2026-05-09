@@ -936,11 +936,12 @@ func NewMessage(role, text string) Message {
 	}
 }
 
-func NewAssistantMessage(text string, toolCalls []ToolCall) Message {
+func NewAssistantMessage(text, thinking string, toolCalls []ToolCall) Message {
 	return Message{
 		ID:        newRecordID("msg"),
 		Role:      "assistant",
 		Text:      text,
+		Thinking:  thinking,
 		ToolCalls: toolCalls,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}

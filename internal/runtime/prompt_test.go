@@ -812,7 +812,7 @@ func TestNextHarnessReminderEscalatesAfterAssistantReplyWithoutDelivery(t *testi
 		"source": "harness_reminder",
 		"kind":   "steer_completion",
 	}
-	assistant := session.NewAssistantMessage("I have enough evidence and will summarize next.", nil)
+	assistant := session.NewAssistantMessage("I have enough evidence and will summarize next.", "", nil)
 
 	reminder := nextHarnessReminder("/tmp/work", session.ModeExec, []session.Message{
 		session.NewMessage("user", "Initial task."),
@@ -844,7 +844,7 @@ func TestNextHarnessReminderRepeatsEscalatedSteerReminderUntilDelivery(t *testin
 		"source": "harness_reminder",
 		"kind":   "steer_completion_escalated",
 	}
-	assistant := session.NewAssistantMessage("Still narrating.", nil)
+	assistant := session.NewAssistantMessage("Still narrating.", "", nil)
 	reminder := nextHarnessReminder("/tmp/work", session.ModeExec, []session.Message{
 		session.NewMessage("user", "Initial task."),
 		steer,
@@ -1476,13 +1476,13 @@ func TestToolGuardBlocksFinishAfterCompactionWhenPromptFallsOutOfRecentTail(t *t
 	state := session.State{}
 	messages := []session.Message{
 		session.NewMessage("user", "Write reports/rt04-forced-compaction-proof.md and finish."),
-		session.NewAssistantMessage(strings.Repeat("analysis ", 200), nil),
+		session.NewAssistantMessage(strings.Repeat("analysis ", 200), "", nil),
 		session.NewToolMessage([]session.ToolResult{{Name: "read_file", Metadata: map[string]any{"path": filepath.Join(workdir, "README.md")}, DisplayOutput: strings.Repeat("evidence ", 200)}}),
-		session.NewAssistantMessage(strings.Repeat("more analysis ", 200), nil),
+		session.NewAssistantMessage(strings.Repeat("more analysis ", 200), "", nil),
 		session.NewToolMessage([]session.ToolResult{{Name: "grep", Metadata: map[string]any{"path": filepath.Join(workdir, "internal", "runtime", "prompt.go")}, DisplayOutput: strings.Repeat("match ", 200)}}),
-		session.NewAssistantMessage(strings.Repeat("proof ", 200), nil),
+		session.NewAssistantMessage(strings.Repeat("proof ", 200), "", nil),
 		session.NewToolMessage([]session.ToolResult{{Name: "read_file", Metadata: map[string]any{"path": filepath.Join(workdir, "internal", "runtime", "compaction.go")}, DisplayOutput: strings.Repeat("proof ", 200)}}),
-		session.NewAssistantMessage(strings.Repeat("wrap up ", 200), nil),
+		session.NewAssistantMessage(strings.Repeat("wrap up ", 200), "", nil),
 	}
 	compactor := newCompactor(store)
 	view, err := compactor.Build("sess-1", workdir, state, messages, nil, nil, 1, 1, func(events.Event) {})

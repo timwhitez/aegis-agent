@@ -1,5 +1,7 @@
 package webconsole
 
+import "go-cli-agent/internal/session"
+
 const (
 	errorCodeUnknownProvider            = "UNKNOWN_PROVIDER"
 	errorCodeActiveHandleNotOwned       = "ACTIVE_HANDLE_NOT_OWNED"
@@ -76,6 +78,11 @@ type ErrorResponse struct {
 	Code   string `json:"code,omitempty"`
 	Detail string `json:"detail,omitempty"`
 	Action string `json:"action,omitempty"`
+}
+
+type MessagesResponse struct {
+	Messages []session.Message `json:"messages"`
+	HasMore  bool              `json:"has_more"`
 }
 
 type webError struct {

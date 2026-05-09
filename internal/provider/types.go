@@ -50,12 +50,14 @@ type Usage struct {
 }
 
 type TurnResult struct {
-	Text               string
-	ToolCalls          []ToolCall
-	StopReason         string
-	Usage              Usage
-	ProviderResponseID string
-	RawProvider        map[string]any
+	Text                  string
+	Thinking              string
+	ProviderContentBlocks []session.ProviderContentBlock
+	ToolCalls             []ToolCall
+	StopReason            string
+	Usage                 Usage
+	ProviderResponseID    string
+	RawProvider           map[string]any
 }
 
 func rawProviderEnvelope(sourceKey, stopReason string, extras map[string]any) map[string]any {

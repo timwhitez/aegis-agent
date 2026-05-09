@@ -67,7 +67,12 @@ const state = {
   fileChangesExpanded: true,
   subAgentExpanded: true,
   expandedHistoryParents: new Set(),
-  stoppingSessionIds: new Set()
+  stoppingSessionIds: new Set(),
+  hasMoreMessages: false,
+  oldestMessageId: '',
+  loadingEarlier: false,
+  loadedAllEarlierMessages: false,
+  preserveScrollAfterRender: null
 };
 
 const nodes = {
@@ -441,6 +446,12 @@ function setupEventListeners() {
     const clearHistoryButton = event.target.closest('[data-history-clear]');
     if (clearHistoryButton) {
       await clearHistory();
+      return;
+    }
+
+    const loadEarlierButton = event.target.closest('[data-load-earlier]');
+    if (loadEarlierButton) {
+      await loadEarlierMessages();
       return;
     }
 
@@ -1282,10 +1293,15 @@ async function refreshCurrentSession() {
   state.refreshingSession = true;
   state.needsSessionRefresh = false;
   try {
-    const detail = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}?limit=80`);
+    const detail = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}?limit=40`);
+    mergeLoadedMessagesIntoDetail(detail);
+    mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
     updateSessionId();
     reconcileOptimisticMessages(detail);
+    state.hasMoreMessages = state.loadedAllEarlierMessages ? false : detail?.has_more_messages === true;
+    const msgs = maybeArray(detail?.messages);
+    state.oldestMessageId = msgs.length > 0 ? msgs[0].id : '';
     if (detail?.state?.status === 'running') {
       state.isGenerating = true;
       if (!state.liveEvents.length) {
@@ -1315,12 +1331,100 @@ async function refreshCurrentSession() {
   }
 }
 
+async function loadEarlierMessages() {
+  if (state.loadingEarlier || !state.hasMoreMessages || !state.oldestMessageId) {
+    return;
+  }
+  state.loadingEarlier = true;
+  renderCurrentSession();
+  try {
+    const beforeScrollHeight = nodes.chatContainer.scrollHeight;
+    const resp = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/messages?before_id=${encodeURIComponent(state.oldestMessageId)}&limit=40`);
+    const olderMessages = maybeArray(resp?.messages);
+    if (olderMessages.length > 0) {
+      const currentMessages = maybeArray(state.sessionDetail?.messages);
+      state.sessionDetail.messages = olderMessages.concat(currentMessages);
+      state.oldestMessageId = olderMessages[0].id;
+      state.hasMoreMessages = resp?.has_more === true;
+      state.loadedAllEarlierMessages = resp?.has_more !== true;
+      mergeMessageTimelineEntries(state.sessionDetail);
+      state.preserveScrollAfterRender = beforeScrollHeight;
+    } else {
+      state.hasMoreMessages = false;
+      state.loadedAllEarlierMessages = true;
+    }
+    state.loadingEarlier = false;
+    renderCurrentSession();
+  } catch (err) {
+    console.error('load earlier messages error', err);
+    state.loadingEarlier = false;
+    renderCurrentSession();
+  } finally {
+    state.preserveScrollAfterRender = null;
+  }
+}
+
+function mergeLoadedMessagesIntoDetail(detail) {
+  const currentMessages = maybeArray(state.sessionDetail?.messages);
+  const nextMessages = maybeArray(detail?.messages);
+  if (!detail || currentMessages.length <= nextMessages.length) {
+    return;
+  }
+  const seen = new Set(nextMessages.map((message) => message?.id).filter(Boolean));
+  const preserved = currentMessages.filter((message) => message?.id && !seen.has(message.id));
+  if (!preserved.length) {
+    return;
+  }
+  detail.messages = preserved.concat(nextMessages);
+}
+
+function mergeMessageTimelineEntries(detail) {
+  if (!detail) {
+    return;
+  }
+  const timeline = maybeArray(detail.timeline);
+  const existing = new Set(timeline
+    .filter((item) => item?.kind === 'message' && item?.message_id)
+    .map((item) => item.message_id));
+  const additions = maybeArray(detail.messages)
+    .filter((message) => message?.id && !existing.has(message.id))
+    .map((message) => ({
+      time: message.created_at || '',
+      kind: 'message',
+      message_id: message.id,
+      role: message.role || '',
+      text: messageTimelineText(message),
+      data: message.meta || null
+    }));
+  if (!additions.length) {
+    return;
+  }
+  detail.timeline = timeline.concat(additions).sort((left, right) => String(right.time || '').localeCompare(String(left.time || '')));
+}
+
+function messageTimelineText(message) {
+  const text = String(message?.text || '').trim();
+  if (text) {
+    return text;
+  }
+  const toolResults = maybeArray(message?.tool_results);
+  if (toolResults.length > 0) {
+    return toolResults[0]?.display_output || toolResults[0]?.llm_output || '';
+  }
+  return '';
+}
+
 // Session workspace rendering helpers live in session-view.js.
 
 async function openSession(sessionID, options = {}) {
   adoptSession(sessionID, true);
   state.sessionDetail = null;
   state.optimisticMessages = [];
+  state.hasMoreMessages = false;
+  state.oldestMessageId = '';
+  state.loadingEarlier = false;
+  state.loadedAllEarlierMessages = false;
+  state.preserveScrollAfterRender = null;
   state.nextSendInterrupt = false;
   state.liveEvents = [];
   state.isGenerating = false;

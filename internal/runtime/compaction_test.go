@@ -56,7 +56,7 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 			DisplayOutput: "Error: npm test failed",
 			IsError:       true,
 		}}),
-		session.NewAssistantMessage(strings.Repeat("B", 128), nil),
+		session.NewAssistantMessage(strings.Repeat("B", 128), "", nil),
 	}
 	todo := []session.TodoItem{
 		{Content: "Audit provider contracts", Status: "completed", Priority: "high", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
@@ -234,7 +234,7 @@ func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	}
 	messages := []session.Message{
 		session.NewMessage("user", "Continue the large audit."),
-		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
 
 	var emitted []events.Event
@@ -284,7 +284,7 @@ func TestCompactionAddsReferencePrefix(t *testing.T) {
 	}
 	messages := []session.Message{
 		session.NewMessage("user", "Keep going."),
-		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
 	profile := compactionContextProfile{
 		Provider:              "openai",
@@ -367,7 +367,7 @@ func TestCompactionRedactsSecrets(t *testing.T) {
 				"token": "tok_metadata_123456789",
 			},
 		}}),
-		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
 	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) {})
 	if err != nil {
@@ -402,7 +402,7 @@ func TestCompactionRedactsSecrets(t *testing.T) {
 func TestRedactToolCallArgumentsPreservesValidRawJSON(t *testing.T) {
 	args := json.RawMessage(`{"path":"macorchard-api/internal/httpapi/handlers.go","pattern":"\"token\":\"abcdefghijklmnop\"|tokenSHA :=|Set-Cookie|Cookie|Authorization","nested":{"password":"supersecretpassword"}}`)
 	messages := []session.Message{
-		session.NewAssistantMessage("", []session.ToolCall{{
+		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:        "call_sensitive_pattern",
 			Name:      "shell",
 			Arguments: args,
@@ -455,7 +455,7 @@ func TestCompactionTruncatesOldToolOutput(t *testing.T) {
 	oldOutput := "HEAD-" + strings.Repeat("B", 1800) + "MIDDLE" + strings.Repeat("Y", 1800) + "-TAIL"
 	messages := []session.Message{
 		session.NewMessage("user", "Run tools."),
-		session.NewAssistantMessage("", []session.ToolCall{{
+		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:        "old_call",
 			Name:      "shell",
 			Arguments: json.RawMessage(oldArgs),
@@ -466,7 +466,7 @@ func TestCompactionTruncatesOldToolOutput(t *testing.T) {
 			LLMOutput:     oldOutput,
 			DisplayOutput: oldOutput,
 		}}),
-		session.NewAssistantMessage("", []session.ToolCall{{
+		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:        "new_call",
 			Name:      "shell",
 			Arguments: json.RawMessage(`{"command":"pwd"}`),
@@ -533,7 +533,7 @@ func TestCompactionKeepsArtifactProofMemory(t *testing.T) {
 			DisplayOutput: "func run() { return nil }",
 			Metadata:      map[string]any{"path": codePath, "offset": 12, "end": 20},
 		}}),
-		session.NewAssistantMessage(strings.Repeat("A", 512), nil),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
 	if _, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) {}); err != nil {
 		t.Fatalf("build: %v", err)
@@ -593,7 +593,7 @@ func TestCompactorPreservesAssistantToolCallsForRetainedToolResults(t *testing.T
 
 	messages := []session.Message{
 		session.NewMessage("user", "Initial request"),
-		session.NewAssistantMessage("", []session.ToolCall{{
+		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:             "call_old",
 			Name:           "read_file",
 			Arguments:      json.RawMessage(`{"path":"old.md"}`),
@@ -605,7 +605,7 @@ func TestCompactorPreservesAssistantToolCallsForRetainedToolResults(t *testing.T
 			LLMOutput:     "old file content",
 			DisplayOutput: "old file content",
 		}}),
-		session.NewAssistantMessage("", []session.ToolCall{{
+		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:             "call_new",
 			Name:           "read_file",
 			Arguments:      json.RawMessage(`{"path":"new.md"}`),
@@ -617,9 +617,9 @@ func TestCompactorPreservesAssistantToolCallsForRetainedToolResults(t *testing.T
 			LLMOutput:     "new file content",
 			DisplayOutput: "new file content",
 		}}),
-		session.NewAssistantMessage("Observed enough context.", nil),
+		session.NewAssistantMessage("Observed enough context.", "", nil),
 		session.NewMessage("user", "Interrupt and keep the answer short."),
-		session.NewAssistantMessage("Will do.", nil),
+		session.NewAssistantMessage("Will do.", "", nil),
 	}
 
 	view, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, messages, nil, nil, 1, 10, func(events.Event) {})
@@ -653,7 +653,7 @@ func TestCompactorPreservesAssistantToolCallsForRetainedToolResults(t *testing.T
 func TestDeduplicateToolResults(t *testing.T) {
 	messages := []session.Message{
 		session.NewMessage("user", "Read the file"),
-		session.NewAssistantMessage("", []session.ToolCall{{
+		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:        "call_1",
 			Name:      "read_file",
 			Arguments: json.RawMessage(`{"file_path":"/test/file.go"}`),
@@ -664,7 +664,7 @@ func TestDeduplicateToolResults(t *testing.T) {
 			LLMOutput:     "first read content",
 			DisplayOutput: "first read content",
 		}}),
-		session.NewAssistantMessage("", []session.ToolCall{{
+		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:        "call_2",
 			Name:      "read_file",
 			Arguments: json.RawMessage(`{"file_path":"/test/file.go"}`),

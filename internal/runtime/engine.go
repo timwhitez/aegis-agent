@@ -243,7 +243,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		e.emit(meta.ID, "turn.stopped", "provider_call", providerTurnEventData(result))
 
-		if strings.TrimSpace(result.Text) != "" || len(result.ToolCalls) > 0 {
+		if strings.TrimSpace(result.Text) != "" || strings.TrimSpace(result.Thinking) != "" || len(result.ToolCalls) > 0 {
 			assistantPayload, err := hookManager.Trigger(ctx, "assistant.message", map[string]any{
 				"session_id": meta.ID,
 				"text":       result.Text,
@@ -256,7 +256,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			if value, ok := assistantPayload["text"].(string); ok {
 				assistantText = value
 			}
-			msg := session.NewAssistantMessage(assistantText, translateToolCalls(result.ToolCalls))
+			msg := session.NewAssistantMessage(assistantText, result.Thinking, translateToolCalls(result.ToolCalls))
+			msg.ProviderContentBlocks = result.ProviderContentBlocks
 			if meta := providerTurnMessageMeta(result); len(meta) > 0 {
 				msg.Meta = meta
 			}

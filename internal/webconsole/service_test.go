@@ -1773,6 +1773,53 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 	}
 }
 
+func TestServiceSessionMessagesPagination(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_messages_page")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	var written []session.Message
+	for i := 0; i < 5; i++ {
+		msg := session.NewMessage("user", "message "+strconv.Itoa(i))
+		if err := svc.store.AppendMessage(meta.ID, msg); err != nil {
+			t.Fatalf("append message %d: %v", i, err)
+		}
+		written = append(written, msg)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var detail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"?limit=2", &detail)
+	if !detail.HasMoreMessages || len(detail.Messages) != 2 || detail.Messages[0].ID != written[3].ID || detail.Messages[1].ID != written[4].ID {
+		t.Fatalf("unexpected session detail pagination metadata: %#v", detail.Messages)
+	}
+
+	var page MessagesResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/messages?before_id="+url.QueryEscape(written[3].ID)+"&limit=2", &page)
+	if !page.HasMore || len(page.Messages) != 2 || page.Messages[0].ID != written[1].ID || page.Messages[1].ID != written[2].ID {
+		t.Fatalf("unexpected previous page: %#v", page)
+	}
+
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/messages?before_id="+url.QueryEscape(written[1].ID)+"&limit=2", &page)
+	if page.HasMore || len(page.Messages) != 1 || page.Messages[0].ID != written[0].ID {
+		t.Fatalf("unexpected first page: %#v", page)
+	}
+
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/messages?before_id="+url.QueryEscape(written[3].ID)+"&limit=-1", &page)
+	if len(page.Messages) != 3 {
+		t.Fatalf("negative limit should fall back safely, got %#v", page)
+	}
+}
+
 func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	root := t.TempDir()
 	workspaceRoot := filepath.Join(root, "workspace")

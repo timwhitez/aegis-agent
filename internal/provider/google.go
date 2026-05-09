@@ -48,6 +48,8 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			Content struct {
 				Parts []struct {
 					Text         string `json:"text"`
+					Thought      bool   `json:"thought"`
+					ThoughtSig   string `json:"thoughtSignature"`
 					FunctionCall struct {
 						Name string          `json:"name"`
 						ID   string          `json:"id"`
@@ -74,16 +76,46 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	}
 	candidate := resp.Candidates[0]
 	var textParts []string
+	var thinkingParts []string
+	var providerBlocks []session.ProviderContentBlock
 	var calls []ToolCall
 	for _, part := range candidate.Content.Parts {
+		if part.Thought {
+			if part.Text != "" {
+				thinkingParts = append(thinkingParts, part.Text)
+			}
+			thought := true
+			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+				Provider:         "google",
+				Type:             "part",
+				Text:             part.Text,
+				Thought:          &thought,
+				ThoughtSignature: part.ThoughtSig,
+			})
+			continue
+		}
 		if part.Text != "" {
 			textParts = append(textParts, part.Text)
+			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+				Provider:         "google",
+				Type:             "part",
+				Text:             part.Text,
+				ThoughtSignature: part.ThoughtSig,
+			})
 		}
 		if part.FunctionCall.Name != "" {
 			callID := part.FunctionCall.ID
 			if callID == "" {
 				callID = "call_" + part.FunctionCall.Name
 			}
+			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
+				Provider:         "google",
+				Type:             "function_call",
+				Name:             part.FunctionCall.Name,
+				ID:               callID,
+				Args:             part.FunctionCall.Args,
+				ThoughtSignature: part.ThoughtSig,
+			})
 			calls = append(calls, ToolCall{
 				ID:             callID,
 				Name:           part.FunctionCall.Name,
@@ -106,10 +138,12 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		stopReason = "blocked"
 	}
 	return TurnResult{
-		Text:               text,
-		ToolCalls:          calls,
-		StopReason:         stopReason,
-		ProviderResponseID: resp.ResponseID,
+		Text:                  text,
+		Thinking:              strings.Join(thinkingParts, "\n"),
+		ProviderContentBlocks: providerBlocks,
+		ToolCalls:             calls,
+		StopReason:            stopReason,
+		ProviderResponseID:    resp.ResponseID,
 		Usage: Usage{
 			InputTokens:  resp.UsageMetadata.PromptTokenCount,
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
@@ -173,19 +207,36 @@ func googleContents(messages []session.Message) []map[string]any {
 			})
 		case "assistant":
 			parts := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if msg.Text != "" {
+			if googleBlocks := googleProviderParts(msg.ProviderContentBlocks); len(googleBlocks) > 0 {
+				parts = googleBlocks
+			} else if msg.Text != "" {
 				parts = append(parts, map[string]any{"text": msg.Text})
+				for _, call := range msg.ToolCalls {
+					var args any
+					_ = json.Unmarshal(call.Arguments, &args)
+					parts = append(parts, map[string]any{
+						"functionCall": map[string]any{
+							"name": call.Name,
+							"id":   call.ID,
+							"args": args,
+						},
+					})
+				}
+			} else {
+				for _, call := range msg.ToolCalls {
+					var args any
+					_ = json.Unmarshal(call.Arguments, &args)
+					parts = append(parts, map[string]any{
+						"functionCall": map[string]any{
+							"name": call.Name,
+							"id":   call.ID,
+							"args": args,
+						},
+					})
+				}
 			}
-			for _, call := range msg.ToolCalls {
-				var args any
-				_ = json.Unmarshal(call.Arguments, &args)
-				parts = append(parts, map[string]any{
-					"functionCall": map[string]any{
-						"name": call.Name,
-						"id":   call.ID,
-						"args": args,
-					},
-				})
+			if len(parts) == 0 {
+				continue
 			}
 			out = append(out, map[string]any{
 				"role":  "model",
@@ -217,6 +268,38 @@ func googleContents(messages []session.Message) []map[string]any {
 		}
 	}
 	return out
+}
+
+func googleProviderParts(blocks []session.ProviderContentBlock) []map[string]any {
+	var parts []map[string]any
+	for _, block := range blocks {
+		if block.Provider != "google" {
+			continue
+		}
+		part := map[string]any{}
+		if block.Text != "" {
+			part["text"] = block.Text
+		}
+		if block.Thought != nil {
+			part["thought"] = *block.Thought
+		}
+		if block.ThoughtSignature != "" {
+			part["thoughtSignature"] = block.ThoughtSignature
+		}
+		if block.Type == "function_call" && block.Name != "" {
+			var args any
+			_ = json.Unmarshal(block.Args, &args)
+			part["functionCall"] = map[string]any{
+				"name": block.Name,
+				"id":   block.ID,
+				"args": args,
+			}
+		}
+		if len(part) > 0 {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 func isJSON(input string) bool {
