@@ -678,7 +678,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 		t.Fatalf("unexpected events.js body: %s", eventsBody)
 	}
 	settingsBody := checkBody(server.URL + "/settings-view.js")
-	if !strings.Contains(settingsBody, "renderSettings") || !strings.Contains(settingsBody, "saveConfig") || !strings.Contains(settingsBody, "settings-provider") {
+	if !strings.Contains(settingsBody, "renderSettings") || !strings.Contains(settingsBody, "saveConfig") || !strings.Contains(settingsBody, "testConfig") || !strings.Contains(settingsBody, "settings-provider") || !strings.Contains(settingsBody, "settings-reasoning-mode") || !strings.Contains(settingsBody, "settings-test-btn") {
 		t.Fatalf("unexpected settings-view.js body: %s", settingsBody)
 	}
 	workspaceBody := checkBody(server.URL + "/workspace-view.js")
@@ -1607,6 +1607,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		"provider":                "openai",
 		"base_url":                "http://example.invalid/v1",
 		"model":                   "gpt-test",
+		"reasoning_mode":          "xhigh",
 		"api_key":                 "secret-key",
 		"guardrails_mode":         "standard",
 		"disable_hard_turn_limit": true,
@@ -1631,6 +1632,9 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if openaiProvider["model"] != "gpt-test" {
 		t.Fatalf("expected updated model, got %#v", openaiProvider)
 	}
+	if openaiProvider["reasoning_mode"] != "xhigh" || openaiProvider["reasoning_effort"] != "xhigh" {
+		t.Fatalf("expected xhigh reasoning mode, got %#v", openaiProvider)
+	}
 	if got := os.Getenv("OPENAI_API_KEY"); got != "secret-key" {
 		t.Fatalf("expected OPENAI_API_KEY to update, got %q", got)
 	}
@@ -1650,6 +1654,122 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(configBytes), "guardrails_mode: standard") {
 		t.Fatalf("expected updated guardrails mode to persist to config, got %q", string(configBytes))
+	}
+	if !strings.Contains(string(configBytes), "reasoning_effort: xhigh") {
+		t.Fatalf("expected updated reasoning effort to persist to config, got %q", string(configBytes))
+	}
+}
+
+func TestServiceConfigRoutesPersistThinkingMaxMode(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":       "anthropic",
+		"base_url":       "http://example.invalid",
+		"model":          "claude-test",
+		"reasoning_mode": "max",
+	}, http.StatusOK, nil)
+
+	var after map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &after)
+	if after["default_provider"] != "anthropic" {
+		t.Fatalf("unexpected default provider after update: %#v", after)
+	}
+	providers, _ := after["providers"].(map[string]any)
+	anthropicProvider, _ := providers["anthropic"].(map[string]any)
+	if anthropicProvider["reasoning_mode"] != "max" {
+		t.Fatalf("expected max thinking mode, got %#v", anthropicProvider)
+	}
+	if anthropicProvider["include_thoughts"] != true {
+		t.Fatalf("expected include_thoughts=true, got %#v", anthropicProvider)
+	}
+	if got, _ := anthropicProvider["thinking_budget"].(float64); int(got) != settingsThinkingMaxBudget {
+		t.Fatalf("expected max thinking budget, got %#v", anthropicProvider)
+	}
+	if got, _ := anthropicProvider["max_output_tokens"].(float64); int(got) != settingsThinkingMaxOutputTokens {
+		t.Fatalf("expected max output tokens to fit max thinking budget, got %#v", anthropicProvider)
+	}
+
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config file: %v", err)
+	}
+	configText := string(configBytes)
+	for _, want := range []string{
+		"thinking_budget: 32000",
+		"include_thoughts: true",
+		"max_output_tokens: 32768",
+	} {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("expected %q to persist to config, got %q", want, configText)
+		}
+	}
+}
+
+func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
+	seenRequest := make(chan map[string]any, 1)
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("unexpected provider path: %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		seenRequest <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe_1",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"provider probe ok\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var result TestConfigResponse
+	postJSON(t, ts.URL+"/api/config/test", map[string]any{
+		"provider":       "openai",
+		"base_url":       providerServer.URL,
+		"model":          "gpt-test",
+		"reasoning_mode": "xhigh",
+	}, http.StatusOK, &result)
+
+	if !result.Success || result.Provider != "openai" || result.Model != "gpt-test" || result.ReasoningMode != "xhigh" || result.ReasoningEffort != "xhigh" {
+		t.Fatalf("unexpected test config response: %#v", result)
+	}
+	seen := <-seenRequest
+	if seen["model"] != "gpt-test" {
+		t.Fatalf("expected provider probe model override, got %#v", seen)
+	}
+	reasoning, _ := seen["reasoning"].(map[string]any)
+	if reasoning["effort"] != "xhigh" {
+		t.Fatalf("expected provider probe to send reasoning effort xhigh, got %#v", seen)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config test should not persist config; stat err=%v", err)
 	}
 }
 

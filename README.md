@@ -104,7 +104,7 @@ providers:
       retry_transport: true
     wire_api: responses
     max_output_tokens: 8192
-    reasoning_effort: high
+    reasoning_effort: xhigh
     text_verbosity: low
 ```
 
@@ -132,6 +132,7 @@ provider generation / reasoning 字段会进入 runtime 和 session metadata，�
 `run.sh` 为 WSL / Windows 浏览器访问默认监听 `0.0.0.0:3940`。这个本地控制台可以写配置和 `.env` API key、删除 session、管理 skill、读取 workspace 文件；只在可信本机网络使用，暴露到非 loopback 地址前先确认风险。
 
 WebConsole 的页面结构、Background Jobs 简化口径、API 契约和浏览器验证要求写在 [`spec/17-web-console.md`](./spec/17-web-console.md)。
+Settings 页面提供 provider reasoning 下拉选择和测试按钮：OpenAI / `openai-compatible` 可以选择 `xhigh`，Anthropic / Google 这类 thinking provider 可以选择 `max`，测试按钮会用当前表单值做一次 provider probe，成功后再保存配置。
 
 ## 设计原则
 

@@ -2679,17 +2679,50 @@ textarea {
   color: var(--text-main);
 }
 
-.settings-save-btn {
+.settings-action-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.settings-save-btn,
+.settings-test-btn {
+  min-height: 40px;
   padding: 12px;
-  background-color: var(--accent);
-  color: white;
   border: none;
   border-radius: var(--radius-md);
   font-weight: 600;
 }
 
+.settings-save-btn {
+  flex: 1;
+  background-color: var(--accent);
+  color: white;
+}
+
+.settings-test-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 150px;
+  color: var(--text-main);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.settings-test-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .settings-save-btn:hover {
   background-color: var(--accent-strong);
+}
+
+.settings-test-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .settings-card { max-width: 640px; overflow: visible; flex-shrink: 0; min-height: 0; }

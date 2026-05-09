@@ -52,9 +52,23 @@ type UpdateConfigRequest struct {
 	BaseURL              string `json:"base_url"`
 	Model                string `json:"model"`
 	APIKey               string `json:"api_key"`
+	ReasoningMode        string `json:"reasoning_mode"`
 	GuardrailsMode       string `json:"guardrails_mode"`
 	MaxTurnsHard         *int   `json:"max_turns_hard"`
 	DisableHardTurnLimit bool   `json:"disable_hard_turn_limit"`
+}
+
+type TestConfigResponse struct {
+	Success         bool   `json:"success"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	ReasoningMode   string `json:"reasoning_mode"`
+	StopReason      string `json:"stop_reason,omitempty"`
+	FinishMessage   string `json:"finish_message,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ThinkingBudget  int    `json:"thinking_budget,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	IncludeThoughts *bool  `json:"include_thoughts,omitempty"`
 }
 
 type ErrorResponse struct {

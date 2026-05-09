@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"mime"
@@ -32,6 +33,14 @@ var upgrader = websocket.Upgrader{
 }
 
 var webconsoleProcessOwner = newProcessOwner()
+
+const (
+	maskedAPIKey                    = "••••••••••••••••"
+	settingsThinkingStandardBudget  = 1024
+	settingsThinkingMaxBudget       = 32000
+	settingsThinkingMaxOutputTokens = 32768
+	settingsProbeTimeout            = 90 * time.Second
+)
 
 type processOwner struct {
 	pid            int
@@ -281,6 +290,8 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleGetConfig(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/config":
 		s.handleUpdateConfig(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/config/test":
+		s.handleTestConfig(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/files":
 		s.handleListFiles(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/file/read":
@@ -1215,9 +1226,15 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	provs := map[string]any{}
 	for name, p := range s.cfg.Providers {
 		provs[name] = map[string]any{
-			"base_url": p.BaseURL,
-			"model":    p.Model,
-			"has_key":  s.cfg.APIKey(name) != "",
+			"base_url":          p.BaseURL,
+			"model":             p.Model,
+			"has_key":           s.cfg.APIKey(name) != "",
+			"reasoning_mode":    providerReasoningMode(name, p),
+			"reasoning_modes":   providerReasoningModes(name),
+			"reasoning_effort":  strings.TrimSpace(p.ReasoningEffort),
+			"thinking_budget":   p.ThinkingBudget,
+			"include_thoughts":  p.IncludeThoughts,
+			"max_output_tokens": p.MaxOutputTokens,
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1277,7 +1294,13 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if req.Model != "" {
 			p.Model = req.Model
 		}
-		if req.APIKey != "" && req.APIKey != "••••••••••••••••" {
+		if strings.TrimSpace(req.ReasoningMode) != "" {
+			if err := applyProviderReasoningMode(req.Provider, &p, req.ReasoningMode); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		if req.APIKey != "" && req.APIKey != maskedAPIKey {
 			if err := os.Setenv(p.APIKeyEnv, req.APIKey); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
@@ -1313,6 +1336,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"guardrails_mode":        updatedCfg.Runtime.GuardrailsMode,
 		"max_turns_hard":         updatedCfg.Runtime.MaxTurnsHard,
 		"hard_turn_limit_active": updatedCfg.Runtime.MaxTurnsHard > 0,
+		"reasoning_mode":         providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1327,12 +1351,182 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
+func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
+	var req UpdateConfigRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	s.mu.RLock()
+	testCfg, err := config.Clone(s.cfg)
+	s.mu.RUnlock()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	providerName := strings.TrimSpace(req.Provider)
+	if providerName == "" {
+		providerName = testCfg.DefaultProvider
+	}
+	p, ok := testCfg.Providers[providerName]
+	if !ok {
+		writeError(w, http.StatusBadRequest, newWebError(
+			errorCodeUnknownProvider,
+			"unknown provider",
+			"provider "+providerName+" is not configured",
+			"choose one of the configured providers before testing settings",
+		))
+		return
+	}
+	testCfg.DefaultProvider = providerName
+	if strings.TrimSpace(req.BaseURL) != "" {
+		p.BaseURL = req.BaseURL
+	}
+	if strings.TrimSpace(req.Model) != "" {
+		p.Model = req.Model
+	}
+	if strings.TrimSpace(req.ReasoningMode) != "" {
+		if err := applyProviderReasoningMode(providerName, &p, req.ReasoningMode); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	probeReq := runtime.ProbeRequest{Provider: providerName}
+	if req.APIKey != "" && req.APIKey != maskedAPIKey {
+		apiKeyEnv := fmt.Sprintf("GO_CLI_AGENT_SETTINGS_TEST_API_KEY_%d", time.Now().UnixNano())
+		if err := os.Setenv(apiKeyEnv, req.APIKey); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		defer os.Unsetenv(apiKeyEnv)
+		probeReq.APIKeyEnv = apiKeyEnv
+	}
+	testCfg.Providers[providerName] = p
+
+	ctx, cancel := context.WithTimeout(r.Context(), settingsProbeTimeout)
+	defer cancel()
+	result, err := runtime.NewRunner(testCfg).Probe(ctx, probeReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, TestConfigResponse{
+		Success:         true,
+		Provider:        result.Provider,
+		Model:           result.Model,
+		ReasoningMode:   providerReasoningMode(providerName, p),
+		StopReason:      result.StopReason,
+		FinishMessage:   result.FinishMessage,
+		ReasoningEffort: strings.TrimSpace(p.ReasoningEffort),
+		ThinkingBudget:  p.ThinkingBudget,
+		MaxOutputTokens: p.MaxOutputTokens,
+		IncludeThoughts: p.IncludeThoughts,
+	})
+}
+
 func configMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "yolo":
 		return "yolo"
 	default:
 		return "standard"
+	}
+}
+
+func providerReasoningModes(providerName string) []string {
+	switch providerReasoningFamily(providerName) {
+	case "openai":
+		return []string{"default", "low", "medium", "high", "xhigh"}
+	case "thinking":
+		return []string{"default", "standard", "max", "off"}
+	default:
+		return []string{"default"}
+	}
+}
+
+func providerReasoningMode(providerName string, provider config.Provider) string {
+	switch providerReasoningFamily(providerName) {
+	case "openai":
+		switch strings.ToLower(strings.TrimSpace(provider.ReasoningEffort)) {
+		case "low", "medium", "high", "xhigh":
+			return strings.ToLower(strings.TrimSpace(provider.ReasoningEffort))
+		default:
+			return "default"
+		}
+	case "thinking":
+		if provider.IncludeThoughts != nil && !*provider.IncludeThoughts {
+			return "off"
+		}
+		if provider.ThinkingBudget >= settingsThinkingMaxBudget {
+			return "max"
+		}
+		if provider.ThinkingBudget > 0 || (provider.IncludeThoughts != nil && *provider.IncludeThoughts) {
+			return "standard"
+		}
+		return "default"
+	default:
+		return "default"
+	}
+}
+
+func applyProviderReasoningMode(providerName string, provider *config.Provider, mode string) error {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		return nil
+	}
+	switch providerReasoningFamily(providerName) {
+	case "openai":
+		switch normalized {
+		case "default", "off":
+			provider.ReasoningEffort = ""
+		case "low", "medium", "high", "xhigh":
+			provider.ReasoningEffort = normalized
+		default:
+			return fmt.Errorf("unsupported reasoning mode for %s: %s", providerName, mode)
+		}
+	case "thinking":
+		switch normalized {
+		case "default":
+			provider.ThinkingBudget = 0
+			provider.IncludeThoughts = nil
+		case "off":
+			value := false
+			provider.ThinkingBudget = 0
+			provider.IncludeThoughts = &value
+		case "standard":
+			value := true
+			provider.ThinkingBudget = settingsThinkingStandardBudget
+			provider.IncludeThoughts = &value
+			if provider.MaxOutputTokens > 0 && provider.MaxOutputTokens <= settingsThinkingStandardBudget {
+				provider.MaxOutputTokens = settingsThinkingStandardBudget + 1024
+			}
+		case "max":
+			value := true
+			provider.ThinkingBudget = settingsThinkingMaxBudget
+			provider.IncludeThoughts = &value
+			if provider.MaxOutputTokens < settingsThinkingMaxOutputTokens {
+				provider.MaxOutputTokens = settingsThinkingMaxOutputTokens
+			}
+		default:
+			return fmt.Errorf("unsupported thinking mode for %s: %s", providerName, mode)
+		}
+	default:
+		if normalized != "default" {
+			return fmt.Errorf("provider %s does not support reasoning mode %s", providerName, mode)
+		}
+	}
+	return nil
+}
+
+func providerReasoningFamily(providerName string) string {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "openai", "openai-compatible":
+		return "openai"
+	case "anthropic", "google":
+		return "thinking"
+	default:
+		return ""
 	}
 }
 

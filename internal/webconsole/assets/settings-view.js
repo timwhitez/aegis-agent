@@ -11,6 +11,17 @@ async function renderSettings() {
     const options = Object.keys(providers).map((providerName) => `
       <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
     `).join('');
+    const maskedKey = '••••••••••••••••';
+    const modeLabel = (mode) => ({
+      default: 'Provider default',
+      low: 'Low',
+      medium: 'Medium',
+      high: 'High',
+      xhigh: 'XHigh',
+      standard: 'Standard',
+      max: 'Max',
+      off: 'Off'
+    }[mode] || mode);
 
     container.innerHTML = `
       <div class="view-header">
@@ -55,10 +66,21 @@ async function renderSettings() {
             <input id="settings-model" class="settings-input" type="text">
           </div>
           <div class="field">
+            <label class="field-label">Reasoning Mode</label>
+            <select id="settings-reasoning-mode" class="settings-input"></select>
+            <p id="settings-reasoning-help" class="view-subtitle settings-help"></p>
+          </div>
+          <div class="field">
             <label class="field-label">API Key</label>
             <input id="settings-apikey" class="settings-input" type="password" placeholder="Leave blank to keep existing persisted key...">
           </div>
-          <button id="settings-save-btn" class="skill-btn install settings-save-btn" type="button">Save Changes</button>
+          <div class="settings-action-row">
+            <button id="settings-test-btn" class="skill-btn settings-test-btn" type="button">
+              <i data-lucide="activity"></i>
+              <span>Test Settings</span>
+            </button>
+            <button id="settings-save-btn" class="skill-btn install settings-save-btn" type="button">Save Changes</button>
+          </div>
         </form>
       </div>
     `;
@@ -72,7 +94,10 @@ async function renderSettings() {
     const disableHardTurnLimitInput = document.getElementById('settings-disable-hard-turn-limit');
     const baseURLInput = document.getElementById('settings-baseurl');
     const modelInput = document.getElementById('settings-model');
+    const reasoningModeSelect = document.getElementById('settings-reasoning-mode');
+    const reasoningHelp = document.getElementById('settings-reasoning-help');
     const apiKeyInput = document.getElementById('settings-apikey');
+    const testButton = document.getElementById('settings-test-btn');
     const saveButton = document.getElementById('settings-save-btn');
 
     const syncProviderFields = () => {
@@ -82,8 +107,22 @@ async function renderSettings() {
       }
       baseURLInput.value = provider.base_url || '';
       modelInput.value = provider.model || '';
-      apiKeyInput.value = provider.has_key ? '••••••••••••••••' : '';
+      apiKeyInput.value = provider.has_key ? maskedKey : '';
       apiKeyInput.dataset.originalHasKey = provider.has_key ? 'true' : 'false';
+      const modes = Array.isArray(provider.reasoning_modes) && provider.reasoning_modes.length > 0 ? provider.reasoning_modes : ['default'];
+      reasoningModeSelect.innerHTML = modes.map((mode) => `
+        <option value="${escapeAttr(mode)}" ${mode === provider.reasoning_mode ? 'selected' : ''}>${escapeHTML(modeLabel(mode))}</option>
+      `).join('');
+      if (!modes.includes(reasoningModeSelect.value)) {
+        reasoningModeSelect.value = modes[0] || 'default';
+      }
+      if (modes.includes('xhigh')) {
+        reasoningHelp.textContent = 'GPT-compatible providers send reasoning_effort with the selected level.';
+      } else if (modes.includes('max')) {
+        reasoningHelp.textContent = 'Thinking providers set include_thoughts and a budget profile.';
+      } else {
+        reasoningHelp.textContent = 'This provider only exposes its default reasoning behavior.';
+      }
     };
 
     providerSelect.addEventListener('change', syncProviderFields);
@@ -93,6 +132,42 @@ async function renderSettings() {
     maxTurnsHardInput.disabled = disableHardTurnLimit;
     disableHardTurnLimitInput.addEventListener('change', () => {
       maxTurnsHardInput.disabled = disableHardTurnLimitInput.checked;
+    });
+
+    const currentAPIKeyValue = () => (
+      apiKeyInput.value === maskedKey && apiKeyInput.dataset.originalHasKey === 'true' ? '' : apiKeyInput.value
+    );
+    const buildConfigPayload = () => ({
+      guardrailsMode: guardrailsSelect.value,
+      maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
+      disableHardTurnLimit: disableHardTurnLimitInput.checked,
+      provider: providerSelect.value,
+      baseURL: baseURLInput.value,
+      model: modelInput.value,
+      reasoningMode: reasoningModeSelect.value,
+      apiKey: currentAPIKeyValue()
+    });
+
+    testButton.addEventListener('click', async () => {
+      testButton.innerText = 'Testing...';
+      testButton.disabled = true;
+      try {
+        const result = await testConfig(buildConfigPayload());
+        const selectedMode = modeLabel(result.reasoning_mode || reasoningModeSelect.value || 'default');
+        showToast(`Provider test passed: ${result.provider} / ${result.model} / ${selectedMode}.`, 'success');
+        testButton.innerHTML = '<i data-lucide="activity"></i><span>Test Settings</span>';
+        testButton.disabled = false;
+        if (window.lucide && lucide.createIcons) {
+          lucide.createIcons({ root: testButton });
+        }
+      } catch (err) {
+        showToast(err.message || 'Provider test failed.', 'error');
+        testButton.innerHTML = '<i data-lucide="activity"></i><span>Test Settings</span>';
+        testButton.disabled = false;
+        if (window.lucide && lucide.createIcons) {
+          lucide.createIcons({ root: testButton });
+        }
+      }
     });
 
     saveButton.addEventListener('click', async () => {
@@ -105,20 +180,12 @@ async function renderSettings() {
             throw new Error('Hard max turns must be a positive integer, or disable the hard limit.');
           }
         }
-        await saveConfig({
-          guardrailsMode: guardrailsSelect.value,
-          maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
-          disableHardTurnLimit: disableHardTurnLimitInput.checked,
-          provider: providerSelect.value,
-          baseURL: baseURLInput.value,
-          model: modelInput.value,
-          apiKey: apiKeyInput.value === '••••••••••••••••' && apiKeyInput.dataset.originalHasKey === 'true' ? '' : apiKeyInput.value
-        });
+        await saveConfig(buildConfigPayload());
         showToast('Settings saved.', 'success');
         saveButton.innerText = 'Saved';
         saveButton.disabled = false;
-        if (apiKeyInput.value !== '••••••••••••••••') {
-          apiKeyInput.value = '••••••••••••••••';
+        if (apiKeyInput.value !== maskedKey) {
+          apiKeyInput.value = maskedKey;
           apiKeyInput.dataset.originalHasKey = 'true';
         }
         setTimeout(() => {

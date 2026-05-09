@@ -280,7 +280,7 @@ providers:
       retry_transport: true
     wire_api: responses
     max_output_tokens: 8192
-    reasoning_effort: high
+    reasoning_effort: xhigh
     text_verbosity: low
 
 session:
@@ -329,7 +329,8 @@ hooks:
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
-- `experimental web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里
+- `experimental web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、provider reasoning / thinking mode 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里
+- Settings 页面必须用受支持值的下拉选择暴露 provider reasoning / thinking mode，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 provider probe，但不得持久化配置
 
 ## 8. Provider 配置字段
 
@@ -353,7 +354,7 @@ hooks:
 - `temperature`
 - `top_p`
 - `max_output_tokens`
-- `reasoning_effort`
+- `reasoning_effort`：Settings mode `default | low | medium | high | xhigh`，其中 `xhigh` 持久化为 `reasoning_effort: xhigh`
 - `text_verbosity`
 - `store`
 - `send_metadata`
@@ -366,6 +367,7 @@ hooks:
 - `max_output_tokens`
 - `thinking_budget`
 - `include_thoughts`
+- Settings mode `default | standard | max | off`；`max` 持久化为 `include_thoughts: true`、`thinking_budget: 32000`，并把 `max_output_tokens` 提高到至少 `32768`
 
 ### 8.4 Google
 
@@ -374,6 +376,7 @@ hooks:
 - `max_output_tokens`
 - `thinking_budget`
 - `include_thoughts`
+- Settings mode 与 Anthropic 相同，用于 Gemini thinking config
 
 约束：
 

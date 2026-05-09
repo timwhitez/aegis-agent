@@ -118,6 +118,17 @@ function saveConfig(payload) {
     provider: payload.provider,
     base_url: payload.baseURL,
     model: payload.model,
+    reasoning_mode: payload.reasoningMode,
+    api_key: payload.apiKey
+  }));
+}
+
+function testConfig(payload) {
+  return requestJSON('/api/config/test', jsonRequest({
+    provider: payload.provider,
+    base_url: payload.baseURL,
+    model: payload.model,
+    reasoning_mode: payload.reasoningMode,
     api_key: payload.apiKey
   }));
 }
