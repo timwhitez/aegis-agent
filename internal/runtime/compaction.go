@@ -486,7 +486,7 @@ func redactSecretsInMessages(messages []session.Message) []session.Message {
 		out[i].Text = redactSecretText(out[i].Text)
 		for j := range out[i].ToolCalls {
 			if len(out[i].ToolCalls[j].Arguments) > 0 {
-				out[i].ToolCalls[j].Arguments = json.RawMessage(redactSecretText(string(out[i].ToolCalls[j].Arguments)))
+				out[i].ToolCalls[j].Arguments = redactToolCallArguments(out[i].ToolCalls[j].Arguments)
 			}
 		}
 		for j := range out[i].ToolResults {
@@ -497,6 +497,31 @@ func redactSecretsInMessages(messages []session.Message) []session.Message {
 		out[i].Meta = redactMetadata(out[i].Meta)
 	}
 	return out
+}
+
+func redactToolCallArguments(raw json.RawMessage) json.RawMessage {
+	if strings.TrimSpace(string(raw)) == "" {
+		return json.RawMessage(`{}`)
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		redacted := redactAny(decoded)
+		if data, err := json.Marshal(redacted); err == nil {
+			return json.RawMessage(data)
+		}
+	}
+	redactedText := redactSecretText(string(raw))
+	if json.Valid([]byte(redactedText)) {
+		return json.RawMessage(redactedText)
+	}
+	data, err := json.Marshal(map[string]any{
+		"redacted_invalid_json": true,
+		"text":                  redactedText,
+	})
+	if err != nil {
+		return json.RawMessage(`{"redacted_invalid_json":true}`)
+	}
+	return json.RawMessage(data)
 }
 
 func redactMetadata(input map[string]any) map[string]any {
@@ -525,6 +550,10 @@ func redactAny(value any) any {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, item := range typed {
+			if isSecretLikeKey(key) {
+				out[key] = redactSecretValue(item)
+				continue
+			}
 			out[key] = redactAny(item)
 		}
 		return out
@@ -558,6 +587,56 @@ func redactAny(value any) any {
 		return out
 	default:
 		return value
+	}
+}
+
+func isSecretLikeKey(key string) bool {
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '-', '.', ' ':
+			return -1
+		default:
+			return r
+		}
+	}, strings.ToLower(strings.TrimSpace(key)))
+	if compact == "" {
+		return false
+	}
+	return compact == "token" ||
+		strings.HasSuffix(compact, "token") ||
+		strings.Contains(compact, "apikey") ||
+		strings.Contains(compact, "secret") ||
+		strings.Contains(compact, "password") ||
+		strings.Contains(compact, "authorization")
+}
+
+func redactSecretValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return typed
+		}
+		return "[REDACTED]"
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = redactSecretValue(item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(typed))
+		for i, item := range typed {
+			if strings.TrimSpace(item) == "" {
+				out[i] = item
+			} else {
+				out[i] = "[REDACTED]"
+			}
+		}
+		return out
+	case nil:
+		return nil
+	default:
+		return "[REDACTED]"
 	}
 }
 

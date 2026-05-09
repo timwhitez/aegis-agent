@@ -758,10 +758,11 @@ function renderSpecialToolResult(result, parsed) {
   }
 
   if (result.name === 'agent_list') {
-    const sessions = maybeArray(parsed.sessions);
-    const jobs = maybeArray(parsed.jobs);
+    const sessions = maybeArray(parsed.sessions).slice().sort(compareCreatedAscending);
+    const jobs = maybeArray(parsed.jobs).slice().sort(compareCreatedAscending);
     const sessionIds = new Set(sessions.map((s) => s.id));
-    const orphanJobs = jobs.filter((job) => !sessionIds.has(job.session_id));
+    const sessionQueueJobIds = new Set(sessions.map((s) => s.queue_job_id).filter(Boolean));
+    const orphanJobs = jobs.filter((job) => !sessionIds.has(job.session_id) && !sessionQueueJobIds.has(job.id));
     if (!sessions.length && !orphanJobs.length) return '';
 
     const rows = [];
@@ -931,10 +932,11 @@ function renderAgentsPanel(detail) {
   const children = maybeArray(detail.children?.sessions);
   const jobs = maybeArray(detail.children?.jobs);
   const notifications = maybeArray(detail.background_notifications);
+  const agents = mergeSubAgentRows(children, jobs);
   return `
     <section class="panel-section">
       <div class="summary-grid wide">
-        ${renderMetricCard('Child sessions', String(children.length), 'durable sessions')}
+        ${renderMetricCard('Sub agents', String(agents.length), 'stable creation order')}
         ${renderMetricCard('Background jobs', String(jobs.length), 'queued or completed')}
         ${renderMetricCard('Notifications', String(notifications.length), 'background results')}
       </div>
@@ -942,16 +944,9 @@ function renderAgentsPanel(detail) {
 
     <section class="panel-section">
       <div class="section-title-row">
-        <h4>Child sessions</h4>
+        <h4>Sub agents</h4>
       </div>
-      ${children.length ? `<div class="card-stack">${children.map((item) => renderChildSessionCard(item)).join('')}</div>` : '<div class="empty-panel">No child sessions yet.</div>'}
-    </section>
-
-    <section class="panel-section">
-      <div class="section-title-row">
-        <h4>Background queue</h4>
-      </div>
-      ${jobs.length ? `<div class="card-stack">${jobs.map((job) => renderQueueJobCard(job)).join('')}</div>` : '<div class="empty-panel">No background jobs yet.</div>'}
+      ${agents.length ? `<div class="card-stack">${agents.map((item) => renderSubAgentCard(item)).join('')}</div>` : '<div class="empty-panel">No sub agents yet.</div>'}
     </section>
 
     <section class="panel-section">
@@ -961,6 +956,45 @@ function renderAgentsPanel(detail) {
       ${notifications.length ? `<div class="card-stack">${notifications.map((note) => renderNotificationCard(note)).join('')}</div>` : '<div class="empty-panel">No background notifications yet.</div>'}
     </section>
   `;
+}
+
+function mergeSubAgentRows(children, jobs) {
+  const sortedChildren = maybeArray(children).slice().sort(compareCreatedAscending);
+  const sortedJobs = maybeArray(jobs).slice().sort(compareCreatedAscending);
+  const rows = [];
+  const bySessionId = new Map();
+  const byQueueJobId = new Map();
+
+  sortedChildren.forEach((sessionItem) => {
+    const row = { session: sessionItem, job: null };
+    rows.push(row);
+    if (sessionItem.id) bySessionId.set(sessionItem.id, row);
+    if (sessionItem.queue_job_id) byQueueJobId.set(sessionItem.queue_job_id, row);
+  });
+
+  sortedJobs.forEach((job) => {
+    const row = (job.session_id && bySessionId.get(job.session_id)) || (job.id && byQueueJobId.get(job.id));
+    if (row) {
+      row.job = job;
+      return;
+    }
+    rows.push({ session: null, job });
+  });
+
+  return rows.sort((left, right) => compareCreatedAscending(agentRowSortSource(left), agentRowSortSource(right)));
+}
+
+function agentRowSortSource(row) {
+  return row.session || row.job || {};
+}
+
+function compareCreatedAscending(left, right) {
+  const leftCreated = left?.created_at || '';
+  const rightCreated = right?.created_at || '';
+  if (leftCreated !== rightCreated) return leftCreated < rightCreated ? -1 : 1;
+  const leftId = left?.id || left?.session_id || left?.queue_job_id || '';
+  const rightId = right?.id || right?.session_id || right?.queue_job_id || '';
+  return leftId.localeCompare(rightId);
 }
 
 function renderTasksPanel(detail) {
@@ -1470,6 +1504,39 @@ function renderTimelineItem(item, options = {}) {
       </div>
     </div>
   `;
+}
+
+function renderSubAgentCard(row) {
+  const sessionItem = row.session || null;
+  const job = row.job || null;
+  const status = isTerminalStatus(job?.status) ? job.status : (sessionItem?.status || job?.status || 'unknown');
+  const label = agentLabel(sessionItem?.agent_name || job?.agent_name, sessionItem?.agent_role || job?.agent_role) || shortId(sessionItem?.id || job?.id || '');
+  const model = sessionItem?.model || job?.model || sessionItem?.provider || job?.provider || 'n/a';
+  const phase = sessionItem?.phase ? phaseHeadline(sessionItem.phase) : (job?.mode || 'exec');
+  const sessionId = sessionItem?.id || job?.session_id || '';
+  const jobId = job?.id || sessionItem?.queue_job_id || '';
+  const error = sessionItem?.last_error || job?.last_error || '';
+  return `
+    <div class="agent-card">
+      <div class="agent-card-top">
+        <div class="agent-card-title">${escapeHTML(label)}</div>
+        <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
+      </div>
+      <div class="agent-card-copy">${escapeHTML(model)} · ${escapeHTML(phase)}</div>
+      ${error ? `<div class="notification-copy danger">${escapeHTML(truncateText(error, 180))}</div>` : ''}
+      <div class="agent-card-meta">${sessionId ? escapeHTML(shortId(sessionId)) : ''}${jobId ? `${sessionId ? ' · ' : ''}job ${escapeHTML(shortId(jobId))}` : ''}</div>
+      ${renderVisiblePaths(sessionItem?.visible_paths || job?.visible_paths)}
+      <div class="card-actions">
+        ${sessionId ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(sessionId)}">Open child session</button>` : ''}
+        ${jobId ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(jobId)}">Open job</button>` : ''}
+        ${job?.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function isTerminalStatus(status) {
+  return status === 'completed' || status === 'failed';
 }
 
 function renderChildSessionCard(item) {

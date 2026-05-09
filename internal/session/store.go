@@ -482,7 +482,10 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].UpdatedAt > result[j].UpdatedAt
+		if result[i].CreatedAt == result[j].CreatedAt {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt < result[j].CreatedAt
 	})
 	if len(result) > limit {
 		result = result[:limit]
@@ -613,7 +616,7 @@ func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 		path := s.queueJobPath(status, jobID)
 		err := readJSONFile(path, &job)
 		if err == nil {
-			if repaired, changed := s.reconcileStaleRunningJob(job); changed {
+			if repaired, changed := s.reconcileQueueJobSession(job); changed {
 				job = repaired
 			}
 			return job, nil
@@ -680,13 +683,19 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 			if parentSessionID != "" && job.ParentSessionID != parentSessionID {
 				continue
 			}
-			if repaired, changed := s.reconcileStaleRunningJob(job); changed {
+			if repaired, changed := s.reconcileQueueJobSession(job); changed {
 				job = repaired
 			}
 			out = append(out, job)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if parentSessionID != "" {
+			if out[i].CreatedAt == out[j].CreatedAt {
+				return out[i].ID < out[j].ID
+			}
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
 		if out[i].UpdatedAt == out[j].UpdatedAt {
 			return out[i].CreatedAt > out[j].CreatedAt
 		}
@@ -1076,12 +1085,13 @@ func (s *Store) writeJSONL(path string, payload any) error {
 	return nil
 }
 
-func (s *Store) reconcileStaleRunningJob(job QueueJob) (QueueJob, bool) {
-	if job.Status != QueueStatusRunning {
-		return job, false
-	}
+func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
+	originalStatus := job.Status
 	meta, state, messages, ok := s.findSessionForQueueJob(job.ID)
 	if !ok {
+		if job.Status != QueueStatusRunning {
+			return job, false
+		}
 		if !queueJobIsStale(job, time.Now().UTC()) {
 			return job, false
 		}
@@ -1089,6 +1099,9 @@ func (s *Store) reconcileStaleRunningJob(job QueueJob) (QueueJob, bool) {
 		job.SessionStatus = StatusFailed
 		job.LastError = "queue job stale: running job has no linked session and heartbeat is stale"
 		_ = s.SaveJob(job)
+		if job.Status != originalStatus {
+			s.reconcileParentQueueJobStatus(job)
+		}
 		if job.ParentSessionID != "" {
 			s.ensureBackgroundNotification(job)
 			s.ensureQueueLifecycleEvent(job, "queue.job.notified")
@@ -1096,31 +1109,129 @@ func (s *Store) reconcileStaleRunningJob(job QueueJob) (QueueJob, bool) {
 		}
 		return job, true
 	}
-	if changed := syncRunningQueueJobSession(&job, meta, state, messages); changed && state.Status != StatusCompleted && state.Status != StatusFailed {
-		_ = s.SaveJob(job)
-		return job, true
+	state, stateChanged := reconcileStateFromTerminalQueueJob(state, job)
+	if stateChanged {
+		_ = s.SaveState(meta.ID, state)
 	}
+	changed := syncRunningQueueJobSession(&job, meta, state, messages)
 	switch state.Status {
 	case StatusCompleted, StatusFailed:
+		if state.Status == StatusFailed {
+			if job.Status != QueueStatusFailed {
+				job.Status = QueueStatusFailed
+				changed = true
+			}
+		} else if job.Status != QueueStatusCompleted {
+			job.Status = QueueStatusCompleted
+			changed = true
+		}
 	default:
+		if job.Status != QueueStatusRunning {
+			job.Status = QueueStatusRunning
+			changed = true
+		}
+	}
+	if !changed {
 		return job, false
 	}
-	if state.Status == StatusFailed {
-		job.Status = QueueStatusFailed
-	} else {
-		job.Status = QueueStatusCompleted
-	}
 	_ = s.SaveJob(job)
+	if job.Status != originalStatus || (isTerminalQueueStatus(job.Status) && changed) {
+		s.reconcileParentQueueJobStatus(job)
+	}
 	if job.ParentSessionID != "" {
-		s.ensureBackgroundNotification(job)
-		s.ensureQueueLifecycleEvent(job, "queue.job.notified")
-		if job.Status == QueueStatusFailed {
-			s.ensureQueueLifecycleEvent(job, "queue.job.failed")
-		} else {
-			s.ensureQueueLifecycleEvent(job, "queue.job.completed")
+		switch job.Status {
+		case QueueStatusCompleted, QueueStatusFailed:
+			s.ensureBackgroundNotification(job)
+			s.ensureQueueLifecycleEvent(job, "queue.job.notified")
+			if job.Status == QueueStatusFailed {
+				s.ensureQueueLifecycleEvent(job, "queue.job.failed")
+			} else {
+				s.ensureQueueLifecycleEvent(job, "queue.job.completed")
+			}
 		}
 	}
 	return job, true
+}
+
+func isTerminalQueueStatus(status string) bool {
+	return status == QueueStatusCompleted || status == QueueStatusFailed
+}
+
+func reconcileStateFromTerminalQueueJob(state State, job QueueJob) (State, bool) {
+	switch job.Status {
+	case QueueStatusFailed:
+		if state.Status == StatusCompleted || state.Status == StatusFailed {
+			return state, false
+		}
+		state.Status = StatusFailed
+		if strings.TrimSpace(state.LastError) == "" {
+			state.LastError = job.LastError
+		}
+		if strings.TrimSpace(state.Phase) == "" {
+			state.Phase = "failed"
+		}
+		return state, true
+	case QueueStatusCompleted:
+		if state.Status == StatusCompleted || state.Status == StatusFailed {
+			return state, false
+		}
+		state.Status = StatusCompleted
+		if strings.TrimSpace(state.LastAssistantExcerpt) == "" {
+			state.LastAssistantExcerpt = job.FinalText
+		}
+		return state, true
+	default:
+		return state, false
+	}
+}
+
+func (s *Store) reconcileParentQueueJobStatus(job QueueJob) {
+	if strings.TrimSpace(job.ParentSessionID) == "" || strings.TrimSpace(job.ID) == "" {
+		return
+	}
+	coordination, err := s.LoadParentCoordination(job.ParentSessionID)
+	if err != nil || coordination.ParentSessionID == "" {
+		return
+	}
+	coordination.UnresolvedQueueJobs = removeStringValue(coordination.UnresolvedQueueJobs, job.ID)
+	coordination.CompletedQueueJobs = removeStringValue(coordination.CompletedQueueJobs, job.ID)
+	coordination.FailedQueueJobs = removeStringValue(coordination.FailedQueueJobs, job.ID)
+	switch job.Status {
+	case QueueStatusCompleted:
+		coordination.CompletedQueueJobs = appendUniqueString(coordination.CompletedQueueJobs, job.ID)
+	case QueueStatusFailed:
+		coordination.FailedQueueJobs = appendUniqueString(coordination.FailedQueueJobs, job.ID)
+	default:
+		coordination.UnresolvedQueueJobs = appendUniqueString(coordination.UnresolvedQueueJobs, job.ID)
+	}
+	coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	_ = s.SaveParentCoordination(job.ParentSessionID, coordination)
+}
+
+func appendUniqueString(items []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return items
+	}
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
+}
+
+func removeStringValue(items []string, value string) []string {
+	if len(items) == 0 {
+		return items
+	}
+	out := items[:0]
+	for _, item := range items {
+		if item != value {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func syncRunningQueueJobSession(job *QueueJob, meta SessionMetadata, state State, messages []Message) bool {
@@ -1273,7 +1384,6 @@ func collectQueueVisiblePaths(effectiveWorkdir string, messages []Message) []str
 			out = append(out, rel)
 		}
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -1307,7 +1417,6 @@ func syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir string, visiblePat
 	if len(out) == 0 {
 		return nil
 	}
-	sort.Strings(out)
 	return out
 }
 

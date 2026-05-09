@@ -145,7 +145,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			e.bus.Publish(evt)
 		})
 		if err != nil {
-			return RunResult{}, err
+			return e.fail(ctx, meta, state, err, hookManager)
 		}
 		if didCompact {
 			state.LastCompactionInputChars = compactionInputChars

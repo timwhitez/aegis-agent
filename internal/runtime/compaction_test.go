@@ -399,6 +399,42 @@ func TestCompactionRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestRedactToolCallArgumentsPreservesValidRawJSON(t *testing.T) {
+	args := json.RawMessage(`{"path":"macorchard-api/internal/httpapi/handlers.go","pattern":"\"token\":\"abcdefghijklmnop\"|tokenSHA :=|Set-Cookie|Cookie|Authorization","nested":{"password":"supersecretpassword"}}`)
+	messages := []session.Message{
+		session.NewAssistantMessage("", []session.ToolCall{{
+			ID:        "call_sensitive_pattern",
+			Name:      "shell",
+			Arguments: args,
+		}}),
+	}
+
+	redacted := redactSecretsInMessages(messages)
+	if _, err := json.Marshal(redacted); err != nil {
+		t.Fatalf("marshal redacted messages: %v", err)
+	}
+	gotArgs := redacted[0].ToolCalls[0].Arguments
+	if !json.Valid(gotArgs) {
+		t.Fatalf("expected valid redacted tool arguments, got %s", string(gotArgs))
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(gotArgs, &decoded); err != nil {
+		t.Fatalf("unmarshal redacted args: %v", err)
+	}
+	if decoded["path"] != "macorchard-api/internal/httpapi/handlers.go" {
+		t.Fatalf("expected non-secret path to survive, got %#v", decoded)
+	}
+	if strings.Contains(string(gotArgs), "supersecretpassword") || strings.Contains(string(gotArgs), "abcdefghijklmnop") {
+		t.Fatalf("expected secrets to be redacted, got %s", string(gotArgs))
+	}
+	if !strings.Contains(string(gotArgs), "[REDACTED]") {
+		t.Fatalf("expected redaction marker, got %s", string(gotArgs))
+	}
+	if string(messages[0].ToolCalls[0].Arguments) != string(args) {
+		t.Fatalf("expected original raw arguments to remain unchanged")
+	}
+}
+
 func TestCompactionTruncatesOldToolOutput(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	meta := session.SessionMetadata{

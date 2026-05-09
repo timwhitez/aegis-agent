@@ -376,6 +376,191 @@ func TestReconcileKeepsRecentHeartbeatRunningJob(t *testing.T) {
 	}
 }
 
+func TestListChildrenAndParentJobsUseCreationOrder(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	base := time.Date(2026, 5, 9, 3, 22, 19, 0, time.UTC)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_order",
+		CreatedAt:        base.Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_order",
+	}
+	parentState := State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: base.Format(time.RFC3339Nano)}
+	if err := store.Create(parentMeta, parentState); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	children := []struct {
+		id        string
+		createdAt time.Time
+		updatedAt time.Time
+	}{
+		{"child_first", base.Add(1 * time.Second), base.Add(1 * time.Second)},
+		{"child_second", base.Add(2 * time.Second), base.Add(10 * time.Second)},
+	}
+	for _, child := range children {
+		meta := SessionMetadata{
+			SchemaVersion:    1,
+			ID:               child.id,
+			CreatedAt:        child.createdAt.Format(time.RFC3339Nano),
+			Workdir:          t.TempDir(),
+			Mode:             ModeExec,
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			CompletionPolicy: CompletionPolicyAutonomous,
+			ParentSessionID:  parentMeta.ID,
+			RootSessionID:    parentMeta.ID,
+			AgentRole:        "evaluator",
+			Depth:            1,
+		}
+		state := State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: child.updatedAt.Format(time.RFC3339Nano)}
+		if err := store.Create(meta, state); err != nil {
+			t.Fatalf("create child %s: %v", child.id, err)
+		}
+	}
+	listedChildren, err := store.ListChildren(parentMeta.ID, 10)
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	if len(listedChildren) != 2 || listedChildren[0].ID != "child_first" || listedChildren[1].ID != "child_second" {
+		t.Fatalf("expected child creation order, got %#v", listedChildren)
+	}
+
+	firstJob := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_first",
+		CreatedAt:       base.Add(1 * time.Second).Format(time.RFC3339Nano),
+		Status:          QueueStatusQueued,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "first",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	secondJob := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_second",
+		CreatedAt:       base.Add(2 * time.Second).Format(time.RFC3339Nano),
+		Status:          QueueStatusQueued,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "second",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(firstJob); err != nil {
+		t.Fatalf("save first job: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := store.SaveJob(secondJob); err != nil {
+		t.Fatalf("save second job: %v", err)
+	}
+	listedJobs, err := store.ListJobsByParent(parentMeta.ID, 10)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(listedJobs) != 2 || listedJobs[0].ID != "job_first" || listedJobs[1].ID != "job_second" {
+		t.Fatalf("expected job creation order, got %#v", listedJobs)
+	}
+}
+
+func TestReconcileFailedJobUpdatesLinkedRunningSession(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_failed_job",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_failed_job",
+	}
+	parentState := State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}
+	if err := store.Create(parentMeta, parentState); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	coordination := ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentMeta.ID,
+		WaitMode:            "all",
+		UnresolvedQueueJobs: []string{"job_linked_failed"},
+		UpdatedAt:           now,
+	}
+	if err := store.SaveParentCoordination(parentMeta.ID, coordination); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_linked_failed",
+		CreatedAt:       now,
+		Status:          QueueStatusFailed,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		AgentName:       "scan-store-and-data-layer",
+		AgentRole:       "evaluator",
+		Prompt:          "scan",
+		Mode:            ModeExec,
+		Background:      true,
+		LastError:       "json: error calling MarshalJSON for type json.RawMessage: unexpected end of JSON input",
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save failed job: %v", err)
+	}
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_linked_failed",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		AgentName:        "scan-store-and-data-layer",
+		AgentRole:        "evaluator",
+		QueueJobID:       job.ID,
+		Depth:            1,
+	}
+	childState := State{Status: StatusRunning, Phase: "compact", UpdatedAt: now}
+	if err := store.Create(childMeta, childState); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	repaired, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load repaired job: %v", err)
+	}
+	if repaired.Status != QueueStatusFailed || repaired.SessionID != childMeta.ID || repaired.SessionStatus != StatusFailed {
+		t.Fatalf("expected failed job linked to failed child session, got %#v", repaired)
+	}
+	if !strings.Contains(repaired.LastError, "MarshalJSON") {
+		t.Fatalf("expected job error to be preserved, got %#v", repaired)
+	}
+	loadedChildState, err := store.LoadState(childMeta.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if loadedChildState.Status != StatusFailed || !strings.Contains(loadedChildState.LastError, "MarshalJSON") {
+		t.Fatalf("expected linked child state to be failed, got %#v", loadedChildState)
+	}
+	loadedCoordination, err := store.LoadParentCoordination(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if stringSliceContains(loadedCoordination.UnresolvedQueueJobs, job.ID) || !stringSliceContains(loadedCoordination.FailedQueueJobs, job.ID) {
+		t.Fatalf("expected parent coordination to move job to failed, got %#v", loadedCoordination)
+	}
+}
+
 func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)
@@ -518,4 +703,13 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	if reloaded.Status != QueueStatusCompleted {
 		t.Fatalf("expected persisted completed job, got %#v", reloaded)
 	}
+}
+
+func stringSliceContains(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
