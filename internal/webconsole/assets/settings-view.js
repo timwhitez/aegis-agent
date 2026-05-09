@@ -18,7 +18,7 @@ async function renderSettings() {
         <p class="view-subtitle">Configure provider defaults, local API credentials, and guardrails mode. API keys are persisted to the local env file for future restarts.</p>
       </div>
       <div class="skill-card settings-card">
-        <div class="settings-form">
+        <form class="settings-form">
           <div class="field">
             <label class="field-label">Guardrails Mode</label>
             <select id="settings-guardrails" class="settings-input">
@@ -58,8 +58,8 @@ async function renderSettings() {
             <label class="field-label">API Key</label>
             <input id="settings-apikey" class="settings-input" type="password" placeholder="Leave blank to keep existing persisted key...">
           </div>
-          <button id="settings-save-btn" class="skill-btn install settings-save-btn">Save Changes</button>
-        </div>
+          <button id="settings-save-btn" class="skill-btn install settings-save-btn" type="button">Save Changes</button>
+        </form>
       </div>
     `;
     if (window.lucide && lucide.createIcons) {

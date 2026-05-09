@@ -2382,7 +2382,8 @@ textarea {
   #skills-view.view,
   #workspace-view.view,
   #history-view.view,
-  #settings-view.view {
+  #settings-view.view,
+  #queue-view.view {
     padding-bottom: 112px;
   }
 
@@ -2463,6 +2464,29 @@ textarea {
 
   .workspace-layout {
     flex-direction: column;
+  }
+
+  /* Preserve full path on small screens — allow chip to wrap instead of overflowing */
+  #workspace-root-chip {
+    max-width: 100%;
+    white-space: normal;
+    word-break: break-all;
+    height: auto;
+    min-height: 22px;
+  }
+
+  /* Header adapts to content height on narrow screens */
+  header {
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .status-indicator {
+    flex-wrap: wrap;
   }
 
   .file-tree {
@@ -2668,8 +2692,16 @@ textarea {
   background-color: var(--accent-strong);
 }
 
-.settings-card { max-width: 640px; }
+.settings-card { max-width: 640px; overflow: visible; flex-shrink: 0; min-height: 0; }
 .settings-card:hover { transform: none; box-shadow: var(--shadow-soft); }
+
+/* Cards inside scrollable views — let them participate in outer scroll instead of clipping internally */
+#queue-view .panel-card,
+#history-view .panel-card {
+  overflow: visible;
+  flex-shrink: 0;
+  min-height: 0;
+}
 .field { display: flex; flex-direction: column; gap: 6px; }
 
 .empty-panel.compact {
