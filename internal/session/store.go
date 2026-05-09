@@ -411,6 +411,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 		if err != nil {
 			continue
 		}
+		s.reconcileSessionQueueJob(meta)
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
 			continue
@@ -459,6 +460,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		if err != nil || meta.ParentSessionID != parentSessionID {
 			continue
 		}
+		s.reconcileSessionQueueJob(meta)
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
 			continue
@@ -1109,6 +1111,17 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 		}
 		return job, true
 	}
+	if job.Status == QueueStatusRunning && state.Status == StatusRunning && queueJobIsStale(job, time.Now().UTC()) {
+		job.Status = QueueStatusFailed
+		if strings.TrimSpace(job.LastError) == "" {
+			job.LastError = "queue job stale: linked running session heartbeat is stale"
+		}
+		var stateChanged bool
+		state, stateChanged = reconcileStateFromTerminalQueueJob(state, job)
+		if stateChanged {
+			_ = s.SaveState(meta.ID, state)
+		}
+	}
 	state, stateChanged := reconcileStateFromTerminalQueueJob(state, job)
 	if stateChanged {
 		_ = s.SaveState(meta.ID, state)
@@ -1151,6 +1164,13 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 		}
 	}
 	return job, true
+}
+
+func (s *Store) reconcileSessionQueueJob(meta SessionMetadata) {
+	if strings.TrimSpace(meta.QueueJobID) == "" {
+		return
+	}
+	_, _ = s.LoadJob(meta.QueueJobID)
 }
 
 func isTerminalQueueStatus(status string) bool {

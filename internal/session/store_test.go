@@ -561,6 +561,125 @@ func TestReconcileFailedJobUpdatesLinkedRunningSession(t *testing.T) {
 	}
 }
 
+func TestListPageReconcilesLinkedQueueJobStatus(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_list_reconcile",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_list_reconcile",
+		RootSessionID:    "parent_list_reconcile",
+		AgentName:        "child-list",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_list_reconcile",
+		Depth:            1,
+	}
+	childState := State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: now}
+	if err := store.Create(childMeta, childState); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := store.SaveJob(QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          QueueStatusFailed,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		AgentName:       childMeta.AgentName,
+		AgentRole:       childMeta.AgentRole,
+		Prompt:          "fail",
+		Mode:            ModeExec,
+		Background:      true,
+		LastError:       "worker failed",
+	}); err != nil {
+		t.Fatalf("save failed job: %v", err)
+	}
+
+	items, _, err := store.ListPage(10, 0)
+	if err != nil {
+		t.Fatalf("list page: %v", err)
+	}
+	var childSummary *SessionSummary
+	for i := range items {
+		if items[i].ID == childMeta.ID {
+			childSummary = &items[i]
+			break
+		}
+	}
+	if childSummary == nil || childSummary.Status != StatusFailed || childSummary.LastError != "worker failed" {
+		t.Fatalf("expected list page to reconcile linked failed job, got %#v", childSummary)
+	}
+	loadedState, err := store.LoadState(childMeta.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if loadedState.Status != StatusFailed || loadedState.LastError != "worker failed" {
+		t.Fatalf("expected child state to be reconciled, got %#v", loadedState)
+	}
+}
+
+func TestReconcileStaleLinkedRunningJobFailsSession(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_stale_linked",
+		CreatedAt:        oldHeartbeat,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_stale_linked",
+		RootSessionID:    "parent_stale_linked",
+		AgentName:        "stale-child",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_stale_linked",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: oldHeartbeat}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := store.SaveJob(QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       oldHeartbeat,
+		Status:          QueueStatusRunning,
+		ClaimedAt:       oldHeartbeat,
+		HeartbeatAt:     oldHeartbeat,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		AgentName:       childMeta.AgentName,
+		AgentRole:       childMeta.AgentRole,
+		Prompt:          "stale",
+		Mode:            ModeExec,
+		Background:      true,
+	}); err != nil {
+		t.Fatalf("save stale running job: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(childMeta.QueueJobID)
+	if err != nil {
+		t.Fatalf("load reconciled job: %v", err)
+	}
+	if reconciled.Status != QueueStatusFailed || reconciled.SessionStatus != StatusFailed || !strings.Contains(reconciled.LastError, "linked running session heartbeat is stale") {
+		t.Fatalf("expected stale linked job to fail, got %#v", reconciled)
+	}
+	loadedState, err := store.LoadState(childMeta.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if loadedState.Status != StatusFailed || !strings.Contains(loadedState.LastError, "linked running session heartbeat is stale") {
+		t.Fatalf("expected stale linked child session to fail, got %#v", loadedState)
+	}
+}
+
 func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)

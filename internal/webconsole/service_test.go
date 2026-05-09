@@ -712,6 +712,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "shouldInsertChatNewline") || !strings.Contains(jsBody, "insertChatInputNewline") {
 		t.Fatalf("expected explicit Ctrl+Enter newline helpers, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "sessionDetailHasActiveDescendants") || !strings.Contains(jsBody, "needsSessionRefresh") {
+		t.Fatalf("expected current session polling to track active descendants and coalesced refreshes, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "message-bubble-plaintext") {
 		t.Fatalf("expected explicit plaintext user-message renderer, got session-view.js body: %s", sessionBody)
 	}
@@ -809,6 +812,65 @@ func TestServiceWebSocketRejectsChatControl(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("websocket chat must not create sessions, got %#v", items)
+	}
+}
+
+func TestServiceSessionDetailReconcilesLinkedQueueJob(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	childMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_detail_reconcile",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_detail_reconcile",
+		RootSessionID:    "parent_detail_reconcile",
+		AgentName:        "detail-child",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_detail_reconcile",
+		Depth:            1,
+	}
+	if err := svc.store.Create(childMeta, session.State{
+		Status:    session.StatusRunning,
+		Phase:     "provider_call",
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          session.QueueStatusFailed,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		AgentName:       childMeta.AgentName,
+		AgentRole:       childMeta.AgentRole,
+		Prompt:          "fail",
+		Mode:            session.ModeExec,
+		Background:      true,
+		LastError:       "queue failure",
+	}); err != nil {
+		t.Fatalf("save failed job: %v", err)
+	}
+
+	detail, err := svc.sessionDetail(childMeta.ID, 100)
+	if err != nil {
+		t.Fatalf("session detail: %v", err)
+	}
+	if detail.State.Status != session.StatusFailed || detail.State.LastError != "queue failure" {
+		t.Fatalf("expected detail to reconcile linked failed queue job, got %#v", detail.State)
 	}
 }
 

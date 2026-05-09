@@ -595,6 +595,9 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
+	if strings.TrimSpace(meta.QueueJobID) != "" {
+		_, _ = s.store.LoadJob(meta.QueueJobID)
+	}
 	state, err := s.store.LoadState(sessionID)
 	if err != nil {
 		return SessionDetailResponse{}, err

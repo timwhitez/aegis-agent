@@ -56,6 +56,7 @@ const state = {
   pollHandle: null,
   refreshingOverview: false,
   refreshingSession: false,
+  needsSessionRefresh: false,
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
   lastInputWasEmpty: true,
@@ -1106,14 +1107,26 @@ function shouldPollChatOverview() {
   if (!state.overview) {
     return true;
   }
-  return state.isGenerating || !hasDurableSession();
+  return state.isGenerating || !hasDurableSession() || sessionDetailHasActiveDescendants(state.sessionDetail);
 }
 
 function shouldPollCurrentSession() {
   if (state.currentView !== 'chat' || !hasDurableSession()) {
     return false;
   }
-  return state.isGenerating || !state.sessionDetail;
+  return state.isGenerating || !state.sessionDetail || sessionDetailHasActiveDescendants(state.sessionDetail);
+}
+
+function sessionDetailHasActiveDescendants(detail) {
+  if (!detail) {
+    return false;
+  }
+  return maybeArray(detail.children?.sessions).some((item) => isActiveRuntimeStatus(item.status)) ||
+    maybeArray(detail.children?.jobs).some((item) => isActiveRuntimeStatus(item.status) || isActiveRuntimeStatus(item.session_status));
+}
+
+function isActiveRuntimeStatus(status) {
+  return ['queued', 'pending', 'running'].includes(String(status || '').toLowerCase());
 }
 
 function sessionActivityForState(sessionState = {}) {
@@ -1186,10 +1199,15 @@ async function refreshOverview() {
 }
 
 async function refreshCurrentSession() {
-  if (!hasDurableSession() || state.refreshingSession || isEphemeralSessionId(state.sessionId)) {
+  if (!hasDurableSession() || isEphemeralSessionId(state.sessionId)) {
+    return;
+  }
+  if (state.refreshingSession) {
+    state.needsSessionRefresh = true;
     return;
   }
   state.refreshingSession = true;
+  state.needsSessionRefresh = false;
   try {
     const detail = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}?limit=80`);
     state.sessionDetail = detail;
@@ -1217,6 +1235,10 @@ async function refreshCurrentSession() {
     console.error('session detail error', err);
   } finally {
     state.refreshingSession = false;
+    if (state.needsSessionRefresh) {
+      state.needsSessionRefresh = false;
+      queueSessionRefresh(80);
+    }
   }
 }
 
