@@ -1267,12 +1267,14 @@ function renderSubAgentSessionRow(sess, job) {
       <span class="sa-tree-label">${escapeHTML(label)}</span>
       <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(sess.status))}</span>
       <span class="sa-tree-meta">${escapeHTML(sess.model || sess.provider || 'n/a')}${jobMeta} · ${escapeHTML(shortId(sess.id))}</span>
+      ${renderSessionStopButton(sess.id, sess.status, '')}
     </div>
   `;
 }
 
 function renderSubAgentJobRow(job) {
-  const statusTone = toneForStatus(job.status);
+  const status = job.session_status || job.status;
+  const statusTone = toneForStatus(status);
   const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
   const targetAttr = job.session_id
     ? `data-sub-agent-open="${escapeAttr(job.session_id)}" title="Click to open child session"`
@@ -1281,8 +1283,9 @@ function renderSubAgentJobRow(job) {
     <div class="sa-tree-row orphan" ${targetAttr}>
       <span class="sa-tree-dot ${statusTone}"></span>
       <span class="sa-tree-label">${escapeHTML(label)}</span>
-      <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(job.status))}</span>
+      <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(status))}</span>
       <span class="sa-tree-meta">${escapeHTML(job.mode || '')} · ${escapeHTML(shortId(job.id))}</span>
+      ${job.session_id ? renderSessionStopButton(job.session_id, status, '') : ''}
     </div>
   `;
 }
@@ -1527,6 +1530,7 @@ function renderSubAgentCard(row) {
       <div class="agent-card-meta">${sessionId ? escapeHTML(shortId(sessionId)) : ''}${jobId ? `${sessionId ? ' · ' : ''}job ${escapeHTML(shortId(jobId))}` : ''}</div>
       ${renderVisiblePaths(sessionItem?.visible_paths || job?.visible_paths)}
       <div class="card-actions">
+        ${sessionId ? renderSessionStopButton(sessionId, status) : ''}
         ${sessionId ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(sessionId)}">Open child session</button>` : ''}
         ${jobId ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(jobId)}">Open job</button>` : ''}
         ${job?.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
@@ -1549,6 +1553,7 @@ function renderChildSessionCard(item) {
       <div class="agent-card-copy">${escapeHTML(item.model || item.provider || 'n/a')} · ${escapeHTML(phaseHeadline(item.phase || 'prepare'))}</div>
       <div class="agent-card-meta">${escapeHTML(shortId(item.id))}${item.queue_job_id ? ` · job ${escapeHTML(shortId(item.queue_job_id))}` : ''}</div>
       <div class="card-actions">
+        ${renderSessionStopButton(item.id, item.status)}
         <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">Open child session</button>
       </div>
     </div>
@@ -1556,21 +1561,37 @@ function renderChildSessionCard(item) {
 }
 
 function renderQueueJobCard(job) {
+  const status = job.session_status || job.status;
   return `
     <div class="job-card ${job.id === state.selectedQueueJobId ? 'active' : ''}" data-queue-job-id="${escapeAttr(job.id)}">
       <div class="job-card-top">
         <div class="job-card-title">${escapeHTML(agentLabel(job.agent_name, job.agent_role) || shortId(job.id))}</div>
-        <span class="status-badge ${toneForStatus(job.status)}">${escapeHTML(humanizeStatus(job.status))}</span>
+        <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
       </div>
       <div class="job-card-copy">${escapeHTML(truncateText(job.prompt || '(no prompt)', 180))}</div>
       <div class="job-card-meta">${escapeHTML(shortId(job.id))} · ${escapeHTML(job.mode || 'exec')}${job.session_id ? ` · child ${escapeHTML(shortId(job.session_id))}` : ''}</div>
       ${renderVisiblePaths(job.visible_paths)}
       <div class="card-actions">
+        ${job.session_id ? renderSessionStopButton(job.session_id, status) : ''}
         <button class="mini-link-btn" type="button" data-open-job="${escapeAttr(job.id)}">Open job</button>
         ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
         ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
       </div>
     </div>
+  `;
+}
+
+function renderSessionStopButton(sessionID, status, label = 'Stop') {
+  if (!sessionID || !isStoppableSessionStatus(status)) {
+    return '';
+  }
+  const busy = isStoppingSession(sessionID);
+  const text = label ? `<span>${escapeHTML(label)}</span>` : '';
+  return `
+    <button class="mini-link-btn danger" type="button" data-stop-session-id="${escapeAttr(sessionID)}" aria-label="Stop session ${escapeAttr(shortId(sessionID))}" title="Stop session" ${busy ? 'disabled' : ''}>
+      <i data-lucide="square"></i>
+      ${text}
+    </button>
   `;
 }
 

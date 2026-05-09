@@ -5,6 +5,7 @@
 const POLL_INTERVAL_MS = 1600;
 const MAX_LIVE_EVENTS = 80;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
+const STOP_FALLBACK_STEER_MESSAGE = 'Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue.';
 
 const SHORTCUTS = {
   'escape': 'stop',
@@ -65,7 +66,8 @@ const state = {
   todoFloatExpanded: true,
   fileChangesExpanded: true,
   subAgentExpanded: true,
-  expandedHistoryParents: new Set()
+  expandedHistoryParents: new Set(),
+  stoppingSessionIds: new Set()
 };
 
 const nodes = {
@@ -453,6 +455,17 @@ function setupEventListeners() {
       const sessionID = deleteHistoryButton.getAttribute('data-delete-session');
       if (sessionID) {
         await deleteHistorySession(sessionID);
+      }
+      return;
+    }
+
+    const stopInlineSessionButton = event.target.closest('[data-stop-session-id]');
+    if (stopInlineSessionButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const sessionID = stopInlineSessionButton.getAttribute('data-stop-session-id');
+      if (sessionID) {
+        await requestStopSession(sessionID, { button: stopInlineSessionButton });
       }
       return;
     }
@@ -874,19 +887,71 @@ async function requestStop() {
     showToast('No running session is available to stop.', 'info');
     return;
   }
+  await requestStopSession(state.sessionId);
+}
+
+async function requestStopSession(sessionID, options = {}) {
+  if (!sessionID) {
+    showToast('No session is available to stop.', 'info');
+    return;
+  }
+  if (isStoppingSession(sessionID)) {
+    return;
+  }
+  state.stoppingSessionIds.add(sessionID);
+  const button = options.button || null;
+  if (button) {
+    button.disabled = true;
+  }
+  const isCurrentSession = sessionID === state.sessionId;
   try {
-    await stopSession(state.sessionId);
-    state.liveActivity = {
-      title: 'Stopping run',
-      copy: 'The current run is being stopped. Partial output and tool results will remain visible.',
-      tone: 'danger'
-    };
-    showToast('Stop requested.', 'success');
+    const result = await requestStopViaBestAvailablePath(sessionID);
+    if (isCurrentSession) {
+      state.liveActivity = {
+        title: 'Stopping run',
+        copy: result.via === 'steer'
+          ? 'This run is being stopped through an interrupt steer request because no local handle is owned by this page.'
+          : 'The current run is being stopped. Partial output and tool results will remain visible.',
+        tone: 'danger'
+      };
+    }
+    showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
     queueSessionRefresh(120);
+    queueOverviewRefresh(180);
+    if (state.currentView === 'history') {
+      await fetchHistory(state.historyPage, { showLoading: false, silentError: true });
+    }
+    if (state.currentView === 'queue') {
+      await fetchQueue();
+    }
   } catch (err) {
     showToast(err.message || 'Failed to stop the session.', 'error');
+  } finally {
+    state.stoppingSessionIds.delete(sessionID);
+    if (button && document.body.contains(button)) {
+      button.disabled = false;
+    }
+    if (state.currentView === 'history') {
+      renderHistory();
+    }
+    renderCurrentSession();
   }
-  renderCurrentSession();
+}
+
+async function requestStopViaBestAvailablePath(sessionID) {
+  try {
+    await stopSession(sessionID);
+    return { via: 'handle' };
+  } catch (err) {
+    if (err?.code !== 'ACTIVE_HANDLE_NOT_OWNED') {
+      throw err;
+    }
+    await steerSession(sessionID, {
+      message: STOP_FALLBACK_STEER_MESSAGE,
+      interrupt: true
+    });
+    return { via: 'steer' };
+  }
 }
 
 async function requestContinueSession(sessionID, message = '', options = {}) {
@@ -1127,6 +1192,14 @@ function sessionDetailHasActiveDescendants(detail) {
 
 function isActiveRuntimeStatus(status) {
   return ['queued', 'pending', 'running'].includes(String(status || '').toLowerCase());
+}
+
+function isStoppableSessionStatus(status) {
+  return String(status || '').toLowerCase() === 'running';
+}
+
+function isStoppingSession(sessionID) {
+  return state.stoppingSessionIds.has(sessionID);
 }
 
 function sessionActivityForState(sessionState = {}) {
@@ -1775,6 +1848,7 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
       </div>
       <div class="history-row-actions">
         ${expandToggle}
+        ${renderSessionStopButton(item.id, item.status)}
         <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.id)}">Open session</button>
         <button class="mini-link-btn danger" type="button" data-delete-session="${escapeAttr(item.id)}">Delete</button>
       </div>
