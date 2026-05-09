@@ -488,7 +488,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
-			resp, err := s.sessionDetail(sessionID, queryInt(r, "limit", 40))
+			resp, err := s.sessionDetail(sessionID, queryBoundedInt(r, "limit", 40, 1, 200))
 			if err != nil {
 				status := http.StatusInternalServerError
 				if errors.Is(err, fs.ErrNotExist) {

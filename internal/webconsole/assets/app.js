@@ -1367,7 +1367,7 @@ async function loadEarlierMessages() {
 function mergeLoadedMessagesIntoDetail(detail) {
   const currentMessages = maybeArray(state.sessionDetail?.messages);
   const nextMessages = maybeArray(detail?.messages);
-  if (!detail || currentMessages.length <= nextMessages.length) {
+  if (!detail || !currentMessages.length) {
     return;
   }
   const seen = new Set(nextMessages.map((message) => message?.id).filter(Boolean));
@@ -1396,10 +1396,18 @@ function mergeMessageTimelineEntries(detail) {
       text: messageTimelineText(message),
       data: message.meta || null
     }));
-  if (!additions.length) {
-    return;
-  }
-  detail.timeline = timeline.concat(additions).sort((left, right) => String(right.time || '').localeCompare(String(left.time || '')));
+  const merged = timeline.concat(additions).sort((left, right) => String(right.time || '').localeCompare(String(left.time || '')));
+  const seen = new Set();
+  detail.timeline = merged.filter((item) => {
+    if (item?.kind !== 'message' || !item?.message_id) {
+      return true;
+    }
+    if (seen.has(item.message_id)) {
+      return false;
+    }
+    seen.add(item.message_id);
+    return true;
+  });
 }
 
 function messageTimelineText(message) {

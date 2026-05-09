@@ -1786,7 +1786,7 @@ func TestServiceSessionMessagesPagination(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	var written []session.Message
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 45; i++ {
 		msg := session.NewMessage("user", "message "+strconv.Itoa(i))
 		if err := svc.store.AppendMessage(meta.ID, msg); err != nil {
 			t.Fatalf("append message %d: %v", i, err)
@@ -1799,13 +1799,21 @@ func TestServiceSessionMessagesPagination(t *testing.T) {
 
 	var detail SessionDetailResponse
 	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"?limit=2", &detail)
-	if !detail.HasMoreMessages || len(detail.Messages) != 2 || detail.Messages[0].ID != written[3].ID || detail.Messages[1].ID != written[4].ID {
+	if !detail.HasMoreMessages || len(detail.Messages) != 2 || detail.Messages[0].ID != written[43].ID || detail.Messages[1].ID != written[44].ID {
 		t.Fatalf("unexpected session detail pagination metadata: %#v", detail.Messages)
+	}
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"?limit=-1", &detail)
+	if !detail.HasMoreMessages || len(detail.Messages) != 40 || detail.Messages[0].ID != written[5].ID || detail.Messages[39].ID != written[44].ID {
+		t.Fatalf("negative session detail limit should fall back to default window, got %#v", detail.Messages)
+	}
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"?limit=1000", &detail)
+	if !detail.HasMoreMessages || len(detail.Messages) != 40 || detail.Messages[0].ID != written[5].ID || detail.Messages[39].ID != written[44].ID {
+		t.Fatalf("oversized session detail limit should fall back to default window, got %#v", detail.Messages)
 	}
 
 	var page MessagesResponse
-	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/messages?before_id="+url.QueryEscape(written[3].ID)+"&limit=2", &page)
-	if !page.HasMore || len(page.Messages) != 2 || page.Messages[0].ID != written[1].ID || page.Messages[1].ID != written[2].ID {
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/messages?before_id="+url.QueryEscape(written[43].ID)+"&limit=2", &page)
+	if !page.HasMore || len(page.Messages) != 2 || page.Messages[0].ID != written[41].ID || page.Messages[1].ID != written[42].ID {
 		t.Fatalf("unexpected previous page: %#v", page)
 	}
 
