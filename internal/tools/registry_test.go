@@ -467,6 +467,52 @@ func TestShellToolSupportsRelativeWorkdirOverride(t *testing.T) {
 	}
 }
 
+func TestShellToolAllowsRegisteredSkillWorkdirOutsideWorkspace(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	root := t.TempDir()
+	workdir := filepath.Join(root, "workspace")
+	skillDir := filepath.Join(root, "skills", "bundle")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: bundle\ndescription: bundled commands\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{Workdir: workdir, Store: store, Config: cfg, Catalog: catalog}
+
+	result, err := registry.Execute(context.Background(), "shell", execCtx, json.RawMessage(`{
+		"command":"pwd",
+		"workdir":"../skills/bundle"
+	}`))
+	if err != nil {
+		t.Fatalf("execute shell: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got %#v", result)
+	}
+	if result.Metadata["workdir"] != skillDir {
+		t.Fatalf("expected shell metadata workdir %q, got %#v", skillDir, result.Metadata)
+	}
+	if result.Metadata["workdir_source"] != "skill" || result.Metadata["skill"] != "bundle" {
+		t.Fatalf("expected skill workdir metadata, got %#v", result.Metadata)
+	}
+	if !strings.Contains(result.DisplayOutput, skillDir) {
+		t.Fatalf("expected pwd output to include %q, got %q", skillDir, result.DisplayOutput)
+	}
+}
+
 func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -561,7 +607,7 @@ func TestCoreToolDescriptionsGuideSelection(t *testing.T) {
 	}
 	checks := map[string][]string{
 		"shell":       {"build, test, package, git", "Prefer dedicated tools", "workdir parameter"},
-		"read_file":   {"known workspace text file", "capped at 120 lines", "use grep_files or grep first"},
+		"read_file":   {"known text file", "Registered skill bundle", "capped at 120 lines", "use grep_files or grep first"},
 		"write_file":  {"Create or overwrite", "prefer edit_file"},
 		"edit_file":   {"Replace exact text", "after reading"},
 		"grep_files":  {"default discovery step", "return only files"},
@@ -922,6 +968,103 @@ func TestReadFileCapsLargeRequestsAndAnnotatesWindow(t *testing.T) {
 	}
 	if strings.Contains(result.DisplayOutput, "line 121") {
 		t.Fatalf("expected capped content to exclude line 121, got %q", result.DisplayOutput)
+	}
+}
+
+func TestReadFileAllowsRegisteredSkillReferencesOutsideWorkspace(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	root := t.TempDir()
+	workdir := filepath.Join(root, "workspace")
+	skillDir := filepath.Join(root, "skills", "pentest-toolset")
+	referenceDir := filepath.Join(skillDir, "references")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: pentest-toolset\ndescription: pentest helper\n---\nSee references/01-cli-contract.md\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(referenceDir, "01-cli-contract.md"), []byte("# CLI Contract\n\nUse schema first.\n"), 0o644); err != nil {
+		t.Fatalf("write reference: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{Workdir: workdir, Store: store, Config: cfg, Catalog: catalog}
+
+	for _, inputPath := range []string{
+		"skills/pentest-toolset/references/01-cli-contract.md",
+		"references/01-cli-contract.md",
+		filepath.Join(skillDir, "references", "01-cli-contract.md"),
+	} {
+		result, err := registry.Execute(context.Background(), "read_file", execCtx, json.RawMessage(fmt.Sprintf(`{"path":%q}`, inputPath)))
+		if err != nil {
+			t.Fatalf("read_file %s: %v", inputPath, err)
+		}
+		if result.IsError {
+			t.Fatalf("expected skill reference read to succeed for %s, got %#v", inputPath, result)
+		}
+		if result.Metadata["path_source"] != "skill" || result.Metadata["skill"] != "pentest-toolset" {
+			t.Fatalf("expected skill metadata for %s, got %#v", inputPath, result.Metadata)
+		}
+		if !strings.Contains(result.DisplayOutput, "[read_file path=skills/pentest-toolset/references/01-cli-contract.md") {
+			t.Fatalf("expected skill-relative annotation for %s, got %q", inputPath, result.DisplayOutput)
+		}
+		if !strings.Contains(result.DisplayOutput, "Use schema first.") {
+			t.Fatalf("expected reference content for %s, got %q", inputPath, result.DisplayOutput)
+		}
+	}
+}
+
+func TestReadFileRejectsRegisteredSkillSymlinkEscape(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	root := t.TempDir()
+	workdir := filepath.Join(root, "workspace")
+	skillDir := filepath.Join(root, "skills", "pentest-toolset")
+	referenceDir := filepath.Join(skillDir, "references")
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: pentest-toolset\ndescription: pentest helper\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(outside, []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(referenceDir, "escape.md")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{Workdir: workdir, Store: store, Config: cfg, Catalog: catalog}
+
+	result, err := registry.Execute(context.Background(), "read_file", execCtx, json.RawMessage(`{
+		"path":"skills/pentest-toolset/references/escape.md"
+	}`))
+	if err != nil {
+		t.Fatalf("read_file: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "path escapes registered skill root") {
+		t.Fatalf("expected skill symlink escape error, got %#v", result)
 	}
 }
 
@@ -1305,6 +1448,8 @@ func TestLoadSkillIncludesShellWorkdirHint(t *testing.T) {
 	for _, needle := range []string{
 		`shell_workdir="skills/helpers"`,
 		"`workdir=\"skills/helpers\"`",
+		"Skill bundle files are registered read-only resources",
+		"`skills/helpers/references/...`",
 	} {
 		if !strings.Contains(result.LLMOutput, needle) {
 			t.Fatalf("expected load_skill output to contain %q, got %q", needle, result.LLMOutput)

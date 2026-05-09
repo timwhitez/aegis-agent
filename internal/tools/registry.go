@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -265,7 +266,7 @@ func withDescription(schema map[string]any, description string) map[string]any {
 func defShell() Definition {
 	return Definition{
 		Name:            "shell",
-		Description:     "Run non-interactive terminal commands in the workspace for build, test, package, git, and runtime operations. Prefer dedicated tools for file search, reading, writing, and editing instead of shell cat/grep/sed/echo. Use the workdir parameter instead of embedding cd when changing directories, quote paths with spaces, and inspect exit_code/output before claiming success.",
+		Description:     "Run non-interactive terminal commands in the workspace for build, test, package, git, and runtime operations. Prefer dedicated tools for file search, reading, writing, and editing instead of shell cat/grep/sed/echo. Use the workdir parameter instead of embedding cd when changing directories; workdir may be workspace-relative or a registered skill directory returned by load_skill. Quote paths with spaces, and inspect exit_code/output before claiming success.",
 		Ephemeral:       true,
 		EphemeralWindow: 2,
 		InputSchema: map[string]any{
@@ -281,7 +282,7 @@ func defShell() Definition {
 				},
 				"workdir": map[string]any{
 					"type":        "string",
-					"description": "Optional workspace-relative directory for command execution. Must resolve inside the workspace.",
+					"description": "Optional directory for command execution. Must resolve inside the workspace or under a registered skill root returned by load_skill.",
 				},
 			},
 			"required": []string{"command"},
@@ -299,19 +300,16 @@ func defShell() Definition {
 				return errorResult("shell", errors.New("command is required")), nil
 			}
 			workdir := execCtx.Workdir
+			workdirSource := "workspace"
+			workdirSkill := ""
 			if strings.TrimSpace(input.Workdir) != "" {
-				resolvedWorkdir, err := ResolveWorkspacePath(execCtx.Workdir, input.Workdir)
+				resolvedWorkdir, source, skillName, err := resolveShellWorkdir(execCtx, input.Workdir)
 				if err != nil {
 					return errorResult("shell", err), nil
-				}
-				info, err := os.Stat(resolvedWorkdir)
-				if err != nil {
-					return errorResult("shell", err), nil
-				}
-				if !info.IsDir() {
-					return errorResult("shell", fmt.Errorf("workdir is not a directory: %s", relativeOrAbsolute(execCtx.Workdir, resolvedWorkdir))), nil
 				}
 				workdir = resolvedWorkdir
+				workdirSource = source
+				workdirSkill = skillName
 			}
 			timeout := effectiveToolTimeout(execCtx.Config.Runtime.CommandTimeoutSec, input.Timeout)
 			callCtx := ctx
@@ -330,15 +328,20 @@ func defShell() Definition {
 			policyViolations := DetectExecPolicyViolations(input.Command)
 			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
 			metadata := func(exitCode, rawLength int, truncated bool) map[string]any {
-				return attachExecPolicyMetadata(map[string]any{
-					"command":    input.Command,
-					"exit_code":  exitCode,
-					"timeout":    timeout,
-					"workdir":    workdir,
-					"sandbox":    sandboxStatus,
-					"raw_length": rawLength,
-					"truncated":  truncated,
-				}, policyMetadata)
+				data := map[string]any{
+					"command":        input.Command,
+					"exit_code":      exitCode,
+					"timeout":        timeout,
+					"workdir":        workdir,
+					"workdir_source": workdirSource,
+					"sandbox":        sandboxStatus,
+					"raw_length":     rawLength,
+					"truncated":      truncated,
+				}
+				if workdirSkill != "" {
+					data["skill"] = workdirSkill
+				}
+				return attachExecPolicyMetadata(data, policyMetadata)
 			}
 			if policyMode == "deny" && len(policyViolations) > 0 {
 				text := "Error: shell command denied by exec policy"
@@ -398,13 +401,13 @@ func defShell() Definition {
 func defReadFile() Definition {
 	return Definition{
 		Name:        "read_file",
-		Description: "Read a known workspace text file with 1-based offset and limit. Each call returns an annotated line window and is capped at 120 lines, so use grep_files or grep first for discovery and then read the owning file slices you need. This reads files only, not directories, and rejects internal generated artifacts.",
+		Description: "Read a known text file with 1-based offset and limit. Paths normally resolve inside the workspace. Registered skill bundle files are also readable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Each call returns an annotated line window and is capped at 120 lines, so use grep_files or grep first for workspace discovery and then read the owning file slices you need. This reads files only, not directories, and rejects internal generated artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Workspace-relative file path to read.",
+					"description": "Workspace-relative file path to read, or a registered skill bundle file path such as skills/<skill-name>/references/file.md.",
 				},
 				"offset": map[string]any{
 					"type":        "integer",
@@ -426,11 +429,11 @@ func defReadFile() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("read_file", err), nil
 			}
-			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
+			path, displayBase, source, skillName, err := resolveReadFilePath(execCtx, input.Path)
 			if err != nil {
 				return errorResult("read_file", err), nil
 			}
-			if isInternalGeneratedArtifactPath(execCtx.Workdir, path) {
+			if source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, path) {
 				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			data, err := os.ReadFile(path)
@@ -456,16 +459,21 @@ func defReadFile() Definition {
 				end = len(lines)
 			}
 			selected := strings.Join(lines[offset:end], "\n")
-			selected = annotateReadWindow(execCtx.Workdir, path, offset, end, len(lines), input.Limit, capped, selected)
+			selected = annotateReadWindow(displayBase, path, offset, end, len(lines), input.Limit, capped, selected)
+			metadata := map[string]any{
+				"path":        path,
+				"offset":      offset,
+				"end":         end,
+				"path_source": source,
+			}
+			if skillName != "" {
+				metadata["skill"] = skillName
+			}
 			return session.ToolResult{
 				Name:          "read_file",
 				LLMOutput:     selected,
 				DisplayOutput: selected,
-				Metadata: map[string]any{
-					"path":   path,
-					"offset": offset,
-					"end":    end,
-				},
+				Metadata:      metadata,
 			}, nil
 		},
 	}
@@ -839,6 +847,229 @@ func isInternalGeneratedArtifactPath(workdir, path string) bool {
 	return false
 }
 
+var errNoRegisteredSkillPath = errors.New("path is not under a registered skill")
+
+type resolvedSkillPath struct {
+	path        string
+	displayBase string
+	skillName   string
+	explicit    bool
+}
+
+func resolveShellWorkdir(execCtx ExecContext, input string) (string, string, string, error) {
+	workspacePath, workspaceErr := ResolveWorkspacePath(execCtx.Workdir, input)
+	if workspaceErr == nil {
+		info, err := os.Stat(workspacePath)
+		if err == nil {
+			if info.IsDir() {
+				return workspacePath, "workspace", "", nil
+			}
+			workspaceErr = fmt.Errorf("workdir is not a directory: %s", relativeOrAbsolute(execCtx.Workdir, workspacePath))
+		} else {
+			workspaceErr = err
+		}
+	}
+
+	skillPath, _, skillName, skillErr := resolveRegisteredSkillDir(execCtx.Catalog, input)
+	if skillErr == nil {
+		return skillPath, "skill", skillName, nil
+	}
+	if !errors.Is(skillErr, errNoRegisteredSkillPath) {
+		return "", "", "", skillErr
+	}
+	return "", "", "", workspaceErr
+}
+
+func resolveReadFilePath(execCtx ExecContext, input string) (string, string, string, string, error) {
+	workspacePath, workspaceErr := ResolveWorkspacePath(execCtx.Workdir, input)
+	if workspaceErr == nil {
+		if _, err := os.Stat(workspacePath); err == nil {
+			return workspacePath, execCtx.Workdir, "workspace", "", nil
+		} else if !os.IsNotExist(err) {
+			return "", "", "", "", err
+		}
+	}
+
+	skillPath, displayBase, skillName, skillErr := resolveRegisteredSkillFile(execCtx.Catalog, input)
+	if skillErr == nil {
+		return skillPath, displayBase, "skill", skillName, nil
+	}
+	if !errors.Is(skillErr, errNoRegisteredSkillPath) {
+		return "", "", "", "", skillErr
+	}
+	if workspaceErr != nil {
+		return "", "", "", "", workspaceErr
+	}
+	return workspacePath, execCtx.Workdir, "workspace", "", nil
+}
+
+func resolveRegisteredSkillFile(catalog *skills.Catalog, input string) (string, string, string, error) {
+	match, err := resolveRegisteredSkillPath(catalog, input, false)
+	if err != nil {
+		return "", "", "", err
+	}
+	return match.path, match.displayBase, match.skillName, nil
+}
+
+func resolveRegisteredSkillDir(catalog *skills.Catalog, input string) (string, string, string, error) {
+	match, err := resolveRegisteredSkillPath(catalog, input, true)
+	if err != nil {
+		return "", "", "", err
+	}
+	return match.path, match.displayBase, match.skillName, nil
+}
+
+func resolveRegisteredSkillPath(catalog *skills.Catalog, input string, requireDir bool) (resolvedSkillPath, error) {
+	if catalog == nil || strings.TrimSpace(input) == "" {
+		return resolvedSkillPath{}, errNoRegisteredSkillPath
+	}
+
+	var matches []resolvedSkillPath
+	for _, summary := range catalog.Summaries() {
+		skillDir := filepath.Dir(summary.Path)
+		if filepath.IsAbs(input) {
+			if !pathLexicallyUnderRoot(skillDir, input) {
+				continue
+			}
+			match, ok, err := resolveSkillCandidate(skillDir, summary.Name, input, true, requireDir)
+			if err != nil {
+				return resolvedSkillPath{}, err
+			}
+			if ok {
+				matches = append(matches, match)
+			}
+			continue
+		}
+
+		rel, explicit, ok := skillRelativeInput(input, summary.Name)
+		if !ok {
+			continue
+		}
+		match, candidateOK, err := resolveSkillCandidate(skillDir, summary.Name, rel, explicit, requireDir)
+		if err != nil {
+			if explicit {
+				return resolvedSkillPath{}, err
+			}
+			continue
+		}
+		if candidateOK {
+			matches = append(matches, match)
+		}
+	}
+
+	if len(matches) == 0 {
+		return resolvedSkillPath{}, errNoRegisteredSkillPath
+	}
+	if len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, match := range matches {
+			names = append(names, match.skillName)
+		}
+		sort.Strings(names)
+		return resolvedSkillPath{}, fmt.Errorf("ambiguous skill-relative path %q matches multiple registered skills: %s; use skills/<skill-name>/...", input, strings.Join(names, ", "))
+	}
+	return matches[0], nil
+}
+
+func pathLexicallyUnderRoot(root, input string) bool {
+	base, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	target, err := filepath.Abs(input)
+	if err != nil {
+		return false
+	}
+	return isWithin(filepath.Clean(base), filepath.Clean(target))
+}
+
+func resolveSkillCandidate(skillDir, skillName, input string, explicit, requireDir bool) (resolvedSkillPath, bool, error) {
+	path, err := resolvePathUnderRoot(skillDir, input)
+	if err != nil {
+		return resolvedSkillPath{}, false, err
+	}
+	info, statErr := os.Stat(path)
+	if requireDir {
+		if statErr != nil {
+			if explicit {
+				return resolvedSkillPath{}, false, statErr
+			}
+			return resolvedSkillPath{}, false, nil
+		}
+		if !info.IsDir() {
+			if explicit {
+				return resolvedSkillPath{}, false, fmt.Errorf("skill workdir is not a directory: %s", relativeOrAbsolute(skillDisplayBase(skillDir), path))
+			}
+			return resolvedSkillPath{}, false, nil
+		}
+	} else if !explicit {
+		if statErr != nil || info.IsDir() {
+			return resolvedSkillPath{}, false, nil
+		}
+	}
+
+	return resolvedSkillPath{
+		path:        path,
+		displayBase: skillDisplayBase(skillDir),
+		skillName:   skillName,
+		explicit:    explicit,
+	}, true, nil
+}
+
+func skillRelativeInput(input, skillName string) (string, bool, bool) {
+	cleaned := filepath.ToSlash(filepath.Clean(input))
+	if cleaned == "." || cleaned == "" {
+		return "", false, false
+	}
+	for _, prefix := range []string{
+		"skills/" + skillName,
+		"../skills/" + skillName,
+	} {
+		if cleaned == prefix {
+			return ".", true, true
+		}
+		if strings.HasPrefix(cleaned, prefix+"/") {
+			return strings.TrimPrefix(cleaned, prefix+"/"), true, true
+		}
+	}
+	if strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "skills/") {
+		return "", false, false
+	}
+	return cleaned, false, true
+}
+
+func resolvePathUnderRoot(root, input string) (string, error) {
+	base, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", err
+	}
+	target := input
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(base, target)
+	}
+	target = filepath.Clean(target)
+	resolved, err := resolveWithExistingParent(target)
+	if err != nil {
+		return "", err
+	}
+	if !isWithin(base, resolved) {
+		return "", errors.New("path escapes registered skill root")
+	}
+	return resolved, nil
+}
+
+func skillDisplayBase(skillDir string) string {
+	parent := filepath.Dir(skillDir)
+	if filepath.Base(parent) == "skills" {
+		return filepath.Dir(parent)
+	}
+	return parent
+}
+
 func resolveGrepRoot(workdir, inputPath string) (string, error) {
 	root := workdir
 	if inputPath == "" {
@@ -992,7 +1223,7 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 			skill, _ := execCtx.Catalog.Load(input.Name)
 			skillDir := filepath.Dir(skill.Path)
 			shellWorkdir := relativeOrAbsolute(execCtx.Workdir, skillDir)
-			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, body)
+			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect referenced skill files, call read_file with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
 			return session.ToolResult{
 				Name:          "load_skill",
 				LLMOutput:     output,

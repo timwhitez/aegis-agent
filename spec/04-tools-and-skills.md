@@ -75,6 +75,7 @@ v1 内置工具固定为：
 
 - 在 `workdir` 中运行
 - 可选接受 `workdir` 覆盖；相对路径按当前 workspace 解析，解析后仍必须位于 workspace 内且是目录
+- 对已注册 skill，`workdir` 也可使用 `load_skill` 返回的 skill 根目录提示；这只表示 skill bundle 的受控执行目录，不改变 workspace 写入边界
 - 必须接受 timeout
 - stdout/stderr 合并截断
 - 返回码与摘要写入 metadata
@@ -85,6 +86,8 @@ v1 内置工具固定为：
 ### 4.2 `read_file`
 
 - 路径必须限制在工作区内
+- 例外：已注册 skill bundle 文件属于只读资源根，允许用 `skills/<skill-name>/...`、`load_skill` 返回的绝对路径，或唯一匹配的 skill-relative 链接路径读取；不得把这些路径误解析成 `workspace/skills/...`
+- skill 文件读取必须校验 symlink escape，且不赋予写入权限
 - 默认支持 `offset` / `limit`
 - v1 采用小窗口读取，默认与最大返回窗口都限制为 120 行
 - 返回结果应包含实际窗口范围，便于模型基于行号继续做下一次定点读取
@@ -129,6 +132,7 @@ v1 内置工具固定为：
 - 接受 `name`
 - 返回目标 `SKILL.md` 的完整内容与路径信息
 - 当 skill 依赖相对 shell 路径时，返回值还应给出可直接复用的 skill 根目录执行提示，避免把 skill 内相对脚本误当成 workspace 根相对路径
+- 返回值还应明确 skill references 是注册 skill bundle 下的只读资源，可通过 `read_file` 的 `skills/<skill-name>/references/...` 或唯一匹配的 `references/...` 读取，不属于 workspace 文件
 
 ### 4.10 `task_update`
 
