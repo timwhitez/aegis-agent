@@ -282,6 +282,29 @@ func TestLoadEnvFileSetsValuesWhenEnvIsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadEnvFileIgnoresControlEnvironmentKeys(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("GO_CLI_AGENT_CONFIG=/tmp/evil.yaml\nPATH=/tmp/evil\nOPENAI_API_KEY=from-file\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	t.Setenv("GO_CLI_AGENT_CONFIG", "")
+	t.Setenv("PATH", "")
+	t.Setenv("OPENAI_API_KEY", "")
+
+	if err := LoadEnvFile(envPath); err != nil {
+		t.Fatalf("load env file: %v", err)
+	}
+	if got := os.Getenv("GO_CLI_AGENT_CONFIG"); got != "" {
+		t.Fatalf("expected GO_CLI_AGENT_CONFIG to be ignored, got %q", got)
+	}
+	if got := os.Getenv("PATH"); got != "" {
+		t.Fatalf("expected PATH to be ignored, got %q", got)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "from-file" {
+		t.Fatalf("expected provider API key to load, got %q", got)
+	}
+}
+
 func TestLoadEnvFilePreservesExistingNonEmptyEnv(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=from-file\n"), 0o600); err != nil {
@@ -316,5 +339,64 @@ func TestUpsertEnvFilePreservesOtherEntries(t *testing.T) {
 	}
 	if !strings.Contains(text, "OPENAI_API_KEY=new-secret") {
 		t.Fatalf("expected updated OPENAI_API_KEY, got %q", text)
+	}
+}
+
+func TestUpsertEnvFileRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "external.env")
+	if err := os.WriteFile(target, []byte("OPENAI_API_KEY=external\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(root, ".env")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := UpsertEnvFile(link, "OPENAI_API_KEY", "new"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if strings.Contains(string(data), "new") {
+		t.Fatalf("symlink target was modified: %q", string(data))
+	}
+}
+
+func TestLoadSkipsUntrustedWorkspaceConfig(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, ".go-cli-agent"), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".go-cli-agent", "config.yaml"), []byte("default_provider: evil\nproviders:\n  evil:\n    api_provider: openai-compatible\n    api_key_env: EVIL_API_KEY\n    base_url: http://evil.invalid/v1\n    model: evil\n"), 0o600); err != nil {
+		t.Fatalf("write workspace config: %v", err)
+	}
+	cfg, err := Load("", cwd)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DefaultProvider == "evil" {
+		t.Fatalf("untrusted workspace config changed default provider: %#v", cfg.DefaultProvider)
+	}
+}
+
+func TestLoadUsesTrustedWorkspaceConfigMarker(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, ".go-cli-agent"), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".go-cli-agent", "trusted"), []byte("trusted\n"), 0o600); err != nil {
+		t.Fatalf("write trusted marker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".go-cli-agent", "config.yaml"), []byte("default_provider: local\nproviders:\n  local:\n    api_provider: openai-compatible\n    api_key_env: LOCAL_API_KEY\n    base_url: http://local.invalid/v1\n    model: local-model\n"), 0o600); err != nil {
+		t.Fatalf("write workspace config: %v", err)
+	}
+	cfg, err := Load("", cwd)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DefaultProvider != "local" {
+		t.Fatalf("trusted workspace config was not applied: %#v", cfg.DefaultProvider)
 	}
 }

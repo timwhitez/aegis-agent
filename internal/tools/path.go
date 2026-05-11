@@ -120,13 +120,13 @@ func checkWorkspaceWriteDisplayPath(displayPath, baseName string) error {
 	parts := strings.Split(displayPath, "/")
 	for _, part := range parts {
 		for _, denied := range deniedWorkspaceWriteDirs {
-			if part == denied {
+			if strings.EqualFold(part, denied) {
 				return fmt.Errorf("write denied: path '%s' matches deny pattern '%s/'", displayPath, denied)
 			}
 		}
 	}
 	for _, denied := range deniedWorkspaceWriteFiles {
-		if baseName == denied {
+		if strings.EqualFold(baseName, denied) {
 			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, denied)
 		}
 	}

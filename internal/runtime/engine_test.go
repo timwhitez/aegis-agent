@@ -75,6 +75,77 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 }
 
+func TestEngineWritesReplayCompleteToolResultsWhenBeforeHookFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Hooks.ToolBefore = []config.HookDefinition{{
+		Name:       "fail-before",
+		Command:    []string{"/bin/sh", "-c", "exit 7"},
+		FailClosed: true,
+	}}
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"true"}`)},
+				{ID: "call_2", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatal("expected hook failure")
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed result, got %#v", result)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "tool" || len(last.ToolResults) != 2 {
+		t.Fatalf("expected replay-complete synthetic tool results, got %#v", last)
+	}
+	for _, toolResult := range last.ToolResults {
+		if !toolResult.IsError || !strings.Contains(toolResult.LLMOutput, "tool.before hook failed") {
+			t.Fatalf("expected hook failure tool result, got %#v", toolResult)
+		}
+	}
+}
+
+func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
+	for _, stopReason := range []string{"max_tokens", "blocked", "error"} {
+		t.Run(stopReason, func(t *testing.T) {
+			engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+			if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+			fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+				return provider.TurnResult{Text: "partial", StopReason: stopReason}, nil
+			})
+			result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if result.Status != session.StatusFailed {
+				t.Fatalf("expected failed status for %s, got %#v", stopReason, result)
+			}
+			loaded, err := engine.store.LoadState(meta.ID)
+			if err != nil {
+				t.Fatalf("load state: %v", err)
+			}
+			if loaded.IncompleteReason == "" || !strings.Contains(loaded.IncompleteReason, "provider") {
+				t.Fatalf("expected provider incomplete reason, got %#v", loaded)
+			}
+		})
+	}
+}
+
 func TestEnginePersistsOpenAIReasoningOnlyProviderBlockWhenReplayValid(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {

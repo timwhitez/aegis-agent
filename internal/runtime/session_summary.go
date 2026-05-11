@@ -266,7 +266,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		}
 	}
 	for _, job := range jobs {
-		if job.Status == session.QueueStatusQueued || job.Status == session.QueueStatusRunning {
+		if job.Status == session.QueueStatusQueued || job.Status == session.QueueStatusRunning || job.Status == session.QueueStatusBlocked {
 			checkpoint.UnresolvedQueueJobs = append(checkpoint.UnresolvedQueueJobs, job.ID)
 		}
 	}

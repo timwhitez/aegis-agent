@@ -16,7 +16,7 @@ type ExecPolicyViolation struct {
 var (
 	privilegeEscalationPattern = regexp.MustCompile(`(^|[;&|()])\s*(sudo|doas|pkexec)(\s|$)`)
 	rmRfRootPattern            = regexp.MustCompile(`\brm\s+(?:-[^\s;&|]*[rR][^\s;&|]*[fF][^\s;&|]*|-[^\s;&|]*[fF][^\s;&|]*[rR][^\s;&|]*)\s+(?:/|/\*)($|[\s;&|])`)
-	secretPathWritePattern     = regexp.MustCompile(`(?:^|[\s;&|])(>|>>|tee(?:\s+-a)?)\s+[^\n;&|]*(\.env|\.ssh/|\.aws/credentials|\.gnupg/|\.kube/config|\.docker/config\.json|id_rsa|id_ed25519|credentials)(?:$|[\s;&|])`)
+	secretPathWritePattern     = regexp.MustCompile(`(?i)(?:^|[\s;&|])(?:\d*>>?|\d*>\|?|tee(?:\s+-a)?)\s*[^\n;&|]*(\.env|\.ssh/|\.aws/credentials|\.gnupg/|\.kube/config|\.docker/config\.json|id_rsa|id_ed25519|credentials)(?:$|[\s;&|])`)
 	networkEgressPattern       = regexp.MustCompile(`(^|[;&|()])\s*(curl|wget|nc|ncat|telnet|ssh|scp|sftp)(\s|$)`)
 )
 

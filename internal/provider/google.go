@@ -33,7 +33,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{{"text": req.SystemPrompt}},
 		},
-		"contents": googleContents(req.Messages, req.Model),
+		"contents": googleContents(req.Messages, req.Model, req.ProviderProfile, req.APIProvider),
 		"tools": []map[string]any{
 			{"functionDeclarations": googleTools(req.Tools)},
 		},
@@ -234,7 +234,7 @@ func googleTools(tools []ToolSchema) []map[string]any {
 	return out
 }
 
-func googleContents(messages []session.Message, model string) []map[string]any {
+func googleContents(messages []session.Message, model, providerProfile, apiProvider string) []map[string]any {
 	var out []map[string]any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -245,7 +245,7 @@ func googleContents(messages []session.Message, model string) []map[string]any {
 			})
 		case "assistant":
 			parts := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if googleBlocks := googleProviderParts(msg.ProviderContentBlocks, model); len(googleBlocks) > 0 {
+			if googleBlocks := googleProviderParts(msg.ProviderContentBlocks, model, providerProfile, apiProvider); len(googleBlocks) > 0 {
 				parts = googleBlocks
 			} else if msg.Text != "" {
 				parts = append(parts, map[string]any{"text": msg.Text})
@@ -308,7 +308,7 @@ func googleContents(messages []session.Message, model string) []map[string]any {
 	return out
 }
 
-func googleProviderParts(blocks []session.ProviderContentBlock, model string) []map[string]any {
+func googleProviderParts(blocks []session.ProviderContentBlock, model, providerProfile, apiProvider string) []map[string]any {
 	var parts []map[string]any
 	hasAnchor := false
 	for _, block := range blocks {
@@ -316,6 +316,12 @@ func googleProviderParts(blocks []session.ProviderContentBlock, model string) []
 			continue
 		}
 		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
+			continue
+		}
+		if strings.TrimSpace(block.ProviderProfile) != "" && strings.TrimSpace(providerProfile) != "" && block.ProviderProfile != providerProfile {
+			continue
+		}
+		if strings.TrimSpace(block.APIProvider) != "" && strings.TrimSpace(apiProvider) != "" && block.APIProvider != apiProvider {
 			continue
 		}
 		part := map[string]any{}

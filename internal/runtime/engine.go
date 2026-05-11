@@ -73,9 +73,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 	allowResolutionTurn := false
 	hardTurnLimit := e.cfg.Runtime.MaxTurnsHard
 	hardTurnLimitEnabled := hardTurnLimit > 0
+	runStartTurn := state.Turn
 	for turn := state.Turn; ; turn++ {
 		usingResolutionTurn := false
-		if hardTurnLimitEnabled && turn >= hardTurnLimit {
+		runTurn := turn - runStartTurn
+		if hardTurnLimitEnabled && runTurn >= hardTurnLimit {
 			if !allowResolutionTurn {
 				state.Status = session.StatusFailed
 				state.LastError = "max_turns_hard_exceeded"
@@ -139,7 +141,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		projectMemory := loadProjectMemoryStack(meta.Workdir)
 		e.emit(meta.ID, "session.context.loaded", "prepare", contextLoadedEventData(meta, state.Turn, projectMemory, todo, tasks))
 
-		systemPrompt := buildSystemPrompt(meta.Workdir, meta.Mode, systemOverride, catalog.Summaries(), catalog.CommandTools(), state, messages, meta.AgentName, meta.AgentRole)
+		systemPrompt := buildSystemPrompt(meta.Workdir, meta.Mode, systemOverride, catalog.Summaries(), catalog.TrustedCommandTools(meta.Workdir), state, messages, meta.AgentName, meta.AgentRole)
 		if e.guardrailsYolo() {
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Runtime retrieval, project-memory, and review-artifact guardrails are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
@@ -180,6 +182,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			Temperature:      meta.ProviderOptions.Temperature,
 			TopP:             meta.ProviderOptions.TopP,
 			MaxOutputTokens:  meta.ProviderOptions.MaxOutputTokens,
+			ProviderProfile:  meta.Provider,
 			APIProvider:      meta.ProviderOptions.APIProvider,
 			ReasoningEffort:  meta.ProviderOptions.ReasoningEffort,
 			ReasoningSummary: meta.ProviderOptions.ReasoningSummary,
@@ -249,6 +252,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		e.emit(meta.ID, "turn.stopped", "provider_call", providerTurnEventData(result))
 
+		result.ProviderContentBlocks = stampProviderContentBlocks(meta, result.ProviderContentBlocks)
 		if shouldPersistAssistantResult(result) {
 			assistantPayload, err := hookManager.Trigger(ctx, "assistant.message", map[string]any{
 				"session_id": meta.ID,
@@ -280,6 +284,19 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 
 		if len(result.ToolCalls) == 0 {
+			if failureReason, failureText := providerStopFailure(result.StopReason); failureReason != "" {
+				state.Status = session.StatusFailed
+				state.Phase = "turn_decide"
+				state.IncompleteReason = failureReason
+				state.LastError = failureText
+				if err := e.store.SaveState(meta.ID, state); err != nil {
+					return RunResult{}, err
+				}
+				e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"reason": failureReason, "stop_reason": result.StopReason})
+				_ = writeSessionSummary(e.store, meta.ID)
+				_ = writeLongRunCheckpoint(e.store, meta.ID)
+				return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
+			}
 			acceptedBackgroundAfterProvider, err := e.drainBackground(ctx, meta, hookManager)
 			if err != nil {
 				return RunResult{}, err
@@ -301,7 +318,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if len(result.ToolCalls) > 0 {
 			doneCandidates = 0
 			toolResults := make([]session.ToolResult, 0, len(result.ToolCalls))
-			for _, call := range result.ToolCalls {
+			for callIndex, call := range result.ToolCalls {
 				argumentsText := prettyJSON(call.Arguments)
 				e.emit(meta.ID, "tool.before", "tool_execute", map[string]any{
 					"tool_name": call.Name,
@@ -315,6 +332,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				updatedBeforePayload, err := hookManager.Trigger(ctx, "tool.before", beforePayload)
 				if err != nil {
+					toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex:], "Error: tool.before hook failed: "+err.Error())...)
+					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+						return RunResult{}, appendErr
+					}
 					return e.fail(ctx, meta, state, err, hookManager)
 				}
 				toolArgs := call.Arguments
@@ -322,6 +343,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					trimmed := strings.TrimSpace(value)
 					if trimmed != "" {
 						if !json.Valid([]byte(trimmed)) {
+							toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex:], "Error: tool.before hook produced invalid arguments JSON")...)
+							if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+								return RunResult{}, appendErr
+							}
 							return e.fail(ctx, meta, state, errors.New("tool.before hook produced invalid arguments JSON"), hookManager)
 						}
 						toolArgs = json.RawMessage(trimmed)
@@ -400,6 +425,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 							IsError:       true,
 						}
 						toolResults = append(toolResults, toolResult)
+						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool execution was interrupted before this call ran")...)
 						if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
 							return RunResult{}, err
 						}
@@ -436,6 +462,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				updatedPayload, err := hookManager.Trigger(ctx, "tool.after", afterPayload)
 				if err != nil {
+					toolResult.IsError = true
+					if strings.TrimSpace(toolResult.LLMOutput) == "" {
+						toolResult.LLMOutput = "Error: tool.after hook failed: " + err.Error()
+					}
+					if strings.TrimSpace(toolResult.DisplayOutput) == "" {
+						toolResult.DisplayOutput = toolResult.LLMOutput
+					}
+					toolResults = append(toolResults, toolResult)
+					toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.after hook failed before this call ran: "+err.Error())...)
+					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+						return RunResult{}, appendErr
+					}
 					return e.fail(ctx, meta, state, err, hookManager)
 				}
 				if value, ok := updatedPayload["llm_output"].(string); ok {
@@ -559,6 +597,9 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 	}
 	state.Status = session.StatusCompleted
 	state.Phase = "turn_decide"
+	state.LastError = ""
+	state.IncompleteReason = ""
+	state.ProviderAutoResumeCount = 0
 	state.LastAssistantExcerpt = truncateText(text, 500)
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
@@ -1013,6 +1054,26 @@ func shouldPersistAssistantResult(result provider.TurnResult) bool {
 	return false
 }
 
+func stampProviderContentBlocks(meta session.SessionMetadata, blocks []session.ProviderContentBlock) []session.ProviderContentBlock {
+	if len(blocks) == 0 {
+		return blocks
+	}
+	out := make([]session.ProviderContentBlock, len(blocks))
+	copy(out, blocks)
+	for i := range out {
+		if strings.TrimSpace(out[i].ProviderProfile) == "" {
+			out[i].ProviderProfile = meta.Provider
+		}
+		if strings.TrimSpace(out[i].APIProvider) == "" {
+			out[i].APIProvider = meta.ProviderOptions.APIProvider
+		}
+		if strings.TrimSpace(out[i].Model) == "" {
+			out[i].Model = meta.Model
+		}
+	}
+	return out
+}
+
 func providerTurnEventData(result provider.TurnResult) map[string]any {
 	data := map[string]any{
 		"stop_reason": result.StopReason,
@@ -1028,6 +1089,36 @@ func providerTurnEventData(result provider.TurnResult) map[string]any {
 		data["raw_provider"] = result.RawProvider
 	}
 	return data
+}
+
+func providerStopFailure(stopReason string) (string, string) {
+	switch strings.TrimSpace(stopReason) {
+	case "max_tokens":
+		return "provider_max_tokens", "provider stopped because max output tokens were reached"
+	case "blocked":
+		return "provider_blocked", "provider stopped because the response was blocked"
+	case "error":
+		return "provider_stop_error", "provider stopped with an adapter/provider error stop reason"
+	default:
+		return "", ""
+	}
+}
+
+func syntheticToolResults(calls []provider.ToolCall, output string) []session.ToolResult {
+	if len(calls) == 0 {
+		return nil
+	}
+	results := make([]session.ToolResult, 0, len(calls))
+	for _, call := range calls {
+		results = append(results, session.ToolResult{
+			ToolCallID:    call.ID,
+			Name:          call.Name,
+			LLMOutput:     output,
+			DisplayOutput: output,
+			IsError:       true,
+		})
+	}
+	return results
 }
 
 func providerTurnMessageMeta(result provider.TurnResult) map[string]any {

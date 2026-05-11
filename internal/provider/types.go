@@ -30,6 +30,7 @@ type TurnRequest struct {
 	Temperature      *float64
 	TopP             *float64
 	MaxOutputTokens  int
+	ProviderProfile  string
 	APIProvider      string
 	ReasoningEffort  string
 	ReasoningSummary string

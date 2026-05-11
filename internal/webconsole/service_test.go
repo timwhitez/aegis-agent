@@ -57,6 +57,8 @@ func TestServiceSteerWritesWebSource(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/steer", bytes.NewBufferString(`{"message":"focus on the failing test","interrupt":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -556,6 +558,7 @@ func TestSensitiveWebActionsEmitAuditEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new delete request: %v", err)
 	}
+	req.Header.Set(webMutationHeader, "1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete session request: %v", err)
@@ -591,7 +594,13 @@ func TestSensitiveWebActionsEmitAuditEvents(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
-	resp, err = http.Post(ts.URL+"/api/skills/upload", writer.FormDataContentType(), body)
+	req, err = http.NewRequest(http.MethodPost, ts.URL+"/api/skills/upload", body)
+	if err != nil {
+		t.Fatalf("new upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(webMutationHeader, "1")
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("upload skill: %v", err)
 	}
@@ -976,6 +985,7 @@ func TestServiceQueueJobDetailRequiresGet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new %s job detail request: %v", method, err)
 		}
+		req.Header.Set(webMutationHeader, "1")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("%s job detail request: %v", method, err)
@@ -1122,6 +1132,8 @@ func TestServiceWorkerScaling(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":2}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -1132,6 +1144,45 @@ func TestServiceWorkerScaling(t *testing.T) {
 	}
 	if snapshot.DesiredCount != 2 || snapshot.ActiveCount != 2 {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
+	}
+	if snapshot.MaxCount != maxWorkerCount {
+		t.Fatalf("expected max worker count in snapshot, got %#v", snapshot)
+	}
+}
+
+func TestServiceWorkerScalingRejectsExcessiveCount(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":999}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for excessive worker count, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServiceRejectsForeignOriginMutation(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewBufferString(`{"provider":"openai"}`))
+	request.Header.Set("Origin", "http://evil.invalid")
+	request.Header.Set("Content-Type", "text/plain")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden cross-origin mutation, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -1443,6 +1494,7 @@ func TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new delete request: %v", err)
 	}
+	req.Header.Set(webMutationHeader, "1")
 	recorder := httptest.NewRecorder()
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -1502,7 +1554,9 @@ func TestServiceClearSessionsRouteRemovesHistory(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected clear status: %d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -1558,13 +1612,15 @@ func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected clear status with stale handle: %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
-func TestServiceClearSessionsIgnoresStaleRunningSessionsWithoutLiveOwners(t *testing.T) {
+func TestServiceClearSessionsRejectsRunningSessionsWithoutLiveOwners(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
 	if err != nil {
@@ -1594,9 +1650,44 @@ func TestServiceClearSessionsIgnoresStaleRunningSessionsWithoutLiveOwners(t *tes
 	}
 
 	recorder := httptest.NewRecorder()
-	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("unexpected clear status with stale running session: %d body=%s", recorder.Code, recorder.Body.String())
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected conflict for running session without current owner, got: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServiceDeleteSessionRejectsRunningSessionWithoutLiveOwner(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "running_not_owned_delete",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "running_not_owned_delete",
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "provider_call", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := svc.store.Create(meta, state); err != nil {
+		t.Fatalf("create running session: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected conflict deleting running session, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -1621,7 +1712,9 @@ func TestServiceClearSessionsRejectsRunningQueueJobs(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("expected conflict while running queue job exists, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -1710,6 +1803,38 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(configBytes), "reasoning_effort: xhigh") {
 		t.Fatalf("expected updated reasoning effort to persist to config, got %q", string(configBytes))
+	}
+}
+
+func TestServiceConfigSaveClearsExplicitProviderFields(t *testing.T) {
+	cfg := testConfig(t, "")
+	provider := cfg.Providers["openai"]
+	provider.APIProvider = "openai-compatible"
+	provider.BaseURL = "http://example.invalid/v1"
+	provider.Model = "gpt-old"
+	cfg.Providers["openai"] = provider
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":     "openai",
+		"api_provider": "",
+		"base_url":     "",
+		"model":        "",
+	}, http.StatusOK, nil)
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	p := updated.Providers["openai"]
+	if p.APIProvider != "" || p.BaseURL != "" || p.Model != "" {
+		t.Fatalf("expected explicit provider fields to be cleared, got %#v", p)
 	}
 }
 
@@ -2179,6 +2304,7 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 		t.Fatalf("new upload request: %v", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(webMutationHeader, "1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("upload request: %v", err)
@@ -2203,6 +2329,9 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 		if err != nil {
 			t.Fatalf("new %s uninstall request: %v", method, err)
 		}
+		if method != http.MethodGet {
+			req.Header.Set(webMutationHeader, "1")
+		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("%s uninstall request: %v", method, err)
@@ -2217,7 +2346,13 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 		}
 	}
 
-	resp, err = http.Post(ts.URL+"/api/skills/demo-skill/install", "application/json", strings.NewReader("{}"))
+	req, err = http.NewRequest(http.MethodPost, ts.URL+"/api/skills/demo-skill/install", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("new install request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("install request: %v", err)
 	}
@@ -2227,7 +2362,13 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 		t.Fatalf("expected install to be unsupported, got %d body=%s", resp.StatusCode, string(body))
 	}
 
-	resp, err = http.Post(ts.URL+"/api/skills/demo-skill/uninstall", "application/json", strings.NewReader("{}"))
+	req, err = http.NewRequest(http.MethodPost, ts.URL+"/api/skills/demo-skill/uninstall", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("new uninstall request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("uninstall request: %v", err)
 	}
@@ -2547,7 +2688,13 @@ func postJSON(t *testing.T, url string, payload any, wantStatus int, target any)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("new post %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post %s: %v", url, err)
 	}
@@ -2570,7 +2717,13 @@ func postJSONError(t *testing.T, url string, payload any, wantStatus int) ErrorR
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("new post %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post %s: %v", url, err)
 	}

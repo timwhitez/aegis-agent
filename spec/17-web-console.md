@@ -289,7 +289,7 @@ Web console 通过一个新的 `WebConsoleService` 运行。
 
 ### 6.3 Worker 并发池
 
-worker pool 允许并发 `N >= 1`。
+worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式；后端必须设置保守上限（当前实现为 `8`）并在 worker snapshot 中暴露 `max_count`。
 
 约束：
 
@@ -304,6 +304,7 @@ worker pool 允许并发 `N >= 1`。
 
 控制面约束：
 
+- 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json`；multipart skill upload 保持表单入口但仍受 header 与 path/root 校验约束。
 - `POST /api/sessions/start`、`POST /api/sessions/{id}/continue`、`POST /api/sessions/{id}/steer`、`POST /api/sessions/{id}/interrupt`、`POST /api/sessions/{id}/stop` 是 session 控制的唯一入口。
 - `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session。
 - `/ws` 收到历史 `{"type":"chat"}` 或 `{"type":"stop"}` 控制消息时必须返回 `WEBSOCKET_CONTROL_DEPRECATED`，且不得创建、继续或修改 session。
@@ -509,8 +510,8 @@ Settings API：
 
 1. 填写 prompt
 2. 可选填写 `agent_name` / `agent_role`
-3. 选择 provider / model / mode
-4. 选择是否 isolation
+3. 可选填写 model；provider / mode / isolation 作为 REST API advanced 控制面保留，默认 UI 不强迫展示
+4. 如需 provider / mode / isolation 的完整控制，使用 CLI 或 REST API advanced payload
 5. 点击 Start
 6. UI 立即切换到该 session 详情页
 7. Timeline 开始轮询刷新

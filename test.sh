@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-UNFORMATTED="$(gofmt -l cmd internal pkg)"
+UNFORMATTED="$(gofmt -l cmd internal pkg validation/cmd)"
 if [[ -n "$UNFORMATTED" ]]; then
   printf 'gofmt needed for:\n%s\n' "$UNFORMATTED" >&2
   exit 1
@@ -23,6 +23,7 @@ PKG_PATTERNS=(
   ./cmd/...
   ./internal/...
   ./pkg/...
+  ./validation/cmd/...
 )
 
 # Keep the repo-level test surface on the owned module packages. The

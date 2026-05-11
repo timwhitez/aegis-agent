@@ -373,8 +373,13 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		if job.LastError == "" && runErr != nil {
 			job.LastError = runErr.Error()
 		}
-	} else {
+	} else if result.Status == session.StatusCompleted {
 		job.Status = session.QueueStatusCompleted
+	} else {
+		job.Status = session.QueueStatusBlocked
+		if job.LastError == "" {
+			job.LastError = "child session is resumable: " + result.Status
+		}
 	}
 	if err := retryQueuePersistence("persist queue job "+job.ID, func() error {
 		return r.store.SaveJob(job)
@@ -394,12 +399,17 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			"status":     job.Status,
 			"agent_role": job.AgentRole,
 		})
-		_ = resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status)
+		if isTerminalQueueStatus(job.Status) {
+			_ = resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status)
+		}
 		_ = writeSessionSummary(r.store, job.ParentSessionID)
 		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
 	}
 	if job.ParentSessionID != "" {
-		eventType := "queue.job.completed"
+		eventType := "queue.job.blocked"
+		if job.Status == session.QueueStatusCompleted {
+			eventType = "queue.job.completed"
+		}
 		if job.Status == session.QueueStatusFailed {
 			eventType = "queue.job.failed"
 		}
@@ -441,6 +451,10 @@ func (r *Runner) startQueueJobHeartbeat(ctx context.Context, jobID string) func(
 		cancel()
 		<-done
 	}
+}
+
+func isTerminalQueueStatus(status string) bool {
+	return status == session.QueueStatusCompleted || status == session.QueueStatusFailed
 }
 
 func (r *Runner) queueJobHeartbeatInterval() time.Duration {

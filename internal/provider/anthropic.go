@@ -32,7 +32,7 @@ func (a *AnthropicAdapter) Name() string { return "anthropic" }
 func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
 	body := map[string]any{
 		"model":      req.Model,
-		"messages":   anthropicMessages(req.Messages, req.Model),
+		"messages":   anthropicMessages(req.Messages, req.Model, req.ProviderProfile, req.APIProvider),
 		"tools":      anthropicTools(req.Tools),
 		"max_tokens": anthropicMaxTokens(req.MaxOutputTokens),
 	}
@@ -212,7 +212,7 @@ func anthropicTools(tools []ToolSchema) []map[string]any {
 	return out
 }
 
-func anthropicMessages(messages []session.Message, model string) []map[string]any {
+func anthropicMessages(messages []session.Message, model, providerProfile, apiProvider string) []map[string]any {
 	var out []map[string]any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -228,7 +228,7 @@ func anthropicMessages(messages []session.Message, model string) []map[string]an
 			})
 		case "assistant":
 			content := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if anthropicBlocks := anthropicProviderContent(msg.ProviderContentBlocks, model); len(anthropicBlocks) > 0 {
+			if anthropicBlocks := anthropicProviderContent(msg.ProviderContentBlocks, model, providerProfile, apiProvider); len(anthropicBlocks) > 0 {
 				content = anthropicBlocks
 			} else {
 				if msg.Text != "" {
@@ -274,7 +274,7 @@ func anthropicMessages(messages []session.Message, model string) []map[string]an
 	return out
 }
 
-func anthropicProviderContent(blocks []session.ProviderContentBlock, model string) []map[string]any {
+func anthropicProviderContent(blocks []session.ProviderContentBlock, model, providerProfile, apiProvider string) []map[string]any {
 	var content []map[string]any
 	hasAnchor := false
 	for _, block := range blocks {
@@ -282,6 +282,12 @@ func anthropicProviderContent(blocks []session.ProviderContentBlock, model strin
 			continue
 		}
 		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
+			continue
+		}
+		if strings.TrimSpace(block.ProviderProfile) != "" && strings.TrimSpace(providerProfile) != "" && block.ProviderProfile != providerProfile {
+			continue
+		}
+		if strings.TrimSpace(block.APIProvider) != "" && strings.TrimSpace(apiProvider) != "" && block.APIProvider != apiProvider {
 			continue
 		}
 		switch block.Type {

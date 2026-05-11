@@ -31,6 +31,10 @@ func Prepare(req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	parentWorkdir, err = filepath.EvalSymlinks(parentWorkdir)
+	if err != nil {
+		return Result{}, err
+	}
 	mode := strings.TrimSpace(req.RequestedMode)
 	if mode == "" {
 		mode = "off"
@@ -52,26 +56,70 @@ func Prepare(req Request) (Result, error) {
 		return Result{}, err
 	}
 	target := filepath.Join(rootDir, req.SessionID)
-	if isWithin(parentWorkdir, target) {
+	resolvedTarget, err := resolveWithExistingParent(target)
+	if err != nil {
+		return Result{}, err
+	}
+	if isWithin(parentWorkdir, resolvedTarget) {
 		return Result{}, fmt.Errorf("isolation target must not be inside source workdir")
 	}
-	result.RootDir = rootDir
+	resolvedRoot, err := resolveWithExistingParent(rootDir)
+	if err != nil {
+		return Result{}, err
+	}
+	if isWithin(parentWorkdir, resolvedRoot) {
+		return Result{}, fmt.Errorf("isolation root must not be inside source workdir")
+	}
+	result.RootDir = resolvedRoot
 	switch mode {
 	case "auto":
 		if gitRoot, ok := detectGitRepo(parentWorkdir); ok {
-			return prepareGitWorktree(result, gitRoot, target)
+			return prepareGitWorktree(result, gitRoot, resolvedTarget)
 		}
-		return prepareCopy(result, target)
+		return prepareCopy(result, resolvedTarget)
 	case "git":
 		gitRoot, ok := detectGitRepo(parentWorkdir)
 		if !ok {
 			return Result{}, fmt.Errorf("git isolation requested but %s is not inside a git repository", parentWorkdir)
 		}
-		return prepareGitWorktree(result, gitRoot, target)
+		return prepareGitWorktree(result, gitRoot, resolvedTarget)
 	case "copy":
-		return prepareCopy(result, target)
+		return prepareCopy(result, resolvedTarget)
 	default:
 		return Result{}, fmt.Errorf("unsupported isolation mode: %s", mode)
+	}
+}
+
+func resolveWithExistingParent(path string) (string, error) {
+	path = filepath.Clean(path)
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || info.Mode().IsRegular() {
+			return filepath.EvalSymlinks(path)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	var suffix []string
+	current := path
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("unable to resolve path: %s", path)
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
 	}
 }
 

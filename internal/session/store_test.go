@@ -996,6 +996,50 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
+func TestLoadJobPreservesResumableChildAsBlocked(t *testing.T) {
+	store := NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := QueueJob{
+		ID:        "job-resumable",
+		Status:    QueueStatusBlocked,
+		Prompt:    "continue later",
+		Mode:      ModeRun,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save blocked job: %v", err)
+	}
+	childMeta := SessionMetadata{
+		ID:         "child-resumable",
+		Mode:       ModeRun,
+		Workdir:    t.TempDir(),
+		QueueJobID: job.ID,
+		CreatedAt:  now,
+	}
+	if err := store.Create(childMeta, State{Status: StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	repaired, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	if repaired.Status != QueueStatusBlocked {
+		t.Fatalf("expected blocked job for resumable child, got %#v", repaired)
+	}
+	if repaired.SessionStatus != StatusAwaitingInput {
+		t.Fatalf("expected awaiting child status, got %#v", repaired)
+	}
+	state, err := store.LoadState(childMeta.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if state.Status != StatusAwaitingInput {
+		t.Fatalf("resumable child state should not be forced terminal, got %#v", state)
+	}
+}
+
 func stringSliceContains(items []string, value string) bool {
 	for _, item := range items {
 		if item == value {

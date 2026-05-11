@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"go-cli-agent/internal/tools"
 )
 
 type projectMemoryFile struct {
@@ -29,7 +31,11 @@ func loadProjectMemoryStack(workdir string) projectMemoryStack {
 
 func loadProjectMemoryFile(workdir, name, rel string) projectMemoryFile {
 	entry := projectMemoryFile{Name: name, Path: rel}
-	data, err := os.ReadFile(filepath.Join(workdir, rel))
+	path, err := tools.ResolveWorkspacePath(workdir, rel)
+	if err != nil {
+		return entry
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return entry
 	}

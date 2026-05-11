@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"go-cli-agent/internal/fileutil"
 )
 
 func DefaultEnvFilePath(cwd string) string {
@@ -38,6 +40,9 @@ func LoadEnvFile(path string) error {
 		if current := strings.TrimSpace(os.Getenv(key)); current != "" {
 			continue
 		}
+		if !allowedEnvFileKey(key) {
+			continue
+		}
 		if err := os.Setenv(key, value); err != nil {
 			return err
 		}
@@ -53,6 +58,17 @@ func UpsertEnvFile(path, key, value string) error {
 	}
 	if key == "" {
 		return fmt.Errorf("env key is required")
+	}
+
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to update symlinked env file: %s", path)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("env file is not a regular file: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
 	var lines []string
@@ -84,27 +100,22 @@ func UpsertEnvFile(path, key, value string) error {
 	if content != "" && !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	return fileutil.AtomicWriteFileNoSymlink(path, []byte(content), 0o600)
+}
+
+func allowedEnvFileKey(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if key == "" {
+		return false
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".env.*.tmp")
-	if err != nil {
-		return err
+	if strings.HasPrefix(key, "GO_CLI_AGENT_") {
+		return false
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		return err
+	switch key {
+	case "PATH", "HOME", "SHELL", "BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES":
+		return false
 	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
+	return strings.HasSuffix(key, "_API_KEY") || strings.HasSuffix(key, "_ACCESS_TOKEN")
 }
 
 func parseEnvAssignment(line string) (string, string, bool) {

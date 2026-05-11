@@ -85,8 +85,8 @@ child session 使用独立工作目录执行。当前支持：
 
 新增命令：
 
-- `go-cli-agent delegate <parent-session-id> [prompt]`
-- `go-cli-agent children <session-id>`
+- `go-cli-agent experimental delegate <parent-session-id> [prompt]`
+- `go-cli-agent experimental children <session-id>`
 
 `delegate` 高频参数：
 
@@ -255,7 +255,7 @@ parent 通过 tool 或 CLI 获取结构化结果，不直接复用 child 的 std
 
 ### 9.1 depth limit
 
-默认 `enabled = false`，`max_depth = 4`。
+默认 `enabled = true`，`max_depth = 4`。默认暴露 `agent_spawn` / `agent_status` / `agent_list`，operator 可通过 `runtime.multi_agent.enabled=false` 显式收窄。
 
 超过时：
 

@@ -14,7 +14,7 @@
 - session / state / messages / events / todo / tasks 是本地文件事实源
 - provider 原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - `openai-compatible` 作为 OpenAI Responses 形状的兼容部署模式提供
-- `experimental delegate|children|queue|web`、`tui` 和 `--isolation auto|copy` 仍是显式扩展面，不是默认 core 叙事
+- `experimental delegate|children|queue|tui|web` 和 `--isolation auto|copy` 仍是显式扩展面，不是默认 core 叙事
 - 默认不做报告、prompt、session、compaction 或 provider view 脱敏；如需脱敏，由用户在当轮 prompt 明确要求
 
 ## 快速开始
@@ -82,7 +82,7 @@ export ANTHROPIC_API_KEY=...
 export GEMINI_API_KEY=...
 ```
 
-默认配置文件是 `.go-cli-agent/config.yaml`。CLI / Web 启动时还会自动读取仓库根目录 `.env`，或 `GO_CLI_AGENT_ENV_FILE` 指向的 env 文件。
+默认配置文件优先来自 `~/.go-cli-agent/config.yaml` 或显式 `--config` / `GO_CLI_AGENT_CONFIG`。仓库内 `.go-cli-agent/config.yaml` 默认视为未受信，只在设置 `GO_CLI_AGENT_TRUST_WORKSPACE_CONFIG=1|true` 或存在普通文件 `.go-cli-agent/trusted` 时加载。CLI / Web 启动时还会读取仓库根目录 `.env`，或 `GO_CLI_AGENT_ENV_FILE` 指向的 env 文件；自动导入仅允许 provider secret 形态的键（`*_API_KEY`、`*_ACCESS_TOKEN`），不会从 `.env` 接收 `GO_CLI_AGENT_*`、`PATH`、`HOME` 等控制变量。
 
 OpenAI / `openai-compatible` 默认走 Responses API。为了保持本地 session 是唯一事实源，adapter 默认发送 `store: false`，不依赖服务端持久化续跑。
 
@@ -173,7 +173,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 ## 脚本
 
 - `build.sh`: 构建 `bin/go-cli-agent`
-- `test.sh`: 检查 `gofmt` 漂移、WebConsole JS 语法，并执行 `go test ./cmd/... ./internal/... ./pkg/...`
+- `test.sh`: 检查 `gofmt` 漂移、WebConsole JS 语法，并执行 `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
 - `run.sh`: 启动、停止或查看本地 `experimental web` 进程
 - `live_smoke.sh`: 真实 provider 的在线探活脚本
 - `validation/run_openai_compatible_acceptance_stack.sh`: provider 连通性确认后的长期 acceptance 入口

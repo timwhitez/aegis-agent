@@ -28,7 +28,7 @@ core v1 的默认命令面固定为：
 
 - 这组命令定义当前默认工作流
 - README、帮助文本、live smoke、测试说明默认围绕这一组命令展开
-- `delegate` / `children` / `queue` / `tui` 仍可保留，但只能通过显式 experimental 入口出现
+- `delegate` / `children` / `queue` / `tui` / `web` 仍可保留，但只能通过显式 experimental 入口出现
 
 ## 3. 扩展命令
 
@@ -38,6 +38,7 @@ core v1 的默认命令面固定为：
 - `go-cli-agent experimental children <session-id>`
 - `go-cli-agent experimental queue <submit|list|show|worker>`
 - `go-cli-agent experimental tui`
+- `go-cli-agent experimental web`
 
 要求：
 
@@ -249,14 +250,15 @@ next: go-cli-agent continue 20260319-101530-ab12cd --message "..."
 默认位置：
 
 - `~/.go-cli-agent/config.yaml`
-- 或当前工作目录 `.go-cli-agent/config.yaml`
-- 或 `GO_CLI_AGENT_CONFIG`
+- 或显式 `GO_CLI_AGENT_CONFIG` / `--config`
+- 当前工作目录 `.go-cli-agent/config.yaml` 只在设置 `GO_CLI_AGENT_TRUST_WORKSPACE_CONFIG=1|true`，或存在普通文件 `.go-cli-agent/trusted` 时加载；未受信 workspace config 不得改写 provider endpoint、API-provider、hooks、session-dir、skills-dir 等 active runtime 配置
 
 环境变量文件：
 
 - 默认读取当前工作目录 `.env`
 - 若设置 `GO_CLI_AGENT_ENV_FILE`，则读取该文件
 - 进程启动时会先加载 env 文件，再解析 provider `api_key_env`
+- 自动导入仅允许 provider secret 形态的键（`*_API_KEY`、`*_ACCESS_TOKEN`）；`GO_CLI_AGENT_*`、`PATH`、`HOME`、shell loader / dynamic loader 等控制变量必须忽略
 - `experimental web` Settings 页面保存的 API key 会持久化到这个 env 文件中
 
 配置结构：

@@ -11,6 +11,7 @@ import (
 
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/skills"
+	"go-cli-agent/internal/tools"
 )
 
 var artifactPathPattern = regexp.MustCompile(`(?i)(?:[a-z]:)?(?:/|\.?/)?[a-z0-9._/-]+\.md`)
@@ -3012,7 +3013,10 @@ func loadAgentsChain(workdir string) []agentsDoc {
 	if err != nil {
 		return nil
 	}
-	path := filepath.Join(current, "AGENTS.md")
+	path, err := tools.ResolveWorkspacePath(current, "AGENTS.md")
+	if err != nil {
+		return nil
+	}
 	if data, err := os.ReadFile(path); err == nil {
 		return []agentsDoc{{Path: path, Content: strings.TrimSpace(string(data))}}
 	}

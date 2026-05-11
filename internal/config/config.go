@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"go-cli-agent/internal/fileutil"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -360,8 +362,12 @@ func Load(explicitPath, cwd string) (*Config, error) {
 		loadOrder = append(loadOrder, explicitPath)
 	}
 
+	workspaceConfigPath := filepath.Join(cwd, ".go-cli-agent", "config.yaml")
 	for _, path := range loadOrder {
 		if path == "" {
+			continue
+		}
+		if explicitPath == "" && sameCleanPath(path, workspaceConfigPath) && !workspaceConfigTrusted(cwd) {
 			continue
 		}
 		data, err := os.ReadFile(path)
@@ -611,10 +617,24 @@ func WriteFile(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	return fileutil.AtomicWriteFileNoSymlink(path, data, 0o600)
+}
+
+func sameCleanPath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func workspaceConfigTrusted(cwd string) bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GO_CLI_AGENT_TRUST_WORKSPACE_CONFIG")), "1") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("GO_CLI_AGENT_TRUST_WORKSPACE_CONFIG")), "true") {
+		return true
 	}
-	return os.WriteFile(path, data, 0o600)
+	marker := filepath.Join(cwd, ".go-cli-agent", "trusted")
+	info, err := os.Lstat(marker)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
 }
 
 func Clone(cfg *Config) (*Config, error) {

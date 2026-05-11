@@ -61,6 +61,9 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(childSessionID) == "" {
 		return nil
 	}
+	if !isTerminalSessionStatus(status) {
+		return nil
+	}
 	coordination := loadOrNewParentCoordination(store, parentSessionID)
 	wasParked := coordination.Parked
 	coordination.UnresolvedChildSessions = removeString(coordination.UnresolvedChildSessions, childSessionID)
@@ -76,6 +79,10 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 	}
 	emitParentCoordinationTransition(store, coordination, wasParked, "child_session", childSessionID)
 	return nil
+}
+
+func isTerminalSessionStatus(status string) bool {
+	return status == session.StatusCompleted || status == session.StatusFailed
 }
 
 func resolveParentQueueJob(store *session.Store, parentSessionID, jobID, status string) error {

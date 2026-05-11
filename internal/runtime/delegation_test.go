@@ -650,10 +650,9 @@ func TestRunnerAutoQueueWorkerProcessesQueuedJobs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load background notifications: %v", err)
 			}
-			if len(notifications) == 0 {
-				t.Fatalf("expected background notification for completed job")
+			if len(notifications) > 0 {
+				return
 			}
-			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

@@ -30,6 +30,7 @@ func recordProviderFailure(store *session.Store, meta session.SessionMetadata, t
 	}
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "failure"
+	attempt.Attempt = terminalProviderAttempt(store, meta.ID, turn)
 	attempt.ResponseCommitted = responseCommitted
 	attempt.Error = err.Error()
 	var httpErr *provider.HTTPError
@@ -44,9 +45,27 @@ func recordProviderFailure(store *session.Store, meta session.SessionMetadata, t
 func recordProviderSuccess(store *session.Store, meta session.SessionMetadata, turn int, result provider.TurnResult) {
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "success"
+	attempt.Attempt = terminalProviderAttempt(store, meta.ID, turn)
 	attempt.ResponseCommitted = true
 	attempt.ProviderResponseID = result.ProviderResponseID
 	_ = store.AppendProviderAttempt(meta.ID, attempt)
+}
+
+func terminalProviderAttempt(store *session.Store, sessionID string, turn int) int {
+	attempts, err := store.LoadProviderAttempts(sessionID)
+	if err != nil {
+		return 1
+	}
+	maxAttempt := 0
+	for _, attempt := range attempts {
+		if attempt.Turn != turn || attempt.Outcome != "retry" {
+			continue
+		}
+		if attempt.Attempt > maxAttempt {
+			maxAttempt = attempt.Attempt
+		}
+	}
+	return maxAttempt + 1
 }
 
 func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, err error, attemptNo int) {

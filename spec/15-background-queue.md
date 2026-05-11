@@ -21,6 +21,8 @@
     job_*.json
   running/
     job_*.json
+  blocked/
+    job_*.json
   completed/
     job_*.json
   failed/
@@ -46,6 +48,11 @@
   "created_at": "2026-03-19T12:00:00Z",
   "updated_at": "2026-03-19T12:00:00Z",
   "status": "queued",
+  "claimed_by": "",
+  "claimed_at": "",
+  "heartbeat_at": "",
+  "worker_pid": 0,
+  "process_start_id": "",
   "parent_session_id": "20260319-115500-aa11bb",
   "root_session_id": "20260319-115500-aa11bb",
   "agent_name": "reviewer",
@@ -56,10 +63,12 @@
   "model": "gpt-5.4",
   "requested_workdir": "/repo",
   "effective_workdir": "",
+  "visible_paths": [],
   "session_id": "",
   "session_status": "",
   "system_override": "",
   "background": true,
+  "wait_mode": "notify",
   "isolation_mode": "auto",
   "isolation_root": "",
   "last_error": "",
@@ -71,10 +80,10 @@
 
 新增命令：
 
-- `go-cli-agent queue submit [prompt]`
-- `go-cli-agent queue list`
-- `go-cli-agent queue show <job-id>`
-- `go-cli-agent queue worker`
+- `go-cli-agent experimental queue submit [prompt]`
+- `go-cli-agent experimental queue list`
+- `go-cli-agent experimental queue show <job-id>`
+- `go-cli-agent experimental queue worker`
 
 ### 4.1 `queue submit`
 
@@ -93,6 +102,7 @@
 - `--workdir`
 - `--system`
 - `--mode`
+- `--wait-mode`
 - `--json`
 - `--isolation`
 - `--isolation-root`
@@ -162,6 +172,13 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 
 都要写回 job 文件。
 
+状态映射：
+
+- child `completed` -> queue `completed`
+- child `failed` -> queue `failed`
+- child `paused` / `awaiting_input` / 其他可恢复非终态 -> queue `blocked`，保留 `session_id`、`session_status` 与 `last_error` 方便后续 `continue`
+- 只有仍由 worker 持有并心跳更新的执行中 job 保持 `running`
+
 ### 5.3.1 parent notification
 
 若 job 带有 `parent_session_id`，worker 还必须向 parent session 写入一条 `control/background.jsonl` 记录，至少包含：
@@ -186,6 +203,12 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 - child session 最终状态为 `failed`
 - worktree 隔离准备失败
 
+以下情况标记 job `blocked`：
+
+- child session 停在 `paused`
+- child session 停在 `awaiting_input`
+- child session 进入其他非 terminal、但仍可继续恢复的状态
+
 ### 5.5 worker 生命周期
 
 - 单个 job 失败时，worker 必须先把 job 状态持久化为 `failed`
@@ -200,9 +223,9 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 
 ## 7. 验收标准
 
-- `queue submit` 能稳定落盘 job
-- `queue worker --once` 能真实消化至少一个 job
+- `experimental queue submit` 能稳定落盘 job
+- `experimental queue worker --once` 能真实消化至少一个 job
 - auto worker 能在活跃 CLI 进程中自动消化 background child job
 - queue job 与 child session 能正确关联
-- child 完成/失败后 parent session 能在下一安全边界接纳 background notification
+- child 完成/失败后 parent session 能在下一安全边界接纳 background notification；child 若停在 `paused` / `awaiting_input`，queue job 必须保持 `blocked` / resumable，不能释放 parent completion gate
 - 多 worker 同时启动时不会重复消费同一 queued 文件

@@ -41,6 +41,26 @@ func TestPrepareGitModeRequiresRepository(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsSymlinkedRootInsideParent(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(parent, ".go-cli-agent", "_worktrees"), 0o700); err != nil {
+		t.Fatalf("mkdir internal root: %v", err)
+	}
+	rootLink := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(filepath.Join(parent, ".go-cli-agent", "_worktrees"), rootLink); err != nil {
+		t.Fatalf("symlink root: %v", err)
+	}
+	_, err := Prepare(Request{
+		SessionID:     "session-copy",
+		ParentWorkdir: parent,
+		RequestedMode: "copy",
+		RootDir:       rootLink,
+	})
+	if err == nil {
+		t.Fatal("expected symlinked isolation root inside parent to be rejected")
+	}
+}
+
 func TestPrepareAutoUsesGitWorktreeInsideRepository(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required for worktree test")

@@ -23,6 +23,7 @@ const (
 
 	QueueStatusQueued    = "queued"
 	QueueStatusRunning   = "running"
+	QueueStatusBlocked   = "blocked"
 	QueueStatusCompleted = "completed"
 	QueueStatusFailed    = "failed"
 
@@ -256,6 +257,8 @@ type ToolResult struct {
 
 type ProviderContentBlock struct {
 	Provider         string          `json:"provider,omitempty"`
+	ProviderProfile  string          `json:"provider_profile,omitempty"`
+	APIProvider      string          `json:"api_provider,omitempty"`
 	Type             string          `json:"type"`
 	Text             string          `json:"text,omitempty"`
 	Thinking         string          `json:"thinking,omitempty"`

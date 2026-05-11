@@ -627,7 +627,7 @@ func TestRunnerAppendUserMessageAppliesUserHook(t *testing.T) {
 	}
 }
 
-func TestRunnerContinueResetsTurnBudgetAfterMaxTurnsFailure(t *testing.T) {
+func TestRunnerContinueKeepsDurableTurnAndResetsRunBudgetAfterMaxTurnsFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
 	cfg.Session.Dir = t.TempDir()
@@ -655,12 +655,14 @@ func TestRunnerContinueResetsTurnBudgetAfterMaxTurnsFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
+	rawSidecar := true
 	cfg.Providers["openai-compatible"] = config.Provider{
 		APIKeyEnv:  "OPENAI_API_KEY",
 		BaseURL:    server.URL + "/v1",
 		Model:      "gpt-5.4",
 		TimeoutSec: 30,
 		WireAPI:    "responses",
+		RawSidecar: &rawSidecar,
 	}
 	t.Setenv("OPENAI_API_KEY", "test-key")
 
@@ -707,11 +709,139 @@ func TestRunnerContinueResetsTurnBudgetAfterMaxTurnsFailure(t *testing.T) {
 	if loaded.Status != session.StatusCompleted {
 		t.Fatalf("expected completed state after continue, got %#v", loaded)
 	}
-	if loaded.Turn != 1 {
-		t.Fatalf("expected resumed run to restart turn budget, got turn=%d", loaded.Turn)
+	if loaded.Turn != 42 {
+		t.Fatalf("expected resumed run to keep monotonic durable turn while restarting run budget, got turn=%d", loaded.Turn)
 	}
 	if loaded.LastError != "" {
 		t.Fatalf("expected continue to clear stale last_error, got %q", loaded.LastError)
+	}
+	sidecar, err := runner.store.LoadProviderRawSidecar(meta.ID, 42)
+	if err != nil {
+		t.Fatalf("expected resumed run to write monotonic raw sidecar: %v", err)
+	}
+	if sidecar.Turn != 42 {
+		t.Fatalf("expected raw sidecar turn 42, got %#v", sidecar)
+	}
+}
+
+func TestRunnerContinueProviderOverrideUsesNewProviderDefaultModel(t *testing.T) {
+	var seenModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &body)
+		if model, _ := body["model"].(string); model != "" {
+			seenModel = model
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_1",
+			"stop_reason":"tool_use",
+			"content":[{"type":"tool_use","id":"toolu_1","name":"finish","input":{"message":"done"}}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.Providers["anthropic"] = config.Provider{
+		APIProvider:      "anthropic-compatible",
+		APIKeyEnv:        "ANTHROPIC_API_KEY",
+		BaseURL:          server.URL,
+		Model:            "claude-new-default",
+		TimeoutSec:       30,
+		AnthropicVersion: "2023-06-01",
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-old",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+	}
+	state := session.State{Status: session.StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "continue")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Provider: "anthropic"})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	loadedMeta, err := runner.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if loadedMeta.Provider != "anthropic" || loadedMeta.Model != "claude-new-default" || seenModel != "claude-new-default" {
+		t.Fatalf("expected new provider default model, meta=%#v seen=%q", loadedMeta, seenModel)
+	}
+}
+
+func TestAutoContinuePersistsRalphLoopCountBeforeResume(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_1","name":"finish","arguments":"{\"message\":\"done\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Runtime.RalphLoop.MaxIterations = 2
+	cfg.Providers["openai-compatible"] = config.Provider{APIProvider: "openai-compatible", APIKeyEnv: "OPENAI_API_KEY", BaseURL: server.URL + "/v1", Model: "gpt-5.4", TimeoutSec: 30, WireAPI: "responses"}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), Mode: session.ModeExec, Provider: "openai-compatible", Model: "gpt-5.4", CompletionPolicy: completionPolicy(session.ModeExec), ProviderOptions: providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"])}
+	state := session.State{Status: session.StatusFailed, Phase: "turn_decide", IncompleteReason: "incomplete_no_finish", LastError: "incomplete_no_finish", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "finish")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := runner.AutoContinue(context.Background(), meta.ID); err != nil {
+		t.Fatalf("auto continue: %v", err)
+	}
+	loaded, err := runner.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.RalphLoopCount != 1 {
+		t.Fatalf("expected persisted Ralph loop count, got %#v", loaded)
+	}
+}
+
+func TestResolveRequestedWorkdirRejectsDefaultWorkspaceSymlink(t *testing.T) {
+	cwd := t.TempDir()
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldCwd)
+	if err := os.Symlink(t.TempDir(), filepath.Join(cwd, defaultWorkspaceDirName)); err != nil {
+		t.Fatalf("symlink workspace: %v", err)
+	}
+	if _, err := resolveRequestedWorkdir("", nil); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected default workspace symlink rejection, got %v", err)
 	}
 }
 

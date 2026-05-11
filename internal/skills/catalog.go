@@ -152,6 +152,66 @@ func (c *Catalog) CommandTools() []CommandTool {
 	return out
 }
 
+func (c *Catalog) TrustedCommandTools(cwd string) []CommandTool {
+	if c == nil {
+		return nil
+	}
+	anchors := []string{}
+	if strings.TrimSpace(cwd) != "" {
+		anchors = append(anchors, cwd)
+	}
+	if processCwd, err := os.Getwd(); err == nil && strings.TrimSpace(processCwd) != "" {
+		anchors = append(anchors, processCwd)
+	}
+	anchorReals := make([]string, 0, len(anchors))
+	for _, anchor := range anchors {
+		real, err := realOrAbs(anchor)
+		if err != nil {
+			continue
+		}
+		anchorReals = append(anchorReals, real)
+	}
+	if len(anchorReals) == 0 {
+		return nil
+	}
+	var out []CommandTool
+	for _, tool := range c.CommandTools() {
+		toolPath, err := realOrAbs(tool.SkillPath)
+		if err != nil {
+			continue
+		}
+		if pathWithinAny(anchorReals, toolPath) {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out
+}
+
+func pathWithinAny(anchors []string, target string) bool {
+	for _, anchor := range anchors {
+		if pathWithin(anchor, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func realOrAbs(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return filepath.Clean(real), nil
+	}
+	if os.IsNotExist(err) {
+		return filepath.Clean(abs), nil
+	}
+	return "", err
+}
+
 func loadSkill(rootReal, path string) (Skill, error) {
 	skillDir := filepath.Dir(path)
 	skillDirReal, err := filepath.EvalSymlinks(skillDir)

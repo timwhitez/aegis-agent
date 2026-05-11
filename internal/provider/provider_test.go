@@ -150,10 +150,12 @@ func TestOpenAIResponsesReasoningSummaryEncryptedAndReplay(t *testing.T) {
 func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
 	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
-		{Provider: "openai", Type: "reasoning", ID: "rs_1", Data: "enc_opaque", Summary: []string{"summary"}, Sequence: 1, Model: "gpt-5.4"},
-		{Provider: "openai", Type: "reasoning", ID: "rs_old", Data: "old", Summary: []string{"old"}, Sequence: 2, Model: "other-model"},
+		{Provider: "openai", ProviderProfile: "openai", APIProvider: "openai-compatible", Type: "reasoning", ID: "rs_1", Data: "enc_opaque", Summary: []string{"summary"}, Sequence: 1, Model: "gpt-5.4"},
+		{Provider: "openai", ProviderProfile: "gateway-b", APIProvider: "openai-compatible", Type: "reasoning", ID: "rs_other_profile", Data: "other", Summary: []string{"other"}, Sequence: 2, Model: "gpt-5.4"},
+		{Provider: "openai", ProviderProfile: "openai", APIProvider: "anthropic-compatible", Type: "reasoning", ID: "rs_other_api", Data: "other-api", Summary: []string{"other-api"}, Sequence: 3, Model: "gpt-5.4"},
+		{Provider: "openai", Type: "reasoning", ID: "rs_old", Data: "old", Summary: []string{"old"}, Sequence: 4, Model: "other-model"},
 	}
-	input, err := openAIInput([]session.Message{assistant}, "gpt-5.4")
+	input, err := openAIInput([]session.Message{assistant}, "gpt-5.4", "openai", "openai-compatible")
 	if err != nil {
 		t.Fatalf("input: %v", err)
 	}
@@ -508,6 +510,68 @@ func TestOpenAIAdapterClassifiesResponseParseError(t *testing.T) {
 	}
 	if httpErr.Provider != "openai" || httpErr.Class != "response_parse_error" {
 		t.Fatalf("unexpected provider error: %#v", httpErr)
+	}
+}
+
+func TestAdaptersClassifyNon2xxAndPropagateCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		adapter func(baseURL string, client *http.Client) Adapter
+		model   string
+		class   string
+	}{
+		{
+			name:    "openai",
+			adapter: func(baseURL string, client *http.Client) Adapter { return NewOpenAI(baseURL, "key", client) },
+			model:   "gpt-5.4",
+			class:   "upstream_unavailable",
+		},
+		{
+			name: "anthropic",
+			adapter: func(baseURL string, client *http.Client) Adapter {
+				return NewAnthropic(baseURL, "key", "2023-06-01", client)
+			},
+			model: "claude-sonnet-4-6",
+			class: "upstream_unavailable",
+		},
+		{
+			name:    "google",
+			adapter: func(baseURL string, client *http.Client) Adapter { return NewGoogle(baseURL, "key", client) },
+			model:   "gemini-2.5-flash",
+			class:   "upstream_unavailable",
+		},
+	} {
+		t.Run(tc.name+"_non_2xx", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "temporary", http.StatusInternalServerError)
+			}))
+			defer server.Close()
+			_, err := tc.adapter(server.URL, server.Client()).RunTurn(context.Background(), TurnRequest{
+				SessionID: "s1",
+				Model:     tc.model,
+				Messages:  []session.Message{session.NewMessage("user", "hello")},
+			}, func(string, map[string]any) {})
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) || httpErr.Class != tc.class {
+				t.Fatalf("expected %s HTTPError, got %#v", tc.class, err)
+			}
+		})
+		t.Run(tc.name+"_cancel", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := tc.adapter(server.URL, server.Client()).RunTurn(ctx, TurnRequest{
+				SessionID: "s1",
+				Model:     tc.model,
+				Messages:  []session.Message{session.NewMessage("user", "hello")},
+			}, func(string, map[string]any) {})
+			if err == nil {
+				t.Fatal("expected cancellation error")
+			}
+		})
 	}
 }
 

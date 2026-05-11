@@ -17,7 +17,7 @@
 
 新增命令：
 
-- `go-cli-agent tui`
+- `go-cli-agent experimental tui`
 
 高频参数：
 

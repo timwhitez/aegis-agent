@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -41,6 +42,8 @@ const (
 	settingsThinkingMaxBudget       = 32000
 	settingsThinkingMaxOutputTokens = 32768
 	settingsProbeTimeout            = 90 * time.Second
+	maxWorkerCount                  = 8
+	webMutationHeader               = "X-Go-Cli-Agent-Web"
 )
 
 type processOwner struct {
@@ -202,6 +205,7 @@ type LaunchResponse struct {
 type WorkerPoolSnapshot struct {
 	DesiredCount int            `json:"desired_count"`
 	ActiveCount  int            `json:"active_count"`
+	MaxCount     int            `json:"max_count"`
 	PollInterval int            `json:"poll_interval_ms"`
 	Workers      []WorkerStatus `json:"workers"`
 }
@@ -260,6 +264,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
+	if err := guardUnsafeAPIRequest(r); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/meta":
 		meta, err := s.meta()
@@ -617,6 +625,15 @@ func (s *Service) handleClearSessions(w http.ResponseWriter) {
 		writeError(w, http.StatusConflict, errors.New("cannot clear history while queue jobs are still running"))
 		return
 	}
+	hasRunningSessions, err := s.hasRunningSessions("")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if hasRunningSessions {
+		writeError(w, http.StatusConflict, errors.New("cannot clear history while sessions are still running"))
+		return
+	}
 	if err := s.store.ClearHistory(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -828,6 +845,10 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("prompt is required"))
 		return
 	}
+	if err := s.validateProviderOverride(req.Provider); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	resp, err := s.startSession(runtime.StartRequest{
 		Prompt:         req.Prompt,
 		AgentName:      req.AgentName,
@@ -855,9 +876,38 @@ func isClientStartError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var configErr *runtime.ConfigError
+	if errors.As(err, &configErr) {
+		return true
+	}
 	message := err.Error()
 	return strings.Contains(message, "unsupported agent role") ||
-		strings.Contains(message, "isolation target must not be inside source workdir")
+		strings.Contains(message, "isolation target must not be inside source workdir") ||
+		strings.Contains(message, "unknown provider")
+}
+
+func (s *Service) validateProviderOverride(providerName string) error {
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		return err
+	}
+	return validateProviderOverrideInConfig(cfg, providerName)
+}
+
+func validateProviderOverrideInConfig(cfg *config.Config, providerName string) error {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" || strings.EqualFold(providerName, "default") {
+		return nil
+	}
+	if _, err := cfg.ProviderConfig(providerName); err != nil {
+		return newWebError(
+			errorCodeUnknownProvider,
+			"unknown provider",
+			err.Error(),
+			"choose one of the configured providers",
+		)
+	}
+	return nil
 }
 
 func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error) {
@@ -924,6 +974,10 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	cfg, err := s.configSnapshot()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := validateProviderOverrideInConfig(cfg, req.Provider); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	runner := runtime.NewRunner(cfg)
@@ -1097,6 +1151,10 @@ func (s *Service) handleScaleWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DesiredCount < 0 {
 		writeError(w, http.StatusBadRequest, errors.New("desired_count must be >= 0"))
+		return
+	}
+	if req.DesiredCount > maxWorkerCount {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("desired_count must be <= %d", maxWorkerCount))
 		return
 	}
 	s.workers.Scale(req.DesiredCount)
@@ -1300,7 +1358,18 @@ func currentServerWorkspaceRoot() (string, error) {
 		return "", err
 	}
 	root := filepath.Join(cwd, "workspace")
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if info, err := os.Lstat(root); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("default workspace must not be a symlink: %s", root)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("default workspace path is not a directory: %s", root)
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			return "", err
+		}
+	} else {
 		return "", err
 	}
 	return tools.ResolveWorkspacePath(root, ".")
@@ -1398,23 +1467,23 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	var apiKeyAudit map[string]any
 	if p, ok := updatedCfg.Providers[req.Provider]; ok {
-		if req.BaseURL != "" {
-			p.BaseURL = req.BaseURL
+		if req.BaseURL != nil {
+			p.BaseURL = strings.TrimSpace(*req.BaseURL)
 		}
-		if req.Model != "" {
-			p.Model = req.Model
+		if req.Model != nil {
+			p.Model = strings.TrimSpace(*req.Model)
 		}
-		if strings.TrimSpace(req.APIProvider) != "" {
-			p.APIProvider = strings.TrimSpace(req.APIProvider)
+		if req.APIProvider != nil {
+			p.APIProvider = strings.TrimSpace(*req.APIProvider)
 		}
-		if strings.TrimSpace(req.ReasoningMode) != "" {
-			if err := applyProviderReasoningMode(req.Provider, &p, req.ReasoningMode); err != nil {
+		if req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "" {
+			if err := applyProviderReasoningMode(req.Provider, &p, *req.ReasoningMode); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 		}
-		if strings.TrimSpace(req.ReasoningSummary) != "" {
-			if err := applyProviderReasoningSummary(req.Provider, &p, req.ReasoningSummary); err != nil {
+		if req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "" {
+			if err := applyProviderReasoningSummary(req.Provider, &p, *req.ReasoningSummary); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
@@ -1423,14 +1492,14 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if req.APIKey != "" && req.APIKey != maskedAPIKey {
-			if err := os.Setenv(p.APIKeyEnv, req.APIKey); err != nil {
+		if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
+			if err := os.Setenv(p.APIKeyEnv, *req.APIKey); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
 			cwd, _ := os.Getwd()
 			envPath := config.DefaultEnvFilePath(cwd)
-			if err := config.UpsertEnvFile(envPath, p.APIKeyEnv, req.APIKey); err != nil {
+			if err := config.UpsertEnvFile(envPath, p.APIKeyEnv, *req.APIKey); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
@@ -1453,6 +1522,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg = updatedCfg
+	s.workers.UpdateConfig(updatedCfg)
 	if err := s.appendAuditEvent("web.config.write", map[string]any{
 		"provider":               updatedCfg.DefaultProvider,
 		"config_path":            configPath,
@@ -1503,23 +1573,23 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	testCfg.DefaultProvider = providerName
-	if strings.TrimSpace(req.BaseURL) != "" {
-		p.BaseURL = req.BaseURL
+	if req.BaseURL != nil {
+		p.BaseURL = strings.TrimSpace(*req.BaseURL)
 	}
-	if strings.TrimSpace(req.Model) != "" {
-		p.Model = req.Model
+	if req.Model != nil {
+		p.Model = strings.TrimSpace(*req.Model)
 	}
-	if strings.TrimSpace(req.APIProvider) != "" {
-		p.APIProvider = strings.TrimSpace(req.APIProvider)
+	if req.APIProvider != nil {
+		p.APIProvider = strings.TrimSpace(*req.APIProvider)
 	}
-	if strings.TrimSpace(req.ReasoningMode) != "" {
-		if err := applyProviderReasoningMode(providerName, &p, req.ReasoningMode); err != nil {
+	if req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "" {
+		if err := applyProviderReasoningMode(providerName, &p, *req.ReasoningMode); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 	}
-	if strings.TrimSpace(req.ReasoningSummary) != "" {
-		if err := applyProviderReasoningSummary(providerName, &p, req.ReasoningSummary); err != nil {
+	if req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "" {
+		if err := applyProviderReasoningSummary(providerName, &p, *req.ReasoningSummary); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -1530,9 +1600,9 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probeReq := runtime.ProbeRequest{Provider: providerName, APIProvider: p.APIProvider, ThinkingProbe: true, ReasoningSummary: p.ReasoningSummary}
-	if req.APIKey != "" && req.APIKey != maskedAPIKey {
+	if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
 		apiKeyEnv := fmt.Sprintf("GO_CLI_AGENT_SETTINGS_TEST_API_KEY_%d", time.Now().UnixNano())
-		if err := os.Setenv(apiKeyEnv, req.APIKey); err != nil {
+		if err := os.Setenv(apiKeyEnv, *req.APIKey); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -1889,6 +1959,11 @@ func processSkillZip(src string, globalDest string) (int, error) {
 
 		targetDirName = sanitizeDirName(targetDirName)
 		targetPath := filepath.Join(globalDest, targetDirName)
+		if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return extractedCount, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
+		} else if err != nil && !os.IsNotExist(err) {
+			return extractedCount, err
+		}
 
 		if err := os.RemoveAll(targetPath); err != nil {
 			return extractedCount, err
@@ -2041,7 +2116,7 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	dest, err := resolveSkillDir(cfg.Skills.Dirs[0])
+	dest, err := resolveManagedSkillDir(cfg.Skills.Dirs[0])
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2088,21 +2163,32 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 {
+	if len(parts) != 5 || parts[1] != "api" || parts[2] != "skills" || parts[4] != "uninstall" {
 		writeError(w, http.StatusBadRequest, errors.New("invalid path format"))
 		return
 	}
 	skillID := parts[3]
+	if strings.TrimSpace(skillID) == "" || sanitizeDirName(skillID) != skillID {
+		writeError(w, http.StatusBadRequest, errors.New("invalid skill id"))
+		return
+	}
 
-	rootDir, err := resolveSkillDir(cfg.Skills.Dirs[0])
+	rootDir, err := resolveManagedSkillDir(cfg.Skills.Dirs[0])
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	targetDir := filepath.Join(rootDir, skillID)
-	// simple protection against directory traversal
 	if !pathWithinRoot(rootDir, targetDir) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if filepath.Dir(targetDir) != rootDir {
+		writeError(w, http.StatusForbidden, errors.New("skill must be a direct child of the skill root"))
+		return
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "SKILL.md")); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("target is not an installed skill"))
 		return
 	}
 
@@ -2277,6 +2363,13 @@ func (s *Service) pruneInactiveHandles() {
 }
 
 func (s *Service) ensureSessionTreeNotLive(sessionID string) error {
+	hasRunningSessions, err := s.hasRunningSessions(sessionID)
+	if err != nil {
+		return err
+	}
+	if hasRunningSessions {
+		return errors.New("cannot delete a running session tree")
+	}
 	hasRunningJobs, err := s.hasRunningQueueJobs(sessionID)
 	if err != nil {
 		return err
@@ -2285,6 +2378,49 @@ func (s *Service) ensureSessionTreeNotLive(sessionID string) error {
 		return errors.New("cannot delete a running session tree")
 	}
 	return nil
+}
+
+func (s *Service) hasRunningSessions(sessionID string) (bool, error) {
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return false, err
+	}
+	targets := map[string]struct{}{}
+	if strings.TrimSpace(sessionID) != "" {
+		targets[sessionID] = struct{}{}
+		changed := true
+		for changed {
+			changed = false
+			for _, item := range items {
+				if _, ok := targets[item.ID]; ok {
+					continue
+				}
+				if _, ok := targets[item.ParentSessionID]; ok {
+					targets[item.ID] = struct{}{}
+					changed = true
+				}
+				if _, ok := targets[item.RootSessionID]; ok {
+					targets[item.ID] = struct{}{}
+					changed = true
+				}
+			}
+		}
+	}
+	for _, item := range items {
+		if len(targets) > 0 {
+			if _, ok := targets[item.ID]; !ok {
+				continue
+			}
+		}
+		state, err := s.store.LoadState(item.ID)
+		if err != nil {
+			continue
+		}
+		if state.Status == session.StatusRunning {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) hasRunningQueueJobs(sessionID string) (bool, error) {
@@ -2497,7 +2633,41 @@ func resolveSkillDir(rawDir string) (string, error) {
 	return filepath.Join(cwd, rawDir), nil
 }
 
+func resolveManagedSkillDir(rawDir string) (string, error) {
+	resolved, err := resolveSkillDir(rawDir)
+	if err != nil {
+		return "", err
+	}
+	resolved = filepath.Clean(resolved)
+	if info, err := os.Lstat(resolved); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("skill root must not be a symlink: %s", resolved)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("skill root is not a directory: %s", resolved)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return canonicalManagedPath(resolved), nil
+}
+
+func canonicalManagedPath(path string) string {
+	real, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(real)
+	}
+	parent := filepath.Dir(path)
+	if parentReal, parentErr := filepath.EvalSymlinks(parent); parentErr == nil {
+		return filepath.Join(parentReal, filepath.Base(path))
+	}
+	return filepath.Clean(path)
+}
+
 func newWorkerPool(cfg *config.Config, desired int) *workerPool {
+	if desired > maxWorkerCount {
+		desired = maxWorkerCount
+	}
 	pool := &workerPool{
 		cfg:     cfg,
 		workers: map[int]*workerHandle{},
@@ -2513,6 +2683,9 @@ func (p *workerPool) Close() {
 func (p *workerPool) Scale(desired int) {
 	if desired < 0 {
 		desired = 0
+	}
+	if desired > maxWorkerCount {
+		desired = maxWorkerCount
 	}
 	var toStop []*workerHandle
 	p.mu.Lock()
@@ -2564,13 +2737,14 @@ func (p *workerPool) startWorkerLocked() {
 }
 
 func (p *workerPool) runWorker(ctx context.Context, worker *workerHandle) {
-	poll := time.Duration(p.cfg.Runtime.Queue.PollIntervalMS) * time.Millisecond
-	if poll <= 0 {
-		poll = time.Second
-	}
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
+		cfg := p.configSnapshot()
+		poll := time.Duration(cfg.Runtime.Queue.PollIntervalMS) * time.Millisecond
+		if poll <= 0 {
+			poll = time.Second
+		}
 		select {
 		case <-ctx.Done():
 			worker.setStatus(WorkerStatus{
@@ -2590,6 +2764,7 @@ func (p *workerPool) runWorker(ctx context.Context, worker *workerHandle) {
 			LastError:     current.LastError,
 			UpdatedAt:     nowString(),
 		})
+		worker.runner = runtime.NewRunner(cfg)
 		job, ok, err := worker.runner.ProcessNextJob(ctx)
 		if err != nil {
 			current = worker.snapshot()
@@ -2635,6 +2810,7 @@ func (p *workerPool) Snapshot() WorkerPoolSnapshot {
 	snapshot := WorkerPoolSnapshot{
 		DesiredCount: p.desired,
 		ActiveCount:  len(p.workers),
+		MaxCount:     maxWorkerCount,
 		PollInterval: p.cfg.Runtime.Queue.PollIntervalMS,
 		Workers:      []WorkerStatus{},
 	}
@@ -2643,6 +2819,26 @@ func (p *workerPool) Snapshot() WorkerPoolSnapshot {
 	}
 	sort.Slice(snapshot.Workers, func(i, j int) bool { return snapshot.Workers[i].ID < snapshot.Workers[j].ID })
 	return snapshot
+}
+
+func (p *workerPool) UpdateConfig(cfg *config.Config) {
+	cloned, err := config.Clone(cfg)
+	if err != nil {
+		return
+	}
+	p.mu.Lock()
+	p.cfg = cloned
+	p.mu.Unlock()
+}
+
+func (p *workerPool) configSnapshot() *config.Config {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	cloned, err := config.Clone(p.cfg)
+	if err != nil {
+		return p.cfg
+	}
+	return cloned
 }
 
 func (w *workerHandle) snapshot() WorkerStatus {
@@ -2772,6 +2968,48 @@ func decodeJSON(r *http.Request, target any) error {
 		return err
 	}
 	return nil
+}
+
+func guardUnsafeAPIRequest(r *http.Request) error {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return nil
+	}
+	if expectsJSONBody(r.URL.Path) {
+		contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+		if contentType == "" || !strings.HasPrefix(contentType, "application/json") {
+			return errors.New("JSON API mutation requires Content-Type: application/json")
+		}
+	}
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		originURL, err := url.Parse(origin)
+		if err != nil || !sameOriginHost(originURL, r.Host) {
+			return errors.New("cross-origin API mutation rejected")
+		}
+	} else if strings.TrimSpace(r.Header.Get(webMutationHeader)) != "1" {
+		return errors.New("API mutation requires same-origin Origin or X-Go-Cli-Agent-Web header")
+	}
+	return nil
+}
+
+func sameOriginHost(origin *url.URL, host string) bool {
+	if origin == nil || strings.TrimSpace(origin.Host) == "" {
+		return false
+	}
+	return strings.EqualFold(origin.Host, host)
+}
+
+func expectsJSONBody(path string) bool {
+	if path == "/api/skills/upload" {
+		return false
+	}
+	return path == "/api/config" ||
+		path == "/api/config/test" ||
+		path == "/api/sessions/start" ||
+		path == "/api/queue/jobs" ||
+		path == "/api/workers" ||
+		strings.Contains(path, "/continue") ||
+		strings.Contains(path, "/steer")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

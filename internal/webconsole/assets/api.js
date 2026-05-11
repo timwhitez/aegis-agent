@@ -28,7 +28,12 @@ function jsonRequest(payload, options = {}) {
 }
 
 async function requestJSON(url, options = {}) {
-  const response = await fetch(url, options);
+  const method = (options.method || 'GET').toUpperCase();
+  const headers = { ...(options.headers || {}) };
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    headers['X-Go-Cli-Agent-Web'] = '1';
+  }
+  const response = await fetch(url, { ...options, headers });
   let payload = null;
   try {
     payload = await response.json();

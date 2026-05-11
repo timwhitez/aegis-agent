@@ -19,6 +19,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/hooks"
 	"go-cli-agent/internal/output"
 	"go-cli-agent/internal/provider"
@@ -1119,24 +1120,24 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	reader := bufio.NewReader(os.Stdin)
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		if *provider == "" {
-			*provider = prompt(reader, "Default provider", cfg.DefaultProvider)
+			*provider = prompt(stdout, reader, "Default provider", cfg.DefaultProvider)
 		}
 		if providerCfg, err := cfg.ProviderConfig(defaultString(*provider, cfg.DefaultProvider)); err == nil {
 			if *model == "" {
-				*model = prompt(reader, "Model", providerCfg.Model)
+				*model = prompt(stdout, reader, "Model", providerCfg.Model)
 			}
 			if *baseURL == "" && defaultString(*provider, cfg.DefaultProvider) == "openai-compatible" {
-				*baseURL = prompt(reader, "Base URL", providerCfg.BaseURL)
+				*baseURL = prompt(stdout, reader, "Base URL", providerCfg.BaseURL)
 			}
 			if *apiKeyEnv == "" && defaultString(*provider, cfg.DefaultProvider) == "openai-compatible" {
-				*apiKeyEnv = prompt(reader, "API key env", providerCfg.APIKeyEnv)
+				*apiKeyEnv = prompt(stdout, reader, "API key env", providerCfg.APIKeyEnv)
 			}
 			if *wireAPI == "" && defaultString(*provider, cfg.DefaultProvider) == "openai-compatible" {
-				*wireAPI = prompt(reader, "Wire API", defaultString(providerCfg.WireAPI, "responses"))
+				*wireAPI = prompt(stdout, reader, "Wire API", defaultString(providerCfg.WireAPI, "responses"))
 			}
 		}
-		*sessionDir = prompt(reader, "Session dir", defaultString(*sessionDir, cfg.Session.Dir))
-		*skillDir = prompt(reader, "Skills dir", defaultString(*skillDir, "./skills"))
+		*sessionDir = prompt(stdout, reader, "Session dir", defaultString(*sessionDir, cfg.Session.Dir))
+		*skillDir = prompt(stdout, reader, "Skills dir", defaultString(*skillDir, "./skills"))
 	}
 	cfg.DefaultProvider = defaultString(*provider, cfg.DefaultProvider)
 	if providerCfg, ok := cfg.Providers[cfg.DefaultProvider]; ok {
@@ -1172,7 +1173,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		target = filepath.Join(cwd, ".go-cli-agent", "config.yaml")
 	}
 	if !*force {
-		if _, err := os.Stat(target); err == nil {
+		if _, err := os.Lstat(target); err == nil {
 			return fmt.Errorf("config already exists: %s", target)
 		}
 	}
@@ -1180,13 +1181,10 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	if err := fileutil.AtomicWriteFileNoSymlink(target, data, 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(target, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(cwd, ".env.example"), []byte("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\nGEMINI_API_KEY=\n"), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(cwd, ".env.example"), []byte("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\nGEMINI_API_KEY=\n"), 0o600); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(cwd, "workspace"), 0o700); err != nil {
@@ -1196,7 +1194,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	skillBody := "---\nname: example\ndescription: Example local skill\n---\nWhen asked to inspect the repository, start with rg --files and targeted reads.\n"
-	if err := os.WriteFile(filepath.Join(cwd, effectiveSkillDir, "example", "SKILL.md"), []byte(skillBody), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(cwd, effectiveSkillDir, "example", "SKILL.md"), []byte(skillBody), 0o600); err != nil {
 		return err
 	}
 	toolDir := filepath.Join(cwd, effectiveSkillDir, "example", "tools")
@@ -1204,7 +1202,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	exampleTool := "name: echo_args\ndescription: Echo JSON arguments for debugging\ncommand: [\"/bin/sh\", \"-lc\", \"cat\"]\ntimeout_sec: 15\ninput_schema:\n  type: object\n  properties:\n    message:\n      type: string\n"
-	if err := os.WriteFile(filepath.Join(toolDir, "echo.yaml"), []byte(exampleTool), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(toolDir, "echo.yaml"), []byte(exampleTool), 0o600); err != nil {
 		return err
 	}
 	if *exampleHook {
@@ -1213,7 +1211,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		hookScript := "#!/usr/bin/env sh\nset -eu\nmkdir -p .go-cli-agent/hooks/logs\ncat >> .go-cli-agent/hooks/logs/session-complete.jsonl\n"
-		if err := os.WriteFile(filepath.Join(hookDir, "session-complete.sh"), []byte(hookScript), 0o700); err != nil {
+		if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(hookDir, "session-complete.sh"), []byte(hookScript), 0o700); err != nil {
 			return err
 		}
 	}
@@ -1413,8 +1411,8 @@ func splitFlagToken(arg string) (name string, hasInlineValue bool, isFlag bool) 
 	return trimmed, false, true
 }
 
-func prompt(reader *bufio.Reader, label, fallback string) string {
-	fmt.Printf("%s [%s]: ", label, fallback)
+func prompt(out io.Writer, reader *bufio.Reader, label, fallback string) string {
+	_, _ = fmt.Fprintf(out, "%s [%s]: ", label, fallback)
 	line, _ := reader.ReadString('\n')
 	line = strings.TrimSpace(line)
 	if line == "" {

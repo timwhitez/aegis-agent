@@ -177,7 +177,7 @@ minimal core 的默认完成标准停在 Phase 10。
 只有以下条件都满足，才认为 minimal core v1 可交付：
 
 - spec / README / AGENTS 对齐
-- `go test ./cmd/... ./internal/... ./pkg/...` 通过
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
 - `gofmt -l` 无漂移
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
@@ -203,7 +203,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 
 验收补充：
 
-- `go test ./cmd/... ./internal/... ./pkg/...` 覆盖新增持久化与 gate
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 覆盖新增持久化、gate 与 repo-owned validation helper
 - `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 
@@ -222,8 +222,8 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 
 ### 15.2 Phase 12 - Multi-Agent Delegation
 
-- `delegate`
-- `children`
+- `experimental delegate`
+- `experimental children`
 - `agent_spawn`
 - `agent_status`
 - `agent_list`
@@ -231,16 +231,16 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 
 ### 15.3 Phase 13 - Background Queue
 
-- `queue submit`
-- `queue list`
-- `queue show`
-- `queue worker`
+- `experimental queue submit`
+- `experimental queue list`
+- `experimental queue show`
+- `experimental queue worker`
 - parent background notification
 - 当 large-project profile 被显式启用时，这一 phase 需要有真实 worker 消费、job/session 关联和 background notification 回流证据
 
 ### 15.4 Phase 14 - Terminal TUI
 
-- `tui`
+- `experimental tui`
 - snapshot / interactive 观测面
 
 ### 15.5 Phase 15 - Web Console
@@ -249,7 +249,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 - 本地 HTTP API
 - 内嵌静态单页前端
 - session / queue / children / task board / timeline 可视化
-- Web 发起的 `start` / `continue` / `steer` / `queue submit`
+- Web 发起的 `start` / `continue` / `steer` / `experimental queue submit`
 - 可配置并发 worker pool
 
 ### 15.6 Phase 16+ 的规则

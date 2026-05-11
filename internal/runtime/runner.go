@@ -322,11 +322,45 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 		return "", err
 	}
 	if usedDefaultWorkspace {
-		if err := os.MkdirAll(resolved, 0o700); err != nil {
+		current, err := os.Getwd()
+		if err != nil {
 			return "", err
+		}
+		if info, err := os.Lstat(resolved); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("default workspace must not be a symlink: %s", resolved)
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("default workspace path is not a directory: %s", resolved)
+			}
+		} else if os.IsNotExist(err) {
+			if err := os.MkdirAll(resolved, 0o700); err != nil {
+				return "", err
+			}
+		} else {
+			return "", err
+		}
+		currentReal, err := filepath.EvalSymlinks(current)
+		if err != nil {
+			return "", err
+		}
+		workspaceReal, err := filepath.EvalSymlinks(resolved)
+		if err != nil {
+			return "", err
+		}
+		if !pathWithin(currentReal, workspaceReal) {
+			return "", fmt.Errorf("default workspace escapes current directory: %s", resolved)
 		}
 	}
 	return resolved, nil
+}
+
+func pathWithin(base, target string) bool {
+	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(target))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 func directoryExists(path string) bool {
@@ -423,15 +457,17 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	}
 	defer releaseRunSlot()
 	if req.Provider != "" {
-		meta.Provider = req.Provider
-		providerCfg, err := r.cfg.ProviderConfig(req.Provider)
+		providerName := normalizeProviderOverride(req.Provider)
+		providerCfg, err := r.cfg.ProviderConfig(providerName)
 		if err != nil {
 			return RunResult{}, WrapConfigError(err)
 		}
+		meta.Provider = providerName
 		if req.Model != "" {
 			providerCfg.Model = req.Model
 		}
-		meta.ProviderOptions = providerOptionsFromConfig(req.Provider, providerCfg)
+		meta.Model = providerCfg.Model
+		meta.ProviderOptions = providerOptionsFromConfig(providerName, providerCfg)
 	}
 	if req.Model != "" {
 		meta.Model = req.Model
@@ -458,11 +494,8 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
-	state.Turn = 0
 	state.PendingSteerCount = 0
 	state.PauseReason = ""
-	state.IncompleteReason = ""
-	state.LastError = ""
 	state.ProviderAutoResumeCount = 0
 	state.Status = session.StatusRunning
 	return r.runExisting(ctx, meta, state, req.SystemOverride)
@@ -473,7 +506,7 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 	if err != nil {
 		return RunResult{}, err
 	}
-	registry, err := tools.NewRegistry(r.cfg, catalog, r.store, r)
+	registry, err := tools.NewRegistry(r.cfg, catalog, r.store, r, meta.Workdir)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -758,6 +791,9 @@ func (r *Runner) AutoContinue(ctx context.Context, sessionID string) (RunResult,
 	}
 	originalPrompt := messages[0].Text
 	state.RalphLoopCount++
+	if err := r.store.SaveState(sessionID, state); err != nil {
+		return RunResult{}, err
+	}
 	r.emit(sessionID, events.EventRalphLoopTriggered, "ralph_loop", map[string]any{
 		"count":          state.RalphLoopCount,
 		"max_iterations": r.cfg.Runtime.RalphLoop.MaxIterations,

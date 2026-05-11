@@ -179,4 +179,4 @@ runtime:
     sandbox: bwrap
 ```
 
-When `bwrap` is available, the shell tool runs under a best-effort Bubblewrap wrapper bound to the workspace. On non-Linux systems or when `bwrap` is unavailable, the runtime records fallback metadata and preserves the default shell behavior.
+When `bwrap` is available, the shell tool runs under a best-effort Bubblewrap wrapper bound to the workspace. When an operator explicitly requests `sandbox: bwrap` on non-Linux systems or on a host without Bubblewrap, the shell tool must fail closed instead of silently running unsandboxed. The error metadata should make the unavailable sandbox reason visible for `doctor`, session events, and operator remediation.

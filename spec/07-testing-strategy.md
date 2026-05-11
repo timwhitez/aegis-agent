@@ -89,7 +89,7 @@
 当 Phase 15 / large-project console profile 继续保留时，还需要一层单独验证：
 
 - embedded shell 与静态前端 assets 能由同进程 service 稳定提供
-- Web 发起的 `start` / `continue` / `steer` / `queue submit` / worker pool 更新都走真实 runtime 与文件事实
+- Web 发起的 `start` / `continue` / `steer` / `experimental queue submit` / worker pool 更新都走真实 runtime 与文件事实
 - headless browser UI smoke 能跑通关键交互链，且浏览器端无 runtime exception / console error
 - focused live rerun 能对 durable retry restore 与 background notification dedup 产出独立证据目录
 - focused retry-resume proof 采用 evidence-first 判定：以 durable `retry_policy` 元数据和真实 `provider.retry` 事件为主，不把 bounded finish nudges 后是否落成 `completed` 当作唯一通过条件
@@ -156,7 +156,8 @@
 - Anthropic `tool_result` 回放
 - Google text + `functionCall`
 - Google `functionResponse` 回放
-- 非 2xx 错误映射
+- OpenAI / Anthropic / Google adapter 各自的非 2xx 错误映射
+- OpenAI / Anthropic / Google adapter 各自的 context cancel 传播
 
 ### 4.7 Experimental Web Console
 
@@ -164,9 +165,9 @@
 - Web 发起的 session `start` 能进入 `awaiting_input`
 - focused retry-resume follow-up 里，`continue` 至少要保留 durable `retry_policy.max_attempts=2` 并真实写出 `provider.retry`
 - 若 retry-resume proof 已拿到上述 durable evidence，而 bounded finish nudges 之后 session 仍停在 `awaiting_input`，应记录为 completion quirk / follow-up note，而不是误判成 retry-policy 失败
-- worker pool 更新与 queue job 提交能落到真实 queue / child session 路径
+- worker pool 更新与 queue job 提交能落到真实 queue / child session 路径；worker scaling、queue notification 去重与 retry proof 主要由 shell/service tests 覆盖
 - parent session 的 background notification 在 queue completion 与 stale-running reconcile 重叠时仍按 `queue_job_id` 去重
-- 浏览器 UI smoke 能覆盖 start、continue、worker 更新、queue view、queue-links 通知与 manual refresh
+- 浏览器 UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start/continue 后的 session chrome、tool card、timeline 可见性，settled session polling 收敛，以及 API 提交 queue job 后的 selected job facts 可见性
 - 浏览器端 `runtime exception` / `console error` 必须为空
 
 ## 5. Fixture 组织
@@ -191,8 +192,9 @@ fixture 内容：
 
 最小 CI 命令：
 
-- `go test ./cmd/... ./internal/... ./pkg/...`
-- `gofmt -l .` 结果为空
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
+- `gofmt -l cmd internal pkg validation/cmd` 结果为空
+- `node --check internal/webconsole/assets/*.js`
 
 可选增强：
 

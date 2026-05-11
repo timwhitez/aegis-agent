@@ -277,6 +277,55 @@ func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
 	if !editResult.IsError || !strings.Contains(editResult.LLMOutput, "write denied: path '.go-cli-agent/config.yaml' matches deny pattern '.go-cli-agent/'") {
 		t.Fatalf("expected edit deny result, got %#v", editResult)
 	}
+
+	caseFoldResult, err := registry.Execute(context.Background(), "write_file", execCtx, json.RawMessage(`{
+		"path":".ENV",
+		"content":"bad"
+	}`))
+	if err != nil {
+		t.Fatalf("write_file case-fold: %v", err)
+	}
+	if !caseFoldResult.IsError || !strings.Contains(caseFoldResult.LLMOutput, "write denied") {
+		t.Fatalf("expected case-folded deny result, got %#v", caseFoldResult)
+	}
+}
+
+func TestWriteFileRejectsSymlinkedTempAlias(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workdir, "note.txt.tmp")); err != nil {
+		t.Fatalf("symlink predictable tmp: %v", err)
+	}
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "write_file", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"path":"note.txt",
+		"content":"safe"
+	}`))
+	if err != nil {
+		t.Fatalf("write_file: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("random temp write should not follow predictable symlink alias, got %#v", result)
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside: %v", err)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("outside symlink target was modified: %q", string(data))
+	}
 }
 
 func TestShellReturnsExecPolicyMetadataInWarningMode(t *testing.T) {
@@ -357,6 +406,33 @@ func TestShellBlocksViolationInDenyMode(t *testing.T) {
 	policy, ok := result.Metadata["exec_policy"].(map[string]any)
 	if !ok || policy["mode"] != "deny" {
 		t.Fatalf("expected deny exec policy metadata, got %#v", result.Metadata)
+	}
+}
+
+func TestShellDenyPolicyBlocksNoSpaceSecretRedirect(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.ExecPolicy.Mode = "deny"
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"command":"echo token 2>.env"
+	}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.LLMOutput, "shell command denied by exec policy") {
+		t.Fatalf("expected no-space redirect to be denied, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("deny mode should not create .env, stat err=%v", err)
 	}
 }
 
@@ -832,6 +908,38 @@ func TestGeneratedArtifactsAreHiddenFromFileDiscovery(t *testing.T) {
 	}
 }
 
+func TestReadFileBlocksSymlinkedArtifactsAlias(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "artifact-target"), 0o755); err != nil {
+		t.Fatalf("mkdir artifact target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "artifact-target", "secret.txt"), []byte("secret artifact"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(workdir, "artifact-target"), filepath.Join(workdir, ".ARTIFACTS")); err != nil {
+		t.Fatalf("symlink artifacts: %v", err)
+	}
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "read_file", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"path":".ARTIFACTS/secret.txt"
+	}`))
+	if err != nil {
+		t.Fatalf("read_file: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "internal generated artifact") {
+		t.Fatalf("expected symlinked artifact alias to be blocked, got %#v", result)
+	}
+}
+
 func TestGlobSkipsSymlinkEscapes(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -1263,7 +1371,7 @@ func TestSkillCommandToolDescriptionAddsDirectCallGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan skills: %v", err)
 	}
-	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	registry, err := NewRegistry(cfg, catalog, nil, nil, filepath.Join(root, "workspace"))
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
@@ -1286,6 +1394,41 @@ func TestSkillCommandToolDescriptionAddsDirectCallGuidance(t *testing.T) {
 		if !strings.Contains(description, needle) {
 			t.Fatalf("expected description to contain %q, got %q", needle, description)
 		}
+	}
+}
+
+func TestWorkspaceSkillCommandToolsAreNotAutoRegistered(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldCwd)
+
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: echo_args\ndescription: Echo args\ncommand: [\"/bin/sh\", \"-lc\", \"cat\"]\ninput_schema:\n  type: object\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	if def := registry.Get("echo_args"); def != nil {
+		t.Fatalf("workspace skill command tool should not auto-register before trust/load, got %#v", def)
 	}
 }
 

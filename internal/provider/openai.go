@@ -30,7 +30,7 @@ func NewOpenAIWithRetry(baseURL, apiKey string, httpClient *http.Client, retry R
 func (a *OpenAIAdapter) Name() string { return "openai" }
 
 func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
-	input, err := openAIInput(req.Messages, req.Model)
+	input, err := openAIInput(req.Messages, req.Model, req.ProviderProfile, req.APIProvider)
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -263,7 +263,15 @@ func openAITools(tools []ToolSchema) []map[string]any {
 	return out
 }
 
-func openAIInput(messages []session.Message, model string) ([]any, error) {
+func openAIInput(messages []session.Message, model string, scope ...string) ([]any, error) {
+	providerProfile := ""
+	apiProvider := ""
+	if len(scope) > 0 {
+		providerProfile = scope[0]
+	}
+	if len(scope) > 1 {
+		apiProvider = scope[1]
+	}
 	var input []any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -275,7 +283,7 @@ func openAIInput(messages []session.Message, model string) ([]any, error) {
 				},
 			})
 		case "assistant":
-			for _, item := range openAIReasoningReplayItems(msg, model) {
+			for _, item := range openAIReasoningReplayItems(msg, model, providerProfile, apiProvider) {
 				input = append(input, item)
 			}
 			if msg.Text != "" {
@@ -314,7 +322,7 @@ func openAIInput(messages []session.Message, model string) ([]any, error) {
 	return input, nil
 }
 
-func openAIReasoningReplayItems(msg session.Message, model string) []map[string]any {
+func openAIReasoningReplayItems(msg session.Message, model, providerProfile, apiProvider string) []map[string]any {
 	if msg.Text != "" && len(msg.ToolCalls) > 0 {
 		return nil
 	}
@@ -331,6 +339,12 @@ func openAIReasoningReplayItems(msg session.Message, model string) []map[string]
 			continue
 		}
 		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
+			continue
+		}
+		if strings.TrimSpace(block.ProviderProfile) != "" && strings.TrimSpace(providerProfile) != "" && block.ProviderProfile != providerProfile {
+			continue
+		}
+		if strings.TrimSpace(block.APIProvider) != "" && strings.TrimSpace(apiProvider) != "" && block.APIProvider != apiProvider {
 			continue
 		}
 		item := map[string]any{

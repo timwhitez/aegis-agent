@@ -20,6 +20,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 
 	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/skills"
 )
@@ -115,13 +116,17 @@ var reservedNames = map[string]struct{}{
 	"agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
 }
 
-func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane) (*Registry, error) {
+func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane, trustedCommandWorkdir ...string) (*Registry, error) {
 	registry := &Registry{defs: map[string]Definition{}, control: control}
 	for _, def := range builtinDefinitions(cfg, catalog, control) {
 		registry.Register(def)
 	}
 	if catalog != nil {
-		for _, tool := range catalog.CommandTools() {
+		workdir := ""
+		if len(trustedCommandWorkdir) > 0 {
+			workdir = trustedCommandWorkdir[0]
+		}
+		for _, tool := range catalog.TrustedCommandTools(workdir) {
 			if _, ok := reservedNames[tool.Name]; ok {
 				return nil, fmt.Errorf("skill tool name is reserved: %s", tool.Name)
 			}
@@ -323,7 +328,7 @@ func defShell() Definition {
 			if execCtx.Config != nil {
 				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
 			}
-			commandPath, commandArgs, sandboxStatus := shellSandboxCommand(shellSandbox, workdir, command, shellArg, input.Command)
+			commandPath, commandArgs, sandboxStatus, sandboxErr := shellSandboxCommand(shellSandbox, workdir, command, shellArg, input.Command)
 			policyMode := effectiveExecPolicyMode(execCtx.Config)
 			policyViolations := DetectExecPolicyViolations(input.Command)
 			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
@@ -345,6 +350,16 @@ func defShell() Definition {
 			}
 			if policyMode == "deny" && len(policyViolations) > 0 {
 				text := "Error: shell command denied by exec policy"
+				return session.ToolResult{
+					Name:          "shell",
+					LLMOutput:     text,
+					DisplayOutput: text,
+					IsError:       true,
+					Metadata:      metadata(0, 0, false),
+				}, nil
+			}
+			if sandboxErr != nil {
+				text := "Error: " + sandboxErr.Error()
 				return session.ToolResult{
 					Name:          "shell",
 					LLMOutput:     text,
@@ -434,7 +449,7 @@ func defReadFile() Definition {
 			if err != nil {
 				return errorResult("read_file", err), nil
 			}
-			if source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, path) {
+			if source == "workspace" && (isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path)) {
 				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			data, err := os.ReadFile(path)
@@ -862,7 +877,20 @@ func isInternalGeneratedArtifactPath(workdir, path string) bool {
 		return false
 	}
 	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-		if part == ".artifacts" {
+		if strings.EqualFold(part, ".artifacts") {
+			return true
+		}
+	}
+	if artifactRoot, err := ResolveWorkspacePath(workdir, ".artifacts"); err == nil && isWithin(artifactRoot, path) {
+		return true
+	}
+	return false
+}
+
+func isInternalGeneratedArtifactInput(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	for _, part := range strings.Split(clean, "/") {
+		if strings.EqualFold(part, ".artifacts") {
 			return true
 		}
 	}
@@ -1845,6 +1873,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			"skill_name": tool.SkillName,
 			"skill_path": tool.SkillPath,
 			"workdir":    skillDir,
+			"sandbox":    effectiveSandboxStatus(cfg),
 			"timeout":    timeout,
 			"exit_code":  exitCode,
 			"raw_length": rawLength,
@@ -1877,7 +1906,38 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				callCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 				defer cancel()
 			}
-			cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
+			commandText := strings.Join(argv, " ")
+			policyMode := effectiveExecPolicyMode(execCtx.Config)
+			policyViolations := DetectExecPolicyViolations(commandText)
+			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
+			shellSandbox := ""
+			if execCtx.Config != nil {
+				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
+			}
+			commandPath, commandArgs, sandboxStatus, sandboxErr := sandboxCommand(shellSandbox, skillDir, argv)
+			if policyMode == "deny" && len(policyViolations) > 0 {
+				text := "Error: skill command denied by exec policy"
+				return session.ToolResult{
+					Name:          tool.Name,
+					LLMOutput:     text,
+					DisplayOutput: text,
+					IsError:       true,
+					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, 0, 0, false), policyMetadata),
+				}, nil
+			}
+			if sandboxErr != nil {
+				text := "Error: " + sandboxErr.Error()
+				metadata := commandMetadata(timeout, 0, 0, false)
+				metadata["sandbox"] = sandboxStatus
+				return session.ToolResult{
+					Name:          tool.Name,
+					LLMOutput:     text,
+					DisplayOutput: text,
+					IsError:       true,
+					Metadata:      attachExecPolicyMetadata(metadata, policyMetadata),
+				}, nil
+			}
+			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
 			cmd.Dir = skillDir
 			cmd.Env = append(
 				filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist),
@@ -1906,7 +1966,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 						LLMOutput:     "[Tool execution was interrupted]",
 						DisplayOutput: "[Tool execution was interrupted]",
 						IsError:       true,
-						Metadata:      commandMetadata(timeout, exitCode, rawLength, truncated),
+						Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, exitCode, rawLength, truncated), policyMetadata),
 					}, interruptErr
 				}
 				return session.ToolResult{
@@ -1914,14 +1974,14 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 					LLMOutput:     text,
 					DisplayOutput: text,
 					IsError:       true,
-					Metadata:      commandMetadata(timeout, exitCode, rawLength, truncated),
+					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, exitCode, rawLength, truncated), policyMetadata),
 				}, nil
 			}
 			return session.ToolResult{
 				Name:          tool.Name,
 				LLMOutput:     text,
 				DisplayOutput: text,
-				Metadata:      commandMetadata(timeout, exitCode, rawLength, truncated),
+				Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, exitCode, rawLength, truncated), policyMetadata),
 			}, nil
 		},
 	}
@@ -2135,18 +2195,15 @@ func effectiveToolTimeout(defaultTimeout, requestedTimeout int) int {
 	return 0
 }
 
+func effectiveSandboxStatus(cfg *config.Config) string {
+	if cfg == nil || strings.TrimSpace(cfg.Runtime.Shell.Sandbox) == "" {
+		return "off"
+	}
+	return strings.ToLower(strings.TrimSpace(cfg.Runtime.Shell.Sandbox))
+}
+
 func writeAtomically(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fileutil.AtomicWriteFileNoSymlink(path, data, mode)
 }
 
 func truncateOutput(text string, limit int) (string, int, bool) {

@@ -70,6 +70,21 @@ func TestBuildSystemPromptUsesInitializerMode(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptSkipsSymlinkEscapedAgentsDoc(t *testing.T) {
+	workdir := t.TempDir()
+	external := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(external, []byte("external instruction"), 0o600); err != nil {
+		t.Fatalf("write external: %v", err)
+	}
+	if err := os.Symlink(external, filepath.Join(workdir, "AGENTS.md")); err != nil {
+		t.Fatalf("symlink agents: %v", err)
+	}
+	prompt := buildSystemPrompt(workdir, session.ModeExec, "", nil, nil, session.State{}, nil)
+	if strings.Contains(prompt, "external instruction") || strings.Contains(prompt, "## Project Instructions") {
+		t.Fatalf("symlink-escaped AGENTS.md should not be loaded, got:\n%s", prompt)
+	}
+}
+
 func TestBuildSystemPromptAddsAuditEvidenceNoteForReviewTasks(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",
