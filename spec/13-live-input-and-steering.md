@@ -117,6 +117,7 @@ active `run` / `exec` 进程启动后，需要额外启动一个 control watcher
 - `meta.source = steer`
 - `meta.interrupt = true|false`
 - runtime 基于最新外部指令刷新 `contract.json` / `artifact-tracker.json`，使新的显式 artifact、template、literal 或目标约束能参与后续 completion gate
+- 若 session 存在 current goal，runtime 还需要把 steer 作为 `goal.updated` 历史写入 `artifacts/goal-history.jsonl`，并发出 goal 相关事件，确保目标方向变化有可追溯事实，而不是只改 prompt view
 
 若在同一边界接纳了多条 steer：
 

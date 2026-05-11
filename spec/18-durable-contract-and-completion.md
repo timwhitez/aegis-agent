@@ -5,6 +5,7 @@
 This spec defines the core hardening layer added after core v1 convergence:
 
 - session-scoped contract snapshots
+- session-scoped goal / mission snapshots
 - required artifact tracking
 - centralized completion decisions
 - provider attempt ledger
@@ -13,6 +14,34 @@ This spec defines the core hardening layer added after core v1 convergence:
 - parent coordination for explicit child or queue work
 
 These mechanisms do not create a workflow engine. The model remains the agent; the harness records task constraints, validates explicit completion boundaries, and preserves recovery facts.
+
+## 1.1 Session Goal / Mission
+
+Each session may write:
+
+```text
+.go-cli-agent/sessions/<id>/goal.json
+.go-cli-agent/sessions/<id>/artifacts/goal-history.jsonl
+```
+
+The goal snapshot records:
+
+- `objective`
+- `mode`: `goal` or `mission`
+- `status`: `active`, `paused`, `budget_limited`, or `complete`
+- token / time budgets and usage
+- success criteria
+- validation plan
+- user control settings
+- optional mission plan: requirements, features, milestones, validation contract, role plan, shared / knowledge artifacts, plan approval state
+
+The model-facing tools are intentionally narrow:
+
+- `get_goal` reads the current durable goal
+- `create_goal` creates one current goal when explicitly asked
+- `update_goal` may only mark an existing goal `complete`
+
+Pause, resume, clear, and budget-limited transitions are user/system controlled through CLI, WebConsole, or runtime accounting. Budget limited means the model should wrap up progress, evidence, blockers, and remaining work; it is not completion.
 
 ## 2. Session Contract
 
@@ -65,8 +94,10 @@ The generic required-artifact gate is only active when the contract has explicit
 - pre-completion feature checks
 - required artifact baseline/touched/changed gate
 - parent coordination unresolved work gate
+- active goal completion audit gate
 
 The first migration is behavior-equivalent for existing guard kinds and messages. New generic artifact checks are limited to explicit required artifacts.
+When a current goal is `active`, `finish` is blocked until the model audits the objective, success criteria, and validation plan against concrete session evidence and calls `update_goal(status="complete")`. Paused or budget-limited goals may finish only as an explicit paused/wrap-up state; they must not be reported as complete unless the completion audit actually passed.
 
 Events:
 
@@ -114,6 +145,7 @@ It summarizes:
 - session status, phase, provider/model, workdir, isolation
 - parent/root/queue relation
 - contract and gates
+- goal / mission status, budget usage, criteria, validation, and mission plan status
 - required artifacts
 - todo and task state
 - recent provider attempts
@@ -131,7 +163,7 @@ Large-project, delegated, child/queue, isolation, explicit-contract, multi-artif
 .go-cli-agent/sessions/<id>/checkpoints/longrun-latest.json
 ```
 
-The checkpoint is a resume index, not a replacement for messages/events/state. It records contract snapshot, todo/task summary, artifact status, latest compaction artifact, provider/model/options, workdir/isolation, unresolved child/queue state, and resume hints.
+The checkpoint is a resume index, not a replacement for messages/events/state. It records contract snapshot, goal snapshot, todo/task summary, artifact status, latest compaction artifact, provider/model/options, workdir/isolation, unresolved child/queue state, and resume hints.
 
 Normal `continue` still works without a checkpoint. When a checkpoint exists, `continue` may inject a harness resume note and emits visible checkpoint events rather than silently changing behavior.
 

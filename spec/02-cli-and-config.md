@@ -20,6 +20,7 @@ core v1 的默认命令面固定为：
 - `go-cli-agent steer <session-id>`
 - `go-cli-agent continue <session-id>`
 - `go-cli-agent sessions`
+- `go-cli-agent goal <show|pause|resume|clear|complete> <session-id>`
 - `go-cli-agent tasks <session-id>`
 - `go-cli-agent probe-provider`
 - `go-cli-agent doctor`
@@ -50,7 +51,7 @@ core v1 的默认命令面固定为：
 
 当前 CLI 继续使用 Go 标准库 `flag`，并保留轻量 interspersed-flags 归一化：
 
-- `run` / `exec` / `continue` / `steer` / `tasks` / `experimental delegate` / `experimental children` / `experimental queue submit` / `experimental queue show`
+- `run` / `exec` / `continue` / `steer` / `goal` / `tasks` / `experimental delegate` / `experimental children` / `experimental queue submit` / `experimental queue show`
   支持在 `<session-id>` 或 `[prompt]` 前后继续写受支持 flags
 - 若 prompt 自身以 `-` 开头，使用 `--` 结束 flag 解析
 
@@ -168,7 +169,32 @@ core v1 的默认命令面固定为：
 - `--json`
 - `--config`
 
-### 5.7 `tasks`
+### 5.7 `goal`
+
+作用：
+
+- 读取或用户控制当前 session 的 durable goal
+- `show` 读取 `goal.json`
+- `pause` / `resume` / `clear` / `complete` 写入 goal 状态和 goal history
+
+高频参数：
+
+- `--json`
+- `--config`
+
+`run` / `exec` 额外支持 goal 启动参数：
+
+- `--goal`
+- `--goal-mode goal|mission`
+- `--goal-token-budget`
+- `--goal-time-budget`
+- `--goal-success`（可重复）
+- `--goal-validate`（可重复）
+- `--goal-plan-approval`
+
+这些参数只创建 session-scoped goal，不创建固定 workflow graph；模型仍通过工具和当前上下文自主推进。
+
+### 5.8 `tasks`
 
 作用：
 
@@ -181,7 +207,7 @@ core v1 的默认命令面固定为：
 - `--all`
 - `--config`
 
-### 5.8 `probe-provider`
+### 5.9 `probe-provider`
 
 作用：
 
@@ -199,7 +225,7 @@ core v1 的默认命令面固定为：
 - `--json`
 - `--config`
 
-### 5.9 `doctor`
+### 5.10 `doctor`
 
 作用：
 

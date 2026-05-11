@@ -26,6 +26,7 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	contract, contractErr := store.LoadContract(sessionID)
 	artifacts, _ := store.LoadArtifactTracker(sessionID)
 	attempts, _ := store.LoadProviderAttempts(sessionID)
+	goal, goalErr := store.LoadGoal(sessionID)
 	children, _ := store.ListChildren(sessionID, 100)
 	jobs, _ := store.ListJobsByParent(sessionID, 100)
 	notifications, _ := store.LoadBackgroundNotifications(sessionID)
@@ -78,6 +79,36 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		b.WriteString(fmt.Sprintf("- pause reason: `%s`\n", state.PauseReason))
 	}
 	b.WriteString(fmt.Sprintf("- turn count: `%d`\n", state.Turn))
+
+	b.WriteString("\n## Goal\n\n")
+	if goalErr == nil && goal.GoalID != "" {
+		b.WriteString(fmt.Sprintf("- goal: `%s`\n", goal.GoalID))
+		b.WriteString(fmt.Sprintf("- mode/status: `%s` / `%s`\n", goal.Mode, goal.Status))
+		b.WriteString(fmt.Sprintf("- objective: %s\n", truncateText(goal.Objective, 240)))
+		b.WriteString(fmt.Sprintf("- token usage: `%d`", goal.TokensUsed))
+		if goal.TokenBudget != nil {
+			b.WriteString(fmt.Sprintf(" / `%d`", *goal.TokenBudget))
+		}
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("- time usage: `%ds`", goal.TimeUsedSeconds))
+		if goal.TimeBudgetSeconds != nil {
+			b.WriteString(fmt.Sprintf(" / `%ds`", *goal.TimeBudgetSeconds))
+		}
+		b.WriteString("\n")
+		if len(goal.SuccessCriteria) > 0 {
+			verified, total := goalCriterionCounts(goal.SuccessCriteria)
+			b.WriteString(fmt.Sprintf("- criteria: `%d/%d` verified\n", verified, total))
+		}
+		if len(goal.ValidationPlan) > 0 {
+			verified, total := goalValidationCounts(goal.ValidationPlan)
+			b.WriteString(fmt.Sprintf("- validation: `%d/%d` verified\n", verified, total))
+		}
+		if goal.Mission != nil {
+			b.WriteString(fmt.Sprintf("- mission plan: `%s` features=`%d` milestones=`%d`\n", firstNonEmpty(goal.Mission.PlanStatus, "draft"), len(goal.Mission.Features), len(goal.Mission.Milestones)))
+		}
+	} else {
+		b.WriteString("not recorded\n")
+	}
 
 	b.WriteString("\n## Contract\n\n")
 	if contractErr == nil && contract.ContractID != "" {
@@ -215,6 +246,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	}
 	contract, contractErr := store.LoadContract(sessionID)
 	artifacts, _ := store.LoadArtifactTracker(sessionID)
+	goal, goalErr := store.LoadGoal(sessionID)
 	todo, _ := store.LoadTodo(sessionID)
 	tasks, _ := store.ListTasks(sessionID)
 	children, _ := store.ListChildren(sessionID, 100)
@@ -225,7 +257,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
 
-	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, artifacts, tasks, children, jobs, state) {
+	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, artifacts, tasks, children, jobs, state) {
 		return nil
 	}
 	rootSessionID := meta.RootSessionID
@@ -260,6 +292,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		copyContract := contract
 		checkpoint.ContractSnapshot = &copyContract
 	}
+	if goalErr == nil && goal.GoalID != "" {
+		goalCopy := goal
+		checkpoint.GoalSnapshot = &goalCopy
+	}
 	for _, child := range children {
 		if child.Status != session.StatusCompleted && child.Status != session.StatusFailed {
 			checkpoint.UnresolvedChildSessions = append(checkpoint.UnresolvedChildSessions, child.ID)
@@ -284,7 +320,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	return store.SaveLongRunCheckpoint(sessionID, checkpoint)
 }
 
-func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session.SessionContract, contractErr error, artifacts []session.RequiredArtifact, tasks []session.Task, children []session.SessionSummary, jobs []session.QueueJob, state session.State) bool {
+func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session.SessionContract, contractErr error, goal session.SessionGoal, goalErr error, artifacts []session.RequiredArtifact, tasks []session.Task, children []session.SessionSummary, jobs []session.QueueJob, state session.State) bool {
 	if meta.Depth > 0 || meta.ParentSessionID != "" || meta.QueueJobID != "" || len(children) > 0 || len(jobs) > 0 {
 		return true
 	}
@@ -292,6 +328,9 @@ func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session
 		return true
 	}
 	if contractErr == nil && contract.ContractID != "" && (contract.Profile == "large_project" || contract.Profile == "delegated" || len(contract.RequiredArtifacts) > 0) {
+		return true
+	}
+	if goalErr == nil && goal.GoalID != "" {
 		return true
 	}
 	if len(artifacts) > 1 || len(tasks) > 0 {
@@ -383,7 +422,37 @@ func checkpointHints(checkpoint session.LongRunCheckpoint, state session.State) 
 	if checkpoint.LatestCompactionArtifact != "" {
 		hints = append(hints, "load latest compaction summary before broad reread")
 	}
+	if checkpoint.GoalSnapshot != nil {
+		switch checkpoint.GoalSnapshot.Status {
+		case session.GoalStatusActive:
+			hints = append(hints, "audit active goal before finish")
+		case session.GoalStatusBudgetLimited:
+			hints = append(hints, "budget-limited goal needs wrap-up or explicit resume")
+		case session.GoalStatusPaused:
+			hints = append(hints, "goal is paused; wait for explicit resume or redirect")
+		}
+	}
 	return hints
+}
+
+func goalCriterionCounts(items []session.GoalCriterion) (int, int) {
+	verified := 0
+	for _, item := range items {
+		if item.Status == "verified" {
+			verified++
+		}
+	}
+	return verified, len(items)
+}
+
+func goalValidationCounts(items []session.GoalValidation) (int, int) {
+	verified := 0
+	for _, item := range items {
+		if item.Status == "verified" {
+			verified++
+		}
+	}
+	return verified, len(items)
 }
 
 func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetadata, provider, model string) (bool, []string, error) {

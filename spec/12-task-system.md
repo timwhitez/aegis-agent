@@ -54,6 +54,7 @@ task graph 是当前 session 的“持久化任务板”。
 - 即使运行在 `yolo` 模式，如果单个 session 已经积累明显长任务级别的工具调用或 compaction 事实、但仍没有任何 `todo_write` / `task_*` 状态，runtime 只注入协调型 reminder，不在 `finish` 前强制阻断；是否补最小 durable taskboard 由模型结合任务状态决定。
 - 这个 reminder 只是把执行拉回可恢复节奏，不替代 `todo_write` / `task_create` / `task_update` 本身。
 - `task graph` 不承担 artifact 完成判定；显式交付文件由 `contract.json` / `artifact-tracker.json` 与 `CompletionController` 负责。任务系统只提供执行节奏、依赖关系和恢复索引。
+- `mission` 的 features / milestones 可以作为后续显式操作映射到 durable tasks，但默认创建 goal / mission 不强制生成 task graph，也不让 task graph 承担目标完成判定。
 - 长任务 checkpoint 会读取 todo/task 派生统计，写入 `checkpoints/longrun-latest.json`，但 checkpoint 仍是 resume index，不替代 task 文件本身。
 - WebConsole 和 session summary 必须区分三种状态：ephemeral todo 刷新、durable task graph 进展、artifact/progress 文件推进。`todo_write` 的语义 no-op 不能显示成 durable task graph 进展；当 `tasks/` 为空时，应明确表达没有持久任务。
 

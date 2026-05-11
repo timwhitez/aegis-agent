@@ -107,6 +107,7 @@ type StartRequest struct {
 	Workdir         string
 	Mode            string
 	SystemOverride  string
+	Goal            *session.GoalDraft
 	ParentSessionID string
 	AgentName       string
 	AgentRole       string
@@ -269,6 +270,17 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	}
 	if err := r.store.Create(meta, state); err != nil {
 		return RunResult{}, err
+	}
+	if req.Goal != nil && req.Goal.Enabled {
+		draft := *req.Goal
+		if strings.TrimSpace(draft.Source) == "" {
+			draft.Source = session.GoalSourceCLI
+		}
+		goal, err := r.store.CreateGoal(meta.ID, draft)
+		if err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+		r.emit(meta.ID, "goal.created", "prepare", goalEventData(goal))
 	}
 	_ = writeSessionSummary(r.store, meta.ID)
 	r.emit(meta.ID, "session.created", "prepare", map[string]any{

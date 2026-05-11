@@ -97,10 +97,20 @@
 职责：
 
 - 管理 `session.json`、`state.json`、`messages.jsonl`、`events.jsonl`、`control/`
-- 管理 `contract.json`、`artifact-tracker.json`、`provider-attempts.jsonl`、`parent-coordination.json`、`session.md` 与 `checkpoints/`
+- 管理 `goal.json`、`artifacts/goal-history.jsonl`、`contract.json`、`artifact-tracker.json`、`provider-attempts.jsonl`、`parent-coordination.json`、`session.md` 与 `checkpoints/`
 - 写入 compaction artifacts
 - 为 `continue` 提供恢复数据
 - 持久化 `control/steer.jsonl` 与 `control/background.jsonl`
+
+### 2.8.1 SessionGoalManager
+
+职责：
+
+- 从 `StartRequest.Goal`、CLI `goal` 命令、Web goal API 或模型工具创建 / 更新 session-scoped goal
+- 一个 session 默认最多一个 current goal，存储在 `goal.json`
+- 将 goal 变化与预算计量追加到 `artifacts/goal-history.jsonl`
+- 将 goal / mission snapshot 注入 prompt、compaction summary、`session.md` 与 long-run checkpoint
+- 只记录目标、预算、validation contract、features、milestones 与用户控制状态；不得把 Mission mode 变成固定 DAG 或强制 child / queue 编排
 
 ### 2.9 LiveInputManager
 
@@ -143,6 +153,7 @@
 - 先复用已有 review、artifact、template、literal、target、taskboard、steer guard
 - 再执行 required-artifact baseline/touched/changed gate
 - 再执行 parent child/queue coordination gate
+- 再执行 active goal completion audit gate，要求模型在 `finish` 前读取 / 审计 goal，并只能通过 `update_goal(status="complete")` 标记完成
 - 把 `completion.evaluate.*`、`completion.gate.*`、`artifact.gate.*`、`artifact.tracked` 事件写回 session
 
 ### 2.14 ProviderAttemptLedger
@@ -210,6 +221,7 @@
 - 维护 queue worker pool，并通过独立 worker `Runner` 支持后台并行消费
 - 提供 overview / session detail / queue / children / task board 的聚合只读视图
 - 对 `steer`、`continue`、`queue submit`、`interrupt` 等控制操作做参数校验与状态映射
+- 提供 goal / mission 的本地 REST 控制面：start payload 创建 goal，session detail 返回 goal，用户可以 pause/resume/clear/complete，mission plan 与 validation contract 可被 patch/approve
 - 将 WebConsole active handle 的 owner/process 线索写入 session events，并在 session detail、`session.md` 与 long-run checkpoint 中展示最近 owner 线索；不得把 in-memory cancel handle 伪持久化
 
 约束：
@@ -478,6 +490,17 @@ failed -> running
 - `artifact.gate.passed`
 - `artifact.gate.blocked`
 - `checkpoint.resume_hint.injected`
+- `goal.created`
+- `goal.updated`
+- `goal.accounting.updated`
+- `goal.budget_limited`
+- `goal.completed`
+- `goal.paused`
+- `goal.resumed`
+- `goal.cleared`
+- `mission.plan.updated`
+- `mission.plan.approved`
+- `mission.validation.updated`
 
 每个事件字段至少包括：
 

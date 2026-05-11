@@ -24,6 +24,9 @@ v1 内置工具固定为：
 - `grep`
 - `finish`
 - `load_skill`
+- `get_goal`
+- `create_goal`
+- `update_goal`
 - `todo_write`
 - `todo_read`
 - `task_create`
@@ -133,6 +136,25 @@ v1 内置工具固定为：
 - 返回目标 `SKILL.md` 的完整内容与路径信息
 - 当 skill 依赖相对 shell 路径时，返回值还应给出可直接复用的 skill 根目录执行提示，避免把 skill 内相对脚本误当成 workspace 根相对路径
 - 返回值还应明确 skill references 是注册 skill bundle 下的只读资源，可通过 `read_file` 的 `skills/<skill-name>/references/...` 或唯一匹配的 `references/...` 读取，不属于 workspace 文件
+
+### 4.9.1 Goal Tools
+
+`get_goal`
+
+- 读取当前 session 的 durable goal / mission
+- 无 goal 时返回 `null`
+
+`create_goal`
+
+- 仅在用户或系统显式要求 goal-driven work 时创建一个 current goal
+- 支持 objective、mode、budget、success criteria、validation plan、mission features / milestones
+- 已存在 current goal 时拒绝，避免模型无意覆盖用户目标
+
+`update_goal`
+
+- 模型侧只允许 `status=complete`
+- pause / resume / clear / budget_limited 由用户或系统控制
+- complete 前应基于文件、命令、events 或其他 session facts 做 completion audit
 
 ### 4.10 `task_update`
 

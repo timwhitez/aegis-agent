@@ -10,16 +10,53 @@ const (
 )
 
 type StartSessionRequest struct {
-	Prompt         string `json:"prompt"`
-	AgentName      string `json:"agent_name"`
-	AgentRole      string `json:"agent_role"`
-	Provider       string `json:"provider"`
-	Model          string `json:"model"`
-	Workdir        string `json:"workdir"`
-	Mode           string `json:"mode"`
-	SystemOverride string `json:"system"`
-	IsolationMode  string `json:"isolation_mode"`
-	IsolationRoot  string `json:"isolation_root"`
+	Prompt         string            `json:"prompt"`
+	AgentName      string            `json:"agent_name"`
+	AgentRole      string            `json:"agent_role"`
+	Provider       string            `json:"provider"`
+	Model          string            `json:"model"`
+	Workdir        string            `json:"workdir"`
+	Mode           string            `json:"mode"`
+	SystemOverride string            `json:"system"`
+	IsolationMode  string            `json:"isolation_mode"`
+	IsolationRoot  string            `json:"isolation_root"`
+	Goal           *GoalDraftRequest `json:"goal,omitempty"`
+}
+
+type GoalDraftRequest struct {
+	Enabled                   bool     `json:"enabled"`
+	Mode                      string   `json:"mode"`
+	Objective                 string   `json:"objective"`
+	SuccessCriteria           []string `json:"success_criteria,omitempty"`
+	ValidationPlan            []string `json:"validation_plan,omitempty"`
+	TokenBudget               *int64   `json:"token_budget,omitempty"`
+	TimeBudgetMinutes         *int64   `json:"time_budget_minutes,omitempty"`
+	Autonomy                  string   `json:"autonomy,omitempty"`
+	RequirePlanApproval       bool     `json:"require_plan_approval,omitempty"`
+	CreateTasksFromPlan       bool     `json:"create_tasks_from_plan,omitempty"`
+	Features                  []string `json:"features,omitempty"`
+	Milestones                []string `json:"milestones,omitempty"`
+	AskBeforeLargeChanges     bool     `json:"ask_before_large_changes,omitempty"`
+	AskBeforeDependencyChange bool     `json:"ask_before_dependency_change,omitempty"`
+}
+
+type GoalPatchRequest struct {
+	SuccessCriteria []session.GoalCriterion  `json:"success_criteria,omitempty"`
+	ValidationPlan  []session.GoalValidation `json:"validation_plan,omitempty"`
+	Control         *session.GoalControl     `json:"control,omitempty"`
+	Mission         *session.MissionPlan     `json:"mission,omitempty"`
+}
+
+type MissionPlanPatchRequest struct {
+	Requirements        []session.MissionRequirement `json:"requirements,omitempty"`
+	Features            []session.MissionFeature     `json:"features,omitempty"`
+	Milestones          []session.MissionMilestone   `json:"milestones,omitempty"`
+	ValidationContract  []session.GoalValidation     `json:"validation_contract,omitempty"`
+	RolePlan            []session.MissionRole        `json:"role_plan,omitempty"`
+	SharedArtifacts     []string                     `json:"shared_artifacts,omitempty"`
+	KnowledgeArtifacts  []string                     `json:"knowledge_artifacts,omitempty"`
+	PlanStatus          string                       `json:"plan_status,omitempty"`
+	CreateTasksFromPlan *bool                        `json:"create_tasks_from_plan,omitempty"`
 }
 
 type ContinueSessionRequest struct {

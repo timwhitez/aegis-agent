@@ -126,6 +126,76 @@ func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	tokenBudget := int64(5)
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:         true,
+		Mode:            GoalModeMission,
+		Objective:       "Converge the feature safely",
+		TokenBudget:     &tokenBudget,
+		SuccessCriteria: []string{"tests pass"},
+		ValidationPlan:  []string{"go test ./internal/session"},
+		Features:        []string{"durable goal state"},
+		Milestones:      []string{"first checkpoint"},
+		Source:          GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if goal.Mode != GoalModeMission || goal.Mission == nil || len(goal.Mission.Features) != 1 {
+		t.Fatalf("expected mission goal, got %#v", goal)
+	}
+	loaded, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.GoalID != goal.GoalID || loaded.SuccessCriteria[0].Text != "tests pass" {
+		t.Fatalf("unexpected loaded goal: %#v", loaded)
+	}
+	items, err := store.List(10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 1 || items[0].GoalStatus != GoalStatusActive || items[0].GoalMode != GoalModeMission {
+		t.Fatalf("expected goal summary fields, got %#v", items)
+	}
+	updated, limited, err := store.UpdateGoalAccounting(meta.ID, GoalUsageDelta{TokensUsedDelta: 6, TimeUsedSecondsDelta: 2, SourceTurn: 1})
+	if err != nil {
+		t.Fatalf("update accounting: %v", err)
+	}
+	if !limited || updated.Status != GoalStatusBudgetLimited || updated.TokensUsed != 6 {
+		t.Fatalf("expected budget limited accounting, got limited=%v goal=%#v", limited, updated)
+	}
+	history, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	if len(history) < 3 {
+		t.Fatalf("expected create/accounting/budget history, got %#v", history)
+	}
+	if cleared, err := store.ClearGoal(meta.ID); err != nil || !cleared {
+		t.Fatalf("clear goal cleared=%v err=%v", cleared, err)
+	}
+	if _, err := store.LoadGoal(meta.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing goal after clear, got %v", err)
+	}
+}
+
 func TestStoreHonorsConfiguredDirModeForDirectories(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o750)

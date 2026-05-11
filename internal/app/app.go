@@ -70,6 +70,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		err = steerCommand(ctx, args[1:], stdout, stderr)
 	case "sessions":
 		err = sessionsCommand(args[1:], stdout)
+	case "goal":
+		err = goalCommand(args[1:], stdout, stderr)
 	case "tasks":
 		err = tasksCommand(args[1:], stdout, stderr)
 	case "probe-provider":
@@ -89,7 +91,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func usage(w io.Writer) error {
-	_, _ = fmt.Fprintln(w, "usage: go-cli-agent <init|run|exec|continue|steer|sessions|tasks|probe-provider|doctor> [...]")
+	_, _ = fmt.Fprintln(w, "usage: go-cli-agent <init|run|exec|continue|steer|sessions|goal|tasks|probe-provider|doctor> [...]")
 	return flag.ErrHelp
 }
 
@@ -191,21 +193,30 @@ var experimentalRunnerLoader = loadExperimentalRunner
 var storeRunnerLoader = loadStoreRunner
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root"}, []string{"json", "init"})
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		providerName  = fs.String("provider", "", "")
-		model         = fs.String("model", "", "")
-		configPath    = fs.String("config", "", "")
-		workdir       = fs.String("workdir", "", "")
-		system        = fs.String("system", "", "")
-		jsonMode      = fs.Bool("json", false, "")
-		initMode      = fs.Bool("init", false, "")
-		timeoutSec    = fs.Int("timeout", 0, "")
-		isolationMode = fs.String("isolation", "", "")
-		isolationRoot = fs.String("isolation-root", "", "")
+		providerName     = fs.String("provider", "", "")
+		model            = fs.String("model", "", "")
+		configPath       = fs.String("config", "", "")
+		workdir          = fs.String("workdir", "", "")
+		system           = fs.String("system", "", "")
+		jsonMode         = fs.Bool("json", false, "")
+		initMode         = fs.Bool("init", false, "")
+		timeoutSec       = fs.Int("timeout", 0, "")
+		isolationMode    = fs.String("isolation", "", "")
+		isolationRoot    = fs.String("isolation-root", "", "")
+		goalObjective    = fs.String("goal", "", "")
+		goalMode         = fs.String("goal-mode", "goal", "")
+		goalTokenBudget  = fs.Int64("goal-token-budget", 0, "")
+		goalTimeBudget   = fs.String("goal-time-budget", "", "")
+		goalPlanApproval = fs.Bool("goal-plan-approval", false, "")
+		goalCriteria     stringSliceFlag
+		goalValidation   stringSliceFlag
 	)
+	fs.Var(&goalCriteria, "goal-success", "")
+	fs.Var(&goalValidation, "goal-validate", "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -269,6 +280,10 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *initMode {
 		actualMode = session.ModeInit
 	}
+	goalDraft, err := goalDraftFromCLI(*goalObjective, *goalMode, *goalTokenBudget, *goalTimeBudget, *goalPlanApproval, goalCriteria, goalValidation)
+	if err != nil {
+		return err
+	}
 	result, err := runner.Start(runCtx, runtime.StartRequest{
 		Prompt:         prompt,
 		Provider:       *providerName,
@@ -276,6 +291,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		Workdir:        *workdir,
 		Mode:           actualMode,
 		SystemOverride: *system,
+		Goal:           goalDraft,
 		IsolationMode:  *isolationMode,
 		IsolationRoot:  *isolationRoot,
 	})
@@ -286,6 +302,78 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		return err
 	}
 	return printResult(stdout, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
+}
+
+type stringSliceFlag []string
+
+func (f *stringSliceFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *stringSliceFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+func goalDraftFromCLI(objective, mode string, tokenBudget int64, timeBudget string, requirePlanApproval bool, criteria, validation []string) (*session.GoalDraft, error) {
+	objective = strings.TrimSpace(objective)
+	hasGoalFields := objective != "" || tokenBudget > 0 || strings.TrimSpace(timeBudget) != "" || requirePlanApproval || len(criteria) > 0 || len(validation) > 0 || strings.TrimSpace(mode) == session.GoalModeMission
+	if !hasGoalFields {
+		return nil, nil
+	}
+	if objective == "" {
+		return nil, errors.New("--goal is required when goal options are provided")
+	}
+	var tokenPtr *int64
+	if tokenBudget > 0 {
+		tokenPtr = &tokenBudget
+	}
+	var secondsPtr *int64
+	if strings.TrimSpace(timeBudget) != "" {
+		seconds, err := parseGoalDurationSeconds(timeBudget)
+		if err != nil {
+			return nil, err
+		}
+		secondsPtr = &seconds
+	}
+	return &session.GoalDraft{
+		Enabled:             true,
+		Mode:                mode,
+		Objective:           objective,
+		TokenBudget:         tokenPtr,
+		TimeBudgetSeconds:   secondsPtr,
+		SuccessCriteria:     append([]string(nil), criteria...),
+		ValidationPlan:      append([]string(nil), validation...),
+		RequirePlanApproval: requirePlanApproval,
+		Source:              session.GoalSourceCLI,
+	}, nil
+}
+
+func parseGoalDurationSeconds(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	if allDigits(value) {
+		value += "m"
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --goal-time-budget: %w", err)
+	}
+	if duration <= 0 {
+		return 0, errors.New("--goal-time-budget must be positive")
+	}
+	return int64(duration / time.Second), nil
+}
+
+func allDigits(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func continueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -419,6 +507,143 @@ func sessionsCommand(args []string, stdout io.Writer) error {
 			item.ID, item.Status, item.Provider, item.Model, item.CreatedAt, item.UpdatedAt, item.Phase)
 	}
 	return nil
+}
+
+func goalCommand(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal <show|pause|resume|clear|complete> <session-id> [--json] [--config path]")
+		return flag.ErrHelp
+	}
+	subcommand := args[0]
+	subArgs := normalizeInterspersedFlags(args[1:], []string{"config"}, []string{"json"})
+	fs := flag.NewFlagSet("goal "+subcommand, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "")
+		jsonMode   = fs.Bool("json", false, "")
+	)
+	if err := fs.Parse(subArgs); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("goal %s requires <session-id>", subcommand)
+	}
+	sessionID := fs.Arg(0)
+	cwd, _ := os.Getwd()
+	runner, _, err := storeRunnerLoader(*configPath, cwd)
+	if err != nil {
+		return err
+	}
+	store := runner.Store()
+	switch subcommand {
+	case "show":
+		goal, err := store.LoadGoal(sessionID)
+		if err != nil {
+			return err
+		}
+		if *jsonMode {
+			return json.NewEncoder(stdout).Encode(goal)
+		}
+		printGoal(stdout, goal)
+		return nil
+	case "pause":
+		return mutateGoalStatus(stdout, store, sessionID, session.GoalStatusPaused, "goal.paused", "paused", *jsonMode)
+	case "resume":
+		return mutateGoalStatus(stdout, store, sessionID, session.GoalStatusActive, "goal.resumed", "active", *jsonMode)
+	case "complete":
+		return mutateGoalStatus(stdout, store, sessionID, session.GoalStatusComplete, "goal.completed", "complete", *jsonMode)
+	case "clear":
+		goal, err := store.LoadGoal(sessionID)
+		if err != nil {
+			return err
+		}
+		cleared, err := store.ClearGoal(sessionID)
+		if err != nil {
+			return err
+		}
+		if cleared {
+			_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+				GoalID: goal.GoalID,
+				Type:   "goal.cleared",
+				Source: session.GoalSourceCLI,
+				Status: session.GoalStatusCleared,
+				Data: map[string]any{
+					"previous_status": goal.Status,
+				},
+			})
+			_ = store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
+				"goal_id":         goal.GoalID,
+				"previous_status": goal.Status,
+			}))
+		}
+		if *jsonMode {
+			return json.NewEncoder(stdout).Encode(map[string]any{"session_id": sessionID, "cleared": cleared})
+		}
+		_, _ = fmt.Fprintf(stdout, "goal cleared: %t\n", cleared)
+		return nil
+	default:
+		return fmt.Errorf("unknown goal subcommand: %s", subcommand)
+	}
+}
+
+func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status, eventType, label string, jsonMode bool) error {
+	goal, err := store.LoadGoal(sessionID)
+	if err != nil {
+		return err
+	}
+	goal.Status = status
+	if status == session.GoalStatusComplete && goal.CompletedAt == "" {
+		goal.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if status != session.GoalStatusComplete {
+		goal.CompletedAt = ""
+	}
+	if err := store.SaveGoal(sessionID, goal); err != nil {
+		return err
+	}
+	_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+		GoalID: goal.GoalID,
+		Type:   eventType,
+		Source: session.GoalSourceCLI,
+		Status: goal.Status,
+	})
+	_ = store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", map[string]any{
+		"goal_id":   goal.GoalID,
+		"status":    goal.Status,
+		"mode":      goal.Mode,
+		"objective": goal.Objective,
+	}))
+	if jsonMode {
+		return json.NewEncoder(stdout).Encode(goal)
+	}
+	_, _ = fmt.Fprintf(stdout, "goal %s: %s (%s)\n", label, goal.GoalID, goal.Status)
+	return nil
+}
+
+func printGoal(stdout io.Writer, goal session.SessionGoal) {
+	fmt.Fprintf(stdout, "goal: %s\n", goal.GoalID)
+	fmt.Fprintf(stdout, "mode: %s\n", goal.Mode)
+	fmt.Fprintf(stdout, "status: %s\n", goal.Status)
+	fmt.Fprintf(stdout, "objective: %s\n", goal.Objective)
+	fmt.Fprintf(stdout, "tokens: %d", goal.TokensUsed)
+	if goal.TokenBudget != nil {
+		fmt.Fprintf(stdout, " / %d", *goal.TokenBudget)
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "time_seconds: %d", goal.TimeUsedSeconds)
+	if goal.TimeBudgetSeconds != nil {
+		fmt.Fprintf(stdout, " / %d", *goal.TimeBudgetSeconds)
+	}
+	fmt.Fprintln(stdout)
+	if len(goal.SuccessCriteria) > 0 {
+		fmt.Fprintln(stdout, "success_criteria:")
+		for _, criterion := range goal.SuccessCriteria {
+			fmt.Fprintf(stdout, "- [%s] %s\n", criterion.Status, criterion.Text)
+		}
+	}
+	if goal.Mission != nil {
+		fmt.Fprintf(stdout, "mission_plan_status: %s\n", goal.Mission.PlanStatus)
+	}
 }
 
 func tasksCommand(args []string, stdout, stderr io.Writer) error {

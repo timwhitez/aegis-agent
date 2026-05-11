@@ -588,7 +588,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 		if err != nil {
 			continue
 		}
-		result = append(result, SessionSummary{
+		summary := SessionSummary{
 			ID:              meta.ID,
 			Status:          state.Status,
 			Provider:        meta.Provider,
@@ -604,7 +604,9 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			AgentRole:       meta.AgentRole,
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
-		})
+		}
+		s.populateGoalSummary(&summary)
+		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].UpdatedAt > result[j].UpdatedAt
@@ -637,7 +639,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		if err != nil {
 			continue
 		}
-		result = append(result, SessionSummary{
+		summary := SessionSummary{
 			ID:              meta.ID,
 			Status:          state.Status,
 			Provider:        meta.Provider,
@@ -653,7 +655,9 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			AgentRole:       meta.AgentRole,
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
-		})
+		}
+		s.populateGoalSummary(&summary)
+		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].CreatedAt == result[j].CreatedAt {
@@ -665,6 +669,19 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+func (s *Store) populateGoalSummary(summary *SessionSummary) {
+	if summary == nil || strings.TrimSpace(summary.ID) == "" {
+		return
+	}
+	goal, err := s.LoadGoal(summary.ID)
+	if err != nil || goal.GoalID == "" {
+		return
+	}
+	summary.GoalStatus = goal.Status
+	summary.GoalMode = goal.Mode
+	summary.GoalObjective = goal.Objective
 }
 
 func (s *Store) NextTaskID(sessionID string) (string, error) {

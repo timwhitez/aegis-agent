@@ -48,6 +48,12 @@ function isCompactFlowEvent(eventType) {
     'queue.job.claimed',
     'queue.job.completed',
     'queue.job.failed',
+    'goal.created',
+    'goal.updated',
+    'goal.budget_limited',
+    'goal.completed',
+    'mission.plan.updated',
+    'mission.validation.updated',
     'provider.cancelled',
     'session.paused',
     'session.completed',
@@ -166,6 +172,32 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         meta: data?.job_id ? shortId(data.job_id) : phaseHeadline(phase),
         tone: 'queued',
         data: ''
+      };
+    case 'goal.created':
+    case 'goal.updated':
+    case 'goal.paused':
+    case 'goal.resumed':
+    case 'goal.budget_limited':
+    case 'goal.completed':
+    case 'goal.cleared':
+      return {
+        icon: eventType === 'goal.completed' ? 'badge-check' : eventType === 'goal.budget_limited' ? 'timer-off' : 'target',
+        title: humanizeEventType(eventType),
+        copy: data?.objective ? truncateText(data.objective, 180) : 'Session goal state changed.',
+        meta: data?.status ? humanizeStatus(data.status) : phaseHeadline(phase),
+        tone: eventType === 'goal.budget_limited' ? 'queued' : eventType === 'goal.completed' ? 'live' : 'neutral',
+        data: data ? prettyJSON(data) : ''
+      };
+    case 'mission.plan.updated':
+    case 'mission.plan.approved':
+    case 'mission.validation.updated':
+      return {
+        icon: eventType === 'mission.validation.updated' ? 'shield-check' : 'list-checks',
+        title: humanizeEventType(eventType),
+        copy: data?.plan_status ? `Mission plan is ${humanizeStatus(data.plan_status)}.` : 'Mission state changed.',
+        meta: data?.goal_id ? shortId(data.goal_id) : phaseHeadline(phase),
+        tone: eventType === 'mission.plan.approved' ? 'live' : 'neutral',
+        data: data ? prettyJSON(data) : ''
       };
     case 'session.steer.requested':
     case 'session.steer.queued':

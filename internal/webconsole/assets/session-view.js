@@ -331,6 +331,7 @@ function renderSessionActivityCard() {
   const detail = state.sessionDetail;
   const counters = summarizeCurrentSession();
   const status = detail?.state?.status || (state.isGenerating ? 'running' : 'idle');
+  const goal = detail?.goal || null;
   const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : state.liveActivity.title;
   const tone = toneForStatus(status);
   const failureSummary = detail ? summarizeProviderFailure(detail) : null;
@@ -348,6 +349,7 @@ function renderSessionActivityCard() {
         </div>
         <div class="session-flow-meta">
           ${detail?.metadata?.id ? `<span class="tiny-code-chip">${escapeHTML(shortId(detail.metadata.id))}</span>` : `<span class="tiny-code-chip">${escapeHTML(shortId(state.sessionId))}</span>`}
+          ${goal ? `<span class="surface-chip">${escapeHTML(goal.mode || 'goal')} · ${escapeHTML(humanizeStatus(goal.status || 'active'))}</span>` : ''}
           ${summary ? `<span class="surface-chip">${escapeHTML(summary)}</span>` : ''}
         </div>
       </div>
@@ -1358,7 +1360,7 @@ function renderSessionRail() {
           <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
           <span class="session-rail-id">${escapeHTML(shortId(item.id))}</span>
           <span class="session-rail-meta">${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
-          <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}</span>
+          <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · ${escapeHTML(item.goal_mode || 'goal')}:${escapeHTML(item.goal_status)}` : ''}</span>
         </button>
       `).join('') : '<div class="empty-panel compact">No durable sessions yet.</div>'}
     </div>
@@ -1382,6 +1384,7 @@ function renderInspectorPanel() {
   }
   const tabs = [
     ['summary', 'Summary'],
+    ['goal', 'Goal'],
     ['tasks', 'Tasks'],
     ['agents', 'Background'],
     ['timeline', 'Timeline']
@@ -1389,6 +1392,8 @@ function renderInspectorPanel() {
   const active = tabs.some(([key]) => key === state.inspectorTab) ? state.inspectorTab : 'tasks';
   const panel = active === 'summary'
     ? renderSummaryPanel(detail)
+    : active === 'goal'
+      ? renderGoalPanel(detail)
     : active === 'agents'
       ? renderAgentsPanel(detail)
       : active === 'timeline'
@@ -1409,6 +1414,107 @@ function renderInspectorPanel() {
   `;
 }
 
+function renderGoalPanel(detail) {
+  const goal = detail?.goal;
+  if (!goal) {
+    return '<div class="empty-panel">No goal is attached to this session.</div>';
+  }
+  const mission = goal.mission || null;
+  const criteria = maybeArray(goal.success_criteria);
+  const validations = maybeArray(goal.validation_plan);
+  const features = maybeArray(mission?.features);
+  const milestones = maybeArray(mission?.milestones);
+  const canPause = goal.status === 'active' || goal.status === 'budget_limited';
+  const canResume = goal.status === 'paused' || goal.status === 'budget_limited';
+  const canComplete = goal.status !== 'complete';
+  const canApprove = mission && mission.plan_status !== 'approved';
+
+  return `
+    <div class="goal-panel">
+      <div class="goal-panel-head">
+        <div>
+          <div class="inspector-eyebrow">${escapeHTML(goal.mode || 'goal')}</div>
+          <h4>${escapeHTML(humanizeStatus(goal.status || 'active'))}</h4>
+        </div>
+        <span class="tiny-code-chip">${escapeHTML(shortId(goal.goal_id || 'goal'))}</span>
+      </div>
+      <div class="goal-objective">${escapeHTML(goal.objective || '')}</div>
+      <div class="goal-budget-row">
+        ${renderMiniMetric('Tokens', formatBudget(goal.tokens_used, goal.token_budget))}
+        ${renderMiniMetric('Time', formatSecondsBudget(goal.time_used_seconds, goal.time_budget_seconds))}
+      </div>
+      <div class="goal-actions">
+        ${canPause ? '<button class="mini-link-btn" type="button" data-goal-action="pause">Pause</button>' : ''}
+        ${canResume ? '<button class="mini-link-btn" type="button" data-goal-action="resume">Resume</button>' : ''}
+        ${canComplete ? '<button class="mini-link-btn" type="button" data-goal-action="complete">Complete</button>' : ''}
+        ${canApprove ? '<button class="mini-link-btn" type="button" data-goal-action="approve-plan">Approve plan</button>' : ''}
+        <button class="mini-link-btn danger" type="button" data-goal-action="clear">Clear</button>
+      </div>
+      ${renderGoalItems('Success criteria', criteria, 'text')}
+      ${renderGoalItems('Validation', validations, 'validation')}
+      ${mission ? `
+        <div class="goal-section">
+          <div class="goal-section-title">Mission plan</div>
+          <div class="goal-meta-line">Plan ${escapeHTML(mission.plan_status || 'draft')}${mission.approved_at ? ` · approved ${escapeHTML(formatTimestamp(mission.approved_at))}` : ''}</div>
+          ${features.length ? renderGoalItems('Features', features, 'feature') : ''}
+          ${milestones.length ? renderGoalItems('Milestones', milestones, 'milestone') : ''}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderGoalItems(label, items, kind) {
+  const values = maybeArray(items);
+  if (!values.length) {
+    return '';
+  }
+  return `
+    <div class="goal-section">
+      <div class="goal-section-title">${escapeHTML(label)}</div>
+      <div class="goal-item-list">
+        ${values.map((item) => renderGoalItem(item, kind)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderGoalItem(item, kind) {
+  const status = item?.status || 'pending';
+  const title = kind === 'validation'
+    ? item?.command || item?.artifact || item?.description || item?.kind || 'validation'
+    : item?.title || item?.text || item?.id || 'item';
+  const meta = kind === 'validation'
+    ? item?.kind || ''
+    : item?.milestone_id || '';
+  return `
+    <div class="goal-item">
+      <div class="goal-item-top">
+        <span>${escapeHTML(title)}</span>
+        <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
+      </div>
+      ${meta ? `<div class="goal-meta-line">${escapeHTML(meta)}</div>` : ''}
+      ${maybeArray(item?.evidence).length ? `<div class="goal-meta-line">${escapeHTML(maybeArray(item.evidence).join(' · '))}</div>` : ''}
+    </div>
+  `;
+}
+
+function formatBudget(used, budget) {
+  const usedText = String(Number(used || 0));
+  if (budget === undefined || budget === null) {
+    return usedText;
+  }
+  return `${usedText} / ${budget}`;
+}
+
+function formatSecondsBudget(used, budget) {
+  const usedText = `${Number(used || 0)}s`;
+  if (budget === undefined || budget === null) {
+    return usedText;
+  }
+  return `${usedText} / ${budget}s`;
+}
+
 function sessionSummaryFromDetail(detail) {
   return {
     id: detail.metadata?.id || state.sessionId,
@@ -1419,7 +1525,10 @@ function sessionSummaryFromDetail(detail) {
     phase: detail.state?.phase || '',
     workdir: detail.metadata?.workdir || '',
     agent_name: detail.metadata?.agent_name || '',
-    agent_role: detail.metadata?.agent_role || ''
+    agent_role: detail.metadata?.agent_role || '',
+    goal_status: detail.goal?.status || '',
+    goal_mode: detail.goal?.mode || '',
+    goal_objective: detail.goal?.objective || ''
   };
 }
 

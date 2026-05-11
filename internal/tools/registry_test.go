@@ -148,6 +148,98 @@ func TestTodoAndTaskToolsEmitStructuredEvents(t *testing.T) {
 	}
 }
 
+func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	var eventTypes []string
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   meta.Workdir,
+		Store:     store,
+		Config:    cfg,
+		Emit: func(eventType string, _ map[string]any) {
+			eventTypes = append(eventTypes, eventType)
+		},
+	}
+
+	createResult, err := registry.Execute(context.Background(), "create_goal", execCtx, json.RawMessage(`{
+		"objective":"Ship goal support",
+		"mode":"mission",
+		"token_budget":100,
+		"time_budget_minutes":5,
+		"success_criteria":["goal persisted"],
+		"validation_plan":["go test ./internal/tools"],
+		"features":["web api"],
+		"milestones":["first validation"],
+		"require_plan_approval":true
+	}`))
+	if err != nil {
+		t.Fatalf("create_goal execute: %v", err)
+	}
+	if createResult.IsError {
+		t.Fatalf("create_goal returned error: %s", createResult.DisplayOutput)
+	}
+	if createResult.Metadata["status"] != session.GoalStatusActive {
+		t.Fatalf("expected active goal metadata, got %#v", createResult.Metadata)
+	}
+
+	readResult, err := registry.Execute(context.Background(), "get_goal", execCtx, nil)
+	if err != nil {
+		t.Fatalf("get_goal execute: %v", err)
+	}
+	if !strings.Contains(readResult.LLMOutput, `"mode": "mission"`) || !strings.Contains(readResult.LLMOutput, `"needs_approval"`) {
+		t.Fatalf("expected mission goal JSON, got %s", readResult.LLMOutput)
+	}
+
+	rejectResult, err := registry.Execute(context.Background(), "update_goal", execCtx, json.RawMessage(`{"status":"paused"}`))
+	if err != nil {
+		t.Fatalf("update_goal paused execute: %v", err)
+	}
+	if !rejectResult.IsError || !strings.Contains(rejectResult.DisplayOutput, "can only mark the existing goal complete") {
+		t.Fatalf("expected paused update rejection, got %#v", rejectResult)
+	}
+
+	completeResult, err := registry.Execute(context.Background(), "update_goal", execCtx, json.RawMessage(`{"status":"complete","evidence":["go test ./internal/tools"]}`))
+	if err != nil {
+		t.Fatalf("update_goal complete execute: %v", err)
+	}
+	if completeResult.IsError {
+		t.Fatalf("update_goal complete returned error: %s", completeResult.DisplayOutput)
+	}
+	goal, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if goal.Status != session.GoalStatusComplete || goal.CompletedAt == "" {
+		t.Fatalf("expected completed goal, got %#v", goal)
+	}
+	if strings.Join(eventTypes, ",") != "goal.created,goal.completed" {
+		t.Fatalf("expected goal event emissions, got %#v", eventTypes)
+	}
+}
+
 func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

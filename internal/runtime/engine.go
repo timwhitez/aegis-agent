@@ -138,10 +138,25 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err != nil {
 			return RunResult{}, err
 		}
+		goal, err := loadGoalOptional(e.store, meta.ID)
+		if err != nil {
+			return RunResult{}, err
+		}
 		projectMemory := loadProjectMemoryStack(meta.Workdir)
-		e.emit(meta.ID, "session.context.loaded", "prepare", contextLoadedEventData(meta, state.Turn, projectMemory, todo, tasks))
+		contextData := contextLoadedEventData(meta, state.Turn, projectMemory, todo, tasks)
+		if goal != nil {
+			contextData["goal_status"] = goal.Status
+			contextData["goal_mode"] = goal.Mode
+			contextData["goal_id"] = goal.GoalID
+		}
+		e.emit(meta.ID, "session.context.loaded", "prepare", contextData)
 
 		systemPrompt := buildSystemPrompt(meta.Workdir, meta.Mode, systemOverride, catalog.Summaries(), catalog.TrustedCommandTools(meta.Workdir), state, messages, meta.AgentName, meta.AgentRole)
+		if goal != nil {
+			if contextText := goalPromptContext(*goal); contextText != "" {
+				systemPrompt += "\n\n" + contextText
+			}
+		}
 		if e.guardrailsYolo() {
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Runtime retrieval, project-memory, and review-artifact guardrails are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
@@ -172,6 +187,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		e.emit(meta.ID, "provider.request.prepared", state.Phase, providerRequestPreparedEventData(meta, requestMetadata))
 		callCtx, cancel := context.WithCancel(ctx)
 		e.control.setCancel(cancel)
+		providerStart := time.Now()
 		result, err := adapter.RunTurn(callCtx, provider.TurnRequest{
 			SessionID:        meta.ID,
 			Model:            meta.Model,
@@ -242,6 +258,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 		}
 		recordProviderSuccess(e.store, meta, state.Turn, result)
+		if err := e.updateGoalAccounting(meta.ID, state.Turn, result.Usage, time.Since(providerStart)); err != nil {
+			return e.fail(ctx, meta, state, err, hookManager)
+		}
 		_ = writeSessionSummary(e.store, meta.ID)
 		if state.ProviderAutoResumeCount != 0 {
 			state.ProviderAutoResumeCount = 0
@@ -812,6 +831,15 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 			"id":        requests[i].ID,
 			"interrupt": requests[i].Interrupt,
 		})
+		appendGoalHistoryForSteer(e.store, sessionID, text, requests[i].Interrupt)
+		if goal, goalErr := e.store.LoadGoal(sessionID); goalErr == nil && goal.GoalID != "" {
+			e.emit(sessionID, "goal.updated", "control_drain", map[string]any{
+				"goal_id":   goal.GoalID,
+				"status":    goal.Status,
+				"source":    "steer",
+				"interrupt": requests[i].Interrupt,
+			})
+		}
 	}
 	if changed {
 		if state, err := e.store.LoadState(sessionID); err == nil {

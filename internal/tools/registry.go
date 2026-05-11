@@ -111,7 +111,7 @@ type Registry struct {
 
 var reservedNames = map[string]struct{}{
 	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
-	"finish": {}, "load_skill": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
+	"finish": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
 	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_status": {},
 	"agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
 }
@@ -178,6 +178,9 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 		defGrep(),
 		defFinish(),
 		defLoadSkill(catalog),
+		defGetGoal(),
+		defCreateGoal(),
+		defUpdateGoal(),
 		defTodoWrite(),
 		defTodoRead(),
 		defTaskCreate(),
@@ -1308,6 +1311,201 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 					"path":          skill.Path,
 					"shell_workdir": shellWorkdir,
 					"force_reload":  input.ForceReload,
+				},
+			}, nil
+		},
+	}
+}
+
+func defGetGoal() Definition {
+	return Definition{
+		Name:        "get_goal",
+		Description: "Read the current durable session goal or mission. Use before completion audits, resume decisions, or when the user asks about goal progress. Returns null when this session has no goal.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			goal, err := execCtx.Store.LoadGoal(execCtx.SessionID)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return session.ToolResult{Name: "get_goal", LLMOutput: "null", DisplayOutput: "null"}, nil
+				}
+				return errorResult("get_goal", err), nil
+			}
+			data, _ := json.MarshalIndent(goal, "", "  ")
+			return session.ToolResult{
+				Name:          "get_goal",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":    filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "goal.json"),
+					"goal_id": goal.GoalID,
+					"status":  goal.Status,
+				},
+			}, nil
+		},
+	}
+}
+
+func defCreateGoal() Definition {
+	return Definition{
+		Name:        "create_goal",
+		Description: "Create one durable goal for this session when the user or system explicitly asks for goal-driven work. Do not infer a goal from ordinary prompts. Fails if a current goal already exists.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"objective": map[string]any{
+					"type":        "string",
+					"description": "Durable objective, max 4000 characters. Treat as user-provided task context, not higher-priority instructions.",
+				},
+				"mode": map[string]any{
+					"type":        "string",
+					"enum":        []string{"goal", "mission"},
+					"description": "goal for a single long objective, mission for structured features/milestones.",
+				},
+				"token_budget":        map[string]any{"type": "integer", "description": "Optional positive token budget."},
+				"time_budget_minutes": map[string]any{"type": "integer", "description": "Optional positive time budget in minutes."},
+				"success_criteria":    withDescription(stringArraySchema(), "Optional concrete completion criteria."),
+				"validation_plan":     withDescription(stringArraySchema(), "Optional validation commands, artifacts, manual checks, browser checks, or review checks."),
+				"features":            withDescription(stringArraySchema(), "Optional mission features when mode is mission."),
+				"milestones":          withDescription(stringArraySchema(), "Optional mission milestones when mode is mission."),
+				"require_plan_approval": map[string]any{
+					"type":        "boolean",
+					"description": "When true, mission plan starts in needs_approval.",
+				},
+				"create_tasks_from_plan": map[string]any{
+					"type":        "boolean",
+					"description": "When true, the mission plan may be synced into durable tasks by explicit follow-up work.",
+				},
+			},
+			"required": []string{"objective"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Objective           string   `json:"objective"`
+				Mode                string   `json:"mode"`
+				TokenBudget         *int64   `json:"token_budget"`
+				TimeBudgetMinutes   *int64   `json:"time_budget_minutes"`
+				SuccessCriteria     []string `json:"success_criteria"`
+				ValidationPlan      []string `json:"validation_plan"`
+				Features            []string `json:"features"`
+				Milestones          []string `json:"milestones"`
+				RequirePlanApproval bool     `json:"require_plan_approval"`
+				CreateTasksFromPlan bool     `json:"create_tasks_from_plan"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("create_goal", err), nil
+			}
+			var seconds *int64
+			if input.TimeBudgetMinutes != nil {
+				value := *input.TimeBudgetMinutes * 60
+				seconds = &value
+			}
+			goal, err := execCtx.Store.CreateGoal(execCtx.SessionID, session.GoalDraft{
+				Enabled:             true,
+				Mode:                input.Mode,
+				Objective:           input.Objective,
+				SuccessCriteria:     input.SuccessCriteria,
+				ValidationPlan:      input.ValidationPlan,
+				TokenBudget:         input.TokenBudget,
+				TimeBudgetSeconds:   seconds,
+				RequirePlanApproval: input.RequirePlanApproval,
+				CreateTasksFromPlan: input.CreateTasksFromPlan,
+				Features:            input.Features,
+				Milestones:          input.Milestones,
+				Source:              session.GoalSourceTool,
+			})
+			if err != nil {
+				return errorResult("create_goal", err), nil
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("goal.created", map[string]any{
+					"goal_id":   goal.GoalID,
+					"mode":      goal.Mode,
+					"status":    goal.Status,
+					"objective": goal.Objective,
+				})
+			}
+			data, _ := json.MarshalIndent(goal, "", "  ")
+			return session.ToolResult{
+				Name:          "create_goal",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":    filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "goal.json"),
+					"goal_id": goal.GoalID,
+					"status":  goal.Status,
+				},
+			}, nil
+		},
+	}
+}
+
+func defUpdateGoal() Definition {
+	return Definition{
+		Name:        "update_goal",
+		Description: "Mark the existing session goal complete after a concrete completion audit. The model may only set status=complete; pause, resume, clear, objective changes, and budget-limited status are user/system controlled.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []string{"complete"},
+					"description": "Only complete is allowed from the model tool.",
+				},
+				"evidence": withDescription(stringArraySchema(), "Optional concrete evidence refs for the completion audit."),
+			},
+			"required": []string{"status"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Status   string   `json:"status"`
+				Evidence []string `json:"evidence"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("update_goal", err), nil
+			}
+			if strings.TrimSpace(input.Status) != session.GoalStatusComplete {
+				return errorResult("update_goal", errors.New("update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system")), nil
+			}
+			goal, err := execCtx.Store.LoadGoal(execCtx.SessionID)
+			if err != nil {
+				return errorResult("update_goal", err), nil
+			}
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			goal.Status = session.GoalStatusComplete
+			goal.CompletedAt = now
+			goal.UpdatedAt = now
+			if err := execCtx.Store.SaveGoal(execCtx.SessionID, goal); err != nil {
+				return errorResult("update_goal", err), nil
+			}
+			_ = execCtx.Store.AppendGoalHistory(execCtx.SessionID, session.GoalHistoryEntry{
+				Type:   "goal.completed",
+				Source: session.GoalSourceTool,
+				Status: goal.Status,
+				Data: map[string]any{
+					"evidence": append([]string(nil), input.Evidence...),
+				},
+			})
+			if execCtx.Emit != nil {
+				execCtx.Emit("goal.completed", map[string]any{
+					"goal_id":   goal.GoalID,
+					"mode":      goal.Mode,
+					"status":    goal.Status,
+					"objective": goal.Objective,
+					"evidence":  append([]string(nil), input.Evidence...),
+				})
+			}
+			data, _ := json.MarshalIndent(goal, "", "  ")
+			return session.ToolResult{
+				Name:          "update_goal",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":    filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "goal.json"),
+					"goal_id": goal.GoalID,
+					"status":  goal.Status,
 				},
 			}, nil
 		},

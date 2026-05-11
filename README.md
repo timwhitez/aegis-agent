@@ -6,12 +6,12 @@
 
 ## 当前定位
 
-- Core v1 默认围绕 `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`
+- Core v1 默认围绕 `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`
 - `run` 支持交互式执行和 `Esc` 暂停
 - `exec` 适合脚本或 CI，默认要求模型显式 `finish`
 - `steer` 通过文件控制队列向运行中 session 追加输入，`--interrupt` 是 best-effort 抢占
 - `continue` 恢复 `paused`、`awaiting_input`、`failed` session
-- session / state / messages / events / todo / tasks 是本地文件事实源
+- session / state / messages / events / goal / todo / tasks 是本地文件事实源
 - provider 原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - `openai-compatible` 作为 OpenAI Responses 形状的兼容部署模式提供
 - `experimental delegate|children|queue|tui|web` 和 `--isolation auto|copy` 仍是显式扩展面，不是默认 core 叙事
@@ -67,9 +67,25 @@
 
 ```sh
 ./bin/go-cli-agent sessions
+./bin/go-cli-agent goal show <session-id>
 ./bin/go-cli-agent tasks --all <session-id>
 ./bin/go-cli-agent probe-provider --provider openai
 ./bin/go-cli-agent doctor --provider openai --skip-probe
+```
+
+长任务可以在启动时附带 durable goal。goal 会落盘为 `goal.json`，模型可通过 `get_goal/create_goal/update_goal` 读取、创建并在完成审计后标记 complete；暂停、恢复和清除仍由用户/CLI/Web 控制：
+
+```sh
+./bin/go-cli-agent exec \
+  --goal "Migrate the provider contract tests without changing runtime behavior" \
+  --goal-mode mission \
+  --goal-success "Focused tests pass" \
+  --goal-validate "go test ./internal/provider" \
+  "Implement the migration and call finish after the goal is complete."
+
+./bin/go-cli-agent goal pause <session-id>
+./bin/go-cli-agent goal resume <session-id>
+./bin/go-cli-agent goal complete <session-id>
 ```
 
 ## Provider 配置
@@ -132,7 +148,7 @@ providers:
 
 ## Experimental Web
 
-本地 Web 控制台只作为显式实验入口存在，用来观察 session、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
+本地 Web 控制台只作为显式实验入口存在，用来观察 session、goal / mission、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
 
 ```sh
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
@@ -167,7 +183,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 - provider 差异留在 adapter 层，CLI / tool / Web 层不承载 provider-specific replay 逻辑
 - compaction 只改变发给模型的上下文视图，不覆盖原始日志
 - compaction 只做上下文规模控制，不按密钥模式默认改写内容；用户显式要求脱敏时，模型应在当轮交付文档中处理
-- session contract、required artifact tracker、provider attempts、session summary 与 long-run checkpoint 都是围绕本地文件事实源生成的辅助面，不引入固定 workflow engine
+- session goal、session contract、required artifact tracker、provider attempts、session summary 与 long-run checkpoint 都是围绕本地文件事实源生成的辅助面，不引入固定 workflow engine
 - 默认主路径优先于扩展能力，先把 Phase 0-10 做实，再评估 Phase 11+
 
 ## 脚本
@@ -187,7 +203,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 - `internal/extensions`: workspace extension discovery 与 trust gate
 - `internal/provider`: OpenAI / Anthropic / Google adapter
 - `internal/tools`: built-in tools、skill command tools、workspace safety
-- `internal/session`: session store、todo、task graph、queue files
+- `internal/session`: session store、goal、todo、task graph、queue files
 - `internal/hooks`: 轻量 hooks
 - `internal/skills`: 本地 skill catalog
 - `internal/webconsole`: local Web console service、API、embedded frontend

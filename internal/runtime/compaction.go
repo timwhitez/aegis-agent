@@ -49,6 +49,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
 		_, _, completedTaskCount := taskCounts(tasks)
 		proofBudget := proofReadBudget()
+		goal, _ := loadGoalOptional(c.store, sessionID)
 		if emit != nil {
 			emit(events.New(sessionID, "compact.reused", "compact", map[string]any{
 				"input_chars":                 size,
@@ -63,6 +64,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 				"blocked_task_count":          len(blockedTasks),
 				"completed_task_count":        completedTaskCount,
 				"proof_read_budget":           proofBudget,
+				"goal_present":                goal != nil,
 			}))
 		}
 		summary := map[string]any{
@@ -86,6 +88,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 			"recent_failure_or_pause":  recentFailureOrPause(state),
 			"transcript":               "[previous compaction transcript reused; no new artifact written within hysteresis window]",
 		}
+		if goal != nil {
+			summary["goal_snapshot"] = compactGoalSnapshot(*goal)
+		}
 		compactText, _ := json.MarshalIndent(summary, "", "  ")
 		recent := recentMessagesForCompaction(cloned, 6)
 		compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
@@ -102,6 +107,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
 	_, _, completedTaskCount := taskCounts(tasks)
 	proofBudget := proofReadBudget()
+	goal, _ := loadGoalOptional(c.store, sessionID)
 
 	emit(events.New(sessionID, "compact.started", "compact", map[string]any{
 		"input_chars":            size,
@@ -114,6 +120,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"blocked_task_count":     len(blockedTasks),
 		"completed_task_count":   completedTaskCount,
 		"proof_read_budget":      proofBudget,
+		"goal_present":           goal != nil,
 	}))
 	transcriptName := fmt.Sprintf("transcript-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
 	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, sourceMessages)
@@ -154,6 +161,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"recent_failure_or_pause":  recentFailureOrPause(state),
 		"transcript":               transcriptPath,
 	}
+	if goal != nil {
+		summary["goal_snapshot"] = compactGoalSnapshot(*goal)
+	}
 	summaryName := filepath.Join("compactions", fmt.Sprintf("summary-%s.json", time.Now().UTC().Format("20060102-150405")))
 	summaryPath, err := c.store.WriteArtifact(sessionID, summaryName, summary)
 	if err != nil {
@@ -176,6 +186,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"artifact_memory_count":  len(artifactMemory),
 		"high_value_proof_count": len(highValueProofs),
 		"proof_read_budget":      proofBudget,
+		"goal_present":           goal != nil,
 	}))
 	compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
 	compacted.Meta = map[string]any{
@@ -229,6 +240,43 @@ func recentMessagesForCompaction(messages []session.Message, minCount int) []ses
 		if keep[i] {
 			out = append(out, msg)
 		}
+	}
+	return out
+}
+
+func compactGoalSnapshot(goal session.SessionGoal) map[string]any {
+	out := map[string]any{
+		"goal_id":           goal.GoalID,
+		"mode":              goal.Mode,
+		"status":            goal.Status,
+		"objective":         goal.Objective,
+		"tokens_used":       goal.TokensUsed,
+		"time_used_seconds": goal.TimeUsedSeconds,
+	}
+	if goal.TokenBudget != nil {
+		out["token_budget"] = *goal.TokenBudget
+	}
+	if goal.TimeBudgetSeconds != nil {
+		out["time_budget_seconds"] = *goal.TimeBudgetSeconds
+	}
+	if len(goal.SuccessCriteria) > 0 {
+		counters := map[string]int{}
+		for _, criterion := range goal.SuccessCriteria {
+			counters[firstNonEmpty(criterion.Status, "pending")]++
+		}
+		out["success_criteria"] = counters
+	}
+	if len(goal.ValidationPlan) > 0 {
+		counters := map[string]int{}
+		for _, validation := range goal.ValidationPlan {
+			counters[firstNonEmpty(validation.Status, "pending")]++
+		}
+		out["validation"] = counters
+	}
+	if goal.Mission != nil {
+		out["mission_plan_status"] = goal.Mission.PlanStatus
+		out["mission_feature_count"] = len(goal.Mission.Features)
+		out["mission_milestone_count"] = len(goal.Mission.Milestones)
 	}
 	return out
 }

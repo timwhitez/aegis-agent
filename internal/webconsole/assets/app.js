@@ -73,7 +73,9 @@ const state = {
   oldestMessageId: '',
   loadingEarlier: false,
   loadedAllEarlierMessages: false,
-  preserveScrollAfterRender: null
+  preserveScrollAfterRender: null,
+  goalComposerOpen: false,
+  goalComposer: defaultGoalComposer()
 };
 
 const nodes = {
@@ -96,6 +98,8 @@ const nodes = {
   inputArea: document.querySelector('.input-area'),
   todoFloatPanel: document.getElementById('todo-float-panel'),
   inputContainer: document.getElementById('input-container'),
+  goalToggleBtn: document.getElementById('goal-toggle-btn'),
+  goalComposerPanel: document.getElementById('goal-composer-panel'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
   skillUploadBtn: document.getElementById('skill-upload-btn'),
@@ -166,6 +170,23 @@ async function init() {
 
 function nextEphemeralSessionId() {
   return '0x' + Math.random().toString(16).slice(2, 8).toUpperCase();
+}
+
+function defaultGoalComposer() {
+  return {
+    mode: 'none',
+    usePrompt: true,
+    objective: '',
+    tokenBudget: '',
+    timeBudgetMinutes: '',
+    autonomy: 'assistive',
+    requirePlanApproval: false,
+    createTasksFromPlan: false,
+    successCriteria: [''],
+    validationPlan: [''],
+    features: [''],
+    milestones: ['']
+  };
 }
 
 function isEphemeralSessionId(sessionID) {
@@ -368,6 +389,7 @@ function setupEventListeners() {
   nodes.stopSessionBtn?.addEventListener('click', requestStop);
   nodes.interruptSessionBtn?.addEventListener('click', requestInterrupt);
   nodes.interruptToggleBtn?.addEventListener('click', toggleInterruptArm);
+  nodes.goalToggleBtn?.addEventListener('click', toggleGoalComposer);
   nodes.skillUploadBtn?.addEventListener('click', () => nodes.skillUpload?.click());
   nodes.newSessionBtn?.addEventListener('click', () => {
     const wasGenerating = state.isGenerating;
@@ -414,6 +436,12 @@ function setupEventListeners() {
     if (isNowEmpty !== wasEmpty || state.nextSendInterrupt) {
       state.lastInputWasEmpty = isNowEmpty;
       updateUI();
+    }
+  });
+
+  document.addEventListener('input', (event) => {
+    if (event.target?.hasAttribute?.('data-goal-field')) {
+      syncGoalComposerField(event.target);
     }
   });
 
@@ -572,6 +600,18 @@ function setupEventListeners() {
       return;
     }
 
+    const goalRowAction = event.target.closest('[data-goal-row-action]');
+    if (goalRowAction) {
+      handleGoalRowAction(goalRowAction);
+      return;
+    }
+
+    const goalAction = event.target.closest('[data-goal-action]');
+    if (goalAction) {
+      await handleGoalAction(goalAction);
+      return;
+    }
+
     const todoFloatToggle = event.target.closest('[data-todo-float-toggle]');
     if (todoFloatToggle) {
       state.todoFloatExpanded = !state.todoFloatExpanded;
@@ -602,6 +642,11 @@ function setupEventListeners() {
   });
 
   document.addEventListener('change', async (event) => {
+    if (event.target?.hasAttribute?.('data-goal-field')) {
+      syncGoalComposerField(event.target);
+      renderGoalComposer();
+      return;
+    }
     if (!event.target || event.target.id !== 'skill-upload') {
       return;
     }
@@ -839,11 +884,24 @@ async function sendMessage() {
   }
 
   if (!hasDurableSession() || currentStatus === 'completed') {
+    const goalDraft = collectGoalDraft(text);
+    if (goalDraft?.error) {
+      removeOptimisticMessage(optimisticID);
+      showToast(goalDraft.error, 'error');
+      updateUI();
+      renderCurrentSession();
+      return;
+    }
     try {
       const resp = await startSession({
         prompt: text,
-        workdir: selectedWorkspaceWorkdir()
+        workdir: selectedWorkspaceWorkdir(),
+        goal: goalDraft || undefined
       });
+      if (goalDraft) {
+        state.goalComposerOpen = false;
+        state.goalComposer = defaultGoalComposer();
+      }
       adoptSession(resp.session_id, true);
       setGenerating(true, {
         title: 'Launching session',
@@ -1027,6 +1085,8 @@ function resetChatSession() {
   state.optimisticMessages = [];
   state.liveEvents = [];
   state.nextSendInterrupt = false;
+  state.goalComposerOpen = false;
+  state.goalComposer = defaultGoalComposer();
   state.liveActivity = {
     title: 'Ready for a new session',
     copy: 'Send a prompt to create a durable session. Answers, tool calls, and running flow will appear here.',
@@ -1099,6 +1159,7 @@ function updateUI() {
     : 'Ask anything...';
 
   nodes.inputStatusText.textContent = inputActionLabel();
+  renderGoalComposer();
 
   if (!state.isConnected) {
     nodes.connectionDot.className = 'dot';
@@ -1124,6 +1185,235 @@ function inputActionLabel() {
     return 'Completed session loaded: next send starts a new session unless you open another session from the Sessions view.';
   }
   return 'Start new session: Enter sends, Shift+Enter / Ctrl+Enter inserts a line.';
+}
+
+function canShowGoalComposer() {
+  const status = state.sessionDetail?.state?.status || '';
+  return !state.isGenerating && (!hasDurableSession() || status === 'completed');
+}
+
+function toggleGoalComposer() {
+  if (!canShowGoalComposer()) {
+    return;
+  }
+  state.goalComposerOpen = !state.goalComposerOpen;
+  renderGoalComposer();
+  updateDynamicLayoutMetrics();
+}
+
+function renderGoalComposer() {
+  if (!nodes.goalToggleBtn || !nodes.goalComposerPanel) {
+    return;
+  }
+  const visible = canShowGoalComposer();
+  nodes.goalToggleBtn.hidden = !visible;
+  nodes.goalToggleBtn.classList.toggle('is-active', state.goalComposerOpen && visible);
+  nodes.goalToggleBtn.setAttribute('aria-expanded', state.goalComposerOpen && visible ? 'true' : 'false');
+  if (!visible || !state.goalComposerOpen) {
+    nodes.goalComposerPanel.hidden = true;
+    nodes.goalComposerPanel.innerHTML = '';
+    return;
+  }
+  const composer = state.goalComposer;
+  const mission = composer.mode === 'mission';
+  nodes.goalComposerPanel.hidden = false;
+  nodes.goalComposerPanel.innerHTML = `
+    <div class="goal-composer-grid">
+      <label class="goal-field">
+        <span>Mode</span>
+        <select data-goal-field="mode">
+          <option value="none" ${composer.mode === 'none' ? 'selected' : ''}>No goal</option>
+          <option value="goal" ${composer.mode === 'goal' ? 'selected' : ''}>Goal</option>
+          <option value="mission" ${composer.mode === 'mission' ? 'selected' : ''}>Mission</option>
+        </select>
+      </label>
+      <label class="goal-check">
+        <input type="checkbox" data-goal-field="usePrompt" ${composer.usePrompt ? 'checked' : ''}>
+        <span>Use prompt as objective</span>
+      </label>
+      <label class="goal-field goal-field-wide">
+        <span>Objective</span>
+        <textarea rows="2" data-goal-field="objective" ${composer.usePrompt ? 'disabled' : ''}>${escapeHTML(composer.objective)}</textarea>
+      </label>
+      <label class="goal-field">
+        <span>Token budget</span>
+        <input type="number" min="1" inputmode="numeric" data-goal-field="tokenBudget" value="${escapeAttr(composer.tokenBudget)}">
+      </label>
+      <label class="goal-field">
+        <span>Time budget</span>
+        <input type="number" min="1" inputmode="numeric" data-goal-field="timeBudgetMinutes" value="${escapeAttr(composer.timeBudgetMinutes)}" placeholder="minutes">
+      </label>
+      <label class="goal-field">
+        <span>Autonomy</span>
+        <select data-goal-field="autonomy">
+          <option value="assistive" ${composer.autonomy === 'assistive' ? 'selected' : ''}>Assistive</option>
+          <option value="supervised" ${composer.autonomy === 'supervised' ? 'selected' : ''}>Supervised</option>
+          <option value="autonomous" ${composer.autonomy === 'autonomous' ? 'selected' : ''}>Autonomous</option>
+        </select>
+      </label>
+      <label class="goal-check">
+        <input type="checkbox" data-goal-field="requirePlanApproval" ${composer.requirePlanApproval ? 'checked' : ''}>
+        <span>Require plan approval</span>
+      </label>
+      <label class="goal-check">
+        <input type="checkbox" data-goal-field="createTasksFromPlan" ${composer.createTasksFromPlan ? 'checked' : ''}>
+        <span>Create tasks from plan</span>
+      </label>
+    </div>
+    ${renderGoalComposerList('successCriteria', 'Success criteria', composer.successCriteria)}
+    ${renderGoalComposerList('validationPlan', 'Validation', composer.validationPlan)}
+    ${mission ? renderGoalComposerList('features', 'Features', composer.features) : ''}
+    ${mission ? renderGoalComposerList('milestones', 'Milestones', composer.milestones) : ''}
+  `;
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: nodes.goalComposerPanel });
+  }
+}
+
+function renderGoalComposerList(name, label, values) {
+  const rows = maybeArray(values).length ? maybeArray(values) : [''];
+  return `
+    <div class="goal-list" data-goal-list="${escapeAttr(name)}">
+      <div class="goal-list-head">
+        <span>${escapeHTML(label)}</span>
+        <button class="mini-link-btn" type="button" data-goal-row-action="add" data-goal-list="${escapeAttr(name)}">Add</button>
+      </div>
+      ${rows.map((value, index) => `
+        <div class="goal-row">
+          <textarea rows="1" data-goal-list-input="${escapeAttr(name)}" data-goal-row="${index}">${escapeHTML(value)}</textarea>
+          <button class="icon-action-btn subtle" type="button" data-goal-row-action="remove" data-goal-list="${escapeAttr(name)}" data-goal-row="${index}" aria-label="Remove">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function syncGoalComposerField(target) {
+  const field = target.getAttribute('data-goal-field');
+  if (!field) {
+    return;
+  }
+  if (target.type === 'checkbox') {
+    state.goalComposer[field] = Boolean(target.checked);
+  } else {
+    state.goalComposer[field] = target.value;
+  }
+}
+
+function handleGoalRowAction(button) {
+  const action = button.getAttribute('data-goal-row-action');
+  const list = button.getAttribute('data-goal-list');
+  if (!list || !Array.isArray(state.goalComposer[list])) {
+    return;
+  }
+  syncGoalListInputs(list);
+  if (action === 'add') {
+    state.goalComposer[list].push('');
+  } else if (action === 'remove') {
+    const index = Number(button.getAttribute('data-goal-row'));
+    state.goalComposer[list].splice(index, 1);
+    if (!state.goalComposer[list].length) {
+      state.goalComposer[list].push('');
+    }
+  }
+  renderGoalComposer();
+  updateDynamicLayoutMetrics();
+}
+
+function syncGoalListInputs(list) {
+  if (!nodes.goalComposerPanel) {
+    return;
+  }
+  const inputs = Array.from(nodes.goalComposerPanel.querySelectorAll(`[data-goal-list-input="${list}"]`));
+  state.goalComposer[list] = inputs.map((input) => input.value);
+}
+
+function collectGoalDraft(promptText) {
+  if (!state.goalComposerOpen || state.goalComposer.mode === 'none') {
+    return null;
+  }
+  ['successCriteria', 'validationPlan', 'features', 'milestones'].forEach(syncGoalListInputs);
+  const composer = state.goalComposer;
+  const objective = composer.usePrompt ? promptText : String(composer.objective || '').trim();
+  if (!objective) {
+    return { error: 'Goal objective is required.' };
+  }
+  const tokenBudget = parseOptionalPositiveInteger(composer.tokenBudget, 'Token budget');
+  if (tokenBudget?.error) {
+    return { error: tokenBudget.error };
+  }
+  const timeBudget = parseOptionalPositiveInteger(composer.timeBudgetMinutes, 'Time budget');
+  if (timeBudget?.error) {
+    return { error: timeBudget.error };
+  }
+  return {
+    enabled: true,
+    mode: composer.mode === 'mission' ? 'mission' : 'goal',
+    objective,
+    success_criteria: cleanStringList(composer.successCriteria),
+    validation_plan: cleanStringList(composer.validationPlan),
+    token_budget: tokenBudget?.value,
+    time_budget_minutes: timeBudget?.value,
+    autonomy: composer.autonomy,
+    require_plan_approval: Boolean(composer.requirePlanApproval),
+    create_tasks_from_plan: Boolean(composer.createTasksFromPlan),
+    features: composer.mode === 'mission' ? cleanStringList(composer.features) : undefined,
+    milestones: composer.mode === 'mission' ? cleanStringList(composer.milestones) : undefined
+  };
+}
+
+function parseOptionalPositiveInteger(value, label) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return null;
+  }
+  const parsed = Number(text);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return { error: `${label} must be a positive integer.` };
+  }
+  return { value: parsed };
+}
+
+function cleanStringList(values) {
+  return maybeArray(values).map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+async function handleGoalAction(button) {
+  if (!hasDurableSession()) {
+    showToast('No durable session is loaded.', 'info');
+    return;
+  }
+  const action = button.getAttribute('data-goal-action');
+  button.disabled = true;
+  try {
+    if (action === 'pause') {
+      await pauseGoal(state.sessionId);
+      showToast('Goal paused.', 'success');
+    } else if (action === 'resume') {
+      await resumeGoal(state.sessionId);
+      showToast('Goal resumed.', 'success');
+    } else if (action === 'complete') {
+      await completeGoal(state.sessionId);
+      showToast('Goal marked complete.', 'success');
+    } else if (action === 'clear') {
+      await deleteGoal(state.sessionId);
+      showToast('Goal cleared.', 'success');
+    } else if (action === 'approve-plan') {
+      await approveMissionPlan(state.sessionId);
+      showToast('Mission plan approved.', 'success');
+    }
+    await refreshCurrentSession();
+    queueOverviewRefresh(160);
+  } catch (err) {
+    showToast(err.message || 'Goal action failed.', 'error');
+  } finally {
+    if (document.body.contains(button)) {
+      button.disabled = false;
+    }
+    renderCurrentSession();
+  }
 }
 
 function startPolling() {

@@ -208,6 +208,100 @@ func TestRunCommandAcceptsFlagsAfterPrompt(t *testing.T) {
 	}
 }
 
+func TestRunCommandParsesGoalFlags(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusCompleted,
+		FinalText: "done",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{
+		"exec",
+		"do work",
+		"--json",
+		"--goal", "Ship the goal",
+		"--goal-mode", "mission",
+		"--goal-token-budget", "123",
+		"--goal-time-budget", "15m",
+		"--goal-success", "tests pass",
+		"--goal-validate", "go test ./internal/app",
+		"--goal-plan-approval",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	goal := fake.startCalls[0].Goal
+	if goal == nil || !goal.Enabled || goal.Mode != session.GoalModeMission || goal.Objective != "Ship the goal" {
+		t.Fatalf("unexpected goal draft: %#v", goal)
+	}
+	if goal.TokenBudget == nil || *goal.TokenBudget != 123 {
+		t.Fatalf("unexpected token budget: %#v", goal.TokenBudget)
+	}
+	if goal.TimeBudgetSeconds == nil || *goal.TimeBudgetSeconds != 900 {
+		t.Fatalf("unexpected time budget: %#v", goal.TimeBudgetSeconds)
+	}
+	if len(goal.SuccessCriteria) != 1 || goal.SuccessCriteria[0] != "tests pass" || len(goal.ValidationPlan) != 1 {
+		t.Fatalf("unexpected criteria/validation: %#v", goal)
+	}
+	if !goal.RequirePlanApproval || goal.Source != session.GoalSourceCLI {
+		t.Fatalf("unexpected goal controls/source: %#v", goal)
+	}
+}
+
+func TestGoalCommandAcceptsFlagsAfterSessionID(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_cli",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_cli",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Show goal through CLI",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"goal", "show", meta.ID, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("goal show: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"objective":"Show goal through CLI"`) {
+		t.Fatalf("expected json goal output, got %s", stdout.String())
+	}
+}
+
 func TestRunCommandSupportsInitFlag(t *testing.T) {
 	fake := newFakeRunner()
 	fake.startResult = runtime.RunResult{

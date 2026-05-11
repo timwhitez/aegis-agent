@@ -61,6 +61,9 @@ func (c *CompletionController) EvaluateToolCall(messages []session.Message, tool
 	if kind, text := c.parentCoordinationGate(toolName); text != "" {
 		return c.block(kind, text, map[string]any{"source": "parent_coordination", "tool_name": toolName})
 	}
+	if kind, text := c.goalCompletionGate(toolName); text != "" {
+		return c.block(kind, text, map[string]any{"source": "goal", "tool_name": toolName})
+	}
 	return GateDecision{Status: GateAllow}
 }
 
@@ -224,6 +227,24 @@ func (c *CompletionController) parentCoordinationGate(toolName string) (string, 
 		return "", ""
 	}
 	return "parent_coordination", fmt.Sprintf("Parent-coordination gate: unresolved child or queue work remains before finish (children: %s; jobs: %s). Wait for completion, mark wait_mode=wait-any with one completed result, or explicitly resolve the outstanding work.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs))
+}
+
+func (c *CompletionController) goalCompletionGate(toolName string) (string, string) {
+	if toolName != "finish" {
+		return "", ""
+	}
+	goal, err := c.store.LoadGoal(c.sessionID)
+	if err != nil || goal.GoalID == "" {
+		return "", ""
+	}
+	switch goal.Status {
+	case session.GoalStatusActive:
+		return "goal_completion_audit", "Goal completion gate: this session has an active goal. Before finishing, restate the objective as concrete deliverables, audit each success criterion and validation item against real evidence, then call update_goal with status \"complete\" if the goal is actually achieved. If it is not achieved, keep working or stop in awaiting input instead of calling finish."
+	case session.GoalStatusBudgetLimited, session.GoalStatusPaused, session.GoalStatusComplete:
+		return "", ""
+	default:
+		return "goal_completion_audit", fmt.Sprintf("Goal completion gate: goal status %q is not a valid completion state. Read get_goal, reconcile the goal status, and only finish after the status is complete, paused, or budget_limited wrap-up.", goal.Status)
+	}
 }
 
 func (c *CompletionController) block(kind, text string, evidence map[string]any) GateDecision {

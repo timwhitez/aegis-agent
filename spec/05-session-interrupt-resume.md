@@ -20,12 +20,14 @@ session 系统保证下面四件事同时成立：
     state.json
     messages.jsonl
     events.jsonl
+    goal.json
     todo.json
     tasks/
       task_0001.json
     control/
       steer.jsonl
     artifacts/
+      goal-history.jsonl
       compactions/
       transcripts/
 ```

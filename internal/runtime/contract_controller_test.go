@@ -290,6 +290,41 @@ func TestParentCoordinationGateBlocksWaitAllAndAllowsWaitAnyAfterOneCompletion(t
 	}
 }
 
+func TestGoalCompletionGateBlocksActiveGoalAndAllowsCompletedGoal(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Finish the durable goal",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"done"}`))
+	if decision.Status != GateBlock || decision.GateID != "goal_completion_audit" {
+		t.Fatalf("expected active goal finish block, got %#v", decision)
+	}
+	if !strings.Contains(decision.ModelMessage, "update_goal") {
+		t.Fatalf("expected update_goal guidance, got %q", decision.ModelMessage)
+	}
+
+	goal, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	goal.Status = session.GoalStatusComplete
+	goal.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+	decision = controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"done"}`))
+	if decision.Status != GateAllow {
+		t.Fatalf("expected completed goal to allow finish, got %#v", decision)
+	}
+}
+
 func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := store.AppendBackgroundNotification(meta.ID, session.NewBackgroundNotification(session.QueueJob{

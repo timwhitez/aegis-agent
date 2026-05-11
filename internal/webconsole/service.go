@@ -152,6 +152,7 @@ type FailureSummary struct {
 type SessionDetailResponse struct {
 	Metadata                session.SessionMetadata          `json:"metadata"`
 	State                   session.State                    `json:"state"`
+	Goal                    *session.SessionGoal             `json:"goal,omitempty"`
 	Contract                *session.SessionContract         `json:"contract,omitempty"`
 	RequiredArtifacts       []session.RequiredArtifact       `json:"required_artifacts,omitempty"`
 	ProviderAttempts        []session.ProviderAttempt        `json:"provider_attempts,omitempty"`
@@ -369,7 +370,7 @@ func (s *Service) meta() (MetaResponse, error) {
 		DefaultMode:              cfg.Runtime.Isolation.DefaultMode,
 		QueuePollMS:              cfg.Runtime.Queue.PollIntervalMS,
 		WorkerCount:              s.workers.Snapshot().DesiredCount,
-		Capabilities:             []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks"},
+		Capabilities:             []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks", "goals", "missions"},
 		DefaultVendor:            cfg.DefaultProvider,
 		Providers:                providers,
 	}, nil
@@ -534,10 +535,75 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) != 2 {
+		if len(parts) == 3 && parts[1] == "goal" {
+			switch parts[2] {
+			case "complete":
+				if r.Method != http.MethodPost {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handleGoalStatus(w, sessionID, session.GoalStatusComplete, "goal.completed")
+			case "pause":
+				if r.Method != http.MethodPost {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handleGoalStatus(w, sessionID, session.GoalStatusPaused, "goal.paused")
+			case "resume":
+				if r.Method != http.MethodPost {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handleGoalStatus(w, sessionID, session.GoalStatusActive, "goal.resumed")
+			default:
+				writeError(w, http.StatusNotFound, errors.New("session route not found"))
+			}
+			return
+		}
+		if len(parts) == 3 && parts[1] == "mission" {
+			switch parts[2] {
+			case "plan":
+				if r.Method != http.MethodPatch {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handleMissionPlanPatch(w, r, sessionID)
+			case "validation":
+				if r.Method != http.MethodPatch {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handleMissionValidationPatch(w, r, sessionID)
+			default:
+				writeError(w, http.StatusNotFound, errors.New("session route not found"))
+			}
+			return
+		}
+		if len(parts) == 4 && parts[1] == "mission" && parts[2] == "plan" && parts[3] == "approve" {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+				return
+			}
+			s.handleMissionPlanApprove(w, sessionID)
+			return
+		}
 		writeError(w, http.StatusNotFound, errors.New("session route not found"))
 		return
 	}
 	switch parts[1] {
+	case "goal":
+		switch r.Method {
+		case http.MethodGet:
+			s.handleGoalGet(w, sessionID)
+		case http.MethodPost:
+			s.handleGoalCreate(w, r, sessionID)
+		case http.MethodPatch:
+			s.handleGoalPatch(w, r, sessionID)
+		case http.MethodDelete:
+			s.handleGoalClear(w, sessionID)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		}
 	case "continue":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -699,6 +765,10 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if coordination, err := s.store.LoadParentCoordination(sessionID); err == nil && coordination.ParentSessionID != "" {
 		parentCoordinationPtr = &coordination
 	}
+	var goalPtr *session.SessionGoal
+	if goal, err := s.store.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
+		goalPtr = &goal
+	}
 	ownerEvents := eventsList
 	hasMoreMessages := limit > 0 && len(messages) > limit
 	messages = tailMessages(messages, limit)
@@ -726,6 +796,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	return SessionDetailResponse{
 		Metadata:                meta,
 		State:                   state,
+		Goal:                    goalPtr,
 		Contract:                contractPtr,
 		RequiredArtifacts:       requiredArtifacts,
 		ProviderAttempts:        providerAttempts,
@@ -783,6 +854,249 @@ func (s *Service) handleTaskBoard(w http.ResponseWriter, sessionID string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, session.BuildTaskBoard(todo, tasks))
+}
+
+func (s *Service) handleGoalGet(w http.ResponseWriter, sessionID string) {
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			writeJSON(w, http.StatusOK, nil)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, goal)
+}
+
+func (s *Service) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req GoalDraftRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.Enabled = true
+	draft, err := goalDraftFromWebRequest(&req, session.GoalSourceWeb)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	goal, err := s.store.CreateGoal(sessionID, *draft)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already has a current goal") {
+			status = http.StatusConflict
+		} else if isGoalClientError(err) {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, err)
+		return
+	}
+	if err := s.store.AppendEvent(sessionID, events.New(sessionID, "goal.created", "goal", webGoalEventData(goal))); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, goal)
+}
+
+func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req GoalPatchRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		writeError(w, goalStoreStatus(err), err)
+		return
+	}
+	if req.SuccessCriteria != nil {
+		goal.SuccessCriteria = append([]session.GoalCriterion(nil), req.SuccessCriteria...)
+	}
+	if req.ValidationPlan != nil {
+		goal.ValidationPlan = append([]session.GoalValidation(nil), req.ValidationPlan...)
+	}
+	if req.Control != nil {
+		goal.Control = *req.Control
+	}
+	if req.Mission != nil {
+		goal.Mode = session.GoalModeMission
+		mission := *req.Mission
+		goal.Mission = &mission
+	}
+	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.appendGoalMutation(sessionID, goal, "goal.updated", nil); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, goal)
+}
+
+func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	cleared, err := s.store.ClearGoal(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if cleared {
+		_ = s.store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+			GoalID: goal.GoalID,
+			Type:   "goal.cleared",
+			Source: session.GoalSourceWeb,
+			Status: session.GoalStatusCleared,
+			Data: map[string]any{
+				"previous_status": goal.Status,
+			},
+		})
+		_ = s.store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
+			"goal_id":         goal.GoalID,
+			"previous_status": goal.Status,
+		}))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "cleared": cleared})
+}
+
+func (s *Service) handleGoalStatus(w http.ResponseWriter, sessionID, status, eventType string) {
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		writeError(w, goalStoreStatus(err), err)
+		return
+	}
+	goal.Status = status
+	if status == session.GoalStatusComplete {
+		goal.CompletedAt = nowString()
+	} else {
+		goal.CompletedAt = ""
+	}
+	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.appendGoalMutation(sessionID, goal, eventType, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, goal)
+}
+
+func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req MissionPlanPatchRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		writeError(w, goalStoreStatus(err), err)
+		return
+	}
+	goal.Mode = session.GoalModeMission
+	mission := ensureMissionPlan(goal.Mission)
+	if req.Requirements != nil {
+		mission.Requirements = append([]session.MissionRequirement(nil), req.Requirements...)
+	}
+	if req.Features != nil {
+		mission.Features = append([]session.MissionFeature(nil), req.Features...)
+	}
+	if req.Milestones != nil {
+		mission.Milestones = append([]session.MissionMilestone(nil), req.Milestones...)
+	}
+	if req.ValidationContract != nil {
+		mission.ValidationContract = append([]session.GoalValidation(nil), req.ValidationContract...)
+	}
+	if req.RolePlan != nil {
+		mission.RolePlan = append([]session.MissionRole(nil), req.RolePlan...)
+	}
+	if req.SharedArtifacts != nil {
+		mission.SharedArtifacts = append([]string(nil), req.SharedArtifacts...)
+	}
+	if req.KnowledgeArtifacts != nil {
+		mission.KnowledgeArtifacts = append([]string(nil), req.KnowledgeArtifacts...)
+	}
+	if strings.TrimSpace(req.PlanStatus) != "" {
+		mission.PlanStatus = strings.TrimSpace(req.PlanStatus)
+	}
+	if req.CreateTasksFromPlan != nil {
+		mission.CreateTasksFromPlan = *req.CreateTasksFromPlan
+	}
+	goal.Mission = mission
+	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.appendGoalMutation(sessionID, goal, "mission.plan.updated", map[string]any{
+		"plan_status": mission.PlanStatus,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, goal)
+}
+
+func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, sessionID string) {
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		writeError(w, goalStoreStatus(err), err)
+		return
+	}
+	goal.Mode = session.GoalModeMission
+	mission := ensureMissionPlan(goal.Mission)
+	mission.PlanStatus = "approved"
+	mission.ApprovedAt = nowString()
+	goal.Mission = mission
+	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.appendGoalMutation(sessionID, goal, "mission.plan.approved", map[string]any{
+		"approved_at": mission.ApprovedAt,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, goal)
+}
+
+func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req struct {
+		ValidationPlan     []session.GoalValidation `json:"validation_plan,omitempty"`
+		ValidationContract []session.GoalValidation `json:"validation_contract,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		writeError(w, goalStoreStatus(err), err)
+		return
+	}
+	if req.ValidationPlan != nil {
+		goal.ValidationPlan = append([]session.GoalValidation(nil), req.ValidationPlan...)
+	}
+	if req.ValidationContract != nil {
+		goal.Mode = session.GoalModeMission
+		mission := ensureMissionPlan(goal.Mission)
+		mission.ValidationContract = append([]session.GoalValidation(nil), req.ValidationContract...)
+		goal.Mission = mission
+	}
+	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.appendGoalMutation(sessionID, goal, "mission.validation.updated", nil); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, goal)
 }
 
 func (s *Service) handleSessionMessages(w http.ResponseWriter, sessionID string, r *http.Request) {
@@ -849,6 +1163,11 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	goalDraft, err := goalDraftFromWebRequest(req.Goal, session.GoalSourceWeb)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	resp, err := s.startSession(runtime.StartRequest{
 		Prompt:         req.Prompt,
 		AgentName:      req.AgentName,
@@ -858,6 +1177,7 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		Workdir:        req.Workdir,
 		Mode:           req.Mode,
 		SystemOverride: req.SystemOverride,
+		Goal:           goalDraft,
 		IsolationMode:  req.IsolationMode,
 		IsolationRoot:  req.IsolationRoot,
 	})
@@ -2622,6 +2942,129 @@ func stringValue(value any) string {
 	return text
 }
 
+func goalDraftFromWebRequest(req *GoalDraftRequest, source string) (*session.GoalDraft, error) {
+	if req == nil {
+		return nil, nil
+	}
+	if !req.Enabled {
+		return nil, nil
+	}
+	objective := strings.TrimSpace(req.Objective)
+	if objective == "" {
+		return nil, errors.New("goal objective is required")
+	}
+	var tokenBudget *int64
+	if req.TokenBudget != nil {
+		if *req.TokenBudget <= 0 {
+			return nil, errors.New("goal token budget must be positive")
+		}
+		value := *req.TokenBudget
+		tokenBudget = &value
+	}
+	var timeBudgetSeconds *int64
+	if req.TimeBudgetMinutes != nil {
+		if *req.TimeBudgetMinutes <= 0 {
+			return nil, errors.New("goal time budget must be positive")
+		}
+		value := *req.TimeBudgetMinutes * 60
+		timeBudgetSeconds = &value
+	}
+	return &session.GoalDraft{
+		Enabled:                   true,
+		Mode:                      req.Mode,
+		Objective:                 objective,
+		SuccessCriteria:           append([]string(nil), req.SuccessCriteria...),
+		ValidationPlan:            append([]string(nil), req.ValidationPlan...),
+		TokenBudget:               tokenBudget,
+		TimeBudgetSeconds:         timeBudgetSeconds,
+		Autonomy:                  req.Autonomy,
+		RequirePlanApproval:       req.RequirePlanApproval,
+		CreateTasksFromPlan:       req.CreateTasksFromPlan,
+		Features:                  append([]string(nil), req.Features...),
+		Milestones:                append([]string(nil), req.Milestones...),
+		Source:                    source,
+		AskBeforeLargeChanges:     req.AskBeforeLargeChanges,
+		AskBeforeDependencyChange: req.AskBeforeDependencyChange,
+	}, nil
+}
+
+func isGoalClientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "goal objective") ||
+		strings.Contains(text, "objective exceeds") ||
+		strings.Contains(text, "goal token budget") ||
+		strings.Contains(text, "goal time budget") ||
+		strings.Contains(text, "invalid goal mode") ||
+		strings.Contains(text, "invalid goal status")
+}
+
+func goalStoreStatus(err error) int {
+	if errors.Is(err, fs.ErrNotExist) {
+		return http.StatusNotFound
+	}
+	if isGoalClientError(err) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+func ensureMissionPlan(plan *session.MissionPlan) *session.MissionPlan {
+	if plan == nil {
+		return &session.MissionPlan{PlanStatus: "draft"}
+	}
+	copyPlan := *plan
+	if strings.TrimSpace(copyPlan.PlanStatus) == "" {
+		copyPlan.PlanStatus = "draft"
+	}
+	return &copyPlan
+}
+
+func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {
+	data := webGoalEventData(goal)
+	for key, value := range extra {
+		data[key] = value
+	}
+	if err := s.store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+		GoalID: goal.GoalID,
+		Type:   eventType,
+		Source: session.GoalSourceWeb,
+		Status: goal.Status,
+		Data:   data,
+	}); err != nil {
+		return err
+	}
+	return s.store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", data))
+}
+
+func webGoalEventData(goal session.SessionGoal) map[string]any {
+	data := map[string]any{
+		"goal_id":           goal.GoalID,
+		"mode":              goal.Mode,
+		"status":            goal.Status,
+		"objective":         goal.Objective,
+		"tokens_used":       goal.TokensUsed,
+		"time_used_seconds": goal.TimeUsedSeconds,
+	}
+	if goal.TokenBudget != nil {
+		data["token_budget"] = *goal.TokenBudget
+	}
+	if goal.TimeBudgetSeconds != nil {
+		data["time_budget_seconds"] = *goal.TimeBudgetSeconds
+	}
+	if goal.CompletedAt != "" {
+		data["completed_at"] = goal.CompletedAt
+	}
+	if goal.Mission != nil {
+		data["mission_plan_status"] = goal.Mission.PlanStatus
+		data["mission_feature_count"] = len(goal.Mission.Features)
+		data["mission_milestone_count"] = len(goal.Mission.Milestones)
+	}
+	return data
+}
+
 func resolveSkillDir(rawDir string) (string, error) {
 	if filepath.IsAbs(rawDir) {
 		return filepath.Clean(rawDir), nil
@@ -3008,6 +3451,8 @@ func expectsJSONBody(path string) bool {
 		path == "/api/sessions/start" ||
 		path == "/api/queue/jobs" ||
 		path == "/api/workers" ||
+		strings.HasSuffix(path, "/goal") ||
+		strings.Contains(path, "/mission/") ||
 		strings.Contains(path, "/continue") ||
 		strings.Contains(path, "/steer")
 }

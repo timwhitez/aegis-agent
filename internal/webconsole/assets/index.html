@@ -88,6 +88,13 @@
           <div id="todo-float-panel" class="todo-float-panel"></div>
           <div class="input-container" id="input-container">
             <textarea id="chat-input" placeholder="Describe the task for this session..." rows="1"></textarea>
+            <div class="goal-composer-shell">
+              <button class="goal-toggle-btn" id="goal-toggle-btn" type="button" aria-expanded="false">
+                <i data-lucide="target"></i>
+                <span>Goal</span>
+              </button>
+              <div class="goal-composer-panel" id="goal-composer-panel" hidden></div>
+            </div>
             <div class="input-actions">
               <button class="interrupt-toggle-btn" id="interrupt-toggle-btn" type="button" aria-pressed="false">
                 <i data-lucide="siren"></i>

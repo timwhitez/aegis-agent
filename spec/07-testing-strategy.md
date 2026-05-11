@@ -89,7 +89,7 @@
 当 Phase 15 / large-project console profile 继续保留时，还需要一层单独验证：
 
 - embedded shell 与静态前端 assets 能由同进程 service 稳定提供
-- Web 发起的 `start` / `continue` / `steer` / `experimental queue submit` / worker pool 更新都走真实 runtime 与文件事实
+- Web 发起的 `start` / goal create/pause/resume/clear/complete / mission plan approve / `continue` / `steer` / `experimental queue submit` / worker pool 更新都走真实 runtime 与文件事实
 - headless browser UI smoke 能跑通关键交互链，且浏览器端无 runtime exception / console error
 - focused live rerun 能对 durable retry restore 与 background notification dedup 产出独立证据目录
 - focused retry-resume proof 采用 evidence-first 判定：以 durable `retry_policy` 元数据和真实 `provider.retry` 事件为主，不把 bounded finish nudges 后是否落成 `completed` 当作唯一通过条件
@@ -231,6 +231,7 @@ fixture 内容：
 ### Phase 6
 
 - task system 测试通过
+- goal / mission store、model tool、completion gate 与 CLI/Web 控制面测试通过
 
 ### Phase 7
 

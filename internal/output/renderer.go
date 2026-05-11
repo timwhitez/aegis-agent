@@ -61,5 +61,13 @@ func (r *Renderer) Handle(evt events.Event) {
 		fmt.Fprintf(r.out, "== failed ==\nsession: %s\nnext: go-cli-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
 	case "session.steer.accepted":
 		fmt.Fprintf(r.out, "== steer:accepted ==\n")
+	case "goal.created":
+		fmt.Fprintf(r.out, "== goal:created ==\nstatus: %v\n", evt.Data["status"])
+	case "goal.updated":
+		fmt.Fprintf(r.out, "== goal:updated ==\nstatus: %v\n", evt.Data["status"])
+	case "goal.budget_limited":
+		fmt.Fprintf(r.out, "== goal:budget_limited ==\nsession: %s\n", evt.SessionID)
+	case "goal.completed":
+		fmt.Fprintf(r.out, "== goal:completed ==\nsession: %s\n", evt.SessionID)
 	}
 }

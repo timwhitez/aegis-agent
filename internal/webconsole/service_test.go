@@ -76,6 +76,112 @@ func TestServiceSteerWritesWebSource(t *testing.T) {
 	}
 }
 
+func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_api",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_api",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var goal session.SessionGoal
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"objective":             "Converge the API",
+		"mode":                  "mission",
+		"success_criteria":      []string{"API creates goal"},
+		"validation_plan":       []string{"manual: inspect events"},
+		"features":              []string{"goal endpoints"},
+		"milestones":            []string{"initial patch"},
+		"require_plan_approval": true,
+	}, http.StatusCreated, &goal)
+	if goal.GoalID == "" || goal.Source != session.GoalSourceWeb || goal.Mission == nil {
+		t.Fatalf("expected web mission goal, got %#v", goal)
+	}
+
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal/pause", map[string]any{}, http.StatusOK, &goal)
+	if goal.Status != session.GoalStatusPaused {
+		t.Fatalf("expected paused goal, got %#v", goal)
+	}
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal/resume", map[string]any{}, http.StatusOK, &goal)
+	if goal.Status != session.GoalStatusActive {
+		t.Fatalf("expected active goal, got %#v", goal)
+	}
+	patchBody := bytes.NewBufferString(`{"features":[{"id":"feature_api","title":"Goal API","status":"in_progress"}],"plan_status":"needs_approval"}`)
+	patchReq, err := http.NewRequest(http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", patchBody)
+	if err != nil {
+		t.Fatalf("new patch request: %v", err)
+	}
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set(webMutationHeader, "1")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("patch mission plan: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(patchResp.Body)
+		t.Fatalf("unexpected patch status: %d body=%s", patchResp.StatusCode, string(body))
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&goal); err != nil {
+		t.Fatalf("decode patched goal: %v", err)
+	}
+	if goal.Mission == nil || len(goal.Mission.Features) != 1 || goal.Mission.Features[0].ID != "feature_api" {
+		t.Fatalf("expected patched mission features, got %#v", goal.Mission)
+	}
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusOK, &goal)
+	if goal.Mission == nil || goal.Mission.PlanStatus != "approved" || goal.Mission.ApprovedAt == "" {
+		t.Fatalf("expected approved mission plan, got %#v", goal.Mission)
+	}
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal/complete", map[string]any{}, http.StatusOK, &goal)
+	if goal.Status != session.GoalStatusComplete || goal.CompletedAt == "" {
+		t.Fatalf("expected completed goal, got %#v", goal)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/sessions/"+meta.ID+"/goal", bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete goal: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected delete status: %d body=%s", resp.StatusCode, string(body))
+	}
+	if _, err := svc.store.LoadGoal(meta.ID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected goal to be cleared, got %v", err)
+	}
+
+	history, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	if len(history) < 5 {
+		t.Fatalf("expected goal history entries, got %#v", history)
+	}
+}
+
 func TestServiceStartSessionReturnsSessionID(t *testing.T) {
 	server := newFinishServer()
 	defer server.Close()
@@ -127,6 +233,70 @@ func TestServiceStartSessionReturnsSessionID(t *testing.T) {
 	if len(messages) == 0 || messages[0].Role != "user" {
 		t.Fatalf("expected user message to be persisted, got %#v", messages)
 	}
+}
+
+func TestServiceStartSessionWithGoalPersistsGoal(t *testing.T) {
+	server := newGoalCompleteServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var result LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt": "Implement the goal-aware path.",
+		"mode":   "exec",
+		"goal": map[string]any{
+			"enabled":                  true,
+			"mode":                     "mission",
+			"objective":                "Implement durable goal support",
+			"success_criteria":         []string{"goal persists"},
+			"validation_plan":          []string{"go test ./internal/webconsole"},
+			"features":                 []string{"web start payload"},
+			"milestones":               []string{"first check"},
+			"token_budget":             1000,
+			"time_budget_minutes":      10,
+			"require_plan_approval":    true,
+			"create_tasks_from_plan":   true,
+			"ask_before_large_changes": true,
+		},
+	}, http.StatusAccepted, &result)
+
+	goal, err := svc.store.LoadGoal(result.SessionID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if goal.Mode != session.GoalModeMission || goal.Mission == nil || goal.Mission.PlanStatus != "needs_approval" {
+		t.Fatalf("expected mission goal needing approval, got %#v", goal)
+	}
+	detail, err := svc.sessionDetail(result.SessionID, 20)
+	if err != nil {
+		t.Fatalf("session detail: %v", err)
+	}
+	if detail.Goal == nil || detail.Goal.Objective != "Implement durable goal support" {
+		t.Fatalf("expected detail goal, got %#v", detail.Goal)
+	}
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(result.SessionID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string {
+		state, err := svc.store.LoadState(result.SessionID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
 }
 
 func TestServiceStartSessionRejectsUnsupportedAgentRole(t *testing.T) {
@@ -2579,6 +2749,22 @@ func newFinishServer() *httptest.Server {
 			"status":"completed",
 			"output":[
 				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},
+				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+}
+
+func newGoalCompleteServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},
+				{"type":"function_call","call_id":"call_goal_1","name":"update_goal","arguments":"{\"status\":\"complete\",\"evidence\":[\"service test\"]}"},
 				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"done\"}"}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}

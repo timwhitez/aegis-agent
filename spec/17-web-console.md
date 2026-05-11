@@ -13,6 +13,7 @@ Web console 解决三类问题：
 这次实现要提供一个完整的本地控制台，而不是只有只读页面：
 
 - 可以创建新 session
+- 可以在创建 session 时附带 optional Goal / Mission
 - 可以对运行中的 session 追加 steer
 - 可以对暂停或等待输入的 session 执行 continue
 - 可以提交 queue job
@@ -107,9 +108,10 @@ Sessions 列表项必须展示：
 Session 工作区是新用户的默认落点，展示：
 
 - 空状态说明：从输入框开始一个 durable session
+- 输入区提供默认折叠的 Goal / Mission composer；普通 prompt 不受影响，打开后可设置 objective、budget、success criteria、validation、mission features / milestones
 - 最近 session rail：只显示可直接打开的 session 摘要
 - 中央执行流：消息、工具调用、运行态和错误都在同一条 session timeline 中出现
-- 右侧 tracker：Summary / Tasks / Background / Timeline 按当前 session 聚焦展示
+- 右侧 tracker：Summary / Goal / Tasks / Background / Timeline 按当前 session 聚焦展示
 - Queue 只作为可选后台任务页存在，不再是首页 KPI 的一部分
 
 ### 4.4 Session 工作区
@@ -181,6 +183,22 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 - 从 session detail / background notification 点击 `Open job` 时，Background Jobs 可以展示一个轻量 selected job facts panel，限于 status、prompt / final text / last error、child session、parent session 等追溯事实；它不恢复完整 queue monitor
 - queue job 的 provider、workdir、lease owner、heartbeat、raw payload 等内部事实仍可由 API 与文件事实追溯
 - queue submit 保留为“高级后台任务”入口，并用文案提示普通任务应回到 Session 执行
+
+#### Goal / Mission
+
+展示：
+
+- objective、mode、status、token/time budget usage
+- success criteria 与 validation plan
+- Mission plan status、features、milestones
+- goal / mission 相关 events
+- 用户控制动作：pause、resume、clear、complete、approve mission plan
+
+约束：
+
+- WebConsole 只是读写 `goal.json` 与 `artifacts/goal-history.jsonl` 的本地控制面，不维护第二套 goal 状态
+- complete 是用户控制动作；模型完成目标仍必须通过 `update_goal(status="complete")` 工具留下完成审计路径
+- Mission plan 展示不能暗示 runtime 会自动拆 DAG 或强制 child agent；child / queue 使用仍由模型或用户显式决定
 
 ### 4.5 右侧动作区
 
@@ -257,7 +275,7 @@ Web console 通过一个新的 `WebConsoleService` 运行。
 ### 6.1 组成
 
 - `StoreView`
-  - 负责读取 sessions / tasks / jobs / messages / events
+  - 负责读取 sessions / goals / tasks / jobs / messages / events
 - `LaunchManager`
   - 负责异步启动 `Start` / `Continue`
   - 维护当前 Web server 托管的 active session handle
@@ -265,7 +283,7 @@ Web console 通过一个新的 `WebConsoleService` 运行。
   - 托管 `N` 个后台 worker
   - 每个 worker 都通过真实 `ProcessNextJob(...)` 消费
 - `HTTP API`
-  - 提供 JSON 接口
+  - 提供 JSON 接口，包括 goal / mission 的本地控制面
 - `Static UI`
   - 由 `embed` 提供资源
 
@@ -306,6 +324,7 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 
 - 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json`；multipart skill upload 保持表单入口但仍受 header 与 path/root 校验约束。
 - `POST /api/sessions/start`、`POST /api/sessions/{id}/continue`、`POST /api/sessions/{id}/steer`、`POST /api/sessions/{id}/interrupt`、`POST /api/sessions/{id}/stop` 是 session 控制的唯一入口。
+- goal / mission 控制只通过 REST endpoint 写入 session store，不通过 WebSocket 控制消息。
 - `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session。
 - `/ws` 收到历史 `{"type":"chat"}` 或 `{"type":"stop"}` 控制消息时必须返回 `WEBSOCKET_CONTROL_DEPRECATED`，且不得创建、继续或修改 session。
 - 后端请求 DTO 使用命名结构体维护；错误响应统一为 `{"error","code","detail","action"}`，其中 `code/detail/action` 可为空但对 `UNKNOWN_PROVIDER`、`ACTIVE_HANDLE_NOT_OWNED`、`SESSION_NOT_RESUMABLE`、`WEBSOCKET_CONTROL_DEPRECATED` 必须稳定。
@@ -371,6 +390,7 @@ Settings API：
 - linked jobs
 - active handle status（是否被当前 server 托管）
 - `active_handle_owner`：区分 `current_process`、`running_not_owned`、`settled`，并暴露最近的 `process_start_id`、`pid`、`started_at`、`released_at` 线索
+- `goal?`：当前 `goal.json` snapshot，缺失时为空
 
 ### 7.5 `POST /api/sessions/start`
 
@@ -386,6 +406,19 @@ Settings API：
 - `system?`
 - `isolation_mode?`
 - `isolation_root?`
+- `goal?`
+  - `enabled`
+  - `mode`: `goal | mission`
+  - `objective`
+  - `success_criteria[]`
+  - `validation_plan[]`
+  - `token_budget?`
+  - `time_budget_minutes?`
+  - `autonomy?`
+  - `require_plan_approval?`
+  - `create_tasks_from_plan?`
+  - `features[]?`
+  - `milestones[]?`
 
 行为：
 
@@ -447,7 +480,42 @@ Settings API：
 
 - task board
 
-### 7.11 `GET /api/queue/jobs`
+### 7.12 Goal / Mission APIs
+
+`GET /api/sessions/{id}/goal`
+
+- 返回当前 goal；不存在时返回 `null`
+
+`POST /api/sessions/{id}/goal`
+
+- 创建当前 session 的 goal；session 已有 current goal 时返回 conflict
+- 输入同 `POST /api/sessions/start` 的 `goal` 对象，但 endpoint 本身即表示 enabled
+
+`PATCH /api/sessions/{id}/goal`
+
+- 更新 success criteria、validation plan、control 或 mission snapshot
+
+`DELETE /api/sessions/{id}/goal`
+
+- 清除 current goal，并写入 `goal.cleared`
+
+`POST /api/sessions/{id}/goal/pause|resume|complete`
+
+- 用户控制 goal 状态；complete 写入 `goal.completed`
+
+`PATCH /api/sessions/{id}/mission/plan`
+
+- 更新 mission requirements、features、milestones、validation contract、role plan、shared artifacts、knowledge artifacts、plan status 或 task-sync hint
+
+`POST /api/sessions/{id}/mission/plan/approve`
+
+- 将 mission plan 标记为 approved
+
+`PATCH /api/sessions/{id}/mission/validation`
+
+- 更新 goal validation plan 或 mission validation contract
+
+### 7.13 `GET /api/queue/jobs`
 
 参数：
 
@@ -455,11 +523,11 @@ Settings API：
 
 返回 queue jobs。
 
-### 7.12 `GET /api/queue/jobs/{id}`
+### 7.14 `GET /api/queue/jobs/{id}`
 
 返回单个 job。
 
-### 7.13 `POST /api/queue/jobs`
+### 7.15 `POST /api/queue/jobs`
 
 输入：
 

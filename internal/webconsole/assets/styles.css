@@ -596,6 +596,128 @@ textarea {
   padding-top: 8px;
 }
 
+.goal-composer-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goal-toggle-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.goal-toggle-btn:hover,
+.goal-toggle-btn.is-active {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.goal-toggle-btn i {
+  width: 15px;
+  height: 15px;
+}
+
+.goal-composer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 2px 2px;
+}
+
+.goal-composer-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.goal-field,
+.goal-check {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.goal-check {
+  justify-content: end;
+  flex-direction: row;
+  align-items: center;
+  min-height: 56px;
+}
+
+.goal-field-wide {
+  grid-column: 1 / -1;
+}
+
+.goal-field input,
+.goal-field select,
+.goal-field textarea,
+.goal-row textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  color: var(--text-main);
+  font-size: 12px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.goal-field textarea,
+.goal-row textarea {
+  resize: vertical;
+  min-height: 34px;
+  max-height: 120px;
+}
+
+.goal-field input:focus,
+.goal-field select:focus,
+.goal-field textarea:focus,
+.goal-row textarea:focus {
+  border-color: var(--accent);
+}
+
+.goal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goal-list-head,
+.goal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.goal-list-head {
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.goal-row .icon-action-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+}
+
 .input-status-text {
   margin-right: auto;
   font-size: 12px;
@@ -1879,7 +2001,7 @@ textarea {
 
 .inspector-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px;
   padding: 12px;
 }
@@ -1909,6 +2031,84 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.goal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.goal-panel-head,
+.goal-item-top,
+.goal-actions,
+.goal-budget-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.goal-panel-head,
+.goal-item-top {
+  justify-content: space-between;
+}
+
+.goal-panel-head h4 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.goal-objective {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-main);
+  white-space: pre-wrap;
+}
+
+.goal-budget-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.goal-actions {
+  flex-wrap: wrap;
+}
+
+.goal-section,
+.goal-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goal-section-title {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.goal-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.goal-item-top span:first-child {
+  min-width: 0;
+  color: var(--text-main);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.goal-meta-line {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 .panel-section {

@@ -70,7 +70,8 @@ function startSession(payload) {
     mode: payload.mode,
     system: payload.system,
     isolation_mode: payload.isolationMode,
-    isolation_root: payload.isolationRoot
+    isolation_root: payload.isolationRoot,
+    goal: payload.goal
   }));
 }
 
@@ -96,6 +97,46 @@ function interruptSession(sessionID) {
 
 function stopSession(sessionID) {
   return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/stop`, { method: 'POST' });
+}
+
+function getGoal(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/goal`);
+}
+
+function createGoal(sessionID, payload = {}) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/goal`, jsonRequest(payload));
+}
+
+function updateGoal(sessionID, payload = {}) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/goal`, jsonRequest(payload, { method: 'PATCH' }));
+}
+
+function deleteGoal(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/goal`, jsonRequest({}, { method: 'DELETE' }));
+}
+
+function completeGoal(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/goal/complete`, { method: 'POST' });
+}
+
+function pauseGoal(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/goal/pause`, { method: 'POST' });
+}
+
+function resumeGoal(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/goal/resume`, { method: 'POST' });
+}
+
+function patchMissionPlan(sessionID, payload = {}) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/mission/plan`, jsonRequest(payload, { method: 'PATCH' }));
+}
+
+function approveMissionPlan(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/mission/plan/approve`, { method: 'POST' });
+}
+
+function patchMissionValidation(sessionID, payload = {}) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/mission/validation`, jsonRequest(payload, { method: 'PATCH' }));
 }
 
 function submitQueueJob(payload) {
