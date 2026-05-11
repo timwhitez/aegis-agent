@@ -115,12 +115,15 @@ type MissionFeature struct {
 }
 
 type MissionMilestone struct {
-	ID            string   `json:"id"`
-	Title         string   `json:"title"`
-	Status        string   `json:"status"`
-	FeatureIDs    []string `json:"feature_ids,omitempty"`
-	ValidationIDs []string `json:"validation_ids,omitempty"`
-	Evidence      []string `json:"evidence,omitempty"`
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Status          string   `json:"status"`
+	FeatureIDs      []string `json:"feature_ids,omitempty"`
+	ValidationIDs   []string `json:"validation_ids,omitempty"`
+	TaskIDs         []string `json:"task_ids,omitempty"`
+	ChildSessionIDs []string `json:"child_session_ids,omitempty"`
+	QueueJobIDs     []string `json:"queue_job_ids,omitempty"`
+	Evidence        []string `json:"evidence,omitempty"`
 }
 
 type MissionRole struct {
