@@ -1424,6 +1424,7 @@ function renderGoalPanel(detail) {
   const validations = maybeArray(goal.validation_plan);
   const features = maybeArray(mission?.features);
   const milestones = maybeArray(mission?.milestones);
+  const roles = maybeArray(mission?.role_plan);
   const canPause = goal.status === 'active' || goal.status === 'budget_limited';
   const canResume = goal.status === 'paused' || goal.status === 'budget_limited';
   const canComplete = goal.status !== 'complete';
@@ -1458,6 +1459,7 @@ function renderGoalPanel(detail) {
           <div class="goal-meta-line">Plan ${escapeHTML(mission.plan_status || 'draft')}${mission.approved_at ? ` · approved ${escapeHTML(formatTimestamp(mission.approved_at))}` : ''}</div>
           ${features.length ? renderGoalItems('Features', features, 'feature') : ''}
           ${milestones.length ? renderGoalItems('Milestones', milestones, 'milestone') : ''}
+          ${roles.length ? renderGoalItems('Roles', roles, 'role') : ''}
         </div>
       ` : ''}
     </div>
@@ -1483,10 +1485,14 @@ function renderGoalItem(item, kind) {
   const status = item?.status || 'pending';
   const title = kind === 'validation'
     ? item?.command || item?.artifact || item?.description || item?.kind || 'validation'
-    : item?.title || item?.text || item?.id || 'item';
+    : kind === 'role'
+      ? item?.name || item?.role || 'role'
+      : item?.title || item?.text || item?.id || 'item';
   const meta = kind === 'validation'
     ? item?.kind || ''
-    : item?.milestone_id || '';
+    : kind === 'role'
+      ? [item?.role, item?.scope].filter(Boolean).join(' · ')
+      : item?.milestone_id || '';
   return `
     <div class="goal-item">
       <div class="goal-item-top">
@@ -1494,9 +1500,30 @@ function renderGoalItem(item, kind) {
         <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
       </div>
       ${meta ? `<div class="goal-meta-line">${escapeHTML(meta)}</div>` : ''}
+      ${renderGoalLinkedFacts(item)}
       ${maybeArray(item?.evidence).length ? `<div class="goal-meta-line">${escapeHTML(maybeArray(item.evidence).join(' · '))}</div>` : ''}
     </div>
   `;
+}
+
+function renderGoalLinkedFacts(item) {
+  const parts = [];
+  const tasks = maybeArray(item?.task_ids);
+  const children = maybeArray(item?.child_session_ids);
+  const queueJobs = maybeArray(item?.queue_job_ids);
+  if (tasks.length) {
+    parts.push(`tasks ${tasks.map(shortId).join(', ')}`);
+  }
+  if (children.length) {
+    parts.push(`children ${children.map(shortId).join(', ')}`);
+  }
+  if (queueJobs.length) {
+    parts.push(`queue ${queueJobs.map(shortId).join(', ')}`);
+  }
+  if (!parts.length) {
+    return '';
+  }
+  return `<div class="goal-meta-line">${escapeHTML(parts.join(' · '))}</div>`;
 }
 
 function formatBudget(used, budget) {

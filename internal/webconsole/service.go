@@ -928,7 +928,19 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.appendGoalMutation(sessionID, goal, "goal.updated", nil); err != nil {
+	createdTasks := []session.Task{}
+	if goal.Mission != nil && goal.Mission.CreateTasksFromPlan {
+		syncedGoal, tasks, _, err := s.store.SyncMissionPlanTasks(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		goal = syncedGoal
+		createdTasks = tasks
+	}
+	if err := s.appendGoalMutation(sessionID, goal, "goal.updated", map[string]any{
+		"created_task_ids": webTaskIDs(createdTasks),
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -1032,8 +1044,20 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	createdTasks := []session.Task{}
+	if mission.CreateTasksFromPlan {
+		syncedGoal, tasks, _, err := s.store.SyncMissionPlanTasks(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		goal = syncedGoal
+		createdTasks = tasks
+		mission = ensureMissionPlan(goal.Mission)
+	}
 	if err := s.appendGoalMutation(sessionID, goal, "mission.plan.updated", map[string]any{
-		"plan_status": mission.PlanStatus,
+		"plan_status":      mission.PlanStatus,
+		"created_task_ids": webTaskIDs(createdTasks),
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -3063,6 +3087,16 @@ func webGoalEventData(goal session.SessionGoal) map[string]any {
 		data["mission_milestone_count"] = len(goal.Mission.Milestones)
 	}
 	return data
+}
+
+func webTaskIDs(tasks []session.Task) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if strings.TrimSpace(task.ID) != "" {
+			ids = append(ids, task.ID)
+		}
+	}
+	return ids
 }
 
 func resolveSkillDir(rawDir string) (string, error) {

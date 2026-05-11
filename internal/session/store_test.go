@@ -126,6 +126,15 @@ func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	}
 }
 
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -144,27 +153,35 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	}
 	tokenBudget := int64(5)
 	goal, err := store.CreateGoal(meta.ID, GoalDraft{
-		Enabled:         true,
-		Mode:            GoalModeMission,
-		Objective:       "Converge the feature safely",
-		TokenBudget:     &tokenBudget,
-		SuccessCriteria: []string{"tests pass"},
-		ValidationPlan:  []string{"go test ./internal/session"},
-		Features:        []string{"durable goal state"},
-		Milestones:      []string{"first checkpoint"},
-		Source:          GoalSourceCLI,
+		Enabled:             true,
+		Mode:                GoalModeMission,
+		Objective:           "Converge the feature safely",
+		TokenBudget:         &tokenBudget,
+		SuccessCriteria:     []string{"tests pass"},
+		ValidationPlan:      []string{"go test ./internal/session"},
+		Features:            []string{"durable goal state"},
+		Milestones:          []string{"first checkpoint"},
+		CreateTasksFromPlan: true,
+		Source:              GoalSourceCLI,
 	})
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	if goal.Mode != GoalModeMission || goal.Mission == nil || len(goal.Mission.Features) != 1 {
+	if goal.Mode != GoalModeMission || goal.Mission == nil || len(goal.Mission.Features) != 1 || len(goal.Mission.Features[0].TaskIDs) != 1 {
 		t.Fatalf("expected mission goal, got %#v", goal)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Subject != "durable goal state" || !containsString(tasks[0].Labels, "mission") {
+		t.Fatalf("expected mission feature task, got %#v", tasks)
 	}
 	loaded, err := store.LoadGoal(meta.ID)
 	if err != nil {
 		t.Fatalf("load goal: %v", err)
 	}
-	if loaded.GoalID != goal.GoalID || loaded.SuccessCriteria[0].Text != "tests pass" {
+	if loaded.GoalID != goal.GoalID || loaded.SuccessCriteria[0].Text != "tests pass" || loaded.Mission.Features[0].TaskIDs[0] != tasks[0].ID {
 		t.Fatalf("unexpected loaded goal: %#v", loaded)
 	}
 	items, err := store.List(10)

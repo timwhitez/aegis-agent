@@ -316,20 +316,96 @@ func (s *Store) CreateGoal(sessionID string, draft GoalDraft) (SessionGoal, erro
 	if err := s.SaveGoal(sessionID, goal); err != nil {
 		return SessionGoal{}, err
 	}
+	createdTasks, changed, err := syncMissionPlanTasks(s, sessionID, &goal)
+	if err != nil {
+		return SessionGoal{}, err
+	}
+	if changed {
+		if err := s.SaveGoal(sessionID, goal); err != nil {
+			return SessionGoal{}, err
+		}
+	}
 	if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 		Type:   "goal.created",
 		Source: goal.Source,
 		Status: goal.Status,
 		Data: map[string]any{
-			"mode":       goal.Mode,
-			"objective":  goal.Objective,
-			"goal_id":    goal.GoalID,
-			"created_at": goal.CreatedAt,
+			"mode":             goal.Mode,
+			"objective":        goal.Objective,
+			"goal_id":          goal.GoalID,
+			"created_at":       goal.CreatedAt,
+			"created_task_ids": taskIDs(createdTasks),
 		},
 	}); err != nil {
 		return SessionGoal{}, err
 	}
 	return goal, nil
+}
+
+func (s *Store) SyncMissionPlanTasks(sessionID string) (SessionGoal, []Task, bool, error) {
+	goal, err := s.LoadGoal(sessionID)
+	if err != nil {
+		return SessionGoal{}, nil, false, err
+	}
+	createdTasks, changed, err := syncMissionPlanTasks(s, sessionID, &goal)
+	if err != nil {
+		return SessionGoal{}, nil, false, err
+	}
+	if changed {
+		if err := s.SaveGoal(sessionID, goal); err != nil {
+			return SessionGoal{}, nil, false, err
+		}
+	}
+	return goal, createdTasks, changed, nil
+}
+
+func syncMissionPlanTasks(store *Store, sessionID string, goal *SessionGoal) ([]Task, bool, error) {
+	if goal == nil || goal.Mission == nil || !goal.Mission.CreateTasksFromPlan {
+		return nil, false, nil
+	}
+	var created []Task
+	changed := false
+	for i := range goal.Mission.Features {
+		feature := &goal.Mission.Features[i]
+		if strings.TrimSpace(feature.ID) == "" {
+			feature.ID = fmt.Sprintf("feature_%04d", i+1)
+			changed = true
+		}
+		if len(feature.TaskIDs) > 0 {
+			continue
+		}
+		title := strings.TrimSpace(feature.Title)
+		if title == "" {
+			continue
+		}
+		description := strings.TrimSpace(feature.Description)
+		if description != "" {
+			description += "\n\n"
+		}
+		description += fmt.Sprintf("Mission feature `%s` for goal `%s`.", feature.ID, goal.GoalID)
+		task, err := CreateTask(store, sessionID, TaskCreateInput{
+			Subject:     title,
+			Description: description,
+			Labels:      []string{"mission", "goal:" + goal.GoalID, "feature:" + feature.ID},
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		feature.TaskIDs = append(feature.TaskIDs, task.ID)
+		created = append(created, task)
+		changed = true
+	}
+	return created, changed, nil
+}
+
+func taskIDs(tasks []Task) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if strings.TrimSpace(task.ID) != "" {
+			ids = append(ids, task.ID)
+		}
+	}
+	return ids
 }
 
 func (s *Store) ClearGoal(sessionID string) (bool, error) {
