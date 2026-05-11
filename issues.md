@@ -4,6 +4,8 @@
 
 本文是本轮 master/sub-agent review 的问题登记，不是修复记录。审计边界按 `AGENTS.md` 与当前 spec：core v1 默认主路径仍是 `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`；`delegate` / `children` / `queue` / `tui` / `web` 只作为显式 `experimental` 或扩展入口评估。结论只记录有源码或 spec 证据的问题；未执行真实 provider live matrix，也不把 `./test.sh` 绿色当成覆盖全部风险。
 
+当前文档口径：项目默认运行在可信本地工作环境中，不把报告、prompt、session、compaction 或 provider view 脱敏作为 runtime / spec 的硬编码规范。如果某次任务需要脱敏，必须由用户在当轮 prompt 明确提出，并作为该任务交付物的内容要求处理。
+
 ## Review 循环状态
 
 | 循环 | 状态 | 覆盖范围 | 本轮新增 |
@@ -39,11 +41,11 @@
 - 影响：如果 `isolation_root` 是指向 `<parentWorkdir>/.go-cli-agent/_worktrees` 的 symlink，lexical path 看似在 `/tmp/root-link/<session>`，实际文件操作落在 parent workspace 内。copy mode 会污染源树，甚至因为目标先建在源树下而产生递归复制风险。
 - 建议：对 parent workdir、已存在 root、最近存在的 target parent 做 symlink resolution，再做 containment；resolved root/target 落在 resolved parent 内时拒绝；增加 symlinked isolation root 回归。
 
-### R1-05 High: compaction 脱敏遗漏 assistant thinking 与 provider-owned replay blocks
+### R1-05 Closed: compaction 默认脱敏已从规范和 runtime 移除
 
-- 证据：compaction transcript 来自 `redactedMessages`：`internal/runtime/compaction.go:121`。`redactSecretsInMessages` 只处理 `Message.Text`、tool call args、tool results、metadata：`internal/runtime/compaction.go:487` 到 `internal/runtime/compaction.go:500`，没有处理 `Message.Thinking` 或 `ProviderContentBlocks`。provider blocks 可包含 OpenAI encrypted reasoning：`internal/provider/openai.go:141`，Anthropic thinking/signature 和 tool input：`internal/provider/anthropic.go:104`、`internal/provider/anthropic.go:123`，Google function args / thought signature：`internal/provider/google.go:126`。context compaction spec 要求进入 compacted provider view、summary artifact、transcript artifact 前先脱敏 secret：`spec/10-context-compaction.md:148`。
-- 影响：secret 若存在于 assistant thinking、provider-native tool input/args、opaque reasoning/signature 中，会被写进 `artifacts/transcripts/`，也可能进入 compacted provider view，再次发送给模型。该问题比普通 transcript 泄漏更严重，因为 provider replay blocks 原本就是高敏 continuation fact。
-- 建议：区分 provider replay view 与 artifact redaction view。artifact/transcript 中 strip 或摘要化 provider blocks，只保留 provider/type/id/sequence/count 等低敏信息；compact provider view 至少要脱敏 thinking 与 provider block 的 string/JSON 字段；补充 secrets-in-provider-blocks 回归。
+- 原问题：compaction 曾在用户没有提出脱敏要求时静默改写 provider view、summary 和 transcript，和“compaction 只改变上下文规模视图，不改写内容语义”的产品边界冲突。
+- 当前证据：`BuildWithProfile` 使用 `sourceMessages := cloneMessages(messages)`，并以 source messages 生成 summary、artifact memory、transcript 与 unresolved issue 摘要：`internal/runtime/compaction.go:38` 到 `internal/runtime/compaction.go:89`、`internal/runtime/compaction.go:119` 到 `internal/runtime/compaction.go:158`。`compactTextForContext` 只做 head/tail 裁剪和长度记录，不做 secret-like pattern 替换：`internal/runtime/compaction.go:328` 到 `internal/runtime/compaction.go:336`。回归测试明确断言 secret-like 文本会保留，且 compacted view、summary、transcript 不出现 `[REDACTED]` marker：`internal/runtime/compaction_test.go:337` 到 `internal/runtime/compaction_test.go:420`。当前 spec 也明确 compaction 不默认做报告、prompt、session 或 provider view 脱敏：`spec/10-context-compaction.md:147` 到 `spec/10-context-compaction.md:156`。
+- 后续要求：不要重新引入 runtime / compactor 级默认 redaction。若用户 prompt 明确要求脱敏，应由模型按该 prompt 生成脱敏版报告或指定 artifact，而不是由 runtime 按关键词硬编码改写所有任务。
 
 ### R1-06 Medium-High: workspace skills 的 command tools 在未 `load_skill` / 未 trust 前自动注册
 
@@ -79,7 +81,7 @@
 ### R1-11 Medium: provider-native replay blocks 只按 provider/model 限定，缺少 provider profile / effective API provider 作用域
 
 - 证据：spec 要求 provider profile、effective API provider 或 model 改变时默认剥离旧 opaque reasoning continuation fact：`spec/03-provider-contracts.md:199`。Provider profile 与 adapter family 是不同概念：`spec/02-cli-and-config.md:342`。`ProviderContentBlock` 只有 `Provider`、`Type`、`Model` 等字段，没有 provider profile / effective API provider：`internal/session/types.go:257` 到 `internal/session/types.go:273`。OpenAI block 写入时固定 `Provider: "openai"` 并记录 `Model: req.Model`：`internal/provider/openai.go:141` 到 `internal/provider/openai.go:149`。Replay 过滤只检查 provider/type/id/data 和 model：`internal/provider/openai.go:326` 到 `internal/provider/openai.go:334`。
-- 追加证据：Anthropic replay 也只检查 block provider 与 model，然后回放 thinking、redacted thinking、text、tool_use：`internal/provider/anthropic.go:277` 到 `internal/provider/anthropic.go:323`。Google replay 同样只检查 provider 与 model，然后回放 thought signature / function call：`internal/provider/google.go:311` 到 `internal/provider/google.go:351`。Anthropic-compatible contract 明确允许 Kimi/DeepSeek 等 custom profile 使用同一 adapter family：`spec/03-provider-contracts.md:255` 到 `spec/03-provider-contracts.md:260`。
+- 追加证据：Anthropic replay 也只检查 block provider 与 model，然后回放 thinking、redacted thinking、text、tool_use：`internal/provider/anthropic.go:277` 到 `internal/provider/anthropic.go:323`。Google replay 同样只检查 provider 与 model，然后回放 thought signature / function call：`internal/provider/google.go:311` 到 `internal/provider/google.go:351`。Anthropic-compatible contract 明确允许 Kimi/DeepSeek 等 custom profile 使用同一 adapter family：`spec/03-provider-contracts.md:256` 到 `spec/03-provider-contracts.md:260`。
 - 影响：两个不同 provider profile 可以共用同一 adapter family 和相同 model，例如官方 OpenAI 与自定义 `openai-compatible` gateway，或多个 `anthropic-compatible` custom endpoint。当前逻辑可能把 profile A 的 provider-native continuation fact 发送到 profile B，违反 provider-owned replay 边界，也可能造成上游拒绝或 continuation state 泄漏。
 - 建议：ProviderContentBlock 持久化 provider profile、effective api_provider，必要时保存非 secret endpoint identity/hash；当前 profile/API/model 不一致时 strip provider-native replay block；补充同 model 不同 profile 的 OpenAI / Anthropic-compatible / Google replay 回归。
 
@@ -279,5 +281,5 @@ Round 3 同时做了去重与代表性证据复核：R1/R2 条目没有发现需
 ### R3-02 Medium-High: runtime context loader 直接读取 project memory / `AGENTS.md`，绕过 workspace resolver
 
 - 证据：project memory 固定读取 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md`：`internal/runtime/project_memory.go:20` 到 `internal/runtime/project_memory.go:25`；实际读取是 `os.ReadFile(filepath.Join(workdir, rel))`，没有 `ResolveWorkspacePath` 或 symlink containment：`internal/runtime/project_memory.go:30` 到 `internal/runtime/project_memory.go:37`。这些 excerpt 会进入 project memory summary：`internal/runtime/project_memory.go:61` 到 `internal/runtime/project_memory.go:78`，并写入 compaction summary 的 `project_memory_stack`：`internal/runtime/compaction.go:48`、`internal/runtime/compaction.go:81`。`AGENTS.md` 读取同样是 `os.ReadFile(workdir/AGENTS.md)`：`internal/runtime/prompt.go:3010` 到 `internal/runtime/prompt.go:3017`，并拼入 system prompt 的 Project Instructions：`internal/runtime/prompt.go:105` 到 `internal/runtime/prompt.go:108`。`spec/18` 明确 `yolo` 不应绕过 workspace path safety：`spec/18-durable-contract-and-completion.md:81`。
-- 影响：即使 file tools 能拒绝 symlink escape，runtime 自身仍可能通过 `reports/*.md` 或 `AGENTS.md` symlink 读取 repo 外文件片段，并发送给模型或写入 compaction artifact。该问题不同于 R1-05 的 compaction provider-block 脱敏和 R2-10 的 `.env` upsert symlink 复制。
+- 影响：即使 file tools 能拒绝 symlink escape，runtime 自身仍可能通过 `reports/*.md` 或 `AGENTS.md` symlink 读取 repo 外文件片段，并发送给模型或写入 compaction artifact。该问题不同于 R1-05 的 compaction 默认 redaction 口径收敛和 R2-10 的 `.env` upsert symlink 复制。
 - 建议：runtime 内部读取 workspace 文件也统一走 symlink-aware resolver；对 `reports/*.md`、`AGENTS.md` 这类 context loader 输入执行 containment 校验，escape 时记录 missing/blocked 而不是读取内容。

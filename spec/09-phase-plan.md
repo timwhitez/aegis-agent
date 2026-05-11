@@ -205,7 +205,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 
 - `go test ./cmd/... ./internal/... ./pkg/...` 覆盖新增持久化与 gate
 - `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法
-- WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 sanitizer
+- WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 
 ## 15. Extension Phases
 

@@ -961,7 +961,7 @@ target/report consistency guard 会阻断：
 - final report 与 `reports/progress.md` / `reports/validation.md` 结论冲突。
 - supporting docs 晚于 final report 更新但 final report 未刷新。
 
-说明：当前项目已按可信运行环境去掉报告和 prompt 脱敏；这些 guard 只做一致性和质量控制，不改写报告内容。
+说明：当前项目按可信本地运行环境设计，报告、prompt、session、compaction 与 provider view 都不做默认脱敏。需要脱敏时由用户在当轮 prompt 明确提出；这些 guard 只做一致性和质量控制，不改写报告内容。
 
 **设计判断**
 

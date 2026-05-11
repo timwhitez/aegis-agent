@@ -15,6 +15,7 @@
 - provider 原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - `openai-compatible` 作为 OpenAI Responses 形状的兼容部署模式提供
 - `experimental delegate|children|queue|web`、`tui` 和 `--isolation auto|copy` 仍是显式扩展面，不是默认 core 叙事
+- 默认不做报告、prompt、session、compaction 或 provider view 脱敏；如需脱敏，由用户在当轮 prompt 明确要求
 
 ## 快速开始
 
@@ -165,6 +166,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 - core runtime、sdk facade、cli adapter 分层保持清晰
 - provider 差异留在 adapter 层，CLI / tool / Web 层不承载 provider-specific replay 逻辑
 - compaction 只改变发给模型的上下文视图，不覆盖原始日志
+- compaction 只做上下文规模控制，不按密钥模式默认改写内容；用户显式要求脱敏时，模型应在当轮交付文档中处理
 - session contract、required artifact tracker、provider attempts、session summary 与 long-run checkpoint 都是围绕本地文件事实源生成的辅助面，不引入固定 workflow engine
 - 默认主路径优先于扩展能力，先把 Phase 0-10 做实，再评估 Phase 11+
 

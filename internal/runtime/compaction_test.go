@@ -331,7 +331,7 @@ func TestCompactionProfileFromConfigUsesProviderModelOverride(t *testing.T) {
 	}
 }
 
-func TestCompactionRedactsSecrets(t *testing.T) {
+func TestCompactionDoesNotRedactSecretLikeText(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()
 	meta := session.SessionMetadata{
@@ -376,13 +376,13 @@ func TestCompactionRedactsSecrets(t *testing.T) {
 	if !didCompact {
 		t.Fatal("expected compaction")
 	}
-	for _, leaked := range []string{apiKey, bearer, privateKey, "tok_secret_123456789", "tok_metadata_123456789"} {
-		if strings.Contains(view[0].Text, leaked) {
-			t.Fatalf("secret leaked in compacted provider view: %q", leaked)
+	for _, expected := range []string{apiKey, "tok_secret_123456789"} {
+		if !strings.Contains(view[0].Text, expected) {
+			t.Fatalf("expected secret-like text to remain in compacted provider view: %q", expected)
 		}
 	}
-	if !strings.Contains(view[0].Text, "[REDACTED]") || !strings.Contains(view[0].Text, "[REDACTED PRIVATE KEY]") {
-		t.Fatalf("expected redaction markers in compacted view, got %q", view[0].Text)
+	if strings.Contains(view[0].Text, "[REDACTED]") {
+		t.Fatalf("did not expect redaction markers in compacted view, got %q", view[0].Text)
 	}
 	summaryFiles, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions"))
 	if err != nil {
@@ -392,46 +392,30 @@ func TestCompactionRedactsSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read summary: %v", err)
 	}
-	for _, leaked := range []string{apiKey, bearer, privateKey, "tok_secret_123456789", "tok_metadata_123456789"} {
-		if strings.Contains(string(data), leaked) {
-			t.Fatalf("secret leaked in summary artifact: %q", leaked)
+	for _, expected := range []string{apiKey, "tok_secret_123456789"} {
+		if !strings.Contains(string(data), expected) {
+			t.Fatalf("expected secret-like text to remain in summary artifact: %q", expected)
 		}
 	}
-}
-
-func TestRedactToolCallArgumentsPreservesValidRawJSON(t *testing.T) {
-	args := json.RawMessage(`{"path":"macorchard-api/internal/httpapi/handlers.go","pattern":"\"token\":\"abcdefghijklmnop\"|tokenSHA :=|Set-Cookie|Cookie|Authorization","nested":{"password":"supersecretpassword"}}`)
-	messages := []session.Message{
-		session.NewAssistantMessage("", "", []session.ToolCall{{
-			ID:        "call_sensitive_pattern",
-			Name:      "shell",
-			Arguments: args,
-		}}),
+	if strings.Contains(string(data), "[REDACTED]") {
+		t.Fatalf("did not expect redaction markers in summary artifact: %q", string(data))
 	}
 
-	redacted := redactSecretsInMessages(messages)
-	if _, err := json.Marshal(redacted); err != nil {
-		t.Fatalf("marshal redacted messages: %v", err)
+	transcriptFiles, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "transcripts"))
+	if err != nil {
+		t.Fatalf("read transcripts dir: %v", err)
 	}
-	gotArgs := redacted[0].ToolCalls[0].Arguments
-	if !json.Valid(gotArgs) {
-		t.Fatalf("expected valid redacted tool arguments, got %s", string(gotArgs))
+	transcriptData, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "artifacts", "transcripts", transcriptFiles[0].Name()))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal(gotArgs, &decoded); err != nil {
-		t.Fatalf("unmarshal redacted args: %v", err)
+	for _, expected := range []string{apiKey, bearer, "BEGIN PRIVATE KEY", "abcdef1234567890", "END PRIVATE KEY", "tok_metadata_123456789"} {
+		if !strings.Contains(string(transcriptData), expected) {
+			t.Fatalf("expected secret-like text to remain in transcript artifact: %q", expected)
+		}
 	}
-	if decoded["path"] != "macorchard-api/internal/httpapi/handlers.go" {
-		t.Fatalf("expected non-secret path to survive, got %#v", decoded)
-	}
-	if strings.Contains(string(gotArgs), "supersecretpassword") || strings.Contains(string(gotArgs), "abcdefghijklmnop") {
-		t.Fatalf("expected secrets to be redacted, got %s", string(gotArgs))
-	}
-	if !strings.Contains(string(gotArgs), "[REDACTED]") {
-		t.Fatalf("expected redaction marker, got %s", string(gotArgs))
-	}
-	if string(messages[0].ToolCalls[0].Arguments) != string(args) {
-		t.Fatalf("expected original raw arguments to remain unchanged")
+	if strings.Contains(string(transcriptData), "[REDACTED]") {
+		t.Fatalf("did not expect redaction markers in transcript artifact: %q", string(transcriptData))
 	}
 }
 

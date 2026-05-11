@@ -314,7 +314,7 @@ worker pool 允许并发 `N >= 1`。
 - Workspace read-only browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
 - 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取 workspace 文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
-- 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录 env key 与路径，不记录 secret 值。
+- 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。
 - Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh` 和 summary `default | auto | concise | detailed | off`，Anthropic-compatible / Google 支持 `default | standard | max | off`；`max` 映射到 thinking budget profile，不能要求用户手写 token budget。
 - `POST /api/config/test` 使用当前 Settings 表单值执行一次 thinking-observation probe，用于确认 provider、model、base URL、API key、API Provider 与 reasoning / thinking 配置能被上游接受，并区分“请求成功”和“本次实际返回可读 thinking / summary”；该接口不得持久化 config 或 `.env`。
 
@@ -575,7 +575,7 @@ Settings API：
 - 顶部 toast 用于一次性反馈
 - 详情页内联错误用于对象级失败
 - queue/job/session 失败状态必须保留可见错误摘要
-- Markdown 渲染必须经过本地 sanitizer，不允许依赖外部 `marked` CDN，也不能直接注入未净化 HTML
+- Markdown 渲染必须经过本地 HTML/XSS sanitizer，不允许依赖外部 `marked` CDN，也不能直接注入未净化 HTML；该 sanitizer 只用于浏览器注入防护，不承担内容脱敏
 - skills upload / uninstall、settings 保存、WebSocket 消息解析都必须显示后端错误或 malformed payload 错误，不能假成功或静默失败
 
 ## 11. 测试要求

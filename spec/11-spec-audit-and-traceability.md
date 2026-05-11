@@ -251,6 +251,7 @@
 当前明确承认：
 
 - OpenAI encrypted reasoning、Anthropic thinking signature / redacted data、Gemini thoughtSignature 都是 provider-native continuation fact，只能由对应 adapter replay。
+- 这里的 `redacted data` 是 Anthropic 上游协议事实，不是项目级默认脱敏规范。
 - `Message.thinking` 只保存 provider 明确返回的可读 summary/text；opaque/encrypted/signature 数据不得进入 UI 文本、toast、普通 events 文本或报告正文。
 - Chat-compatible `reasoning_content` / `reasoning_details` / `reasoning_opaque` 不是当前已实现能力；若后续支持，必须通过显式 adapter family 实现。
 

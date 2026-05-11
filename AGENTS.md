@@ -27,6 +27,7 @@
 - hard guard 只用于安全/权限边界、workspace/path escape、用户显式指定的交付路径/模板/字面锚点、恢复一致性、provider/tool 协议完整性，以及用户最新 steer 的明确约束。
 - sub-agent/child-agent 是否使用必须 model-led；优化 `agent_spawn` / `agent_status` / `agent_list` 描述和 child prompt 模板来提示委派时机，不要用 runtime guard 强迫或阻止委派。
 - durable project memory、todo/taskboard 和 long-run checkpoint 主要用于恢复与协作提醒；除非 finish 会留下明显过期或矛盾的 durable state，不要阻断 agent handoff 或普通执行动作。
+- 不要把报告、prompt、session、compaction 或 provider view 脱敏写成 runtime / spec 的默认规范；如需脱敏，由用户在当轮 prompt 中明确要求，并作为任务交付内容处理。
 
 ## 安全与恢复
 

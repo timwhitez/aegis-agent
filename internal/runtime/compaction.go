@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -36,8 +35,8 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 
 func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile, lastCompactionInputChars int, emit func(events.Event)) ([]session.Message, int, bool, error) {
 	profile = normalizeCompactionProfile(profile)
-	redactedMessages := redactSecretsInMessages(messages)
-	cloned := cloneMessages(redactedMessages)
+	sourceMessages := cloneMessages(messages)
+	cloned := cloneMessages(sourceMessages)
 	cloned = deduplicateToolResults(cloned)
 	compactOldToolContext(cloned, profile.KeepRecentToolResults)
 	size := estimateChars(cloned)
@@ -68,26 +67,25 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		}
 		summary := map[string]any{
 			"completed_items":          collectCompletedItems(todo, tasks),
-			"artifact_memory":          collectArtifactMemory(redactedMessages, workdir, 12),
+			"artifact_memory":          collectArtifactMemory(sourceMessages, workdir, 12),
 			"context_profile":          profile,
-			"current_status":           summarizeLatestMessages(redactedMessages),
+			"current_status":           summarizeLatestMessages(sourceMessages),
 			"current_in_progress_todo": currentInProgressTodo(todo),
 			"current_in_progress_task": currentInProgressTask(tasks),
-			"high_value_proofs":        collectHighValueProofs(redactedMessages, workdir, 10),
-			"key_paths":                collectKeyPaths(redactedMessages, workdir),
+			"high_value_proofs":        collectHighValueProofs(sourceMessages, workdir, 10),
+			"key_paths":                collectKeyPaths(sourceMessages, workdir),
 			"loaded_skills":            state.LoadedSkills,
 			"next_step_guidance":       nextStepGuidance(),
 			"proof_read_budget":        proofBudget,
 			"project_memory_stack":     projectMemory.Summary(),
-			"tool_repetition":          summarizeToolRepetition(redactedMessages),
+			"tool_repetition":          summarizeToolRepetition(sourceMessages),
 			"todo":                     todo,
 			"ready_tasks":              readyTasks,
 			"blocked_tasks":            blockedTasks,
-			"unresolved_issues":        collectUnresolvedIssues(redactedMessages, state),
+			"unresolved_issues":        collectUnresolvedIssues(sourceMessages, state),
 			"recent_failure_or_pause":  recentFailureOrPause(state),
 			"transcript":               "[previous compaction transcript reused; no new artifact written within hysteresis window]",
 		}
-		summary = redactSummaryMap(summary)
 		compactText, _ := json.MarshalIndent(summary, "", "  ")
 		recent := recentMessagesForCompaction(cloned, 6)
 		compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
@@ -118,12 +116,12 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"proof_read_budget":      proofBudget,
 	}))
 	transcriptName := fmt.Sprintf("transcript-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
-	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, redactedMessages)
+	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, sourceMessages)
 	if err != nil {
 		return nil, size, false, err
 	}
-	artifactMemory := collectArtifactMemory(redactedMessages, workdir, 12)
-	highValueProofs := collectHighValueProofs(redactedMessages, workdir, 10)
+	artifactMemory := collectArtifactMemory(sourceMessages, workdir, 12)
+	highValueProofs := collectHighValueProofs(sourceMessages, workdir, 10)
 
 	var featureList *session.FeatureList
 	featureListPath := filepath.Join(c.store.SessionDir(sessionID), "feature_list.json")
@@ -138,25 +136,24 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"completed_items":          collectCompletedItems(todo, tasks),
 		"artifact_memory":          artifactMemory,
 		"context_profile":          profile,
-		"current_status":           summarizeLatestMessages(redactedMessages),
+		"current_status":           summarizeLatestMessages(sourceMessages),
 		"current_in_progress_todo": currentInProgressTodo(todo),
 		"current_in_progress_task": currentInProgressTask(tasks),
 		"high_value_proofs":        highValueProofs,
 		"feature_list":             featureList,
-		"key_paths":                collectKeyPaths(redactedMessages, workdir),
+		"key_paths":                collectKeyPaths(sourceMessages, workdir),
 		"loaded_skills":            state.LoadedSkills,
 		"next_step_guidance":       nextStepGuidance(),
 		"proof_read_budget":        proofBudget,
 		"project_memory_stack":     projectMemory.Summary(),
-		"tool_repetition":          summarizeToolRepetition(redactedMessages),
+		"tool_repetition":          summarizeToolRepetition(sourceMessages),
 		"todo":                     todo,
 		"ready_tasks":              readyTasks,
 		"blocked_tasks":            blockedTasks,
-		"unresolved_issues":        collectUnresolvedIssues(redactedMessages, state),
+		"unresolved_issues":        collectUnresolvedIssues(sourceMessages, state),
 		"recent_failure_or_pause":  recentFailureOrPause(state),
 		"transcript":               transcriptPath,
 	}
-	summary = redactSummaryMap(summary)
 	summaryName := filepath.Join("compactions", fmt.Sprintf("summary-%s.json", time.Now().UTC().Format("20060102-150405")))
 	summaryPath, err := c.store.WriteArtifact(sessionID, summaryName, summary)
 	if err != nil {
@@ -329,7 +326,6 @@ func compactToolCallArguments(call *session.ToolCall) {
 }
 
 func compactTextForContext(text, reason string) string {
-	text = redactSecretText(text)
 	const headLimit = 700
 	const tailLimit = 500
 	if len(text) <= headLimit+tailLimit+200 {
@@ -482,190 +478,6 @@ func cloneMessages(messages []session.Message) []session.Message {
 		}
 	}
 	return out
-}
-
-func redactSecretsInMessages(messages []session.Message) []session.Message {
-	out := cloneMessages(messages)
-	for i := range out {
-		out[i].Text = redactSecretText(out[i].Text)
-		for j := range out[i].ToolCalls {
-			if len(out[i].ToolCalls[j].Arguments) > 0 {
-				out[i].ToolCalls[j].Arguments = redactToolCallArguments(out[i].ToolCalls[j].Arguments)
-			}
-		}
-		for j := range out[i].ToolResults {
-			out[i].ToolResults[j].LLMOutput = redactSecretText(out[i].ToolResults[j].LLMOutput)
-			out[i].ToolResults[j].DisplayOutput = redactSecretText(out[i].ToolResults[j].DisplayOutput)
-			out[i].ToolResults[j].Metadata = redactMetadata(out[i].ToolResults[j].Metadata)
-		}
-		out[i].Meta = redactMetadata(out[i].Meta)
-	}
-	return out
-}
-
-func redactToolCallArguments(raw json.RawMessage) json.RawMessage {
-	if strings.TrimSpace(string(raw)) == "" {
-		return json.RawMessage(`{}`)
-	}
-	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err == nil {
-		redacted := redactAny(decoded)
-		if data, err := json.Marshal(redacted); err == nil {
-			return json.RawMessage(data)
-		}
-	}
-	redactedText := redactSecretText(string(raw))
-	if json.Valid([]byte(redactedText)) {
-		return json.RawMessage(redactedText)
-	}
-	data, err := json.Marshal(map[string]any{
-		"redacted_invalid_json": true,
-		"text":                  redactedText,
-	})
-	if err != nil {
-		return json.RawMessage(`{"redacted_invalid_json":true}`)
-	}
-	return json.RawMessage(data)
-}
-
-func redactMetadata(input map[string]any) map[string]any {
-	if input == nil {
-		return nil
-	}
-	value, ok := redactAny(input).(map[string]any)
-	if !ok {
-		return nil
-	}
-	return value
-}
-
-func redactSummaryMap(input map[string]any) map[string]any {
-	value, ok := redactAny(input).(map[string]any)
-	if !ok {
-		return input
-	}
-	return value
-}
-
-func redactAny(value any) any {
-	switch typed := value.(type) {
-	case string:
-		return redactSecretText(typed)
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			if isSecretLikeKey(key) {
-				out[key] = redactSecretValue(item)
-				continue
-			}
-			out[key] = redactAny(item)
-		}
-		return out
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = redactAny(item)
-		}
-		return out
-	case []string:
-		out := make([]string, len(typed))
-		for i, item := range typed {
-			out[i] = redactSecretText(item)
-		}
-		return out
-	case []map[string]any:
-		out := make([]map[string]any, len(typed))
-		for i, item := range typed {
-			out[i] = redactSummaryMap(item)
-		}
-		return out
-	case []session.TodoItem, []session.Task:
-		data, err := json.Marshal(typed)
-		if err != nil {
-			return value
-		}
-		var out any
-		if json.Unmarshal([]byte(redactSecretText(string(data))), &out) != nil {
-			return value
-		}
-		return out
-	default:
-		return value
-	}
-}
-
-func isSecretLikeKey(key string) bool {
-	compact := strings.Map(func(r rune) rune {
-		switch r {
-		case '_', '-', '.', ' ':
-			return -1
-		default:
-			return r
-		}
-	}, strings.ToLower(strings.TrimSpace(key)))
-	if compact == "" {
-		return false
-	}
-	return compact == "token" ||
-		strings.HasSuffix(compact, "token") ||
-		strings.Contains(compact, "apikey") ||
-		strings.Contains(compact, "secret") ||
-		strings.Contains(compact, "password") ||
-		strings.Contains(compact, "authorization")
-}
-
-func redactSecretValue(value any) any {
-	switch typed := value.(type) {
-	case string:
-		if strings.TrimSpace(typed) == "" {
-			return typed
-		}
-		return "[REDACTED]"
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = redactSecretValue(item)
-		}
-		return out
-	case []string:
-		out := make([]string, len(typed))
-		for i, item := range typed {
-			if strings.TrimSpace(item) == "" {
-				out[i] = item
-			} else {
-				out[i] = "[REDACTED]"
-			}
-		}
-		return out
-	case nil:
-		return nil
-	default:
-		return "[REDACTED]"
-	}
-}
-
-var (
-	privateKeyBlockPattern = regexp.MustCompile(`(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
-	bearerTokenPattern     = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}`)
-	jsonSecretPattern      = regexp.MustCompile(`(?i)("(?:[^"]*(?:api[_-]?key|token|secret|password)[^"]*)"\s*:\s*")([^"]{8,})(")`)
-	envSecretPattern       = regexp.MustCompile(`(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*[:=]\s*["']?([^\s"']{8,})["']?`)
-)
-
-func redactSecretText(text string) string {
-	if strings.TrimSpace(text) == "" {
-		return text
-	}
-	text = privateKeyBlockPattern.ReplaceAllString(text, "[REDACTED PRIVATE KEY]")
-	text = bearerTokenPattern.ReplaceAllString(text, "Bearer [REDACTED]")
-	text = jsonSecretPattern.ReplaceAllString(text, `${1}[REDACTED]$3`)
-	text = envSecretPattern.ReplaceAllStringFunc(text, func(match string) string {
-		sep := strings.IndexAny(match, "=:")
-		if sep < 0 {
-			return "[REDACTED]"
-		}
-		return strings.TrimSpace(match[:sep]) + match[sep:sep+1] + "[REDACTED]"
-	})
-	return text
 }
 
 func summarizeLatestMessages(messages []session.Message) []string {

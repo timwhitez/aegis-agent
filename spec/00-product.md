@@ -173,6 +173,7 @@ session、state、messages、events、todo、tasks 都必须落盘。恢复依�
 - 工具输出分层截断
 - 长会话要 compaction
 - compaction 不覆盖原始日志
+- compaction 只做上下文规模控制，不默认执行报告、prompt、session 或 provider view 脱敏；如需脱敏，由用户在当轮 prompt 中明确要求
 
 ### 6.6 扩展面服从主路径
 

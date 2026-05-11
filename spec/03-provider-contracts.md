@@ -74,6 +74,7 @@ ProviderAdapter
 - `provider_response_id` 在上游响应提供稳定 id 时应尽量填充；若协议形状确实没有，则允许为空，但不要默默丢掉已存在的上游 id。
 - `thinking` 是面向本地 UI / session 浏览的可读推理摘要；不得把它当成跨 provider 的 replay 原语。
 - `provider_content_blocks` 保存 provider adapter 认为后续 replay 必须原样带回的 provider-native content blocks，例如 OpenAI encrypted reasoning item、Anthropic thinking signature / redacted thinking block、Gemini thoughtSignature 等；它是 session 文件事实的一部分，但仍由 adapter 独占解释，CLI / Web / tool 层不得硬编码 provider replay 逻辑。
+- 本文中的 `redacted_thinking` / redacted thinking block 是 Anthropic 协议里的上游 block 类型名称，不代表本项目要对本地报告、prompt、session、compaction 或 provider view 执行默认脱敏。
 - `raw_provider` 至少应保留一个统一键 `provider_stop_reason`，并保留原始来源键（例如 `status`、`stop_reason`、`finish_reason`）供跨 provider 诊断。
 - `raw_provider.thinking_strategy` 记录 adapter 本轮实际采用的 thinking / reasoning 请求策略，例如 OpenAI Responses summary、Anthropic-compatible manual budget、Google thinking budget 或 provider default；它是诊断观测字段，不要求 CLI / Web 层据此构造 replay。
 - 当 session metadata 中的 `provider_options.raw_sidecar=true` 时，runtime 会把本次 turn 的诊断 envelope 另存为 `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json`。该 sidecar 只包含 provider、model、turn、timestamp、provider_response_id、内部归一化 `stop_reason` 和 adapter 已选择的 raw provider items；它只用于 replay 诊断和审计，不替代 `messages.jsonl` / `events.jsonl`，也不要求 CLI 或 Web 用 provider-native item 续跑。
