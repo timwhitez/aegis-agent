@@ -68,6 +68,30 @@ func TestWriteDeniedAllowsNormalWorkspaceFile(t *testing.T) {
 	}
 }
 
+func TestWriteDeniedSensitiveSymlinkAlias(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "git-real"), 0o700); err != nil {
+		t.Fatalf("mkdir git-real: %v", err)
+	}
+	if err := os.Symlink("git-real", filepath.Join(root, ".git")); err != nil {
+		t.Fatalf("symlink .git: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, ".git/config")
+	if err != nil {
+		t.Fatalf("resolve symlink alias: %v", err)
+	}
+	if strings.Contains(filepath.ToSlash(resolved), "/.git/") {
+		t.Fatalf("expected symlink to resolve away from .git alias, got %s", resolved)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err != nil {
+		t.Fatalf("resolved path alone should not carry lexical alias, got %v", err)
+	}
+	err = CheckWorkspaceWriteInputAllowed(root, ".git/config")
+	if err == nil || !strings.Contains(err.Error(), ".git/") {
+		t.Fatalf("expected lexical .git alias to be denied, got %v", err)
+	}
+}
+
 func assertWriteDenied(t *testing.T, inputPath, pattern string) {
 	t.Helper()
 	root := t.TempDir()
@@ -75,7 +99,10 @@ func assertWriteDenied(t *testing.T, inputPath, pattern string) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	err = CheckWorkspaceWriteAllowed(root, path)
+	err = CheckWorkspaceWriteInputAllowed(root, inputPath)
+	if err == nil {
+		err = CheckWorkspaceWriteAllowed(root, path)
+	}
 	if err == nil {
 		t.Fatalf("expected %s to be denied", inputPath)
 	}

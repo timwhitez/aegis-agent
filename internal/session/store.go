@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"go-cli-agent/internal/events"
+	"golang.org/x/sys/unix"
 )
 
 type Store struct {
@@ -29,6 +30,7 @@ type Store struct {
 const QueueRunningStaleAfter = 15 * time.Minute
 
 const queueRunningStaleAfter = QueueRunningStaleAfter
+const invalidStoreIDPathSegment = ".invalid-id"
 
 var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)
@@ -55,13 +57,45 @@ func (s *Store) EnsureRoot() error {
 }
 
 func (s *Store) SessionDir(sessionID string) string {
+	if validateStoreID("session", sessionID) != nil {
+		return filepath.Join(s.root, invalidStoreIDPathSegment)
+	}
 	return filepath.Join(s.root, sessionID)
+}
+
+func (s *Store) sessionPath(sessionID string, parts ...string) (string, error) {
+	if err := validateStoreID("session", sessionID); err != nil {
+		return "", err
+	}
+	components := append([]string{s.root, sessionID}, parts...)
+	return filepath.Join(components...), nil
+}
+
+func (s *Store) withFileLock(lockPath string, fn func() error) error {
+	if err := s.ensureDir(filepath.Dir(lockPath)); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, s.fileMode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	}()
+	return fn()
 }
 
 func (s *Store) Create(meta SessionMetadata, state State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := validateStoreID("session", meta.ID); err != nil {
+		return err
+	}
 	if err := s.EnsureRoot(); err != nil {
 		return err
 	}
@@ -96,46 +130,72 @@ func (s *Store) Create(meta SessionMetadata, state State) error {
 
 func (s *Store) LoadMetadata(sessionID string) (SessionMetadata, error) {
 	var meta SessionMetadata
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "session.json"), &meta)
+	path, err := s.sessionPath(sessionID, "session.json")
+	if err != nil {
+		return meta, err
+	}
+	err = readJSONFile(path, &meta)
 	return meta, err
 }
 
 func (s *Store) SaveMetadata(sessionID string, meta SessionMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "session.json"), meta)
+	path, err := s.sessionPath(sessionID, "session.json")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONFile(path, meta)
 }
 
 func (s *Store) LoadState(sessionID string) (State, error) {
 	var state State
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "state.json"), &state)
+	path, err := s.sessionPath(sessionID, "state.json")
+	if err != nil {
+		return state, err
+	}
+	err = readJSONFile(path, &state)
 	return state, err
 }
 
 func (s *Store) SaveState(sessionID string, state State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "state.json")
+	if err != nil {
+		return err
+	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "state.json"), state)
+	return s.writeJSONFile(path, state)
 }
 
 func (s *Store) AppendMessage(sessionID string, message Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "messages.jsonl"), message)
+	path, err := s.sessionPath(sessionID, "messages.jsonl")
+	if err != nil {
+		return err
+	}
+	return s.appendJSONL(path, message)
 }
 
 func (s *Store) LoadMessages(sessionID string) ([]Message, error) {
-	path := filepath.Join(s.SessionDir(sessionID), "messages.jsonl")
+	path, err := s.sessionPath(sessionID, "messages.jsonl")
+	if err != nil {
+		return nil, err
+	}
 	var out []Message
-	err := readJSONL(path, &out)
+	err = readJSONL(path, &out)
 	return out, err
 }
 
 func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
-	path := filepath.Join(s.SessionDir(sessionID), "events.jsonl")
+	path, err := s.sessionPath(sessionID, "events.jsonl")
+	if err != nil {
+		return nil, err
+	}
 	var out []events.Event
-	err := readJSONL(path, &out)
+	err = readJSONL(path, &out)
 	if errors.Is(err, os.ErrNotExist) {
 		return []events.Event{}, nil
 	}
@@ -144,25 +204,41 @@ func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
 
 func (s *Store) LoadContract(sessionID string) (SessionContract, error) {
 	var contract SessionContract
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "contract.json"), &contract)
+	path, err := s.sessionPath(sessionID, "contract.json")
+	if err != nil {
+		return contract, err
+	}
+	err = readJSONFile(path, &contract)
 	return contract, err
 }
 
 func (s *Store) SaveContract(sessionID string, contract SessionContract) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "contract.json"), contract)
+	path, err := s.sessionPath(sessionID, "contract.json")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONFile(path, contract)
 }
 
 func (s *Store) AppendContractHistory(sessionID string, contract SessionContract) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "artifacts", "contract-history.jsonl"), contract)
+	path, err := s.sessionPath(sessionID, "artifacts", "contract-history.jsonl")
+	if err != nil {
+		return err
+	}
+	return s.appendJSONL(path, contract)
 }
 
 func (s *Store) LoadArtifactTracker(sessionID string) ([]RequiredArtifact, error) {
 	var artifacts []RequiredArtifact
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "artifact-tracker.json"), &artifacts)
+	path, err := s.sessionPath(sessionID, "artifact-tracker.json")
+	if err != nil {
+		return nil, err
+	}
+	err = readJSONFile(path, &artifacts)
 	if errors.Is(err, os.ErrNotExist) {
 		return []RequiredArtifact{}, nil
 	}
@@ -172,19 +248,30 @@ func (s *Store) LoadArtifactTracker(sessionID string) ([]RequiredArtifact, error
 func (s *Store) SaveArtifactTracker(sessionID string, artifacts []RequiredArtifact) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "artifact-tracker.json"), artifacts)
+	path, err := s.sessionPath(sessionID, "artifact-tracker.json")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONFile(path, artifacts)
 }
 
 func (s *Store) AppendProviderAttempt(sessionID string, attempt ProviderAttempt) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "provider-attempts.jsonl"), attempt)
+	path, err := s.sessionPath(sessionID, "provider-attempts.jsonl")
+	if err != nil {
+		return err
+	}
+	return s.appendJSONL(path, attempt)
 }
 
 func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error) {
-	path := filepath.Join(s.SessionDir(sessionID), "provider-attempts.jsonl")
+	path, err := s.sessionPath(sessionID, "provider-attempts.jsonl")
+	if err != nil {
+		return nil, err
+	}
 	var out []ProviderAttempt
-	err := readJSONL(path, &out)
+	err = readJSONL(path, &out)
 	if errors.Is(err, os.ErrNotExist) {
 		return []ProviderAttempt{}, nil
 	}
@@ -194,18 +281,26 @@ func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error
 func (s *Store) SaveProviderRawSidecar(sessionID string, sidecar ProviderRawSidecar) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "provider-raw", fmt.Sprintf("%d.json", sidecar.Turn))
+	if err != nil {
+		return err
+	}
 	if sidecar.SchemaVersion == 0 {
 		sidecar.SchemaVersion = 1
 	}
 	if strings.TrimSpace(sidecar.Timestamp) == "" {
 		sidecar.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	return s.writeJSONFile(s.ProviderRawSidecarPath(sessionID, sidecar.Turn), sidecar)
+	return s.writeJSONFile(path, sidecar)
 }
 
 func (s *Store) LoadProviderRawSidecar(sessionID string, turn int) (ProviderRawSidecar, error) {
 	var sidecar ProviderRawSidecar
-	err := readJSONFile(s.ProviderRawSidecarPath(sessionID, turn), &sidecar)
+	path, err := s.sessionPath(sessionID, "provider-raw", fmt.Sprintf("%d.json", turn))
+	if err != nil {
+		return sidecar, err
+	}
+	err = readJSONFile(path, &sidecar)
 	return sidecar, err
 }
 
@@ -215,43 +310,71 @@ func (s *Store) ProviderRawSidecarPath(sessionID string, turn int) string {
 
 func (s *Store) LoadLongRunCheckpoint(sessionID string) (LongRunCheckpoint, error) {
 	var checkpoint LongRunCheckpoint
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "checkpoints", "longrun-latest.json"), &checkpoint)
+	path, err := s.sessionPath(sessionID, "checkpoints", "longrun-latest.json")
+	if err != nil {
+		return checkpoint, err
+	}
+	err = readJSONFile(path, &checkpoint)
 	return checkpoint, err
 }
 
 func (s *Store) SaveLongRunCheckpoint(sessionID string, checkpoint LongRunCheckpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "checkpoints", "longrun-latest.json"), checkpoint)
+	path, err := s.sessionPath(sessionID, "checkpoints", "longrun-latest.json")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONFile(path, checkpoint)
 }
 
 func (s *Store) LoadParentCoordination(sessionID string) (ParentCoordination, error) {
 	var coordination ParentCoordination
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "parent-coordination.json"), &coordination)
+	path, err := s.sessionPath(sessionID, "parent-coordination.json")
+	if err != nil {
+		return coordination, err
+	}
+	err = readJSONFile(path, &coordination)
 	return coordination, err
 }
 
 func (s *Store) SaveParentCoordination(sessionID string, coordination ParentCoordination) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "parent-coordination.json"), coordination)
+	path, err := s.sessionPath(sessionID, "parent-coordination.json")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONFile(path, coordination)
 }
 
 func (s *Store) WriteSessionMarkdown(sessionID string, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeBytesFile(filepath.Join(s.SessionDir(sessionID), "session.md"), []byte(content))
+	path, err := s.sessionPath(sessionID, "session.md")
+	if err != nil {
+		return err
+	}
+	return s.writeBytesFile(path, []byte(content))
 }
 
 func (s *Store) AppendEvent(sessionID string, event events.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "events.jsonl"), event)
+	path, err := s.sessionPath(sessionID, "events.jsonl")
+	if err != nil {
+		return err
+	}
+	return s.appendJSONL(path, event)
 }
 
 func (s *Store) LoadTodo(sessionID string) ([]TodoItem, error) {
 	var todo []TodoItem
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "todo.json"), &todo)
+	path, err := s.sessionPath(sessionID, "todo.json")
+	if err != nil {
+		return nil, err
+	}
+	err = readJSONFile(path, &todo)
 	if errors.Is(err, os.ErrNotExist) {
 		return []TodoItem{}, nil
 	}
@@ -264,19 +387,36 @@ func (s *Store) SaveTodo(sessionID string, todo []TodoItem) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONFile(filepath.Join(s.SessionDir(sessionID), "todo.json"), todo)
+	path, err := s.sessionPath(sessionID, "todo.json")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONFile(path, todo)
 }
 
 func (s *Store) AppendSteerRequest(sessionID string, request SteerRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "control", "steer.jsonl"), request)
+	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
+	if err != nil {
+		return err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "steer.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		return s.appendJSONL(path, request)
+	})
 }
 
 func (s *Store) LoadSteerRequests(sessionID string) ([]SteerRequest, error) {
-	path := filepath.Join(s.SessionDir(sessionID), "control", "steer.jsonl")
+	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
+	if err != nil {
+		return nil, err
+	}
 	var out []SteerRequest
-	err := readJSONL(path, &out)
+	err = readJSONL(path, &out)
 	if errors.Is(err, os.ErrNotExist) {
 		return []SteerRequest{}, nil
 	}
@@ -286,21 +426,46 @@ func (s *Store) LoadSteerRequests(sessionID string) ([]SteerRequest, error) {
 func (s *Store) UpdateSteerRequests(sessionID string, requests []SteerRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONL(filepath.Join(s.SessionDir(sessionID), "control", "steer.jsonl"), requests)
+	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
+	if err != nil {
+		return err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "steer.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		var current []SteerRequest
+		err := readJSONL(path, &current)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if len(current) > 0 {
+			requests = mergeSteerRequests(requests, current)
+		}
+		return s.writeJSONL(path, requests)
+	})
 }
 
 func (s *Store) AppendBackgroundNotification(sessionID string, notification BackgroundNotification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendJSONL(filepath.Join(s.SessionDir(sessionID), "control", "background.jsonl"), notification)
+	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
+	if err != nil {
+		return err
+	}
+	return s.appendJSONL(path, notification)
 }
 
 func (s *Store) EnsureBackgroundNotification(sessionID string, notification BackgroundNotification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.SessionDir(sessionID), "control", "background.jsonl")
+	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
+	if err != nil {
+		return err
+	}
 	var existing []BackgroundNotification
-	err := readJSONL(path, &existing)
+	err = readJSONL(path, &existing)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -315,9 +480,12 @@ func (s *Store) EnsureBackgroundNotification(sessionID string, notification Back
 }
 
 func (s *Store) LoadBackgroundNotifications(sessionID string) ([]BackgroundNotification, error) {
-	path := filepath.Join(s.SessionDir(sessionID), "control", "background.jsonl")
+	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
+	if err != nil {
+		return nil, err
+	}
 	var out []BackgroundNotification
-	err := readJSONL(path, &out)
+	err = readJSONL(path, &out)
 	if errors.Is(err, os.ErrNotExist) {
 		return []BackgroundNotification{}, nil
 	}
@@ -327,7 +495,11 @@ func (s *Store) LoadBackgroundNotifications(sessionID string) ([]BackgroundNotif
 func (s *Store) UpdateBackgroundNotifications(sessionID string, notifications []BackgroundNotification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeJSONL(filepath.Join(s.SessionDir(sessionID), "control", "background.jsonl"), notifications)
+	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONL(path, notifications)
 }
 
 func (s *Store) PendingBackgroundNotifications(sessionID string) ([]BackgroundNotification, error) {
@@ -513,18 +685,34 @@ func (s *Store) NextTaskID(sessionID string) (string, error) {
 func (s *Store) SaveTask(sessionID string, task Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.SessionDir(sessionID), "tasks", task.ID+".json")
+	if err := validateStoreID("task", task.ID); err != nil {
+		return err
+	}
+	path, err := s.sessionPath(sessionID, "tasks", task.ID+".json")
+	if err != nil {
+		return err
+	}
 	return s.writeJSONFile(path, task)
 }
 
 func (s *Store) GetTask(sessionID, taskID string) (Task, error) {
 	var task Task
-	err := readJSONFile(filepath.Join(s.SessionDir(sessionID), "tasks", taskID+".json"), &task)
+	if err := validateStoreID("task", taskID); err != nil {
+		return task, err
+	}
+	path, err := s.sessionPath(sessionID, "tasks", taskID+".json")
+	if err != nil {
+		return task, err
+	}
+	err = readJSONFile(path, &task)
 	return task, err
 }
 
 func (s *Store) ListTasks(sessionID string) ([]Task, error) {
-	dir := filepath.Join(s.SessionDir(sessionID), "tasks")
+	dir, err := s.sessionPath(sessionID, "tasks")
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -551,11 +739,17 @@ func (s *Store) ListTasks(sessionID string) ([]Task, error) {
 func (s *Store) SaveTasks(sessionID string, tasks []Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dir := filepath.Join(s.SessionDir(sessionID), "tasks")
+	dir, err := s.sessionPath(sessionID, "tasks")
+	if err != nil {
+		return err
+	}
 	if err := s.ensureDir(dir); err != nil {
 		return err
 	}
 	for _, task := range tasks {
+		if err := validateStoreID("task", task.ID); err != nil {
+			return err
+		}
 		path := filepath.Join(dir, task.ID+".json")
 		if err := s.writeJSONFile(path, task); err != nil {
 			return err
@@ -578,8 +772,8 @@ func (s *Store) SaveJob(job QueueJob) error {
 }
 
 func (s *Store) saveJobLocked(job QueueJob) error {
-	if strings.TrimSpace(job.ID) == "" {
-		return errors.New("job id is required")
+	if err := validateStoreID("queue job", job.ID); err != nil {
+		return err
 	}
 	if strings.TrimSpace(job.Status) == "" {
 		job.Status = QueueStatusQueued
@@ -614,6 +808,9 @@ func (s *Store) saveJobLocked(job QueueJob) error {
 
 func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 	var job QueueJob
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return job, err
+	}
 	for _, status := range queueStatuses() {
 		path := s.queueJobPath(status, jobID)
 		err := readJSONFile(path, &job)
@@ -710,9 +907,6 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 }
 
 func (s *Store) DeleteSessionTree(sessionID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if _, err := s.LoadMetadata(sessionID); err != nil {
 		return err
 	}
@@ -735,14 +929,22 @@ func (s *Store) DeleteSessionTree(sessionID string) error {
 			}
 		}
 	}
-	for id := range targets {
-		if err := os.RemoveAll(s.SessionDir(id)); err != nil {
-			return err
-		}
-	}
 	jobs, err := s.listJobs(0, "")
 	if err != nil {
 		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for id := range targets {
+		path, err := s.sessionPath(id)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
 	}
 	for _, job := range jobs {
 		if _, ok := targets[job.ParentSessionID]; ok {
@@ -789,6 +991,9 @@ func (s *Store) ClearHistory() error {
 }
 
 func (s *Store) deleteJobLocked(jobID string) error {
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return err
+	}
 	for _, status := range queueStatuses() {
 		path := s.queueJobPath(status, jobID)
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -858,6 +1063,9 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return QueueJob{}, err
+	}
 	if err := s.ensureQueueDirs(); err != nil {
 		return QueueJob{}, err
 	}
@@ -881,7 +1089,10 @@ func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 func (s *Store) WriteArtifact(sessionID, relativePath string, payload any) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.SessionDir(sessionID), "artifacts", relativePath)
+	path, err := s.sessionPath(sessionID, "artifacts", relativePath)
+	if err != nil {
+		return "", err
+	}
 	if err := s.writeJSONFile(path, payload); err != nil {
 		return "", err
 	}
@@ -891,7 +1102,10 @@ func (s *Store) WriteArtifact(sessionID, relativePath string, payload any) (stri
 func (s *Store) WriteTranscript(sessionID, name string, messages []Message) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.SessionDir(sessionID), "artifacts", "transcripts", name)
+	path, err := s.sessionPath(sessionID, "artifacts", "transcripts", name)
+	if err != nil {
+		return "", err
+	}
 	if err := s.writeJSONL(path, messages); err != nil {
 		return "", err
 	}
@@ -1495,6 +1709,44 @@ func validateTodo(todo []TodoItem) error {
 		return errors.New("only one todo may be in_progress")
 	}
 	return nil
+}
+
+func validateStoreID(kind, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%s id is required", kind)
+	}
+	if strings.TrimSpace(id) != id {
+		return fmt.Errorf("invalid %s id %q: leading or trailing whitespace is not allowed", kind, id)
+	}
+	lower := strings.ToLower(id)
+	if id == "." || id == ".." || filepath.IsAbs(id) || strings.ContainsAny(id, `/\`) || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+		return fmt.Errorf("invalid %s id %q: path separators and traversal are not allowed", kind, id)
+	}
+	return nil
+}
+
+func mergeSteerRequests(updated, current []SteerRequest) []SteerRequest {
+	byID := make(map[string]SteerRequest, len(updated))
+	for _, request := range updated {
+		byID[request.ID] = request
+	}
+	seen := make(map[string]struct{}, len(current))
+	merged := make([]SteerRequest, 0, len(current)+len(updated))
+	for _, request := range current {
+		if replacement, ok := byID[request.ID]; ok {
+			merged = append(merged, replacement)
+		} else {
+			merged = append(merged, request)
+		}
+		seen[request.ID] = struct{}{}
+	}
+	for _, request := range updated {
+		if _, ok := seen[request.ID]; ok {
+			continue
+		}
+		merged = append(merged, request)
+	}
+	return merged
 }
 
 func newRecordID(prefix string) string {

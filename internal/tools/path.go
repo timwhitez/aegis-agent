@@ -98,6 +98,25 @@ func CheckWorkspaceWriteAllowed(workdir, resolvedPath string) error {
 		return err
 	}
 	displayPath := filepath.ToSlash(rel)
+	return checkWorkspaceWriteDisplayPath(displayPath, filepath.Base(resolvedPath))
+}
+
+func CheckWorkspaceWriteInputAllowed(workdir, inputPath string) error {
+	displayPath := filepath.Clean(inputPath)
+	if filepath.IsAbs(displayPath) {
+		base, err := filepath.Abs(workdir)
+		if err != nil {
+			return err
+		}
+		if rel, err := filepath.Rel(base, displayPath); err == nil {
+			displayPath = rel
+		}
+	}
+	displayPath = filepath.ToSlash(displayPath)
+	return checkWorkspaceWriteDisplayPath(displayPath, pathBaseFromSlash(displayPath))
+}
+
+func checkWorkspaceWriteDisplayPath(displayPath, baseName string) error {
 	parts := strings.Split(displayPath, "/")
 	for _, part := range parts {
 		for _, denied := range deniedWorkspaceWriteDirs {
@@ -106,11 +125,18 @@ func CheckWorkspaceWriteAllowed(workdir, resolvedPath string) error {
 			}
 		}
 	}
-	baseName := filepath.Base(resolvedPath)
 	for _, denied := range deniedWorkspaceWriteFiles {
 		if baseName == denied {
 			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, denied)
 		}
 	}
 	return nil
+}
+
+func pathBaseFromSlash(path string) string {
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 {
+		return path
+	}
+	return parts[len(parts)-1]
 }

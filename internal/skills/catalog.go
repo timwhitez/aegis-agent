@@ -54,14 +54,19 @@ func Scan(dirs []string) (*Catalog, error) {
 			}
 			return nil, err
 		}
-		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		rootReal, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return nil, err
+		}
+		rootReal = filepath.Clean(rootReal)
+		err = filepath.WalkDir(rootReal, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if d.IsDir() || d.Name() != "SKILL.md" {
 				return nil
 			}
-			skill, loadErr := loadSkill(path)
+			skill, loadErr := loadSkill(rootReal, path)
 			if loadErr != nil {
 				return loadErr
 			}
@@ -147,8 +152,13 @@ func (c *Catalog) CommandTools() []CommandTool {
 	return out
 }
 
-func loadSkill(path string) (Skill, error) {
-	data, err := os.ReadFile(path)
+func loadSkill(rootReal, path string) (Skill, error) {
+	skillDir := filepath.Dir(path)
+	skillDirReal, err := filepath.EvalSymlinks(skillDir)
+	if err != nil {
+		return Skill{}, err
+	}
+	data, realPath, err := readCatalogFile(rootReal, skillDirReal, path)
 	if err != nil {
 		return Skill{}, err
 	}
@@ -165,25 +175,32 @@ func loadSkill(path string) (Skill, error) {
 	if description == "" {
 		description = "No description"
 	}
-	tools, err := loadTools(filepath.Join(filepath.Dir(path), "tools"), name, path)
+	tools, err := loadTools(rootReal, skillDirReal, filepath.Join(skillDir, "tools"), name, realPath)
 	if err != nil {
 		return Skill{}, err
 	}
 	return Skill{
 		Name:        name,
 		Description: description,
-		Path:        path,
+		Path:        realPath,
 		Body:        "",
 		Tools:       tools,
 	}, nil
 }
 
-func loadTools(dir, skillName, skillPath string) ([]CommandTool, error) {
-	entries, err := os.ReadDir(dir)
+func loadTools(rootReal, skillDirReal, dir, skillName, skillPath string) ([]CommandTool, error) {
+	toolDirReal, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []CommandTool{}, nil
 		}
+		return nil, err
+	}
+	if !pathWithin(rootReal, toolDirReal) || !pathWithin(skillDirReal, toolDirReal) {
+		return nil, fmt.Errorf("skill tools directory escapes skill root: %s", dir)
+	}
+	entries, err := os.ReadDir(toolDirReal)
+	if err != nil {
 		return nil, err
 	}
 	var out []CommandTool
@@ -191,7 +208,7 @@ func loadTools(dir, skillName, skillPath string) ([]CommandTool, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		data, _, err := readCatalogFile(rootReal, toolDirReal, filepath.Join(toolDirReal, entry.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -208,6 +225,35 @@ func loadTools(dir, skillName, skillPath string) ([]CommandTool, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func readCatalogFile(rootReal, allowedDirReal, path string) ([]byte, string, error) {
+	if _, err := os.Lstat(path); err != nil {
+		return nil, "", err
+	}
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, "", err
+	}
+	realPath = filepath.Clean(realPath)
+	if !pathWithin(rootReal, realPath) || !pathWithin(allowedDirReal, realPath) {
+		return nil, "", fmt.Errorf("skill catalog file escapes skill root: %s", path)
+	}
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, realPath, nil
+}
+
+func pathWithin(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
 }
 
 func parseFrontmatter(text string) (map[string]string, string, error) {

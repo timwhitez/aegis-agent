@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go-cli-agent/internal/config"
@@ -102,6 +103,64 @@ func TestManagerEmitsCommandExitCodeOnFailure(t *testing.T) {
 	}
 	if failed["command_exit_code"] != 3 {
 		t.Fatalf("expected exit code 3, got %#v", failed["command_exit_code"])
+	}
+}
+
+func TestManagerTruncatesLargeHookCommandOutput(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name:    "large-output",
+				Command: []string{"/bin/sh", "-c", "yes A | head -n 20000"},
+			},
+		},
+	}, t.TempDir())
+
+	var command map[string]any
+	manager.SetEmitter(func(eventType string, data map[string]any) {
+		if eventType == "hook.command" {
+			command = data
+		}
+	})
+
+	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if command == nil {
+		t.Fatal("expected hook.command event")
+	}
+	output, _ := command["output"].(string)
+	if len(output) > hookCommandOutputLimit || !strings.Contains(output, "truncated") {
+		t.Fatalf("expected truncated output, got len=%d output suffix=%q", len(output), output[max(0, len(output)-32):])
+	}
+	if command["truncated"] != true || command["raw_length"] == nil || command["exit_code"] != 0 || command["timeout"] != false {
+		t.Fatalf("expected structured truncation metadata, got %#v", command)
+	}
+}
+
+func TestManagerEmitsHookCommandTimeoutMetadata(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name:       "timeout",
+				Command:    []string{"/bin/sh", "-c", "sleep 2"},
+				TimeoutSec: 1,
+			},
+		},
+	}, t.TempDir())
+
+	var command map[string]any
+	manager.SetEmitter(func(eventType string, data map[string]any) {
+		if eventType == "hook.command" {
+			command = data
+		}
+	})
+
+	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err != nil {
+		t.Fatalf("fail-open timeout should preserve payload, got %v", err)
+	}
+	if command == nil || command["timeout"] != true || command["exit_code"] == nil || command["raw_length"] == nil || command["truncated"] == nil {
+		t.Fatalf("expected timeout command metadata, got %#v", command)
 	}
 }
 

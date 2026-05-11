@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -28,6 +29,10 @@ type Runner struct {
 	bus     *events.Bus
 	control *runControl
 	engine  *Engine
+
+	activeMu        sync.Mutex
+	activeSessionID string
+	activeDepth     int
 }
 
 const defaultSteerMaxMessageChars = 12000
@@ -68,6 +73,32 @@ func NewRunner(cfg *config.Config) *Runner {
 }
 
 func (r *Runner) Bus() *events.Bus { return r.bus }
+
+func (r *Runner) acquireRunSlot(sessionID string) (func(), error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	if r.activeSessionID != "" && r.activeSessionID != sessionID {
+		return nil, fmt.Errorf("runner already has active session %s; create a separate runner for concurrent sessions", r.activeSessionID)
+	}
+	r.activeSessionID = sessionID
+	r.activeDepth++
+	return func() {
+		r.activeMu.Lock()
+		defer r.activeMu.Unlock()
+		if r.activeSessionID != sessionID {
+			return
+		}
+		r.activeDepth--
+		if r.activeDepth <= 0 {
+			r.activeSessionID = ""
+			r.activeDepth = 0
+		}
+	}, nil
+}
 
 type StartRequest struct {
 	Prompt          string
@@ -146,6 +177,11 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	}
 	mode := normalizeRunMode(req.Mode, session.ModeRun)
 	sessionID := session.NewSessionID()
+	releaseRunSlot, err := r.acquireRunSlot(sessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer releaseRunSlot()
 	rootSessionID := sessionID
 	depth := 0
 	var parentMeta *session.SessionMetadata
@@ -381,6 +417,11 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	default:
 		return RunResult{}, errors.New("session is not resumable")
 	}
+	releaseRunSlot, err := r.acquireRunSlot(meta.ID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer releaseRunSlot()
 	if req.Provider != "" {
 		meta.Provider = req.Provider
 		providerCfg, err := r.cfg.ProviderConfig(req.Provider)
@@ -543,6 +584,7 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		}
 	}
 	reasoningSummary := strings.TrimSpace(firstNonEmpty(req.ReasoningSummary, providerCfg.ReasoningSummary))
+	apiProvider, _ := config.EffectiveAPIProvider(providerName, providerCfg)
 	result, err := adapter.RunTurn(ctx, provider.TurnRequest{
 		SessionID:    "probe",
 		Model:        model,
@@ -554,19 +596,18 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		Temperature:      providerCfg.Temperature,
 		TopP:             providerCfg.TopP,
 		MaxOutputTokens:  providerCfg.MaxOutputTokens,
-		APIProvider:      strings.TrimSpace(providerCfg.APIProvider),
+		APIProvider:      apiProvider,
 		ReasoningEffort:  strings.TrimSpace(providerCfg.ReasoningEffort),
 		ReasoningSummary: reasoningSummary,
 		TextVerbosity:    strings.TrimSpace(providerCfg.TextVerbosity),
 		ThinkingBudget:   providerCfg.ThinkingBudget,
 		IncludeThoughts:  providerCfg.IncludeThoughts,
-		Store:            defaultStoreForProvider(providerName, providerCfg.Store),
+		Store:            defaultStoreForAPIProvider(apiProvider, providerCfg.Store),
 	}, func(string, map[string]any) {})
 	if err != nil {
 		return ProbeResult{}, WrapProviderError(err)
 	}
 
-	apiProvider, _ := config.EffectiveAPIProvider(providerName, providerCfg)
 	out := ProbeResult{
 		Provider:         providerName,
 		Model:            model,
@@ -1009,7 +1050,7 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 		TextVerbosity:    strings.TrimSpace(cfg.TextVerbosity),
 		ThinkingBudget:   cfg.ThinkingBudget,
 		IncludeThoughts:  cfg.IncludeThoughts,
-		Store:            defaultStoreForProvider(name, cfg.Store),
+		Store:            defaultStoreForAPIProvider(apiProvider, cfg.Store),
 		SendMetadata:     cfg.SendMetadata,
 		RawSidecar:       cfg.RawSidecar,
 		RetryPolicy:      providerRetryPolicy(cfg),
@@ -1017,12 +1058,11 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 	}
 }
 
-func defaultStoreForProvider(name string, configured *bool) *bool {
+func defaultStoreForAPIProvider(apiProvider string, configured *bool) *bool {
 	if configured != nil {
 		return configured
 	}
-	apiProvider, err := config.EffectiveAPIProvider(name, config.Provider{})
-	if err == nil && apiProvider == "openai-compatible" {
+	if strings.TrimSpace(apiProvider) == "openai-compatible" {
 		value := false
 		return &value
 	}

@@ -342,6 +342,9 @@ func TestTasksCommandRendersTaskBoard(t *testing.T) {
 	fake.taskBoard = session.TaskBoard{
 		Todo: []session.TodoItem{{Content: "Audit provider", Status: "in_progress"}},
 		Groups: map[string][]session.Task{
+			"in_progress": {
+				{ID: "task_0000", Subject: "Active implementation"},
+			},
 			"ready": {
 				{ID: "task_0001", Subject: "Implement hook tests"},
 			},
@@ -358,7 +361,7 @@ func TestTasksCommandRendersTaskBoard(t *testing.T) {
 	if err := Run(context.Background(), []string{"tasks", "s1"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "Audit provider") || !strings.Contains(stdout.String(), "Implement hook tests") {
+	if !strings.Contains(stdout.String(), "Audit provider") || !strings.Contains(stdout.String(), "Active implementation") || !strings.Contains(stdout.String(), "Implement hook tests") {
 		t.Fatalf("unexpected output: %s", stdout.String())
 	}
 }
@@ -450,6 +453,29 @@ func TestProbeProviderCommandRendersJSONErrorAndExitStatus(t *testing.T) {
 		!strings.Contains(stdout.String(), `"wire_api":"responses"`) ||
 		!strings.Contains(stdout.String(), `"error":"provider unavailable"`) {
 		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestProbeProviderCommandNonJSONErrorDoesNotPrintEmptySuccessFields(t *testing.T) {
+	fake := newFakeRunner()
+	fake.probeErr = errors.New("provider unavailable")
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"probe-provider"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected probe error")
+	}
+	if strings.Contains(stdout.String(), "provider:") || strings.Contains(stdout.String(), "stop_reason:") {
+		t.Fatalf("expected no success-looking stdout fields, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "probe failed: provider unavailable") {
+		t.Fatalf("expected stderr probe failure, got %q", stderr.String())
 	}
 }
 

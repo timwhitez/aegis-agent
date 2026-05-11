@@ -136,3 +136,17 @@ func TestTaskUpdateRemovesReverseEdges(t *testing.T) {
 		t.Fatalf("expected blocked_by edge to be removed, got %#v", updatedSecond.BlockedBy)
 	}
 }
+
+func TestBuildTaskBoardIncludesInProgressGroup(t *testing.T) {
+	board := BuildTaskBoard(nil, []Task{
+		{ID: "task_0001", Subject: "active", Status: "in_progress"},
+		{ID: "task_0002", Subject: "ready", Status: "pending"},
+		{ID: "task_0003", Subject: "blocked", Status: "pending", BlockedBy: []string{"task_0001"}},
+	})
+	if board.Counters["in_progress"] != 1 {
+		t.Fatalf("expected one in_progress task, got counters %#v", board.Counters)
+	}
+	if len(board.Groups["in_progress"]) != 1 || board.Groups["in_progress"][0].ID != "task_0001" {
+		t.Fatalf("expected active task group, got %#v", board.Groups)
+	}
+}

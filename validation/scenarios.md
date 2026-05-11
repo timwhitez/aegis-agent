@@ -40,14 +40,14 @@
 除 26 场景主矩阵外，当前还保留一条长期稳定的 focused live 入口：
 
 - 脚本：`validation/run_experimental_webconsole_followup_validation.sh`
-- 当前稳定参考 run：`validation/runs/2026-03-27-openai-compatible-gpt-5.4-round54e-experimental-webconsole-followup-stable-proof/`
+- run 目录：默认写入 `validation/runs/<run-id>/`，该目录通常被 `.gitignore` 忽略；当前 checkout 不把某个历史 focused run 目录当作 tracked stable proof
 - 目的：在不重跑整轮 26 场景矩阵时，单独复核 `experimental web` 相关的高价值回归，包括 durable retry restore、embedded shell/assets、真实浏览器交互，以及 queue background notification dedup
 
 该 focused profile 的判定口径：
 
 - retry-resume proof 采用 evidence-first 规则：只要 durable session metadata 仍保留原始 `retry_policy.max_attempts=2`，且 resumed turn 真实写出 `provider.retry`，就视为 retry-drift 修复已被证实
 - 若上述 retry proof 已成立，而 bounded finish nudges 之后 session 仍停在 `awaiting_input`，应记录为 non-blocking completion quirk，而不是把 focused rerun 判成失败
-- webconsole 部分仍要求 embedded shell / JS / CSS 资产可直接加载，headless browser UI smoke 覆盖 start、continue、worker 更新、queue submit、queue view、queue-links 通知与 manual refresh，且浏览器侧无 `runtime exception` / `console error`
+- webconsole 部分仍要求 embedded shell / JS / CSS 资产可直接加载；当前 headless browser UI smoke 覆盖 Settings / Workspace / Skills / Sessions / Session 导航、主 prompt start、durable session chrome、tool cards、timeline 可见性、history clear、API-backed queue job 完成，以及 queue link 可用时的 selected job facts 面板；worker API、retry proof 与 queue notification dedup 由同一脚本的 API / 文件事实检查覆盖，浏览器侧仍要求无 `runtime exception` / `console error`
 - queue follow-up 仍要求在真实 queue 完成后强制一次 stale-running reconcile，并验证 parent `background.jsonl` 仍只有 2 条通知且 `queue_job_id` 去重成立
 
 ## 场景矩阵

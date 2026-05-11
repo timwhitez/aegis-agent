@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -219,15 +220,19 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := runtime.NewStoreView(cfg).Store()
+	serviceCfg, err := config.Clone(cfg)
+	if err != nil {
+		return nil, err
+	}
+	store := runtime.NewStoreView(serviceCfg).Store()
 	svc := &Service{
-		cfg:        cfg,
+		cfg:        serviceCfg,
 		configPath: opts.ConfigPath,
 		store:      store,
 		staticFS:   staticFS,
 		handles:    map[string]*launchHandle{},
 	}
-	svc.workers = newWorkerPool(cfg, opts.WorkerCount)
+	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount)
 	return svc, nil
 }
 
@@ -257,7 +262,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/meta":
-		writeJSON(w, http.StatusOK, s.meta())
+		meta, err := s.meta()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, meta)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/overview":
 		resp, err := s.overview()
 		if err != nil {
@@ -323,9 +333,19 @@ func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
 	serveEmbeddedFile(w, s.staticFS, "index.html")
 }
 
-func (s *Service) meta() MetaResponse {
-	providers := make([]ProviderMeta, 0, len(s.cfg.Providers))
-	for name, provider := range s.cfg.Providers {
+func (s *Service) configSnapshot() (*config.Config, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return config.Clone(s.cfg)
+}
+
+func (s *Service) meta() (MetaResponse, error) {
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		return MetaResponse{}, err
+	}
+	providers := make([]ProviderMeta, 0, len(cfg.Providers))
+	for name, provider := range cfg.Providers {
 		providers = append(providers, ProviderMeta{
 			Name:    name,
 			Model:   provider.Model,
@@ -338,13 +358,13 @@ func (s *Service) meta() MetaResponse {
 		SessionRoot:              s.store.Root(),
 		WorkspaceRoot:            workspaceRoot,
 		WorkspaceSwitchSupported: true,
-		DefaultMode:              s.cfg.Runtime.Isolation.DefaultMode,
-		QueuePollMS:              s.cfg.Runtime.Queue.PollIntervalMS,
+		DefaultMode:              cfg.Runtime.Isolation.DefaultMode,
+		QueuePollMS:              cfg.Runtime.Queue.PollIntervalMS,
 		WorkerCount:              s.workers.Snapshot().DesiredCount,
 		Capabilities:             []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks"},
-		DefaultVendor:            s.cfg.DefaultProvider,
+		DefaultVendor:            cfg.DefaultProvider,
 		Providers:                providers,
-	}
+	}, nil
 }
 
 func (s *Service) overview() (OverviewResponse, error) {
@@ -841,7 +861,11 @@ func isClientStartError(err error) bool {
 }
 
 func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error) {
-	runner := runtime.NewRunner(s.cfg)
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		return LaunchResponse{}, err
+	}
+	runner := runtime.NewRunner(cfg)
 	sub := runner.Bus().Subscribe(32)
 	runCtx, cancel := context.WithCancel(context.Background())
 	outcomeCh := make(chan launchOutcome, 1)
@@ -897,7 +921,12 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
 		return
 	}
-	runner := runtime.NewRunner(s.cfg)
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
 	s.addHandle(handle)
@@ -920,7 +949,12 @@ func (s *Service) handleSteerSession(w http.ResponseWriter, r *http.Request, ses
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	runner := runtime.NewRunner(s.cfg)
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	runner := runtime.NewRunner(cfg)
 	result, err := runner.Steer(r.Context(), runtime.SteerRequest{
 		SessionID: sessionID,
 		Message:   req.Message,
@@ -995,6 +1029,10 @@ func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleShowJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
 	jobID := strings.TrimPrefix(r.URL.Path, "/api/queue/jobs/")
 	if strings.TrimSpace(jobID) == "" {
 		writeError(w, http.StatusNotFound, errors.New("job route not found"))
@@ -1022,7 +1060,12 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("prompt is required"))
 		return
 	}
-	runner := runtime.NewRunner(s.cfg)
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	runner := runtime.NewRunner(cfg)
 	job, err := runner.QueueSubmit(r.Context(), runtime.QueueSubmitRequest{
 		ParentSessionID: req.ParentSessionID,
 		Prompt:          req.Prompt,
@@ -1280,17 +1323,20 @@ func resolveWorkspaceBrowserPath(workspaceRoot, browseRoot, requestedPath string
 }
 
 func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	provs := map[string]any{}
-	for name, p := range s.cfg.Providers {
+	for name, p := range cfg.Providers {
 		effectiveAPIProvider, _ := config.EffectiveAPIProvider(name, p)
 		provs[name] = map[string]any{
 			"api_provider":            strings.TrimSpace(p.APIProvider),
 			"effective_api_provider":  effectiveAPIProvider,
 			"base_url":                p.BaseURL,
 			"model":                   p.Model,
-			"has_key":                 s.cfg.APIKey(name) != "",
+			"has_key":                 cfg.APIKey(name) != "",
 			"reasoning_mode":          providerReasoningMode(name, p),
 			"reasoning_modes":         providerReasoningModes(name, p),
 			"reasoning_summary":       providerReasoningSummary(p),
@@ -1302,10 +1348,10 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"default_provider":        s.cfg.DefaultProvider,
-		"guardrails_mode":         s.cfg.Runtime.GuardrailsMode,
-		"max_turns_hard":          s.cfg.Runtime.MaxTurnsHard,
-		"disable_hard_turn_limit": s.cfg.Runtime.MaxTurnsHard <= 0,
+		"default_provider":        cfg.DefaultProvider,
+		"guardrails_mode":         cfg.Runtime.GuardrailsMode,
+		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
+		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
 		"providers":               provs,
 	})
 }
@@ -1406,7 +1452,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	*s.cfg = *updatedCfg
+	s.cfg = updatedCfg
 	if err := s.appendAuditEvent("web.config.write", map[string]any{
 		"provider":               updatedCfg.DefaultProvider,
 		"config_path":            configPath,
@@ -1437,9 +1483,7 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.RLock()
-	testCfg, err := config.Clone(s.cfg)
-	s.mu.RUnlock()
+	testCfg, err := s.configSnapshot()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1699,7 +1743,12 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 
 	var skills []skillMeta
 
-	for _, rawDir := range s.cfg.Skills.Dirs {
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, rawDir := range cfg.Skills.Dirs {
 		dir, err := resolveSkillDir(rawDir)
 		if err != nil {
 			continue
@@ -1775,6 +1824,10 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
 	writeError(w, http.StatusNotImplemented, errors.New("installing marketplace skills is not supported; upload a .zip skill instead"))
 }
 
@@ -1786,9 +1839,15 @@ func processSkillZip(src string, globalDest string) (int, error) {
 	defer r.Close()
 
 	var skillRoots []string
+	cleanNames := make(map[*zip.File]string, len(r.File))
 	for _, f := range r.File {
-		if filepath.Base(f.Name) == "SKILL.md" {
-			dir := filepath.Dir(f.Name)
+		cleaned, err := cleanZipEntryName(f.Name)
+		if err != nil {
+			return 0, err
+		}
+		cleanNames[f] = cleaned
+		if path.Base(cleaned) == "SKILL.md" {
+			dir := path.Dir(cleaned)
 			skillRoots = append(skillRoots, dir)
 		}
 	}
@@ -1809,7 +1868,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		}
 
 		for _, f := range r.File {
-			if filepath.ToSlash(filepath.Clean(f.Name)) == filepath.ToSlash(filepath.Clean(mdPath)) {
+			if cleanNames[f] == path.Clean(mdPath) {
 				rc, err := f.Open()
 				if err == nil {
 					data, _ := io.ReadAll(rc)
@@ -1831,12 +1890,16 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		targetDirName = sanitizeDirName(targetDirName)
 		targetPath := filepath.Join(globalDest, targetDirName)
 
-		os.RemoveAll(targetPath)
-		os.MkdirAll(targetPath, 0755)
+		if err := os.RemoveAll(targetPath); err != nil {
+			return extractedCount, err
+		}
+		if err := os.MkdirAll(targetPath, 0o755); err != nil {
+			return extractedCount, err
+		}
 
 		for _, f := range r.File {
-			cleanedName := filepath.ToSlash(filepath.Clean(f.Name))
-			cleanRoot := filepath.ToSlash(filepath.Clean(root))
+			cleanedName := cleanNames[f]
+			cleanRoot := path.Clean(root)
 
 			var rel string
 			var isInRoot bool
@@ -1857,13 +1920,23 @@ func processSkillZip(src string, globalDest string) (int, error) {
 				continue
 			}
 
-			outPath := filepath.Join(targetPath, rel)
-
-			if f.FileInfo().IsDir() {
-				os.MkdirAll(outPath, f.Mode())
+			if rel == "." || rel == "" {
 				continue
 			}
-			os.MkdirAll(filepath.Dir(outPath), 0755)
+			outPath := filepath.Join(targetPath, filepath.FromSlash(rel))
+			if !pathWithinRoot(targetPath, outPath) {
+				return extractedCount, fmt.Errorf("zip entry escapes skill target: %s", f.Name)
+			}
+
+			if f.FileInfo().IsDir() {
+				if err := os.MkdirAll(outPath, f.Mode()); err != nil {
+					return extractedCount, err
+				}
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+				return extractedCount, err
+			}
 
 			rc, err := f.Open()
 			if err != nil {
@@ -1875,13 +1948,48 @@ func processSkillZip(src string, globalDest string) (int, error) {
 				rc.Close()
 				return extractedCount, err
 			}
-			io.Copy(destFile, rc)
-			destFile.Close()
-			rc.Close()
+			_, copyErr := io.Copy(destFile, rc)
+			closeDestErr := destFile.Close()
+			closeSrcErr := rc.Close()
+			if copyErr != nil {
+				return extractedCount, copyErr
+			}
+			if closeDestErr != nil {
+				return extractedCount, closeDestErr
+			}
+			if closeSrcErr != nil {
+				return extractedCount, closeSrcErr
+			}
 		}
 		extractedCount++
 	}
 	return extractedCount, nil
+}
+
+func cleanZipEntryName(name string) (string, error) {
+	original := name
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" {
+		return "", fmt.Errorf("invalid empty zip entry name")
+	}
+	if strings.HasPrefix(name, "/") || (len(name) >= 2 && name[1] == ':') {
+		return "", fmt.Errorf("zip entry uses absolute path: %s", original)
+	}
+	cleaned := path.Clean(name)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("zip entry uses path traversal: %s", original)
+	}
+	return cleaned, nil
+}
+
+func pathWithinRoot(root, target string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
 }
 
 func sanitizeDirName(s string) string {
@@ -1913,7 +2021,12 @@ func extractSkillNameFromMd(data []byte) string {
 }
 
 func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
-	if len(s.cfg.Skills.Dirs) == 0 {
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(cfg.Skills.Dirs) == 0 {
 		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
 		return
 	}
@@ -1928,7 +2041,7 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	dest, err := resolveSkillDir(s.cfg.Skills.Dirs[0])
+	dest, err := resolveSkillDir(cfg.Skills.Dirs[0])
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1961,7 +2074,16 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
-	if len(s.cfg.Skills.Dirs) == 0 {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(cfg.Skills.Dirs) == 0 {
 		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
 		return
 	}
@@ -1972,19 +2094,22 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	skillID := parts[3]
 
-	rootDir, err := resolveSkillDir(s.cfg.Skills.Dirs[0])
+	rootDir, err := resolveSkillDir(cfg.Skills.Dirs[0])
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	targetDir := filepath.Join(rootDir, skillID)
 	// simple protection against directory traversal
-	if !strings.HasPrefix(targetDir, filepath.Clean(rootDir)+string(os.PathSeparator)) {
+	if !pathWithinRoot(rootDir, targetDir) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
 
-	os.RemoveAll(targetDir)
+	if err := os.RemoveAll(targetDir); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := s.appendAuditEvent("web.skill.uninstall", map[string]any{
 		"skill_id":  skillID,
 		"skill_dir": targetDir,

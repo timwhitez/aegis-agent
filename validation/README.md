@@ -61,15 +61,15 @@ export OPENAI_API_KEY=...
 - `run_openai_compatible_acceptance_stack.sh` 是当前长期稳定的一键 acceptance 入口；它会先跑 `run_round31_complex_real_matrix.sh`，再跑 `run_experimental_webconsole_followup_validation.sh`，并把两段结果索引到单独 bundle run 目录下
 - 该 acceptance 入口现在会先做 bundle 级 `probe-provider` preflight；若 probe 在允许的重试次数内仍失败，bundle 会写 `ABORTED.md`、记录 `notes/preflight-index.tsv`，并直接跳过 matrix 与 focused follow-up，避免在明显的网关/认证故障上继续消耗 live 预算
 - `live_smoke.sh`、`run_openai_compatible_acceptance_stack.sh`、`run_round31_complex_real_matrix.sh` 和 `run_experimental_webconsole_followup_validation.sh` 现在都支持 `GO_CLI_AGENT_LIVE_RESPONSES_URL`；切换 live gateway 时优先用这个环境变量覆盖，而不是手改脚本
-- `run_experimental_webconsole_followup_validation.sh` 是当前稳定的 focused live 入口：它用一个本地 fault-injection proxy 稳定触发 `continue` 阶段的 `provider.retry`，会先制造一个真实 failed queue canary 供浏览器验证 recent failure / worker last-job drilldown，然后在真实 webconsole queue 完成后强制一次 stale-running reconcile，检查 parent `background.jsonl` 仍按 `queue_job_id` 去重
+- `run_experimental_webconsole_followup_validation.sh` 是当前稳定的 focused live 入口：它用一个本地 fault-injection proxy 稳定触发 `continue` 阶段的 `provider.retry`，会先制造一个真实 failed queue canary 作为 durable evidence，然后在真实 webconsole queue 完成后强制一次 stale-running reconcile，检查 parent `background.jsonl` 仍按 `queue_job_id` 去重
 - 主矩阵现在额外覆盖两条 steer proof：一条验证 oversized steer 会在 queue 前直接返回结构化 JSON 错误，另一条验证 interrupt steer 会在延迟 provider call 上写出 `provider.cancelled` durable event，并留下 transport-side cancellation evidence
-- 同一个脚本还会验证 embedded shell / JS / CSS 资产可被本地 service 提供，并用 headless Chrome 跑一条真实浏览器交互链，覆盖 role-aware start、session sidebar filter/reveal、queue pin/reveal、overview recent-job/feed/failed-job drilldown、worker last-job drilldown、tasks/children/queue tab 切换、continue、worker 更新、queue submit、queue view、queue-links 通知和手动刷新
-- 当前稳定参考 run 是 `validation/runs/2026-03-27-openai-compatible-gpt-5.4-round54e-experimental-webconsole-followup-stable-proof/`
+- 同一个脚本还会验证 embedded shell / JS / CSS 资产可被本地 service 提供，并用 headless Chrome 跑一条真实浏览器交互链，覆盖 Settings / Workspace / Skills / Sessions / Session 导航、主 prompt start、durable session chrome、tool cards、timeline 可见性、history clear、API-backed queue job 完成，以及 queue link 可用时的 selected job facts 面板；standalone Overview / Worker Pool drilldown、queue notification dedup、retry proof 和 worker API 行为由同一脚本的 API / 文件事实检查或服务层测试覆盖
+- focused run 目录通常由 `.gitignore` 忽略，不把某个历史 run 目录当作当前 checkout 的 tracked 证据；需要参考时运行 `validation/run_experimental_webconsole_followup_validation.sh <run-id>` 重新生成
 - 对 retry-resume proof，这条脚本当前采用“evidence-first”判定：只要 durable session metadata 仍保留原始 `retry_policy.max_attempts=2`，且 resumed turn 真实写出 `provider.retry`，就视为 retry-drift 修复已被证实；即使 bounded finish nudges 之后 session 仍停在 `awaiting_input`，也只作为 run 备注记录，不再阻断后续 UI / queue 验证
 - 该脚本需要 `node` 与本地 Chrome/Chromium；默认会自动探测 `google-chrome`、`chromium`、`chromium-browser`，也可通过 `CHROME_BIN=/path/to/browser` 显式覆盖
 - 旧入口 `run_round53_retry_resume_and_webconsole_queue_followup.sh` 仍保留为兼容别名，方便复用既有 run-id 命名和历史笔记
 - 该脚本还会对每个 live 场景启用首轮无进展 watchdog，避免 provider 在 `provider.call` 后长时间悬挂时拖死整轮矩阵
-- 每次执行都会把原始 JSONL、artifact、notes、issues 和 summary 记录到独立 `validation/runs/<run-id>/`
+- 每次执行都会把原始 JSONL、artifact、notes、summary 和 `ISSUES.md` 记录到独立 `validation/runs/<run-id>/`；成功路径的 `ISSUES.md` 明确写入 no open issues
 - 面向 OpenAI-compatible 部署与 operator 自检的说明在 [`../docs/openai-compatible-operator-guide.md`](../docs/openai-compatible-operator-guide.md)
 
 该目录只服务于验证，不改变 core v1 主产品叙事。

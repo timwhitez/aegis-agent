@@ -10,6 +10,15 @@ if [[ -n "$UNFORMATTED" ]]; then
   exit 1
 fi
 
+if ! command -v node >/dev/null 2>&1; then
+  printf 'node is required for WebConsole JS syntax checks\n' >&2
+  exit 1
+fi
+
+for js_file in internal/webconsole/assets/*.js; do
+  node --check "$js_file"
+done
+
 PKG_PATTERNS=(
   ./cmd/...
   ./internal/...

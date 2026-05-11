@@ -832,6 +832,54 @@ func TestGeneratedArtifactsAreHiddenFromFileDiscovery(t *testing.T) {
 	}
 }
 
+func TestGlobSkipsSymlinkEscapes(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret-name.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workdir, "outside-link")); err != nil {
+		t.Fatalf("symlink outside dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "visible.txt"), []byte("visible"), 0o600); err != nil {
+		t.Fatalf("write visible file: %v", err)
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "glob", ExecContext{
+		SessionID: meta.ID,
+		Workdir:   workdir,
+		Store:     store,
+		Config:    cfg,
+	}, json.RawMessage(`{"pattern":"**/*.txt"}`))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if strings.Contains(result.DisplayOutput, "secret-name.txt") || strings.Contains(result.DisplayOutput, "outside-link") {
+		t.Fatalf("expected glob to skip symlink escape, got %q", result.DisplayOutput)
+	}
+	if !strings.Contains(result.DisplayOutput, "visible.txt") {
+		t.Fatalf("expected glob to keep workspace file, got %q", result.DisplayOutput)
+	}
+}
+
 func TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -1275,6 +1323,66 @@ func TestSkillCommandToolRejectsMissingRequiredField(t *testing.T) {
 	}
 }
 
+func TestSkillCommandToolClosesSchemaByDefault(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: echo_args\ncommand: [\"/bin/sh\", \"-lc\", \"cat\"]\ninput_schema:\n  type: object\n  properties:\n    message:\n      type: string\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "echo_args", ExecContext{Workdir: root, Config: cfg}, json.RawMessage(`{"message":"ok","extra":true}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, `unexpected field "extra"`) {
+		t.Fatalf("expected unknown field rejection from closed schema, got %#v", result)
+	}
+}
+
+func TestSkillCommandToolPreservesExplicitAdditionalPropertiesTrue(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: echo_args\ncommand: [\"/bin/sh\", \"-lc\", \"cat\"]\ninput_schema:\n  type: object\n  additionalProperties: true\n  properties:\n    message:\n      type: string\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "echo_args", ExecContext{Workdir: root, Config: cfg}, json.RawMessage(`{"message":"ok","extra":true}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected explicit additionalProperties=true to allow extra args, got %#v", result)
+	}
+}
+
 func TestSkillCommandToolExecutesWithValidRequiredPayload(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()
@@ -1355,6 +1463,43 @@ func TestSkillCommandToolExecutesFromSkillDirectory(t *testing.T) {
 	}
 	if !strings.Contains(result.DisplayOutput, skillDir) {
 		t.Fatalf("expected skill command output to include %q, got %q", skillDir, result.DisplayOutput)
+	}
+}
+
+func TestSkillCommandToolTimeoutIncludesStructuredMetadata(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "slow.yaml"), []byte("name: slow_skill\ndescription: Sleep too long\ncommand: [\"bash\", \"-lc\", \"sleep 2\"]\ntimeout_sec: 1\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "slow_skill", ExecContext{
+		Workdir: root,
+		Config:  cfg,
+	}, json.RawMessage(`{}`))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got result=%#v err=%v", result, err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected timeout result to be an error, got %#v", result)
+	}
+	if result.Metadata["timeout"] != 1 || result.Metadata["exit_code"] == nil || result.Metadata["raw_length"] == nil || result.Metadata["truncated"] == nil {
+		t.Fatalf("expected structured timeout metadata, got %#v", result.Metadata)
 	}
 }
 

@@ -513,6 +513,9 @@ func defWriteFile() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("write_file", err), nil
 			}
+			if err := CheckWorkspaceWriteInputAllowed(execCtx.Workdir, input.Path); err != nil {
+				return errorResult("write_file", err), nil
+			}
 			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
 			if err != nil {
 				return errorResult("write_file", err), nil
@@ -565,6 +568,9 @@ func defEditFile() Definition {
 				NewText string `json:"new_text"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("edit_file", err), nil
+			}
+			if err := CheckWorkspaceWriteInputAllowed(execCtx.Workdir, input.Path); err != nil {
 				return errorResult("edit_file", err), nil
 			}
 			path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
@@ -624,6 +630,14 @@ func defGlob() Definition {
 			}
 			var matches []string
 			if err := doublestar.GlobWalk(os.DirFS(execCtx.Workdir), input.Pattern, func(path string, d os.DirEntry) error {
+				if path != "." {
+					if _, err := ResolveWorkspacePath(execCtx.Workdir, path); err != nil {
+						if d.IsDir() {
+							return fs.SkipDir
+						}
+						return nil
+					}
+				}
 				if d.IsDir() && path != "." && shouldSkipGrepDir(path) {
 					return fs.SkipDir
 				}
@@ -1825,16 +1839,28 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 		description = fmt.Sprintf("Skill command tool from skill %s.", tool.SkillName)
 	}
 	skillDir := filepath.Dir(tool.SkillPath)
+	inputSchema := closeObjectSchemas(tool.InputSchema)
+	commandMetadata := func(timeout, exitCode, rawLength int, truncated bool) map[string]any {
+		return map[string]any{
+			"skill_name": tool.SkillName,
+			"skill_path": tool.SkillPath,
+			"workdir":    skillDir,
+			"timeout":    timeout,
+			"exit_code":  exitCode,
+			"raw_length": rawLength,
+			"truncated":  truncated,
+		}
+	}
 	return Definition{
 		Name:        tool.Name,
 		Description: fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. This tool executes from the skill directory. %s", tool.SkillName, description),
-		InputSchema: tool.InputSchema,
+		InputSchema: inputSchema,
 		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			args, err := decodeCommandToolArgs(raw)
 			if err != nil {
 				return errorResult(tool.Name, err), nil
 			}
-			if err := validateCommandToolInput(tool.InputSchema, args); err != nil {
+			if err := validateCommandToolInput(inputSchema, args); err != nil {
 				return errorResult(tool.Name, err), nil
 			}
 			argv, err := renderCommand(tool.Command, args)
@@ -1861,51 +1887,41 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			)
 			cmd.Stdin = bytes.NewReader(raw)
 			output, err := cmd.CombinedOutput()
+			exitCode := 0
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
 			text, rawLength, truncated := truncateOutput(string(output), 12000)
 			if text == "" {
 				text = "(no output)"
 			}
 			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				interruptErr := ctx.Err()
+				if interruptErr == nil {
+					interruptErr = callCtx.Err()
+				}
+				if interruptErr != nil {
 					return session.ToolResult{
 						Name:          tool.Name,
 						LLMOutput:     "[Tool execution was interrupted]",
 						DisplayOutput: "[Tool execution was interrupted]",
 						IsError:       true,
-						Metadata: map[string]any{
-							"skill_name": tool.SkillName,
-							"skill_path": tool.SkillPath,
-							"workdir":    skillDir,
-							"raw_length": rawLength,
-							"truncated":  truncated,
-						},
-					}, err
+						Metadata:      commandMetadata(timeout, exitCode, rawLength, truncated),
+					}, interruptErr
 				}
 				return session.ToolResult{
 					Name:          tool.Name,
 					LLMOutput:     text,
 					DisplayOutput: text,
 					IsError:       true,
-					Metadata: map[string]any{
-						"skill_name": tool.SkillName,
-						"skill_path": tool.SkillPath,
-						"workdir":    skillDir,
-						"raw_length": rawLength,
-						"truncated":  truncated,
-					},
+					Metadata:      commandMetadata(timeout, exitCode, rawLength, truncated),
 				}, nil
 			}
 			return session.ToolResult{
 				Name:          tool.Name,
 				LLMOutput:     text,
 				DisplayOutput: text,
-				Metadata: map[string]any{
-					"skill_name": tool.SkillName,
-					"skill_path": tool.SkillPath,
-					"workdir":    skillDir,
-					"raw_length": rawLength,
-					"truncated":  truncated,
-				},
+				Metadata:      commandMetadata(timeout, exitCode, rawLength, truncated),
 			}, nil
 		},
 	}

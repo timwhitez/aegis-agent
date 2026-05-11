@@ -453,7 +453,7 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "[%s] %s\n", marker(item.Status), item.Content)
 	}
 	fmt.Fprintln(stdout, "\n== tasks ==")
-	for _, group := range []string{"ready", "blocked", "completed"} {
+	for _, group := range []string{"in_progress", "ready", "blocked", "completed"} {
 		tasks := board.Groups[group]
 		if len(tasks) == 0 {
 			continue
@@ -511,6 +511,10 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 		}
 		return nil
 	}
+	if err != nil {
+		fmt.Fprintf(stderr, "probe failed: %s\n", err)
+		return err
+	}
 	fmt.Fprintf(stdout, "provider: %s\nmodel: %s\nbase_url: %s\n", result.Provider, result.Model, result.BaseURL)
 	if result.APIProvider != "" {
 		fmt.Fprintf(stdout, "api_provider: %s\n", result.APIProvider)
@@ -527,9 +531,6 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 	}
 	if result.Text != "" {
 		fmt.Fprintf(stdout, "text: %s\n", result.Text)
-	}
-	if err != nil {
-		return err
 	}
 	return nil
 }

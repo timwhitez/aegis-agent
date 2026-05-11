@@ -177,8 +177,8 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 
 #### Background Jobs 主视图补充
 
-- Background Jobs 视图默认是后台任务提交入口与状态计数面，不再展示 worker pool 调参、raw durable payload、完整 jobs 列表或 selected job detail
-- queue job 的 status、prompt、child session、parent session、final text、last error 等细节仍可由当前 session detail、background notification 链接、后端 API 与文件事实追溯，但默认前端不强行展开为独立监控页面
+- Background Jobs 视图默认是后台任务提交入口与状态计数面，不再展示 worker pool 调参、raw durable payload 或完整 jobs 列表
+- 从 session detail / background notification 点击 `Open job` 时，Background Jobs 可以展示一个轻量 selected job facts panel，限于 status、prompt / final text / last error、child session、parent session 等追溯事实；它不恢复完整 queue monitor
 - queue job 的 provider、workdir、lease owner、heartbeat、raw payload 等内部事实仍可由 API 与文件事实追溯
 - queue submit 保留为“高级后台任务”入口，并用文案提示普通任务应回到 Session 执行
 
@@ -202,7 +202,7 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 - 显示 queue 状态计数
 - 显示“Submit Job”后台任务入口
 - 不显示 worker pool 并发调节控件
-- 不默认显示完整 queue jobs 列表或 selected job 详情
+- 不默认显示完整 queue jobs 列表；只有从 session/background 链接进入时显示轻量 selected job facts
 
 当前实现不再提供单独总览页面，也不再把 worker 并发调参当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、Sessions 和可选 Background Jobs。
 
@@ -598,7 +598,7 @@ Settings API：
 - WebSocket malformed payload 不得造成全局 runtime exception
 - focused retry-resume live rerun 需要同时验证 durable retry metadata 未漂移，以及真实 `provider.retry` 事件出现
 - 若 retry proof 已经拿到上述 durable evidence，而 bounded finish nudges 后 session 仍为 `awaiting_input`，应将其记为 non-blocking completion quirk，而不是把整轮 webconsole follow-up 判成失败
-- headless browser UI smoke 覆盖 start、role-aware session chrome、session rail、timeline event filter、tasks/background/timeline tab 切换、continue、queue submit、queue 视图、queue-links 通知与 manual refresh；worker API 缩放保留为服务层测试，不作为默认页面交互
+- headless browser UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start 后的 session chrome、tool card、timeline 可见性，settled session polling 收敛，history clear 留在 Sessions 视图，以及 API 提交 queue job 后的 selected job facts 可见性；worker API 缩放、queue notification dedup 和 retry proof 由 follow-up shell 脚本及服务层断言覆盖
 - 浏览器侧 `runtime exception` 与 `console error` 为空
 
 手工验证至少覆盖：

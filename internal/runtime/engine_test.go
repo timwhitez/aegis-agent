@@ -873,6 +873,17 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			if strings.Contains(toolResult.LLMOutput, "use read_file to review if needed") {
 				t.Fatalf("expected old misleading guidance to be removed, got %q", toolResult.LLMOutput)
 			}
+			wantPrefix := filepath.Join(engine.store.SessionDir(meta.ID), "artifacts", "tool-outputs")
+			if !strings.HasPrefix(artifactPath, wantPrefix+string(os.PathSeparator)) {
+				t.Fatalf("expected default ephemeral artifact under session root %s, got %s", wantPrefix, artifactPath)
+			}
+			info, err := os.Stat(artifactPath)
+			if err != nil {
+				t.Fatalf("stat ephemeral artifact: %v", err)
+			}
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				t.Fatalf("expected ephemeral artifact mode 0600, got %s", perm.String())
+			}
 		}
 	}
 	if !found {
@@ -1369,6 +1380,136 @@ func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 	}
 	if !hasEventType(events, "tool.before") || !hasEventType(events, "tool.interrupted") {
 		t.Fatalf("expected tool lifecycle events, got %#v", events)
+	}
+}
+
+func TestEnginePreservesDeadlineToolResultMetadata(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	registry.Register(tools.Definition{
+		Name:        "deadline_tool",
+		Description: "returns structured timeout metadata",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			return session.ToolResult{
+				Name:          "deadline_tool",
+				LLMOutput:     "[Tool execution timed out]",
+				DisplayOutput: "[Tool execution timed out]",
+				IsError:       true,
+				Metadata: map[string]any{
+					"timeout":    1,
+					"exit_code":  -1,
+					"raw_length": 0,
+					"truncated":  false,
+				},
+			}, context.DeadlineExceeded
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run timeout then finish")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	var calls int
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		calls++
+		if calls == 1 {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_timeout", Name: "deadline_tool", Arguments: json.RawMessage(`{}`)}},
+				StopReason: "tool_use",
+			}, nil
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var timeoutResult *session.ToolResult
+	for _, msg := range messages {
+		for i := range msg.ToolResults {
+			if msg.ToolResults[i].Name == "deadline_tool" {
+				timeoutResult = &msg.ToolResults[i]
+			}
+		}
+	}
+	if timeoutResult == nil {
+		t.Fatalf("expected deadline tool result in messages: %#v", messages)
+	}
+	if !timeoutResult.IsError || timeoutResult.DisplayOutput != "[Tool execution timed out]" {
+		t.Fatalf("expected structured timeout result to be preserved, got %#v", timeoutResult)
+	}
+	if timeoutResult.Metadata["timeout"] != float64(1) && timeoutResult.Metadata["timeout"] != 1 {
+		t.Fatalf("expected timeout metadata to survive engine dispatch, got %#v", timeoutResult.Metadata)
+	}
+}
+
+func TestEngineDoesNotHardBlockNormalFinishOnStaleFeatureList(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := os.WriteFile(filepath.Join(engine.store.SessionDir(meta.ID), "feature_list.json"), []byte(`{"features":[{"id":"feature_0001","status":"pending"}]}`), 0o600); err != nil {
+		t.Fatalf("write feature list: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish current scope")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected normal exec finish not to be blocked by stale roadmap, got %#v", result)
+	}
+}
+
+func TestEngineStillBlocksInitFinishOnIncompleteFeatureList(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeInit)
+	if err := os.WriteFile(filepath.Join(engine.store.SessionDir(meta.ID), "feature_list.json"), []byte(`{"features":[{"id":"feature_0001","status":"pending"}]}`), 0o600); err != nil {
+		t.Fatalf("write feature list: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish init")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	var calls int
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		calls++
+		if calls > 1 {
+			return provider.TurnResult{Text: "blocked", StopReason: "done_candidate"}, nil
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status == session.StatusCompleted {
+		t.Fatalf("expected init finish to be blocked by incomplete feature list")
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var foundBlock bool
+	for _, msg := range messages {
+		for _, toolResult := range msg.ToolResults {
+			if toolResult.Name == "finish" && strings.Contains(toolResult.DisplayOutput, "Pre-completion check failed") {
+				foundBlock = true
+			}
+		}
+	}
+	if !foundBlock {
+		t.Fatalf("expected pre-completion block result, got %#v", messages)
 	}
 }
 

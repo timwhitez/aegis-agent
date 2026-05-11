@@ -947,6 +947,56 @@ func TestServiceQueueWorkersProcessJob(t *testing.T) {
 	}
 }
 
+func TestServiceQueueJobDetailRequiresGet(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	job := session.QueueJob{
+		SchemaVersion: 1,
+		ID:            "queue_method_guard",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		Status:        session.QueueStatusQueued,
+		Prompt:        "queued prompt",
+		Mode:          session.ModeExec,
+		Background:    true,
+	}
+	if err := svc.store.SaveJob(job); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+		req, err := http.NewRequest(method, ts.URL+"/api/queue/jobs/"+job.ID, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatalf("new %s job detail request: %v", method, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s job detail request: %v", method, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("expected %s job detail to be 405, got %d body=%s", method, resp.StatusCode, string(body))
+		}
+		if strings.Contains(string(body), job.Prompt) {
+			t.Fatalf("expected %s job detail not to return job JSON, got body=%s", method, string(body))
+		}
+	}
+
+	var got session.QueueJob
+	postGetJSON(t, ts.URL+"/api/queue/jobs/"+job.ID, &got)
+	if got.ID != job.ID || got.Prompt != job.Prompt {
+		t.Fatalf("unexpected GET job detail: %#v", got)
+	}
+}
+
 func TestServiceParallelQueueWorkersPersistAllJobs(t *testing.T) {
 	server := newDelayedFinishServer(150 * time.Millisecond)
 	defer server.Close()
@@ -2148,6 +2198,25 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 		t.Fatalf("unexpected listed skill: %#v", listed[0])
 	}
 
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		req, err := http.NewRequest(method, ts.URL+"/api/skills/demo-skill/uninstall", nil)
+		if err != nil {
+			t.Fatalf("new %s uninstall request: %v", method, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s uninstall request: %v", method, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("expected %s uninstall to be 405, got %d body=%s", method, resp.StatusCode, string(body))
+		}
+		if _, err := os.Stat(filepath.Join(skillsDir, "demo-skill")); err != nil {
+			t.Fatalf("expected %s uninstall not to remove skill dir: %v", method, err)
+		}
+	}
+
 	resp, err = http.Post(ts.URL+"/api/skills/demo-skill/install", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatalf("install request: %v", err)
@@ -2171,6 +2240,59 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	postGetJSON(t, ts.URL+"/api/skills", &listed)
 	if len(listed) != 0 {
 		t.Fatalf("expected skill list to be empty after uninstall, got %#v", listed)
+	}
+}
+
+func TestProcessSkillZipRejectsTraversalEntries(t *testing.T) {
+	for _, entryName := range []string{"../../zip-slip.txt", "..\\escape.txt", "/absolute.txt", "C:/absolute.txt"} {
+		t.Run(entryName, func(t *testing.T) {
+			base := t.TempDir()
+			dest := filepath.Join(base, "skills")
+			zipPath := filepath.Join(base, "skill.zip")
+			createZipEntries(t, zipPath, map[string]string{
+				"SKILL.md":  "---\nname: demo\n---\n",
+				entryName:   "escaped",
+				"notes.txt": "ok",
+			})
+
+			if _, err := processSkillZip(zipPath, dest); err == nil {
+				t.Fatal("expected traversal zip to be rejected")
+			}
+			for _, candidate := range []string{
+				filepath.Join(base, "zip-slip.txt"),
+				filepath.Join(base, "escape.txt"),
+				filepath.Join(dest, "absolute.txt"),
+			} {
+				if _, err := os.Stat(candidate); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("expected %s to remain absent, got %v", candidate, err)
+				}
+			}
+		})
+	}
+}
+
+func TestProcessSkillZipAllowsNestedSkillFiles(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	zipPath := filepath.Join(base, "skill.zip")
+	createZipEntries(t, zipPath, map[string]string{
+		"demo-skill/SKILL.md":        "---\nname: demo-skill\n---\nbody\n",
+		"demo-skill/references/a.md": "reference\n",
+	})
+
+	count, err := processSkillZip(zipPath, dest)
+	if err != nil {
+		t.Fatalf("process skill zip: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one skill, got %d", count)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "demo-skill", "references", "a.md"))
+	if err != nil {
+		t.Fatalf("read nested reference: %v", err)
+	}
+	if string(data) != "reference\n" {
+		t.Fatalf("unexpected reference content %q", string(data))
 	}
 }
 
@@ -2210,6 +2332,51 @@ func TestListSkillsReportsWorkspaceExtensionTrustStatus(t *testing.T) {
 	}
 	if item["disabled_reason"] == "" || item["extension_path"] == "" || item["discovery_path"] != filepath.Join(workdir, ".agent") {
 		t.Fatalf("expected extension trust details, got %#v", item)
+	}
+}
+
+func TestServiceConfigUpdateSwapsSnapshotInsteadOfMutatingSharedConfig(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Providers["openai"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           "http://127.0.0.1:1/v1",
+		Model:             "gpt-5.4",
+		RequestTimeoutSec: 3,
+	}
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	original := svc.cfg
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":        "openai",
+		"guardrails_mode": "yolo",
+		"max_turns_hard":  4,
+		"api_provider":    "openai-compatible",
+		"base_url":        "http://127.0.0.1:2/v1",
+		"model":           "gpt-5.4",
+		"reasoning_mode":  "default",
+	}, http.StatusOK, nil)
+
+	if original == svc.cfg {
+		t.Fatal("expected service config update to swap config pointer")
+	}
+	if original.Runtime.GuardrailsMode != "standard" || original.Providers["openai"].BaseURL != "http://127.0.0.1:1/v1" {
+		t.Fatalf("expected old config snapshot to remain immutable, got %#v", original)
+	}
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if updated.Runtime.GuardrailsMode != "yolo" || updated.Providers["openai"].BaseURL != "http://127.0.0.1:2/v1" {
+		t.Fatalf("expected updated config snapshot, got %#v", updated)
 	}
 }
 
@@ -2330,6 +2497,13 @@ func newTextReplyServer(reply string) *httptest.Server {
 
 func createSkillZip(t *testing.T, zipPath, skillDir, skillMD string) {
 	t.Helper()
+	createZipEntries(t, zipPath, map[string]string{
+		filepath.ToSlash(filepath.Join(skillDir, "SKILL.md")): skillMD,
+	})
+}
+
+func createZipEntries(t *testing.T, zipPath string, entries map[string]string) {
+	t.Helper()
 	file, err := os.Create(zipPath)
 	if err != nil {
 		t.Fatalf("create zip: %v", err)
@@ -2337,12 +2511,14 @@ func createSkillZip(t *testing.T, zipPath, skillDir, skillMD string) {
 	defer file.Close()
 
 	zipWriter := zip.NewWriter(file)
-	entry, err := zipWriter.Create(filepath.ToSlash(filepath.Join(skillDir, "SKILL.md")))
-	if err != nil {
-		t.Fatalf("create zip entry: %v", err)
-	}
-	if _, err := entry.Write([]byte(skillMD)); err != nil {
-		t.Fatalf("write skill md: %v", err)
+	for name, content := range entries {
+		entry, err := zipWriter.Create(name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := entry.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
 	}
 	if err := zipWriter.Close(); err != nil {
 		t.Fatalf("close zip writer: %v", err)

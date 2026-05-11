@@ -140,9 +140,12 @@ func BuildTaskBoard(todo []TodoItem, tasks []Task) TaskBoard {
 	}
 	ready := []Task{}
 	blocked := []Task{}
+	inProgress := []Task{}
 	done := []Task{}
 	for _, task := range tasks {
 		switch {
+		case task.Status == "in_progress":
+			inProgress = append(inProgress, task)
 		case task.Status == "completed" || task.Status == "cancelled":
 			done = append(done, task)
 		case task.Status == "pending" && len(task.BlockedBy) == 0:
@@ -153,21 +156,24 @@ func BuildTaskBoard(todo []TodoItem, tasks []Task) TaskBoard {
 	}
 	sort.Slice(ready, func(i, j int) bool { return ready[i].ID < ready[j].ID })
 	sort.Slice(blocked, func(i, j int) bool { return blocked[i].ID < blocked[j].ID })
+	sort.Slice(inProgress, func(i, j int) bool { return inProgress[i].ID < inProgress[j].ID })
 	sort.Slice(done, func(i, j int) bool { return done[i].ID < done[j].ID })
 	return TaskBoard{
 		Todo:  todo,
 		Tasks: tasks,
 		Counters: map[string]int{
-			"todo":      len(todo),
-			"tasks":     len(tasks),
-			"ready":     len(ready),
-			"blocked":   len(blocked),
-			"completed": len(done),
+			"todo":        len(todo),
+			"tasks":       len(tasks),
+			"in_progress": len(inProgress),
+			"ready":       len(ready),
+			"blocked":     len(blocked),
+			"completed":   len(done),
 		},
 		Groups: map[string][]Task{
-			"ready":     ready,
-			"blocked":   blocked,
-			"completed": done,
+			"in_progress": inProgress,
+			"ready":       ready,
+			"blocked":     blocked,
+			"completed":   done,
 		},
 	}
 }

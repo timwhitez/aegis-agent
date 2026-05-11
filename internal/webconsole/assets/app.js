@@ -30,6 +30,7 @@ const state = {
   historyPageSize: 8,
   queueData: null,
   selectedQueueJobId: '',
+  selectedQueueJobDetail: null,
   inspectorTab: 'tasks',
   refreshingHistory: false,
   refreshingQueue: false,
@@ -536,6 +537,7 @@ function setupEventListeners() {
     const queueJobButton = event.target.closest('[data-open-job]');
     if (queueJobButton) {
       state.selectedQueueJobId = queueJobButton.getAttribute('data-open-job') || '';
+      state.selectedQueueJobDetail = null;
       switchView('queue');
       return;
     }
@@ -1209,6 +1211,40 @@ function isStoppableSessionStatus(status) {
   return String(status || '').toLowerCase() === 'running';
 }
 
+function queueJobItems(data = state.queueData) {
+  return maybeArray(data?.items || data);
+}
+
+function queueJobByID(jobID, data = state.queueData) {
+  const id = String(jobID || '');
+  if (!id) {
+    return null;
+  }
+  return queueJobItems(data).find((job) => String(job?.id || '') === id) || null;
+}
+
+async function refreshSelectedQueueJobDetail(jobs = queueJobItems()) {
+  const jobID = String(state.selectedQueueJobId || '');
+  if (!jobID) {
+    state.selectedQueueJobDetail = null;
+    return;
+  }
+  const listedJob = jobs.find((job) => String(job?.id || '') === jobID);
+  if (listedJob) {
+    state.selectedQueueJobDetail = listedJob;
+    return;
+  }
+  try {
+    state.selectedQueueJobDetail = await requestJSON(`/api/queue/jobs/${encodeURIComponent(jobID)}`);
+  } catch (err) {
+    state.selectedQueueJobDetail = {
+      id: jobID,
+      status: 'unavailable',
+      last_error: err.message || 'Job detail is unavailable.'
+    };
+  }
+}
+
 function isStoppingSession(sessionID) {
   return state.stoppingSessionIds.has(sessionID);
 }
@@ -1629,6 +1665,7 @@ async function fetchQueue() {
   }
   try {
     state.queueData = await requestJSON('/api/queue/jobs?limit=80');
+    await refreshSelectedQueueJobDetail(queueJobItems(state.queueData));
     renderQueueView({ savedPrompt, savedParent, savedAgent, savedModel });
   } catch (err) {
     container.innerHTML = `<div class="empty-panel">Failed to load queue. ${escapeHTML(err.message || '')}</div>`;
@@ -1638,10 +1675,46 @@ async function fetchQueue() {
   }
 }
 
+function renderSelectedQueueJobPanel() {
+  const jobID = String(state.selectedQueueJobId || '');
+  if (!jobID) {
+    return '';
+  }
+  const job = state.selectedQueueJobDetail || queueJobByID(jobID) || { id: jobID };
+  const status = job.session_status || job.status || 'unknown';
+  const detailCopy = job.last_error || job.final_text || job.prompt || 'Job detail is loading.';
+  const created = job.created_at ? formatTimestamp(job.created_at) : '';
+  const updated = job.updated_at ? formatTimestamp(job.updated_at) : '';
+  return `
+    <section class="panel-card selected-queue-job-panel" data-selected-queue-job="${escapeAttr(jobID)}">
+      <div class="panel-card-header history-panel-header">
+        <div>
+          <h3 class="view-title compact-title">${escapeHTML(agentLabel(job.agent_name, job.agent_role) || shortId(jobID))}</h3>
+          <div class="job-card-meta">job ${escapeHTML(shortId(jobID))}${job.mode ? ` · ${escapeHTML(job.mode)}` : ''}${created ? ` · ${escapeHTML(created)}` : ''}</div>
+        </div>
+        <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
+      </div>
+      <div class="panel-card-body">
+        <div class="${job.last_error ? 'notification-copy danger' : 'job-card-copy'}">${escapeHTML(truncateText(detailCopy, 260))}</div>
+        <div class="path-pill-row">
+          ${job.session_id ? `<span class="surface-chip">child ${escapeHTML(shortId(job.session_id))}</span>` : ''}
+          ${job.parent_session_id ? `<span class="surface-chip">parent ${escapeHTML(shortId(job.parent_session_id))}</span>` : ''}
+          ${updated ? `<span class="surface-chip">updated ${escapeHTML(updated)}</span>` : ''}
+        </div>
+        <div class="card-actions">
+          ${job.session_id ? renderSessionStopButton(job.session_id, status) : ''}
+          ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
+          ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderQueueView(opts = {}) {
   const container = nodes.views.queue;
   if (!container) return;
-  const jobs = maybeArray(state.queueData?.items || state.queueData);
+  const jobs = queueJobItems();
   const fetchedCounters = jobs.reduce((acc, job) => {
     const status = job.status || 'queued';
     acc[status] = (acc[status] || 0) + 1;
@@ -1672,6 +1745,7 @@ function renderQueueView(opts = {}) {
       <span class="surface-chip">Failed ${escapeHTML(String(queueCounters.failed || 0))}</span>
       <span class="surface-chip">Completed ${escapeHTML(String(queueCounters.completed || 0))}</span>
     </section>
+    ${renderSelectedQueueJobPanel()}
     <section class="panel-card queue-submit-panel">
       <div class="panel-card-header"><h3 class="view-title compact-title">Submit Job</h3></div>
       <div class="panel-card-body">

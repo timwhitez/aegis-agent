@@ -142,6 +142,70 @@ func TestProviderOptionsFromConfigIncludesRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestProviderOptionsFromConfigDefaultsStoreFalseForCustomOpenAICompatible(t *testing.T) {
+	opts := providerOptionsFromConfig("gateway", config.Provider{
+		APIProvider: "openai-compatible",
+		Model:       "gpt-5.4",
+	})
+	if opts.Store == nil || *opts.Store {
+		t.Fatalf("expected custom openai-compatible provider to default store=false, got %#v", opts.Store)
+	}
+
+	store := true
+	opts = providerOptionsFromConfig("gateway", config.Provider{
+		APIProvider: "openai-compatible",
+		Model:       "gpt-5.4",
+		Store:       &store,
+	})
+	if opts.Store == nil || !*opts.Store {
+		t.Fatalf("expected explicit store=true to be preserved, got %#v", opts.Store)
+	}
+}
+
+func TestProbeDefaultsStoreFalseForCustomOpenAICompatible(t *testing.T) {
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(data, &seenBody); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"provider probe ok\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "gateway"
+	cfg.Providers["gateway"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "GATEWAY_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		RequestTimeoutSec: 3,
+	}
+	t.Setenv("GATEWAY_API_KEY", "test-key")
+
+	result, err := NewRunner(cfg).Probe(context.Background(), ProbeRequest{Provider: "gateway"})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if result.APIProvider != "openai-compatible" {
+		t.Fatalf("unexpected probe api provider: %#v", result)
+	}
+	if seenBody["store"] != false {
+		t.Fatalf("expected probe request to include store=false, got %#v", seenBody)
+	}
+}
+
 func TestApplySessionProviderOptionsRestoresTimeoutPolicy(t *testing.T) {
 	cfg := config.Provider{
 		TimeoutSec:          10,
@@ -158,6 +222,24 @@ func TestApplySessionProviderOptionsRestoresTimeoutPolicy(t *testing.T) {
 	if restored.TimeoutSec != 30 || restored.RequestTimeoutSec != 240 || restored.StreamIdleTimeoutMS != 300000 {
 		t.Fatalf("expected durable timeout policy to be restored, got %#v", restored)
 	}
+}
+
+func TestRunnerRejectsDifferentConcurrentActiveSessionSlot(t *testing.T) {
+	runner := NewRunner(config.Default())
+	release, err := runner.acquireRunSlot("session_a")
+	if err != nil {
+		t.Fatalf("acquire first slot: %v", err)
+	}
+	defer release()
+
+	if _, err := runner.acquireRunSlot("session_b"); err == nil || !strings.Contains(err.Error(), "already has active session session_a") {
+		t.Fatalf("expected different active session to be rejected, got %v", err)
+	}
+	releaseSame, err := runner.acquireRunSlot("session_a")
+	if err != nil {
+		t.Fatalf("expected same-session nested acquire for auto-continue, got %v", err)
+	}
+	releaseSame()
 }
 
 func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {

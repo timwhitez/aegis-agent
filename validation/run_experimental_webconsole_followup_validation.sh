@@ -901,7 +901,7 @@ cat >"$SUMMARY_PATH" <<EOF
 - Worker scale before smoke: \`raw/pre-smoke-workers-scale.json\`
 - Failed canary job: \`${PRE_SMOKE_FAILED_JOB_ID}\` -> \`raw/pre-smoke-failed-job-detail.json\`
 - Missing workdir used to force the failure: \`${PRE_SMOKE_FAILED_WORKDIR}\`
-- Result: the browser smoke had a real failed queue job plus worker last-job state available before its own queue submit, so overview failure and worker drilldown assertions were exercised against durable failed-job facts rather than mock UI data.
+- Result: the run keeps a real failed queue job and worker last-job state as durable evidence before browser smoke starts. The current browser smoke does not claim standalone Overview or Worker Pool drilldowns.
 
 ## Queue Notification Dedup Follow-Up
 
@@ -920,7 +920,7 @@ cat >"$SUMMARY_PATH" <<EOF
 - UI smoke JSON: \`raw/webconsole-ui-smoke.json\`
 - UI smoke DOM snapshot: \`raw/webconsole-ui-smoke.html\`
 - Shell/assets regression: \`raw/preflight-webconsole-assets.txt\`
-- Result: embedded shell and assets were served locally, headless Chrome exercised role-aware start, session sidebar filter/reveal, queue quick-filter pin/reveal, overview recent-job/feed/failed-job drilldowns, worker last-job drilldown, tasks/children/queue tab navigation, continue, worker update, queue submit, queue-links notification rendering, and manual refresh against the real webconsole.
+- Result: embedded shell and assets were served locally. Headless Chrome exercised Settings, Workspace, Skills, Sessions and Session navigation, start through the main prompt, durable session chrome, tool cards, timeline visibility, history clear behavior, API-backed queue job completion, and selected job facts after an \`Open job\` transition when a queue link is available. Retry drift, queue notification dedup and worker API behavior are covered by the surrounding shell-script checks and service tests, not by standalone Overview or Worker Pool page interactions.
 
 ## Evidence Paths
 
@@ -930,4 +930,12 @@ cat >"$SUMMARY_PATH" <<EOF
 EOF
 
 CURRENT_PHASE="summary write"
+cat >"$ISSUES_PATH" <<EOF
+# Focused Follow-Up Issues
+
+- Status: no open issues from this run.
+- Summary: \`${SUMMARY_PATH}\`
+- UI smoke JSON: \`${UI_SMOKE_JSON}\`
+- Preflight index: \`notes/preflight-index.tsv\`
+EOF
 printf 'focused follow-up summary written to %s\n' "$SUMMARY_PATH"

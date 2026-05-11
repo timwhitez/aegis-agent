@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,6 +195,105 @@ func TestStoreSaveStateRefreshesUpdatedAt(t *testing.T) {
 	}
 	if loaded.UpdatedAt == "2026-01-01T00:00:00Z" || loaded.UpdatedAt == "" {
 		t.Fatalf("expected UpdatedAt to refresh, got %q", loaded.UpdatedAt)
+	}
+}
+
+func TestStoreRejectsPathLikeRecordIDs(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create valid session: %v", err)
+	}
+
+	badSession := "../outside"
+	if err := store.Create(SessionMetadata{ID: badSession}, State{}); err == nil {
+		t.Fatal("expected Create to reject path-like session id")
+	}
+	if _, err := store.LoadMetadata(badSession); err == nil {
+		t.Fatal("expected LoadMetadata to reject path-like session id")
+	}
+	if err := store.DeleteSessionTree(badSession); err == nil {
+		t.Fatal("expected DeleteSessionTree to reject path-like session id")
+	}
+	if _, err := os.Stat(filepath.Join(root, "..", "outside")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected outside path to remain absent, got %v", err)
+	}
+
+	if err := store.SaveTask(meta.ID, Task{ID: "../state"}); err == nil {
+		t.Fatal("expected SaveTask to reject path-like task id")
+	}
+	if _, err := store.GetTask(meta.ID, "../state"); err == nil {
+		t.Fatal("expected GetTask to reject path-like task id")
+	}
+	if err := store.SaveJob(QueueJob{ID: "../job", Status: QueueStatusQueued, Prompt: "x", Mode: ModeExec}); err == nil {
+		t.Fatal("expected SaveJob to reject path-like queue job id")
+	}
+	if _, err := store.LoadJob("../job"); err == nil {
+		t.Fatal("expected LoadJob to reject path-like queue job id")
+	}
+}
+
+func TestUpdateSteerRequestsMergesConcurrentAppend(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := storeA.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first := NewSteerRequest("first", false)
+	if err := storeA.AppendSteerRequest(meta.ID, first); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	snapshot, err := storeA.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	snapshot[0].Status = SteerStatusAccepted
+
+	second := NewSteerRequest("second", false)
+	if err := storeB.AppendSteerRequest(meta.ID, second); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if err := storeA.UpdateSteerRequests(meta.ID, snapshot); err != nil {
+		t.Fatalf("update snapshot: %v", err)
+	}
+
+	loaded, err := storeA.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load merged: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected both steer requests to survive merge, got %#v", loaded)
+	}
+	statusByText := map[string]string{}
+	for _, request := range loaded {
+		statusByText[request.Text] = request.Status
+	}
+	if statusByText["first"] != SteerStatusAccepted || statusByText["second"] != SteerStatusPending {
+		t.Fatalf("unexpected merged statuses: %#v", loaded)
 	}
 }
 
@@ -558,6 +658,78 @@ func TestReconcileFailedJobUpdatesLinkedRunningSession(t *testing.T) {
 	}
 	if stringSliceContains(loadedCoordination.UnresolvedQueueJobs, job.ID) || !stringSliceContains(loadedCoordination.FailedQueueJobs, job.ID) {
 		t.Fatalf("expected parent coordination to move job to failed, got %#v", loadedCoordination)
+	}
+}
+
+func TestDeleteSessionTreeDoesNotDeadlockWithReconcilableJob(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_delete",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_delete",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_delete",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		QueueJobID:       "job_delete",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := store.SaveJob(QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          QueueStatusFailed,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "delete",
+		Mode:            ModeExec,
+		Background:      true,
+		LastError:       "failed before delete",
+	}); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- store.DeleteSessionTree(parentMeta.ID)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("delete session tree: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("DeleteSessionTree appears deadlocked")
+	}
+	if _, err := os.Stat(store.SessionDir(parentMeta.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected parent session removed, got %v", err)
+	}
+	if _, err := os.Stat(store.SessionDir(childMeta.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected child session removed, got %v", err)
+	}
+	if _, err := store.LoadJob(childMeta.QueueJobID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected linked job removed, got %v", err)
 	}
 }
 

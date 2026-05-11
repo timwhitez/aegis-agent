@@ -604,6 +604,43 @@ async function main() {
     );
     results.interactions.history_data_visible = true;
     results.interactions.queue_job_visible = Boolean(queueDetail && (queueDetail.status === 'completed' || queueDetail.status === 'failed'));
+    if (results.queue_job_id) {
+      await click('[data-view="chat"]', 'chat nav before queue job link');
+      await waitFor(
+        () => browserClient.evaluate(`document.getElementById('chat-messages')?.textContent?.length > 0`),
+        15000,
+        'chat visible before queue job link'
+      );
+      const clickedOpenJob = await browserClient.evaluate(`(() => {
+        const jobID = ${JSON.stringify(results.queue_job_id)};
+        const button = Array.from(document.querySelectorAll('[data-open-job]'))
+          .find((el) => el.getAttribute('data-open-job') === jobID);
+        if (!button) return false;
+        button.click();
+        return true;
+      })()`);
+      if (!clickedOpenJob) {
+        await browserClient.evaluate(`(() => {
+          state.selectedQueueJobId = ${JSON.stringify(results.queue_job_id)};
+          state.selectedQueueJobDetail = null;
+          switchView('queue');
+        })()`);
+      }
+      await waitFor(
+        () => browserClient.evaluate(`(() => {
+          const jobID = ${JSON.stringify(results.queue_job_id)};
+          const panel = document.querySelector('[data-selected-queue-job]');
+          const text = document.getElementById('queue-view')?.textContent || '';
+          return Boolean(panel) &&
+            panel.getAttribute('data-selected-queue-job') === jobID &&
+            (text.includes('ui smoke queue ok') || text.includes(jobID.slice(0, 6)));
+        })()`),
+        15000,
+        'selected queue job facts'
+      );
+      results.interactions.queue_open_job_clicked = clickedOpenJob;
+      results.interactions.queue_selected_job_panel_visible = true;
+    }
 
     await click('[data-view="chat"]', 'return to chat');
     await waitFor(

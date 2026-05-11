@@ -44,6 +44,8 @@ type hookExecution struct {
 	commandExitCode *int
 }
 
+const hookCommandOutputLimit = 12000
+
 func New(cfg config.HooksConfig, workdir string) *Manager {
 	return &Manager{
 		workdir:        workdir,
@@ -160,18 +162,27 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 		cmd.Env = minimalEnv(next)
 		cmd.Stdin = bytes.NewReader(stdin)
 		output, err := cmd.CombinedOutput()
+		exitCode := 0
+		if cmd.ProcessState != nil {
+			exitCode = cmd.ProcessState.ExitCode()
+		}
+		text, rawLength, truncated := truncateHookOutput(string(output), hookCommandOutputLimit)
+		timedOut := callCtx.Err() == context.DeadlineExceeded
 		m.emit("hook.command", map[string]any{
-			"name":   hook.Name,
-			"output": string(output),
+			"name":       hook.Name,
+			"output":     text,
+			"raw_length": rawLength,
+			"truncated":  truncated,
+			"timeout":    timedOut,
+			"exit_code":  exitCode,
 		})
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode := exitErr.ExitCode()
+				exitCode = exitErr.ExitCode()
 				execution.commandExitCode = &exitCode
 			}
 			return execution, err
 		}
-		exitCode := 0
 		execution.commandExitCode = &exitCode
 	}
 afterCommand:
@@ -209,6 +220,18 @@ afterCommand:
 		}
 	}
 	return execution, nil
+}
+
+func truncateHookOutput(output string, limit int) (string, int, bool) {
+	rawLength := len(output)
+	if limit <= 0 || rawLength <= limit {
+		return output, rawLength, false
+	}
+	if limit < len("\n[... truncated ...]") {
+		return output[:limit], rawLength, true
+	}
+	suffix := "\n[... truncated ...]"
+	return output[:limit-len(suffix)] + suffix, rawLength, true
 }
 
 type hookCommandPreflight struct {

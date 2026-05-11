@@ -339,7 +339,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					e.emit(meta.ID, eventType, "tool_execute", data)
 				})
 				decision := controller.EvaluateToolCall(currentMessages, call.Name, toolArgs)
-				if decision.Status == GateAllow && call.Name == "finish" && e.cfg.Runtime.PreCompletion.Enabled && e.cfg.Runtime.PreCompletion.CheckFeatures {
+				if decision.Status == GateAllow && call.Name == "finish" && meta.Mode == session.ModeInit && e.cfg.Runtime.PreCompletion.Enabled && e.cfg.Runtime.PreCompletion.CheckFeatures {
 					decision = controller.EvaluatePreCompletionFeatures(true)
 				}
 				if decision.Status == GateAllow {
@@ -410,12 +410,22 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 							goto nextTurn
 						}
 					}
-					toolResult = session.ToolResult{
-						ToolCallID:    call.ID,
-						Name:          call.Name,
-						LLMOutput:     "Error: " + toolErr.Error(),
-						DisplayOutput: "Error: " + toolErr.Error(),
-						IsError:       true,
+					if toolResult.LLMOutput != "" || toolResult.DisplayOutput != "" || len(toolResult.Metadata) > 0 {
+						toolResult.IsError = true
+						if toolResult.LLMOutput == "" {
+							toolResult.LLMOutput = "Error: " + toolErr.Error()
+						}
+						if toolResult.DisplayOutput == "" {
+							toolResult.DisplayOutput = toolResult.LLMOutput
+						}
+					} else {
+						toolResult = session.ToolResult{
+							ToolCallID:    call.ID,
+							Name:          call.Name,
+							LLMOutput:     "Error: " + toolErr.Error(),
+							DisplayOutput: "Error: " + toolErr.Error(),
+							IsError:       true,
+						}
 					}
 				}
 				afterPayload := map[string]any{
@@ -441,13 +451,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if toolDef != nil && toolDef.Ephemeral {
 						count := countToolCalls(messages, call.Name)
 						if count > toolDef.EphemeralWindow {
-							artifactPath := filepath.Join(
-								e.cfg.Runtime.Ephemeral.ArtifactDir,
-								meta.ID,
-								fmt.Sprintf("%s-turn%d.txt", call.Name, turn),
-							)
-							if err := os.MkdirAll(filepath.Dir(artifactPath), 0755); err == nil {
-								if err := os.WriteFile(artifactPath, []byte(toolResult.LLMOutput), 0644); err == nil {
+							artifactPath := e.ephemeralArtifactPath(meta.ID, call.Name, turn)
+							if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err == nil {
+								if err := os.WriteFile(artifactPath, []byte(toolResult.LLMOutput), 0o600); err == nil {
 									toolResult.LLMOutput = fmt.Sprintf(
 										"[Output saved to %s; this internal artifact is not readable via read_file. If you need to inspect it later, rerun the command and redirect output to a normal workspace file such as reports/validation.txt.]",
 										artifactPath,
@@ -519,6 +525,16 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			return result, nil
 		}
 	}
+}
+
+func (e *Engine) ephemeralArtifactPath(sessionID, toolName string, turn int) string {
+	base := strings.TrimSpace(e.cfg.Runtime.Ephemeral.ArtifactDir)
+	if base == "" || filepath.Clean(base) == filepath.Clean(".artifacts/tool-outputs") {
+		base = filepath.Join(e.store.SessionDir(sessionID), "artifacts", "tool-outputs")
+	} else {
+		base = filepath.Join(base, sessionID)
+	}
+	return filepath.Join(base, fmt.Sprintf("%s-turn%d.txt", toolName, turn))
 }
 
 func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager) (RunResult, error) {
