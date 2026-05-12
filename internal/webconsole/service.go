@@ -1025,7 +1025,7 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		mission.ValidationContract = append([]session.GoalValidation(nil), req.ValidationContract...)
 	}
 	if req.RolePlan != nil {
-		mission.RolePlan = append([]session.MissionRole(nil), req.RolePlan...)
+		mission.RolePlan = s.resolveMissionRolePlan(sessionID, req.RolePlan)
 	}
 	if req.SharedArtifacts != nil {
 		mission.SharedArtifacts = append([]string(nil), req.SharedArtifacts...)
@@ -1766,6 +1766,7 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
 		"providers":               provs,
+		"role_providers":          roleProviderOverridesResponse(cfg),
 	})
 }
 
@@ -1798,6 +1799,14 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.GuardrailsMode) != "" {
 		updatedCfg.Runtime.GuardrailsMode = configMode(req.GuardrailsMode)
+	}
+	if req.RoleProviders != nil {
+		roleProviders, err := roleProvidersFromRequest(updatedCfg, req.RoleProviders)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updatedCfg.RoleProviders = roleProviders
 	}
 	if req.DisableHardTurnLimit {
 		updatedCfg.Runtime.MaxTurnsHard = -1
@@ -1876,6 +1885,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"api_provider":           updatedCfg.Providers[updatedCfg.DefaultProvider].APIProvider,
 		"reasoning_mode":         providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
 		"reasoning_summary":      providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),
+		"role_provider_count":    roleProviderOverrideCount(updatedCfg.RoleProviders),
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1888,6 +1898,133 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func roleProviderOverridesResponse(cfg *config.Config) map[string]any {
+	out := map[string]any{}
+	for _, role := range []string{"planner", "generator", "evaluator"} {
+		override := cfg.RoleProviderOverride(role)
+		out[role] = map[string]any{
+			"provider":     strings.TrimSpace(override.Provider),
+			"api_provider": strings.TrimSpace(override.APIProvider),
+			"base_url":     strings.TrimSpace(override.BaseURL),
+			"model":        strings.TrimSpace(override.Model),
+		}
+	}
+	return out
+}
+
+func roleProvidersFromRequest(cfg *config.Config, req map[string]RoleProviderOverrideRequest) (config.RoleProvidersConfig, error) {
+	out := cfg.RoleProviders
+	for role, value := range req {
+		override, err := roleProviderOverrideFromRequest(cfg, role, value)
+		if err != nil {
+			return out, err
+		}
+		switch strings.ToLower(strings.TrimSpace(role)) {
+		case "planner":
+			out.Planner = override
+		case "generator":
+			out.Generator = override
+		case "evaluator":
+			out.Evaluator = override
+		default:
+			return out, fmt.Errorf("unsupported role provider override: %s", role)
+		}
+	}
+	return out, nil
+}
+
+func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RoleProviderOverrideRequest) (config.RoleProviderOverride, error) {
+	providerName := strings.TrimSpace(req.Provider)
+	apiProvider := strings.TrimSpace(req.APIProvider)
+	baseURL := strings.TrimSpace(req.BaseURL)
+	model := strings.TrimSpace(req.Model)
+	if providerName != "" {
+		if _, ok := cfg.Providers[providerName]; !ok {
+			return config.RoleProviderOverride{}, newWebError(
+				errorCodeUnknownProvider,
+				"unknown role provider",
+				"provider "+providerName+" is not configured",
+				"choose one of the configured providers or leave the role provider blank",
+			)
+		}
+	}
+	if apiProvider != "" {
+		providerCfg := config.Provider{APIProvider: apiProvider}
+		if providerName != "" {
+			providerCfg = cfg.Providers[providerName]
+			providerCfg.APIProvider = apiProvider
+		}
+		if _, err := config.EffectiveAPIProvider(firstNonEmpty(providerName, "role-"+strings.TrimSpace(role)), providerCfg); err != nil {
+			return config.RoleProviderOverride{}, err
+		}
+	}
+	return config.RoleProviderOverride{
+		Provider:    providerName,
+		APIProvider: apiProvider,
+		BaseURL:     baseURL,
+		Model:       model,
+	}, nil
+}
+
+func roleProviderOverrideCount(cfg config.RoleProvidersConfig) int {
+	count := 0
+	for _, override := range []config.RoleProviderOverride{cfg.Planner, cfg.Generator, cfg.Evaluator} {
+		if strings.TrimSpace(override.Provider) != "" ||
+			strings.TrimSpace(override.APIProvider) != "" ||
+			strings.TrimSpace(override.BaseURL) != "" ||
+			strings.TrimSpace(override.Model) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) resolveMissionRolePlan(sessionID string, input []session.MissionRole) []session.MissionRole {
+	if len(input) == 0 {
+		return nil
+	}
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		return append([]session.MissionRole(nil), input...)
+	}
+	baseProvider := cfg.DefaultProvider
+	if meta, err := s.store.LoadMetadata(sessionID); err == nil && strings.TrimSpace(meta.Provider) != "" {
+		baseProvider = strings.TrimSpace(meta.Provider)
+	}
+	out := make([]session.MissionRole, 0, len(input))
+	for _, item := range input {
+		role := strings.TrimSpace(item.Role)
+		if !isConfigurableMissionRole(role) {
+			out = append(out, item)
+			continue
+		}
+		override := cfg.RoleProviderOverride(role)
+		providerName := firstNonEmpty(strings.TrimSpace(override.Provider), baseProvider)
+		if strings.TrimSpace(item.Provider) == "" {
+			item.Provider = providerName
+		}
+		if strings.TrimSpace(item.Model) == "" {
+			item.Model = strings.TrimSpace(override.Model)
+			if strings.TrimSpace(item.Model) == "" {
+				if providerCfg, ok := cfg.Providers[providerName]; ok {
+					item.Model = strings.TrimSpace(providerCfg.Model)
+				}
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func isConfigurableMissionRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "planner", "generator", "evaluator":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {

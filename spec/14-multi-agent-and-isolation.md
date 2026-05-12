@@ -141,7 +141,7 @@ child session 使用独立工作目录执行。当前支持：
 - 当 parent 处于活跃 `run` / `exec` 中时，后台 child 默认由同一 CLI 进程内的 auto worker 自动拉起执行
 - child 完成或失败后，结果需要回投到 parent session 的控制通知，供下一安全边界自动并入上下文
 - `background=false` 时同步执行 child session，直到 child 到达稳定状态
-- `agent_role` 允许显式声明 `planner` / `generator` / `evaluator`，并优先于 `agent_name` 推断；该 role 需要在 child session 元数据与后续队列/通知事实中保持可追踪
+- `agent_role` 允许显式声明 `planner` / `generator` / `evaluator`；`agent_name` 只作为人类可读标签，不参与 role provider override 匹配；该 role 需要在 child session 元数据与后续队列/通知事实中保持可追踪
 
 #### `agent_status`
 

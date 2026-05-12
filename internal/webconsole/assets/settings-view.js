@@ -8,9 +8,66 @@ async function renderSettings() {
     const guardrailsMode = configData.guardrails_mode || 'yolo';
     const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
     const maxTurnsHard = Number(configData.max_turns_hard || 0);
+    const roleProviders = configData.role_providers || {};
     const options = Object.keys(providers).map((providerName) => `
       <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
     `).join('');
+    const inheritedProviderOptions = `<option value="">Inherit default</option>${Object.keys(providers).map((providerName) => `
+      <option value="${escapeAttr(providerName)}">${escapeHTML(providerName)}</option>
+    `).join('')}`;
+    const apiProviderOptions = `
+      <option value="">Inherit adapter</option>
+      <option value="openai-compatible">OpenAI-compatible Responses</option>
+      <option value="anthropic-compatible">Anthropic-compatible Messages</option>
+      <option value="google">Google Gemini</option>
+    `;
+    const roleLabels = {
+      planner: 'Planner',
+      generator: 'Generator',
+      evaluator: 'Evaluator'
+    };
+    const roleDescriptions = {
+      planner: 'Decomposition, plans, and handoff artifacts.',
+      generator: 'Bounded implementation and drafting slices.',
+      evaluator: 'Independent review, audit, and validation passes.'
+    };
+    const roleProviderRows = ['planner', 'generator', 'evaluator'].map((role) => {
+      const override = roleProviders[role] || {};
+      const hasOverride = Boolean(override.provider || override.api_provider || override.base_url || override.model);
+      return `
+        <details class="role-provider-panel" data-role-provider="${escapeAttr(role)}" ${hasOverride ? 'open' : ''}>
+          <summary class="role-provider-summary">
+            <span>
+              <strong>${escapeHTML(roleLabels[role])}</strong>
+              <small>${escapeHTML(roleDescriptions[role])}</small>
+            </span>
+            <span class="role-provider-state">${hasOverride ? 'Custom' : 'Default'}</span>
+          </summary>
+          <div class="role-provider-grid">
+            <label class="field">
+              <span class="field-label">Provider Profile</span>
+              <select class="settings-input" data-role-field="provider">
+                ${inheritedProviderOptions}
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">API Provider</span>
+              <select class="settings-input" data-role-field="api_provider">
+                ${apiProviderOptions}
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Base URL</span>
+              <input class="settings-input" data-role-field="base_url" type="text" placeholder="Inherit provider base URL">
+            </label>
+            <label class="field">
+              <span class="field-label">Model Name</span>
+              <input class="settings-input" data-role-field="model" type="text" placeholder="Inherit provider model">
+            </label>
+          </div>
+        </details>
+      `;
+    }).join('');
     const maskedKey = '••••••••••••••••';
     const modeLabel = (mode) => ({
       default: 'Provider default',
@@ -94,6 +151,19 @@ async function renderSettings() {
             <label class="field-label">API Key</label>
             <input id="settings-apikey" class="settings-input" type="password" placeholder="Leave blank to keep existing persisted key...">
           </div>
+          <div class="field role-provider-section">
+            <div class="settings-section-heading">
+              <div>
+                <span class="field-label">Role Provider Overrides</span>
+                <p class="view-subtitle settings-help">
+                  Optional provider settings for planner, generator, and evaluator sessions. Blank fields inherit the selected provider defaults.
+                </p>
+              </div>
+            </div>
+            <div class="role-provider-list">
+              ${roleProviderRows}
+            </div>
+          </div>
           <div class="settings-action-row">
             <button id="settings-test-btn" class="skill-btn settings-test-btn" type="button">
               <i data-lucide="activity"></i>
@@ -123,6 +193,7 @@ async function renderSettings() {
     const apiKeyInput = document.getElementById('settings-apikey');
     const testButton = document.getElementById('settings-test-btn');
     const saveButton = document.getElementById('settings-save-btn');
+    const roleProviderPanels = Array.from(container.querySelectorAll('[data-role-provider]'));
 
     const selectedAPIProvider = (provider) => apiProviderSelect.value || provider?.effective_api_provider || provider?.api_provider || '';
     const reasoningFamilyForAPIProvider = (value) => {
@@ -208,6 +279,42 @@ async function renderSettings() {
     const currentAPIKeyValue = () => (
       apiKeyInput.value === maskedKey && apiKeyInput.dataset.originalHasKey === 'true' ? '' : apiKeyInput.value
     );
+    const syncRoleProviderState = (panel) => {
+      const hasValue = Array.from(panel.querySelectorAll('[data-role-field]')).some((node) => String(node.value || '').trim() !== '');
+      const stateNode = panel.querySelector('.role-provider-state');
+      if (stateNode) {
+        stateNode.textContent = hasValue ? 'Custom' : 'Default';
+      }
+    };
+    const setRoleProviderValues = () => {
+      roleProviderPanels.forEach((panel) => {
+        const role = panel.dataset.roleProvider;
+        const override = roleProviders[role] || {};
+        panel.querySelector('[data-role-field="provider"]').value = override.provider || '';
+        panel.querySelector('[data-role-field="api_provider"]').value = override.api_provider || '';
+        panel.querySelector('[data-role-field="base_url"]').value = override.base_url || '';
+        panel.querySelector('[data-role-field="model"]').value = override.model || '';
+        syncRoleProviderState(panel);
+        panel.querySelectorAll('[data-role-field]').forEach((node) => {
+          node.addEventListener('input', () => syncRoleProviderState(panel));
+          node.addEventListener('change', () => syncRoleProviderState(panel));
+        });
+      });
+    };
+    setRoleProviderValues();
+    const collectRoleProviders = () => {
+      const out = {};
+      roleProviderPanels.forEach((panel) => {
+        const role = panel.dataset.roleProvider;
+        out[role] = {
+          provider: panel.querySelector('[data-role-field="provider"]').value.trim(),
+          api_provider: panel.querySelector('[data-role-field="api_provider"]').value.trim(),
+          base_url: panel.querySelector('[data-role-field="base_url"]').value.trim(),
+          model: panel.querySelector('[data-role-field="model"]').value.trim()
+        };
+      });
+      return out;
+    };
     const buildConfigPayload = () => ({
       guardrailsMode: guardrailsSelect.value,
       maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
@@ -218,6 +325,7 @@ async function renderSettings() {
       model: modelInput.value,
       reasoningMode: reasoningModeSelect.value,
       reasoningSummary: reasoningSummarySelect.value,
+      roleProviders: collectRoleProviders(),
       apiKey: currentAPIKeyValue()
     });
 

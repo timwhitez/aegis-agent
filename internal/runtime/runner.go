@@ -104,6 +104,7 @@ type StartRequest struct {
 	Prompt          string
 	Provider        string
 	Model           string
+	ProviderOptions session.ProviderOptions
 	Workdir         string
 	Mode            string
 	SystemOverride  string
@@ -206,11 +207,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err != nil {
 		return RunResult{}, err
 	}
-	providerName, model, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model)
-	if err != nil {
-		return RunResult{}, WrapConfigError(err)
-	}
-	providerCfg, err := r.cfg.ProviderConfig(providerName)
+	providerName, model, providerCfg, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model, agentRole)
 	if err != nil {
 		return RunResult{}, WrapConfigError(err)
 	}
@@ -261,7 +258,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		QueueJobID:       req.QueueJobID,
 		Depth:            depth,
 		Isolation:        isolationInfo,
-		ProviderOptions:  providerOptionsFromConfig(providerName, providerCfg),
+		ProviderOptions:  resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions),
 	}
 	state := session.State{
 		Status:    session.StatusRunning,
@@ -426,9 +423,11 @@ func normalizeModelOverride(value string) string {
 	return value
 }
 
-func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMetadata, providerOverride, modelOverride string) (string, string, error) {
+func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMetadata, providerOverride, modelOverride string, agentRole ...string) (string, string, config.Provider, error) {
 	providerName := normalizeProviderOverride(providerOverride)
 	model := normalizeModelOverride(modelOverride)
+	explicitProvider := providerName != ""
+	explicitModel := model != ""
 	if providerName == "" && parentMeta != nil && strings.TrimSpace(parentMeta.Provider) != "" {
 		providerName = parentMeta.Provider
 	}
@@ -437,7 +436,27 @@ func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMeta
 	}
 	providerCfg, err := cfg.ProviderConfig(providerName)
 	if err != nil {
-		return "", "", err
+		return "", "", config.Provider{}, err
+	}
+	roleOverride := config.RoleProviderOverride{}
+	if len(agentRole) > 0 && !explicitProvider && !explicitModel {
+		roleOverride = cfg.RoleProviderOverride(agentRole[0])
+	}
+	if strings.TrimSpace(roleOverride.Provider) != "" {
+		providerName = strings.TrimSpace(roleOverride.Provider)
+		providerCfg, err = cfg.ProviderConfig(providerName)
+		if err != nil {
+			return "", "", config.Provider{}, err
+		}
+	}
+	if strings.TrimSpace(roleOverride.APIProvider) != "" {
+		providerCfg.APIProvider = strings.TrimSpace(roleOverride.APIProvider)
+	}
+	if strings.TrimSpace(roleOverride.BaseURL) != "" {
+		providerCfg.BaseURL = strings.TrimSpace(roleOverride.BaseURL)
+	}
+	if strings.TrimSpace(roleOverride.Model) != "" {
+		model = strings.TrimSpace(roleOverride.Model)
 	}
 	if model == "" {
 		if parentMeta != nil && providerName == parentMeta.Provider && strings.TrimSpace(parentMeta.Model) != "" {
@@ -446,7 +465,7 @@ func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMeta
 			model = providerCfg.Model
 		}
 	}
-	return providerName, model, nil
+	return providerName, model, providerCfg, nil
 }
 
 func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {
@@ -1050,6 +1069,9 @@ func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptio
 	if strings.TrimSpace(opts.APIProvider) != "" {
 		cfg.APIProvider = opts.APIProvider
 	}
+	if strings.TrimSpace(opts.BaseURL) != "" {
+		cfg.BaseURL = opts.BaseURL
+	}
 	cfg.Temperature = opts.Temperature
 	cfg.TopP = opts.TopP
 	if opts.MaxOutputTokens > 0 {
@@ -1090,6 +1112,7 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 	apiProvider, _ := config.EffectiveAPIProvider(name, cfg)
 	return session.ProviderOptions{
 		APIProvider:      apiProvider,
+		BaseURL:          strings.TrimSpace(cfg.BaseURL),
 		Temperature:      cfg.Temperature,
 		TopP:             cfg.TopP,
 		MaxOutputTokens:  cfg.MaxOutputTokens,
@@ -1104,6 +1127,13 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 		RetryPolicy:      providerRetryPolicy(cfg),
 		TimeoutPolicy:    providerTimeoutPolicy(cfg),
 	}
+}
+
+func resolvedProviderOptions(name string, cfg config.Provider, override session.ProviderOptions) session.ProviderOptions {
+	if override == (session.ProviderOptions{}) {
+		return providerOptionsFromConfig(name, cfg)
+	}
+	return override
 }
 
 func defaultStoreForAPIProvider(apiProvider string, configured *bool) *bool {

@@ -96,10 +96,11 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	mode := strings.TrimSpace(req.Mode)
 	mode = normalizeRunMode(mode, session.ModeExec)
 	isolationMode := normalizeIsolationMode(req.IsolationMode, "auto")
-	providerName, modelName, err := resolveProviderAndModel(r.cfg, &parentMeta, req.Provider, req.Model)
+	providerName, modelName, providerCfg, err := resolveProviderAndModel(r.cfg, &parentMeta, req.Provider, req.Model, req.AgentRole)
 	if err != nil {
 		return tools.AgentSpawnResult{}, WrapConfigError(err)
 	}
+	providerOptions := providerOptionsFromConfig(providerName, providerCfg)
 	if req.Background {
 		job, err := r.QueueSubmit(ctx, QueueSubmitRequest{
 			ParentSessionID: req.ParentSessionID,
@@ -108,6 +109,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			AgentRole:       req.AgentRole,
 			Provider:        providerName,
 			Model:           modelName,
+			ProviderOptions: providerOptions,
 			Workdir:         workdir,
 			SystemOverride:  req.SystemOverride,
 			Mode:            mode,
@@ -139,6 +141,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		Prompt:          req.Prompt,
 		Provider:        providerName,
 		Model:           modelName,
+		ProviderOptions: providerOptions,
 		Workdir:         workdir,
 		Mode:            mode,
 		SystemOverride:  req.SystemOverride,
@@ -241,6 +244,7 @@ type QueueSubmitRequest struct {
 	AgentRole       string
 	Provider        string
 	Model           string
+	ProviderOptions session.ProviderOptions
 	Workdir         string
 	SystemOverride  string
 	Mode            string
@@ -278,9 +282,13 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	if err != nil {
 		return session.QueueJob{}, err
 	}
-	providerName, modelName, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model)
+	providerName, modelName, providerCfg, err := resolveProviderAndModel(r.cfg, parentMeta, req.Provider, req.Model, req.AgentRole)
 	if err != nil {
 		return session.QueueJob{}, WrapConfigError(err)
+	}
+	providerOptions := req.ProviderOptions
+	if providerOptions == (session.ProviderOptions{}) {
+		providerOptions = providerOptionsFromConfig(providerName, providerCfg)
 	}
 	job := session.QueueJob{
 		SchemaVersion:    1,
@@ -296,6 +304,7 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		Mode:             mode,
 		Provider:         providerName,
 		Model:            modelName,
+		ProviderOptions:  providerOptions,
 		RequestedWorkdir: workdir,
 		SystemOverride:   req.SystemOverride,
 		Background:       true,
@@ -341,6 +350,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		Prompt:          job.Prompt,
 		Provider:        job.Provider,
 		Model:           job.Model,
+		ProviderOptions: job.ProviderOptions,
 		Workdir:         job.RequestedWorkdir,
 		Mode:            job.Mode,
 		SystemOverride:  job.SystemOverride,

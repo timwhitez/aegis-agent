@@ -56,6 +56,7 @@ type ProviderTimeoutPolicy struct {
 
 type ProviderOptions struct {
 	APIProvider      string                 `json:"api_provider,omitempty"`
+	BaseURL          string                 `json:"base_url,omitempty"`
 	Temperature      *float64               `json:"temperature,omitempty"`
 	TopP             *float64               `json:"top_p,omitempty"`
 	MaxOutputTokens  int                    `json:"max_output_tokens,omitempty"`
@@ -380,34 +381,35 @@ type FeatureList struct {
 }
 
 type QueueJob struct {
-	SchemaVersion    int      `json:"schema_version"`
-	ID               string   `json:"id"`
-	CreatedAt        string   `json:"created_at"`
-	UpdatedAt        string   `json:"updated_at"`
-	Status           string   `json:"status"`
-	ClaimedBy        string   `json:"claimed_by,omitempty"`
-	ClaimedAt        string   `json:"claimed_at,omitempty"`
-	HeartbeatAt      string   `json:"heartbeat_at,omitempty"`
-	WorkerPID        int      `json:"worker_pid,omitempty"`
-	ProcessStartID   string   `json:"process_start_id,omitempty"`
-	ParentSessionID  string   `json:"parent_session_id,omitempty"`
-	RootSessionID    string   `json:"root_session_id,omitempty"`
-	AgentName        string   `json:"agent_name,omitempty"`
-	AgentRole        string   `json:"agent_role,omitempty"`
-	Prompt           string   `json:"prompt"`
-	Mode             string   `json:"mode"`
-	Provider         string   `json:"provider,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	RequestedWorkdir string   `json:"requested_workdir,omitempty"`
-	EffectiveWorkdir string   `json:"effective_workdir,omitempty"`
-	VisiblePaths     []string `json:"visible_paths,omitempty"`
-	SessionID        string   `json:"session_id,omitempty"`
-	SessionStatus    string   `json:"session_status,omitempty"`
-	SystemOverride   string   `json:"system_override,omitempty"`
-	Background       bool     `json:"background"`
-	WaitMode         string   `json:"wait_mode,omitempty"`
-	IsolationMode    string   `json:"isolation_mode,omitempty"`
-	IsolationRoot    string   `json:"isolation_root,omitempty"`
-	LastError        string   `json:"last_error,omitempty"`
-	FinalText        string   `json:"final_text,omitempty"`
+	SchemaVersion    int             `json:"schema_version"`
+	ID               string          `json:"id"`
+	CreatedAt        string          `json:"created_at"`
+	UpdatedAt        string          `json:"updated_at"`
+	Status           string          `json:"status"`
+	ClaimedBy        string          `json:"claimed_by,omitempty"`
+	ClaimedAt        string          `json:"claimed_at,omitempty"`
+	HeartbeatAt      string          `json:"heartbeat_at,omitempty"`
+	WorkerPID        int             `json:"worker_pid,omitempty"`
+	ProcessStartID   string          `json:"process_start_id,omitempty"`
+	ParentSessionID  string          `json:"parent_session_id,omitempty"`
+	RootSessionID    string          `json:"root_session_id,omitempty"`
+	AgentName        string          `json:"agent_name,omitempty"`
+	AgentRole        string          `json:"agent_role,omitempty"`
+	Prompt           string          `json:"prompt"`
+	Mode             string          `json:"mode"`
+	Provider         string          `json:"provider,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	ProviderOptions  ProviderOptions `json:"provider_options,omitempty"`
+	RequestedWorkdir string          `json:"requested_workdir,omitempty"`
+	EffectiveWorkdir string          `json:"effective_workdir,omitempty"`
+	VisiblePaths     []string        `json:"visible_paths,omitempty"`
+	SessionID        string          `json:"session_id,omitempty"`
+	SessionStatus    string          `json:"session_status,omitempty"`
+	SystemOverride   string          `json:"system_override,omitempty"`
+	Background       bool            `json:"background"`
+	WaitMode         string          `json:"wait_mode,omitempty"`
+	IsolationMode    string          `json:"isolation_mode,omitempty"`
+	IsolationRoot    string          `json:"isolation_root,omitempty"`
+	LastError        string          `json:"last_error,omitempty"`
+	FinalText        string          `json:"final_text,omitempty"`
 }

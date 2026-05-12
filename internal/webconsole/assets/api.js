@@ -167,6 +167,7 @@ function saveConfig(payload) {
     model: payload.model,
     reasoning_mode: payload.reasoningMode,
     reasoning_summary: payload.reasoningSummary,
+    role_providers: payload.roleProviders,
     api_key: payload.apiKey
   }));
 }

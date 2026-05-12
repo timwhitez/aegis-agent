@@ -130,6 +130,7 @@ type MissionRole struct {
 	Name       string   `json:"name"`
 	Role       string   `json:"role"`
 	Scope      string   `json:"scope,omitempty"`
+	Provider   string   `json:"provider,omitempty"`
 	Model      string   `json:"model,omitempty"`
 	Tools      []string `json:"tools,omitempty"`
 	SessionIDs []string `json:"session_ids,omitempty"`

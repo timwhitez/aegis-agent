@@ -189,7 +189,8 @@
 - 维护 parent / root / depth 元数据
 - 为 child session 准备 isolation workdir
 - 统一 CLI 与 tool 的 delegation 契约
-- 当 `agent_name` 显式声明 `planner` / `generator` / `evaluator` 一类 persona 时，把它作为 role hint 传入 child session，而不是把角色分工硬编码成固定 DAG
+- `agent_role` 可显式选择 `planner` / `generator` / `evaluator`，并作为 role hint 传入 child session；`agent_name` 只是人类可读标签，不参与 role provider override 匹配
+- Settings / config 可为 `planner`、`generator`、`evaluator` 单独声明 provider override；空字段继承默认 provider 或 parent session，显式请求中的 provider/model 仍优先
 - child handoff 必须依赖可见文件事实，例如 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md` 与 visible output 列表，而不是依赖进程内临时上下文
 
 ### 2.18 QueueStore And Worker

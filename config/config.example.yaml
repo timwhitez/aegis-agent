@@ -83,6 +83,27 @@ providers:
   #   include_thoughts: true
   #   max_output_tokens: 32768
 
+# Optional role-level defaults for model-led delegation.
+# Every field may stay blank. Blank provider inherits the default provider or
+# parent session; blank api_provider/base_url/model inherits the selected
+# provider profile. Explicit provider/model arguments still win.
+role_providers:
+  planner:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  generator:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  evaluator:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+
 session:
   dir: .go-cli-agent/sessions
   dir_mode: "0700"

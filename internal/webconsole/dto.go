@@ -87,16 +87,24 @@ type QueueJobRequest struct {
 }
 
 type UpdateConfigRequest struct {
-	Provider             string  `json:"provider"`
-	APIProvider          *string `json:"api_provider"`
-	BaseURL              *string `json:"base_url"`
-	Model                *string `json:"model"`
-	APIKey               *string `json:"api_key"`
-	ReasoningMode        *string `json:"reasoning_mode"`
-	ReasoningSummary     *string `json:"reasoning_summary"`
-	GuardrailsMode       string  `json:"guardrails_mode"`
-	MaxTurnsHard         *int    `json:"max_turns_hard"`
-	DisableHardTurnLimit bool    `json:"disable_hard_turn_limit"`
+	Provider             string                                 `json:"provider"`
+	APIProvider          *string                                `json:"api_provider"`
+	BaseURL              *string                                `json:"base_url"`
+	Model                *string                                `json:"model"`
+	APIKey               *string                                `json:"api_key"`
+	ReasoningMode        *string                                `json:"reasoning_mode"`
+	ReasoningSummary     *string                                `json:"reasoning_summary"`
+	GuardrailsMode       string                                 `json:"guardrails_mode"`
+	MaxTurnsHard         *int                                   `json:"max_turns_hard"`
+	DisableHardTurnLimit bool                                   `json:"disable_hard_turn_limit"`
+	RoleProviders        map[string]RoleProviderOverrideRequest `json:"role_providers"`
+}
+
+type RoleProviderOverrideRequest struct {
+	Provider    string `json:"provider"`
+	APIProvider string `json:"api_provider"`
+	BaseURL     string `json:"base_url"`
+	Model       string `json:"model"`
 }
 
 type TestConfigResponse struct {

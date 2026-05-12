@@ -739,7 +739,7 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"prompt":     "objective, scope, boundaries",
-		"agent_role": "evaluator fits review",
+		"agent_role": "Choose exactly one of planner, generator, or evaluator",
 		"background": "agent_status or agent_list",
 	} {
 		schema, ok := properties[name].(map[string]any)

@@ -235,6 +235,101 @@ func TestServiceStartSessionReturnsSessionID(t *testing.T) {
 	}
 }
 
+func TestServiceMissionRolePlanAppliesExactRoleProviderOverrides(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Providers["planner-profile"] = cfg.Providers["openai"]
+	planner := cfg.Providers["planner-profile"]
+	planner.Model = "planner-profile-model"
+	cfg.Providers["planner-profile"] = planner
+	cfg.RoleProviders.Planner = config.RoleProviderOverride{
+		Provider: "planner-profile",
+	}
+	cfg.RoleProviders.Generator = config.RoleProviderOverride{
+		Model: "generator-role-model",
+	}
+	cfg.RoleProviders.Evaluator = config.RoleProviderOverride{
+		Provider: "planner-profile",
+		Model:    "evaluator-role-model",
+	}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_role_plan_exact",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_role_plan_exact",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Ship role-aware mission plan",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	patchBody := bytes.NewBufferString(`{
+		"role_plan": [
+			{"name":"Plan","role":"planner","scope":"split milestones"},
+			{"name":"Build","role":"generator","scope":"implement feature"},
+			{"name":"Review","role":"evaluator","scope":"validate result"},
+			{"name":"Legacy","role":"worker","scope":"should not be matched"}
+		],
+		"plan_status": "draft"
+	}`)
+	req, err := http.NewRequest(http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", patchBody)
+	if err != nil {
+		t.Fatalf("new patch request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch mission plan: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected patch status: %d body=%s", resp.StatusCode, string(body))
+	}
+	var goal session.SessionGoal
+	if err := json.NewDecoder(resp.Body).Decode(&goal); err != nil {
+		t.Fatalf("decode goal: %v", err)
+	}
+	if goal.Mission == nil || len(goal.Mission.RolePlan) != 4 {
+		t.Fatalf("expected four role plan entries, got %#v", goal.Mission)
+	}
+	roles := goal.Mission.RolePlan
+	if roles[0].Role != "planner" || roles[0].Provider != "planner-profile" || roles[0].Model != "planner-profile-model" {
+		t.Fatalf("expected planner provider profile defaults, got %#v", roles[0])
+	}
+	if roles[1].Role != "generator" || roles[1].Provider != "openai" || roles[1].Model != "generator-role-model" {
+		t.Fatalf("expected generator role model with default provider, got %#v", roles[1])
+	}
+	if roles[2].Role != "evaluator" || roles[2].Provider != "planner-profile" || roles[2].Model != "evaluator-role-model" {
+		t.Fatalf("expected evaluator role override, got %#v", roles[2])
+	}
+	if roles[3].Role != "worker" || roles[3].Provider != "" || roles[3].Model != "" {
+		t.Fatalf("expected unsupported role to remain unmatched, got %#v", roles[3])
+	}
+}
+
 func TestServiceStartSessionWithGoalPersistsGoal(t *testing.T) {
 	server := newGoalCompleteServer()
 	defer server.Close()
@@ -1997,6 +2092,98 @@ func TestServiceConfigSaveClearsExplicitProviderFields(t *testing.T) {
 	p := updated.Providers["openai"]
 	if p.APIProvider != "" || p.BaseURL != "" || p.Model != "" {
 		t.Fatalf("expected explicit provider fields to be cleared, got %#v", p)
+	}
+}
+
+func TestServiceConfigRoutesPersistRoleProviderOverrides(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Providers["validator"] = cfg.Providers["openai"]
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"role_providers": map[string]any{
+			"planner": map[string]any{
+				"model": "planner-only-model",
+			},
+			"generator": map[string]any{},
+			"evaluator": map[string]any{
+				"provider":     "validator",
+				"api_provider": "openai-compatible",
+				"base_url":     "http://validator.invalid/v1",
+				"model":        "validator-model",
+			},
+		},
+	}, http.StatusOK, nil)
+
+	var after map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &after)
+	roleProviders, _ := after["role_providers"].(map[string]any)
+	planner, _ := roleProviders["planner"].(map[string]any)
+	evaluator, _ := roleProviders["evaluator"].(map[string]any)
+	generator, _ := roleProviders["generator"].(map[string]any)
+	if planner["model"] != "planner-only-model" || planner["provider"] != "" {
+		t.Fatalf("expected planner model-only override, got %#v", planner)
+	}
+	if evaluator["provider"] != "validator" || evaluator["base_url"] != "http://validator.invalid/v1" || evaluator["model"] != "validator-model" {
+		t.Fatalf("expected evaluator override, got %#v", evaluator)
+	}
+	if generator["provider"] != "" || generator["model"] != "" {
+		t.Fatalf("expected empty generator override, got %#v", generator)
+	}
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.RoleProviders.Planner.Model != "planner-only-model" || updated.RoleProviders.Evaluator.Provider != "validator" {
+		t.Fatalf("expected role overrides in active config, got %#v", updated.RoleProviders)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config file: %v", err)
+	}
+	configText := string(configBytes)
+	for _, want := range []string{
+		"role_providers:",
+		"planner:",
+		"model: planner-only-model",
+		"evaluator:",
+		"provider: validator",
+		"base_url: http://validator.invalid/v1",
+	} {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("expected %q to persist to config, got %q", want, configText)
+		}
+	}
+}
+
+func TestServiceConfigRejectsUnknownRoleProviderOverride(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"role_providers": map[string]any{
+			"evaluator": map[string]any{
+				"provider": "missing-provider",
+			},
+		},
+	}, http.StatusBadRequest)
+	if errResp.Code != errorCodeUnknownProvider {
+		t.Fatalf("expected unknown provider code, got %#v", errResp)
 	}
 }
 

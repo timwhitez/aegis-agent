@@ -298,6 +298,7 @@ func TestBuildSystemPromptAddsPlannerRoleGuidance(t *testing.T) {
 		[]session.Message{
 			session.NewMessage("user", "Turn this brief prompt into a durable implementation plan."),
 		},
+		"planning-agent",
 		"planner",
 	)
 	if !strings.Contains(prompt, "## Session Role") || !strings.Contains(prompt, "acting as the planner role") {
@@ -320,6 +321,7 @@ func TestBuildSystemPromptAddsEvaluatorRoleGuidance(t *testing.T) {
 			session.NewMessage("user", "Review the latest implementation and decide whether it is actually done."),
 		},
 		"reviewer",
+		"evaluator",
 	)
 	if !strings.Contains(prompt, "acting as the evaluator role") {
 		t.Fatalf("expected evaluator role section, got:\n%s", prompt)
@@ -329,7 +331,25 @@ func TestBuildSystemPromptAddsEvaluatorRoleGuidance(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptPrefersExplicitRoleOverAgentName(t *testing.T) {
+func TestBuildSystemPromptDoesNotInferRoleFromAgentName(t *testing.T) {
+	prompt := buildSystemPrompt(
+		"/tmp/work",
+		session.ModeExec,
+		"",
+		nil,
+		nil,
+		session.State{},
+		[]session.Message{
+			session.NewMessage("user", "Review the latest implementation and decide whether it is actually done."),
+		},
+		"reviewer",
+	)
+	if strings.Contains(prompt, "## Session Role") || strings.Contains(prompt, "acting as the evaluator role") {
+		t.Fatalf("expected agent_name alone not to infer role guidance, got:\n%s", prompt)
+	}
+}
+
+func TestBuildSystemPromptUsesExplicitRoleWithAgentName(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",
 		session.ModeExec,
@@ -347,7 +367,7 @@ func TestBuildSystemPromptPrefersExplicitRoleOverAgentName(t *testing.T) {
 		t.Fatalf("expected explicit planner role guidance, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "acting as the evaluator role") {
-		t.Fatalf("expected explicit role to override inferred agent-name role, got:\n%s", prompt)
+		t.Fatalf("expected explicit role to be the only role guidance, got:\n%s", prompt)
 	}
 }
 

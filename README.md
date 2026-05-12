@@ -126,6 +126,8 @@ providers:
 
 `api_provider` 表示实际 adapter family；Provider map key 只是 Provider Profile 名称。`wire_api` 仅作为 OpenAI-compatible Responses 的 legacy / advanced compatibility 字段保留。provider generation / reasoning 字段会进入 runtime 和 session metadata，而不是只停留在一次性 CLI 参数里。当前支持 `api_provider`、`temperature`、`top_p`、`max_output_tokens`、`reasoning_effort`、`reasoning_summary`、`text_verbosity`、`thinking_budget`、`include_thoughts`、`store`、`send_metadata`，以及 provider timeout / retry 配置。
 
+Settings 可以为 `planner`、`generator`、`evaluator` 三类 role hint 单独配置 provider override。每个字段都可留空：空 provider 继承默认 provider 或 parent session，空 `api_provider` / `base_url` / `model` 继承所选 provider profile；显式启动或委派时传入的 provider/model 仍优先。role override 只在 agent 明确选择 `agent_role` 或 internal `role_plan.role` 为这三类之一时生效，不从 `agent_name` 或 orchestrator / worker / validator 文案做模糊匹配，也不会把 Goal/Mission 改成固定三执行者 workflow。
+
 DeepSeek / Kimi 这类自定义 profile 如果通过 Anthropic-compatible Messages 接入，应显式配置 adapter family，而不是改名伪装成 `anthropic`：
 
 ```yaml

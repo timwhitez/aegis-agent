@@ -507,6 +507,13 @@ Settings API：
 
 - 更新 goal validation plan 或内部 validation contract
 
+`GET /api/config` / `POST /api/config`
+
+- Settings 暴露可折叠的 Role Provider Overrides，用于 `planner`、`generator`、`evaluator` 三类 role hint 的 provider/profile、API provider、base URL、model 默认值
+- role override 只在 `agent_role` 或 internal `role_plan.role` 显式选择 `planner` / `generator` / `evaluator` 时生效；`agent_name` 与 orchestrator / worker / validator 文案不做模糊匹配
+- role override 的每个字段都可留空；空字段继承默认 provider、parent session 或所选 provider profile，显式启动/委派请求中的 provider/model 覆盖 Settings 默认值
+- 该配置只影响带 role hint 的 session / child / queue provider 选择，不把 Goal/Mission 改造成固定 orchestrator / worker / validator runner
+
 ### 7.13 `GET /api/queue/jobs`
 
 参数：

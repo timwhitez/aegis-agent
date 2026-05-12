@@ -27,6 +27,7 @@ type Config struct {
 	SchemaVersion   int                 `yaml:"schema_version"`
 	DefaultProvider string              `yaml:"default_provider"`
 	Providers       map[string]Provider `yaml:"providers"`
+	RoleProviders   RoleProvidersConfig `yaml:"role_providers,omitempty"`
 	Session         SessionConfig       `yaml:"session"`
 	Skills          SkillsConfig        `yaml:"skills"`
 	Runtime         RuntimeConfig       `yaml:"runtime"`
@@ -56,6 +57,19 @@ type Provider struct {
 	Store               *bool    `yaml:"store,omitempty"`
 	SendMetadata        *bool    `yaml:"send_metadata,omitempty"`
 	RawSidecar          *bool    `yaml:"raw_sidecar,omitempty"`
+}
+
+type RoleProvidersConfig struct {
+	Planner   RoleProviderOverride `yaml:"planner,omitempty"`
+	Generator RoleProviderOverride `yaml:"generator,omitempty"`
+	Evaluator RoleProviderOverride `yaml:"evaluator,omitempty"`
+}
+
+type RoleProviderOverride struct {
+	Provider    string `yaml:"provider,omitempty"`
+	APIProvider string `yaml:"api_provider,omitempty"`
+	BaseURL     string `yaml:"base_url,omitempty"`
+	Model       string `yaml:"model,omitempty"`
 }
 
 func (p Provider) ResolvedAPIKey() string {
@@ -404,6 +418,9 @@ func normalizeConfig(cfg *Config, cwd string) {
 		cfg.Runtime.CommandTimeoutSec = 120
 	}
 	cfg.Runtime.GuardrailsMode = normalizeGuardrailsMode(cfg.Runtime.GuardrailsMode)
+	normalizeRoleProviderOverride(&cfg.RoleProviders.Planner)
+	normalizeRoleProviderOverride(&cfg.RoleProviders.Generator)
+	normalizeRoleProviderOverride(&cfg.RoleProviders.Evaluator)
 	for name, provider := range cfg.Providers {
 		provider.APIProvider = normalizeAPIProvider(provider.APIProvider)
 		provider.ReasoningSummary = normalizeReasoningSummary(provider.ReasoningSummary)
@@ -458,6 +475,29 @@ func normalizeConfig(cfg *Config, cwd string) {
 	cfg.Runtime.Isolation.RootDir = normalizeIsolationRootDir(cwd, cfg.Runtime.Isolation.RootDir)
 	for i, dir := range cfg.Skills.Dirs {
 		cfg.Skills.Dirs[i] = resolveMaybeRelative(cwd, dir)
+	}
+}
+
+func normalizeRoleProviderOverride(override *RoleProviderOverride) {
+	if override == nil {
+		return
+	}
+	override.Provider = strings.TrimSpace(override.Provider)
+	override.APIProvider = normalizeAPIProvider(override.APIProvider)
+	override.BaseURL = strings.TrimSpace(override.BaseURL)
+	override.Model = strings.TrimSpace(override.Model)
+}
+
+func (c *Config) RoleProviderOverride(role string) RoleProviderOverride {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "planner":
+		return c.RoleProviders.Planner
+	case "generator":
+		return c.RoleProviders.Generator
+	case "evaluator":
+		return c.RoleProviders.Evaluator
+	default:
+		return RoleProviderOverride{}
 	}
 }
 

@@ -1351,7 +1351,7 @@ func defGetGoal() Definition {
 func defCreateGoal() Definition {
 	return Definition{
 		Name:        "create_goal",
-		Description: "Create one durable goal for this session when the user or system explicitly asks for goal-driven work. Do not infer a goal from ordinary prompts. Fails if a current goal already exists.",
+		Description: "Create one durable goal for this session when the user or system explicitly asks for goal-driven work. Do not infer a goal from ordinary prompts. Fails if a current goal already exists. For large goal-driven work, any internal mission role plan should choose role values directly from planner, generator, and evaluator so Settings role provider overrides apply.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1920,7 +1920,7 @@ func taskFilePath(execCtx ExecContext, taskID string) string {
 func defAgentSpawn(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_spawn",
-		Description: "Spawn a child agent when the model decides delegation would improve coverage, independence, or context control. Consider this for broad investigations, separable long-running slices, code audits, module scans, independent validation, or reviewer/evaluator passes; keep tiny single-file checks in the parent. Child sessions and background jobs are durable facts, and their results should be reconciled before final parent conclusions. Delegation is optional and model-led. Use isolation_mode=auto when the child must write artifacts.",
+		Description: "Spawn a child agent when the model decides delegation would improve coverage, independence, or context control. Consider this for broad investigations, separable long-running slices, code audits, module scans, independent validation, or reviewer/evaluator passes; keep tiny single-file checks in the parent. Child sessions and background jobs are durable facts, and their results should be reconciled before final parent conclusions. Delegation is optional and model-led. Choose agent_role directly from planner, generator, or evaluator when role-specific Settings provider overrides should apply. Use isolation_mode=auto when the child must write artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1935,7 +1935,7 @@ func defAgentSpawn(control ControlPlane) Definition {
 				"agent_role": map[string]any{
 					"type":        "string",
 					"enum":        []string{"planner", "generator", "evaluator"},
-					"description": "Child role hint. evaluator fits review, audit, validation, and reviewer work; planner fits decomposition; generator fits bounded drafting or implementation.",
+					"description": "Optional child role hint. Choose exactly one of planner, generator, or evaluator when that role's Settings provider override should apply. Omit provider/model to use the configured default for the chosen role.",
 				},
 				"provider": map[string]any{
 					"type":        "string",

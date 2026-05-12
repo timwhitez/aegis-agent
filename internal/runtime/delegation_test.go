@@ -268,6 +268,94 @@ func TestRunnerDelegateInheritsParentProviderAndModelWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestRunnerDelegateAppliesRoleProviderOverrideWhenProviderModelOmitted(t *testing.T) {
+	roleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"role override done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	t.Cleanup(roleServer.Close)
+
+	cfg := testRuntimeConfig(t)
+	cfg.Providers["validator"] = cfg.Providers["openai-compatible"]
+	validator := cfg.Providers["validator"]
+	validator.APIProvider = "openai-compatible"
+	validator.Model = "validator-default"
+	validator.BaseURL = "http://validator-profile.invalid/v1"
+	cfg.Providers["validator"] = validator
+	cfg.RoleProviders.Evaluator = config.RoleProviderOverride{
+		Provider:    "validator",
+		APIProvider: "openai-compatible",
+		BaseURL:     roleServer.URL,
+		Model:       "validator-role-model",
+	}
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Provider != "validator" || meta.Model != "validator-role-model" {
+		t.Fatalf("expected evaluator provider/model override, got provider=%q model=%q", meta.Provider, meta.Model)
+	}
+	if meta.ProviderOptions.APIProvider != "openai-compatible" || meta.ProviderOptions.BaseURL != roleServer.URL {
+		t.Fatalf("expected evaluator adapter override in provider options, got %#v", meta.ProviderOptions)
+	}
+}
+
+func TestRunnerDelegateExplicitProviderModelWinsOverRoleProviderOverride(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Providers["validator"] = cfg.Providers["openai-compatible"]
+	validator := cfg.Providers["validator"]
+	validator.APIProvider = "openai-compatible"
+	cfg.Providers["validator"] = validator
+	cfg.RoleProviders.Evaluator = config.RoleProviderOverride{
+		Provider: "validator",
+		Model:    "validator-role-model",
+	}
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		Provider:        "openai-compatible",
+		Model:           "explicit-model",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Provider != "openai-compatible" || meta.Model != "explicit-model" {
+		t.Fatalf("expected explicit provider/model to win, got provider=%q model=%q", meta.Provider, meta.Model)
+	}
+}
+
 func TestRunnerDelegateTreatsDefaultIsolationModeAsAuto(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
@@ -564,6 +652,37 @@ func TestRunnerQueueSubmitInheritsParentProviderAndModelWhenOmitted(t *testing.T
 	}
 	if processed.Model != "gpt-5.4" {
 		t.Fatalf("expected processed model to inherit from parent, got %#v", processed.Model)
+	}
+}
+
+func TestRunnerQueueSubmitPersistsRoleProviderOverrideOptions(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Providers["builder"] = cfg.Providers["openai-compatible"]
+	builder := cfg.Providers["builder"]
+	builder.APIProvider = "openai-compatible"
+	builder.Model = "builder-default"
+	cfg.Providers["builder"] = builder
+	cfg.RoleProviders.Generator = config.RoleProviderOverride{
+		Provider: "builder",
+		BaseURL:  "http://role-builder.invalid/v1",
+		Model:    "builder-role-model",
+	}
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentRole:       "generator",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if job.Provider != "builder" || job.Model != "builder-role-model" {
+		t.Fatalf("expected generator role provider/model override, got %#v", job)
+	}
+	if job.ProviderOptions.BaseURL != "http://role-builder.invalid/v1" {
+		t.Fatalf("expected role base URL to persist on queue job, got %#v", job.ProviderOptions)
 	}
 }
 

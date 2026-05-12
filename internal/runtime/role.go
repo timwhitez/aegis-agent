@@ -11,10 +11,10 @@ const (
 	agentRoleEvaluator = "evaluator"
 )
 
-func normalizeAgentRole(explicitRole, agentName string) (string, error) {
+func normalizeAgentRole(explicitRole, _ string) (string, error) {
 	role := strings.ToLower(strings.TrimSpace(explicitRole))
 	if role == "" {
-		return inferAgentRole(agentName), nil
+		return "", nil
 	}
 	switch role {
 	case agentRolePlanner, agentRoleGenerator, agentRoleEvaluator:
@@ -24,27 +24,8 @@ func normalizeAgentRole(explicitRole, agentName string) (string, error) {
 	}
 }
 
-func inferAgentRole(agentName string) string {
-	lowered := strings.ToLower(strings.TrimSpace(agentName))
-	switch {
-	case lowered == "":
-		return ""
-	case strings.Contains(lowered, "planner"), strings.Contains(lowered, "architect"), strings.Contains(lowered, "spec"):
-		return agentRolePlanner
-	case strings.Contains(lowered, "review"), strings.Contains(lowered, "evaluator"), strings.Contains(lowered, "qa"), strings.Contains(lowered, "audit"):
-		return agentRoleEvaluator
-	case strings.Contains(lowered, "generator"), strings.Contains(lowered, "builder"), strings.Contains(lowered, "implement"), strings.Contains(lowered, "coder"):
-		return agentRoleGenerator
-	default:
-		return ""
-	}
-}
-
-func roleGuidance(agentRole, agentName string) (string, []string) {
+func roleGuidance(agentRole, _ string) (string, []string) {
 	role := strings.ToLower(strings.TrimSpace(agentRole))
-	if role == "" {
-		role = inferAgentRole(agentName)
-	}
 	switch role {
 	case agentRolePlanner:
 		return role, []string{
