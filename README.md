@@ -73,14 +73,11 @@
 ./bin/go-cli-agent doctor --provider openai --skip-probe
 ```
 
-长任务可以在启动时附带 durable goal。goal 会落盘为 `goal.json`，模型可通过 `get_goal/create_goal/update_goal` 读取、创建并在完成审计后标记 complete；暂停、恢复和清除仍由用户/CLI/Web 控制：
+长任务可以在启动时附带 durable goal。默认使用方式很克制：用户只写 prompt，开启 Goal 后 prompt 本身就是目标；模型负责在运行中用 `get_goal/create_goal/update_goal`、todo/task 和普通工具拆分验证，不要求用户先填写 criteria、milestone、budget 等表单。goal 会落盘为 `goal.json`，模型完成审计后通过 `update_goal` 标记 complete；暂停、恢复和清除仍由用户/CLI/Web 控制。
 
 ```sh
 ./bin/go-cli-agent exec \
   --goal "Migrate the provider contract tests without changing runtime behavior" \
-  --goal-mode mission \
-  --goal-success "Focused tests pass" \
-  --goal-validate "go test ./internal/provider" \
   "Implement the migration and call finish after the goal is complete."
 
 ./bin/go-cli-agent goal pause <session-id>
@@ -148,7 +145,7 @@ providers:
 
 ## Experimental Web
 
-本地 Web 控制台只作为显式实验入口存在，用来观察 session、goal / mission、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
+本地 Web 控制台只作为显式实验入口存在，用来观察 session、goal、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。启动区的 Goal 是一个简单开关；选中后用户仍只写 prompt，agent 在运行中自行拆分目标、计划和验证。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
 
 ```sh
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2

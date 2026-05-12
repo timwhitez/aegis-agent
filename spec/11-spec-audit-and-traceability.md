@@ -134,7 +134,7 @@
 - 模型升级后要持续复盘哪些 scaffold 仍然 load-bearing；角色化、evaluator pass、handoff guard 都应按任务强度启用，而不是无差别铺满所有任务
 - role hint 不应只停留在 prompt 文本里；当 session 或 child job 显式声明 `planner` / `generator` / `evaluator` 时，该 role 应持久化进 session metadata、queue job、background notification 和 provider request metadata，方便后续 traceability 与 comparator 验证
 
-### 2.10 Session Goals / Missions
+### 2.10 Session Goals
 
 来源：
 
@@ -144,9 +144,10 @@
 结论：
 
 - 一个 session 默认最多一个 current goal，goal 是用户可见的 durable objective，不是 system 级指令升级
+- 默认产品入口只有一个 Goal 开关；开启后 prompt 本身就是 objective，用户不需要在启动前填写 success criteria、validation、milestone、role plan 或 budget
 - `goal.json` 与 `artifacts/goal-history.jsonl` 是目标事实源；`session.md`、checkpoint、WebConsole 展示都只是派生视图
 - 模型工具面只允许 `get_goal`、`create_goal`、`update_goal(status=complete)`；pause / resume / clear / budget-limited 由用户或系统控制
-- Mission mode 可以保存 success criteria、validation contract、features、milestones、role hints 与 shared artifacts，但 runtime 不得据此硬编码 DAG、强制委派或强制验证顺序
+- Mission 的长任务能力收敛为 Goal 的内部结构化计划：agent 可以在运行中保存 success criteria、validation contract、features、milestones、role hints 与 shared artifacts，但 runtime 不得据此硬编码 DAG、强制委派或强制验证顺序
 - Budget limited 只表示预算触顶，需要 wrap-up 和剩余工作说明；除非完成审计真实通过，否则不能被视为 complete
 
 ## 3. 已验证的 provider 协议事实

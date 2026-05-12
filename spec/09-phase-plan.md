@@ -192,10 +192,10 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 当前已纳入 core v1 收敛口径的加固项：
 
 - session contract snapshot：`contract.json` 与 `artifacts/contract-history.jsonl`
-- session goal / mission snapshot：`goal.json` 与 `artifacts/goal-history.jsonl`，包含 objective、status、budget accounting、success criteria、validation plan 与 mission plan 摘要
+- session goal snapshot：`goal.json` 与 `artifacts/goal-history.jsonl`，包含 objective、status、usage accounting、success criteria、validation plan 与内部结构化计划摘要；默认用户入口不暴露 Goal/Mission 分叉或预算表单
 - required artifact tracker：`artifact-tracker.json`
 - centralized completion controller：统一复用既有 guard，并补充显式 artifact / parent coordination gate
-- active goal completion gate：active goal 下 `finish` 前必须先完成目标审计并由模型调用 `update_goal(status="complete")`；budget_limited 只能触发 wrap-up，不等同完成
+- active goal completion gate：active goal 下 `finish` 前必须先完成目标审计并由模型调用 `update_goal(status="complete")`；若高级入口设置了预算，budget_limited 只能触发 wrap-up，不等同完成
 - provider attempt ledger：`provider-attempts.jsonl`
 - operator session summary：`session.md`
 - long-run checkpoint：`checkpoints/longrun-latest.json`
@@ -208,7 +208,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 覆盖新增持久化、gate 与 repo-owned validation helper
 - `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
-- goal / mission 的验收覆盖 store round-trip、model tools、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate、Web start payload 与 goal REST endpoints
+- goal 的验收覆盖 store round-trip、model tools、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate、Web start payload 与 goal REST endpoints；Web 启动默认只需要 Goal 开关 + prompt
 
 ## 15. Extension Phases
 
@@ -253,7 +253,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 - 内嵌静态单页前端
 - session / queue / children / task board / timeline 可视化
 - Web 发起的 `start` / `continue` / `steer` / `experimental queue submit`
-- Web 发起的 `start` 可附带 optional goal / mission；session inspector 可显示 goal 状态、预算、criteria、validation、mission features/milestones，并提供用户控制的 pause/resume/clear/complete/approve plan 操作
+- Web 发起的 `start` 可通过一个 optional Goal 开关附带 prompt-derived goal；session inspector 可显示 goal 状态、criteria、validation、agent 拆分出的 features/milestones，并提供用户控制的 pause/resume/clear/complete/approve plan 操作
 - 可配置并发 worker pool
 
 ### 15.6 Phase 16+ 的规则

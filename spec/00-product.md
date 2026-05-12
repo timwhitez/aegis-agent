@@ -10,7 +10,7 @@
 - 清晰的 CLI 命令面
 - 本地文件事实驱动的 session / state / events
 - tools / skills / hooks / tasks
-- durable session goals / missions
+- durable session goals
 - 运行中补充输入、暂停与恢复
 - 薄而真实的 provider adapter
 
@@ -54,7 +54,7 @@
 - 支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - 支持 `openai-compatible` 的 Responses 形状兼容入口
 - 支持 built-in tools、skills、hooks、session 持久化、todo + task graph
-- 支持一个 session 绑定一个 durable goal / mission，用于长目标的目标契约、预算计量、完成审计和恢复提示
+- 支持一个 session 绑定一个 durable goal，用于长目标的目标契约、完成审计和恢复提示；默认用户入口只是一个 Goal 开关，prompt 本身就是目标，结构化计划和验证由 agent 在运行中拆分
 - 支持 `run` / `exec` / `steer` / `continue`
 - 支持 `Esc` 暂停、自然停顿进入 `awaiting_input`、`continue` 恢复
 - 支持 provider generation / reasoning 选项通过 runtime 和 session metadata 传递
@@ -169,7 +169,7 @@ TUI 只能是扩展观测面，不能成为主路径依赖。
 
 session、state、messages、events、goal、todo、tasks 都必须落盘。恢复依赖文件事实，而不是进程内临时状态。
 
-goal / mission 与 goal history 属于 session 文件事实源；WebConsole 可以展示和控制 goal，但不能成为目标状态的权威来源。
+goal 与 goal history 属于 session 文件事实源；WebConsole 可以展示和控制 goal，但不能成为目标状态的权威来源。
 
 ### 6.5 上下文要可持续
 
@@ -208,7 +208,7 @@ Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。R
 - 不做 provider fallback routing
 - 不把 child agent / queue / TUI 作为当前主路径
 - Web console 只作为显式 experimental surface 存在
-- Session Goal / Mission 是 core 收敛加固：它记录用户可见目标、预算和完成审计，不把 runtime 改造成固定 DAG、plan graph 或 verification engine。Mission mode 可以携带 features、milestones、validation contract 和 role hints，但 child / queue 是否使用仍由模型或用户决定。
+- Session Goal 是 core 收敛加固：它记录用户可见目标和完成审计，不把 runtime 改造成固定 DAG、plan graph 或 verification engine。原 Mission 能力收敛为 Goal 的内部结构化计划字段：agent 可在运行中沉淀 features、milestones、validation contract 和 role hints，但默认用户不需要选择 Goal/Mission 模式、不需要填写预算或拆分表单；child / queue 是否使用仍由模型或用户决定。
 
 ## 8. 非功能要求
 

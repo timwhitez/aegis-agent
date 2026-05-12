@@ -192,7 +192,7 @@ core v1 的默认命令面固定为：
 - `--goal-validate`（可重复）
 - `--goal-plan-approval`
 
-这些参数只创建 session-scoped goal，不创建固定 workflow graph；模型仍通过工具和当前上下文自主推进。
+默认推荐只使用 `--goal`，让模型根据 prompt 自行拆分计划和验证；其余参数保留给脚本化、高级或兼容调用。这些参数只创建 session-scoped goal，不创建固定 workflow graph；模型仍通过工具和当前上下文自主推进。
 
 ### 5.8 `tasks`
 

@@ -1187,7 +1187,7 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	goalDraft, err := goalDraftFromWebRequest(req.Goal, session.GoalSourceWeb)
+	goalDraft, err := goalDraftFromWebStartRequest(req.Goal, req.Prompt)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3023,6 +3023,20 @@ func isGoalClientError(err error) bool {
 		strings.Contains(text, "goal time budget") ||
 		strings.Contains(text, "invalid goal mode") ||
 		strings.Contains(text, "invalid goal status")
+}
+
+func goalDraftFromWebStartRequest(req *GoalDraftRequest, prompt string) (*session.GoalDraft, error) {
+	if req == nil || !req.Enabled {
+		return nil, nil
+	}
+	draftReq := *req
+	if strings.TrimSpace(draftReq.Objective) == "" {
+		draftReq.Objective = prompt
+	}
+	if strings.TrimSpace(draftReq.Mode) == "" {
+		draftReq.Mode = session.GoalModeGoal
+	}
+	return goalDraftFromWebRequest(&draftReq, session.GoalSourceWeb)
 }
 
 func goalStoreStatus(err error) int {

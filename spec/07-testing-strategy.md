@@ -231,7 +231,7 @@ fixture 内容：
 ### Phase 6
 
 - task system 测试通过
-- goal / mission store、model tool、completion gate 与 CLI/Web 控制面测试通过
+- goal store、model tool、completion gate 与 CLI/Web 控制面测试通过；Web start 覆盖简单 Goal 开关使用 prompt 作为 objective 的默认路径
 
 ### Phase 7
 

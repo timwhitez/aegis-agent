@@ -5,7 +5,7 @@
 This spec defines the core hardening layer added after core v1 convergence:
 
 - session-scoped contract snapshots
-- session-scoped goal / mission snapshots
+- session-scoped goal snapshots
 - required artifact tracking
 - centralized completion decisions
 - provider attempt ledger
@@ -15,7 +15,7 @@ This spec defines the core hardening layer added after core v1 convergence:
 
 These mechanisms do not create a workflow engine. The model remains the agent; the harness records task constraints, validates explicit completion boundaries, and preserves recovery facts.
 
-## 1.1 Session Goal / Mission
+## 1.1 Session Goal
 
 Each session may write:
 
@@ -27,13 +27,15 @@ Each session may write:
 The goal snapshot records:
 
 - `objective`
-- `mode`: `goal` or `mission`
+- `mode`: persisted for compatibility; default user-facing creation uses unified `goal`
 - `status`: `active`, `paused`, `budget_limited`, or `complete`
 - token / time budgets and usage
 - success criteria
 - validation plan
 - user control settings
-- optional mission plan: requirements, features, milestones, validation contract, role plan, shared / knowledge artifacts, plan approval state
+- optional internal plan: requirements, features, milestones, validation contract, role plan, shared / knowledge artifacts, plan approval state
+
+The default user-facing Web entry is intentionally narrower than the data model: one Goal button plus the prompt. The agent can later split the goal into criteria, validation, tasks, features, or milestones using tools and ordinary session work.
 
 The model-facing tools are intentionally narrow:
 
@@ -145,7 +147,7 @@ It summarizes:
 - session status, phase, provider/model, workdir, isolation
 - parent/root/queue relation
 - contract and gates
-- goal / mission status, budget usage, criteria, validation, and mission plan status
+- goal status, usage, criteria, validation, and internal plan status
 - required artifacts
 - todo and task state
 - recent provider attempts

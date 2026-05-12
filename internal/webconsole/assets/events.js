@@ -193,8 +193,8 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
     case 'mission.validation.updated':
       return {
         icon: eventType === 'mission.validation.updated' ? 'shield-check' : 'list-checks',
-        title: humanizeEventType(eventType),
-        copy: data?.plan_status ? `Mission plan is ${humanizeStatus(data.plan_status)}.` : 'Mission state changed.',
+        title: goalPlanEventTitle(eventType),
+        copy: data?.plan_status ? `Goal plan is ${humanizeStatus(data.plan_status)}.` : 'Goal plan state changed.',
         meta: data?.goal_id ? shortId(data.goal_id) : phaseHeadline(phase),
         tone: eventType === 'mission.plan.approved' ? 'live' : 'neutral',
         data: data ? prettyJSON(data) : ''
@@ -331,4 +331,17 @@ function needsOverviewRefresh(type) {
 
 function humanizeEventType(value) {
   return humanizeStatus(String(value || '').replaceAll('.', ' '));
+}
+
+function goalPlanEventTitle(eventType) {
+  switch (eventType) {
+    case 'mission.plan.updated':
+      return 'Goal plan updated';
+    case 'mission.plan.approved':
+      return 'Goal plan approved';
+    case 'mission.validation.updated':
+      return 'Goal validation updated';
+    default:
+      return humanizeEventType(eventType);
+  }
 }

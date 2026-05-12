@@ -254,18 +254,7 @@ func TestServiceStartSessionWithGoalPersistsGoal(t *testing.T) {
 		"prompt": "Implement the goal-aware path.",
 		"mode":   "exec",
 		"goal": map[string]any{
-			"enabled":                  true,
-			"mode":                     "mission",
-			"objective":                "Implement durable goal support",
-			"success_criteria":         []string{"goal persists"},
-			"validation_plan":          []string{"go test ./internal/webconsole"},
-			"features":                 []string{"web start payload"},
-			"milestones":               []string{"first check"},
-			"token_budget":             1000,
-			"time_budget_minutes":      10,
-			"require_plan_approval":    true,
-			"create_tasks_from_plan":   true,
-			"ask_before_large_changes": true,
+			"enabled": true,
 		},
 	}, http.StatusAccepted, &result)
 
@@ -273,14 +262,17 @@ func TestServiceStartSessionWithGoalPersistsGoal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load goal: %v", err)
 	}
-	if goal.Mode != session.GoalModeMission || goal.Mission == nil || goal.Mission.PlanStatus != "needs_approval" {
-		t.Fatalf("expected mission goal needing approval, got %#v", goal)
+	if goal.Mode != session.GoalModeGoal || goal.Objective != "Implement the goal-aware path." {
+		t.Fatalf("expected prompt-derived simple goal, got %#v", goal)
+	}
+	if goal.Mission != nil || goal.TokenBudget != nil || goal.TimeBudgetSeconds != nil || len(goal.SuccessCriteria) != 0 || len(goal.ValidationPlan) != 0 {
+		t.Fatalf("web start should not require user-authored mission/budget fields, got %#v", goal)
 	}
 	detail, err := svc.sessionDetail(result.SessionID, 20)
 	if err != nil {
 		t.Fatalf("session detail: %v", err)
 	}
-	if detail.Goal == nil || detail.Goal.Objective != "Implement durable goal support" {
+	if detail.Goal == nil || detail.Goal.Objective != "Implement the goal-aware path." {
 		t.Fatalf("expected detail goal, got %#v", detail.Goal)
 	}
 	waitFor(t, 4*time.Second, func() bool {

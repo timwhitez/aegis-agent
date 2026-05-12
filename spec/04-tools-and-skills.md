@@ -141,13 +141,13 @@ v1 内置工具固定为：
 
 `get_goal`
 
-- 读取当前 session 的 durable goal / mission
+- 读取当前 session 的 durable goal
 - 无 goal 时返回 `null`
 
 `create_goal`
 
 - 仅在用户或系统显式要求 goal-driven work 时创建一个 current goal
-- 支持 objective、mode、budget、success criteria、validation plan、mission features / milestones
+- 默认只需要 objective；criteria、validation、features / milestones 等结构化信息应优先由 agent 在运行中拆分，保留为高级/兼容字段
 - 已存在 current goal 时拒绝，避免模型无意覆盖用户目标
 
 `update_goal`

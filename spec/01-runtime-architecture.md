@@ -109,8 +109,9 @@
 - 从 `StartRequest.Goal`、CLI `goal` 命令、Web goal API 或模型工具创建 / 更新 session-scoped goal
 - 一个 session 默认最多一个 current goal，存储在 `goal.json`
 - 将 goal 变化与预算计量追加到 `artifacts/goal-history.jsonl`
-- 将 goal / mission snapshot 注入 prompt、compaction summary、`session.md` 与 long-run checkpoint
-- 只记录目标、预算、validation contract、features、milestones 与用户控制状态；不得把 Mission mode 变成固定 DAG 或强制 child / queue 编排
+- 将 goal snapshot 注入 prompt、compaction summary、`session.md` 与 long-run checkpoint
+- 默认用户入口只是一个 Goal 开关：Web start 选中后直接使用 prompt 作为 objective；success criteria、validation contract、features、milestones 与 role hints 由 agent 在运行中拆分和沉淀
+- 只记录目标、可选内部结构化计划与用户控制状态；不得把 Goal 变成固定 DAG 或强制 child / queue 编排
 
 ### 2.9 LiveInputManager
 
@@ -221,7 +222,7 @@
 - 维护 queue worker pool，并通过独立 worker `Runner` 支持后台并行消费
 - 提供 overview / session detail / queue / children / task board 的聚合只读视图
 - 对 `steer`、`continue`、`queue submit`、`interrupt` 等控制操作做参数校验与状态映射
-- 提供 goal / mission 的本地 REST 控制面：start payload 创建 goal，session detail 返回 goal，用户可以 pause/resume/clear/complete，mission plan 与 validation contract 可被 patch/approve
+- 提供 goal 的本地 REST 控制面：start payload 创建 goal，session detail 返回 goal，用户可以 pause/resume/clear/complete；内部结构化计划与 validation contract 可被 agent 或高级 REST 调用 patch/approve，但不作为默认用户启动表单
 - 将 WebConsole active handle 的 owner/process 线索写入 session events，并在 session detail、`session.md` 与 long-run checkpoint 中展示最近 owner 线索；不得把 in-memory cancel handle 伪持久化
 
 约束：

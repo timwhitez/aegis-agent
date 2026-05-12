@@ -607,8 +607,8 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 30px;
-  padding: 0 10px;
+  min-height: 32px;
+  padding: 0 12px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   background: transparent;
@@ -623,99 +623,17 @@ textarea {
   background: var(--accent-soft);
 }
 
+.goal-toggle-btn.is-active::after {
+  content: 'On';
+  margin-left: 2px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .goal-toggle-btn i {
   width: 15px;
   height: 15px;
-}
-
-.goal-composer-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 10px 2px 2px;
-}
-
-.goal-composer-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.goal-field,
-.goal-check {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-muted);
-}
-
-.goal-check {
-  justify-content: end;
-  flex-direction: row;
-  align-items: center;
-  min-height: 56px;
-}
-
-.goal-field-wide {
-  grid-column: 1 / -1;
-}
-
-.goal-field input,
-.goal-field select,
-.goal-field textarea,
-.goal-row textarea {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--background);
-  color: var(--text-main);
-  font-size: 12px;
-  padding: 8px 10px;
-  outline: none;
-}
-
-.goal-field textarea,
-.goal-row textarea {
-  resize: vertical;
-  min-height: 34px;
-  max-height: 120px;
-}
-
-.goal-field input:focus,
-.goal-field select:focus,
-.goal-field textarea:focus,
-.goal-row textarea:focus {
-  border-color: var(--accent);
-}
-
-.goal-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.goal-list-head,
-.goal-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.goal-list-head {
-  justify-content: space-between;
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.goal-row .icon-action-btn {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
 }
 
 .input-status-text {

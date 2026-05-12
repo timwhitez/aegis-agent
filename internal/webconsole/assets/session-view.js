@@ -1434,7 +1434,7 @@ function renderGoalPanel(detail) {
     <div class="goal-panel">
       <div class="goal-panel-head">
         <div>
-          <div class="inspector-eyebrow">${escapeHTML(goal.mode || 'goal')}</div>
+          <div class="inspector-eyebrow">Goal</div>
           <h4>${escapeHTML(humanizeStatus(goal.status || 'active'))}</h4>
         </div>
         <span class="tiny-code-chip">${escapeHTML(shortId(goal.goal_id || 'goal'))}</span>
@@ -1455,7 +1455,7 @@ function renderGoalPanel(detail) {
       ${renderGoalItems('Validation', validations, 'validation')}
       ${mission ? `
         <div class="goal-section">
-          <div class="goal-section-title">Mission plan</div>
+          <div class="goal-section-title">Goal plan</div>
           <div class="goal-meta-line">Plan ${escapeHTML(mission.plan_status || 'draft')}${mission.approved_at ? ` · approved ${escapeHTML(formatTimestamp(mission.approved_at))}` : ''}</div>
           ${features.length ? renderGoalItems('Features', features, 'feature') : ''}
           ${milestones.length ? renderGoalItems('Milestones', milestones, 'milestone') : ''}
