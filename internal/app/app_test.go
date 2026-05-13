@@ -270,6 +270,9 @@ func TestRunCommandParsesPlanFlags(t *testing.T) {
 		return fake, config.Default(), nil
 	}
 	defer func() { runnerLoader = restore }()
+	restoreTTY := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	defer func() { stdinIsTerminal = restoreTTY }()
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -282,6 +285,9 @@ func TestRunCommandParsesPlanFlags(t *testing.T) {
 	planMode := fake.startCalls[0].PlanMode
 	if planMode == nil || !planMode.Enabled || planMode.Objective != "plan this work" || planMode.Source != session.PlanModeSourceCLI {
 		t.Fatalf("unexpected plan mode draft: %#v", planMode)
+	}
+	if fake.startCalls[0].PlanInputHandler != nil {
+		t.Fatalf("non-TTY CLI must not install an unrecoverable Plan Mode input responder")
 	}
 	if !strings.Contains(stdout.String(), `"status":"awaiting_input"`) {
 		t.Fatalf("expected awaiting_input to be a successful planned state, got %s", stdout.String())

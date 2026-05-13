@@ -515,6 +515,15 @@ failed -> running
 - `mission.plan.updated`
 - `mission.plan.approved`
 - `mission.validation.updated`
+- `planmode.created`
+- `planmode.input_requested`
+- `planmode.input_answered`
+- `planmode.input_cancelled`
+- `planmode.plan_submitted`
+- `planmode.plan_approved`
+- `planmode.execution_started`
+- `planmode.plan_revised`
+- `planmode.cancelled`
 
 每个事件字段至少包括：
 

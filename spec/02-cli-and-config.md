@@ -97,11 +97,13 @@ core v1 的默认命令面固定为：
 - `--system`
 - `--json`
 - `--timeout`
+- `--plan`
 
 默认规则：
 
 - 未显式提供 `--workdir` 时，root session 的 `requested_workdir` 默认取当前目录下的 `workspace/`
 - 若该 `workspace/` 目录不存在，runtime 在 session 启动前自动创建
+- `--plan` 只通过显式 flag 启用 Plan Mode；普通 prompt 中写“先计划”不自动切换 runtime mode
 
 ### 5.3 `exec`
 
@@ -120,11 +122,14 @@ core v1 的默认命令面固定为：
 - `--system`
 - `--json`
 - `--timeout`
+- `--plan`
+- `--plan-only`
 
 默认规则与 `run` 一致：
 
 - 未显式提供 `--workdir` 时，root session 默认使用当前目录下的 `workspace/`
 - 若该目录不存在，runtime 在启动前自动创建
+- `--plan` / `--plan-only` 启动 session-scoped Plan Mode，模型只能读/搜索、请求规划输入或提交计划；提交计划后停在 `awaiting_input` + `phase=plan_approval`
 
 ### 5.4 `steer`
 
@@ -155,6 +160,16 @@ core v1 的默认命令面固定为：
 - `--model`
 - `--json`
 - `--config`
+- `--plan`
+- `--approve-plan`
+- `--cancel-plan`
+
+Plan Mode 行为：
+
+- `--plan` 在可恢复 session 上开启新一轮 planning pass
+- `--approve-plan` 批准最新提交的 plan version，并追加 `meta.source=planmode_approval` 的 user message 后恢复执行
+- `--cancel-plan` 取消 pending Plan Mode；如果存在待补偿的 `request_user_input.tool_call_id`，runtime 先写入取消 tool result
+- 当 `planmode.status=awaiting_approval` 且传入普通 `--message` 时，该 message 视为 plan revision，事件源标记为 `planmode_revision`
 
 ### 5.6 `sessions`
 

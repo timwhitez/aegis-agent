@@ -191,6 +191,9 @@ func loadStoreRunner(configPath, workdir string) (storeRunner, *config.Config, e
 var runnerLoader = loadRunner
 var experimentalRunnerLoader = loadExperimentalRunner
 var storeRunnerLoader = loadStoreRunner
+var stdinIsTerminal = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
 	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval", "plan", "plan-only"})
@@ -366,10 +369,10 @@ func planModeDraftFromCLI(enabled bool, prompt string) *session.PlanModeDraft {
 }
 
 func cliPlanInputHandler(stdin io.Reader, stderr io.Writer) runtime.PlanInputHandler {
+	if !stdinIsTerminal() {
+		return nil
+	}
 	return func(ctx context.Context, request session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			return nil, errors.New("request_user_input requires an interactive TTY or Web API responder")
-		}
 		reader := bufio.NewReader(stdin)
 		answers := make([]session.PlanModeInputAnswer, 0, len(request.Questions))
 		for _, question := range request.Questions {

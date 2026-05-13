@@ -71,6 +71,8 @@
 - `sessions` 输出
 - `tasks` 输出
 - `steer` 参数解析
+- `run` / `exec --plan` 与 `exec --plan-only` 参数解析
+- `continue --plan` / `--approve-plan` / `--cancel-plan` 参数解析
 - `exec --json`
 - `exec` 未显式完成时退出码为 `6`
 - `run` 的 `awaiting_input` 提示
@@ -131,6 +133,16 @@
 - `failed` 状态可恢复
 - `completed` 状态不能恢复
 - `steer.jsonl` 只在接纳后转成真实 user message
+
+### 4.3.1 Plan Mode
+
+- `planmode.json`、`artifacts/planmode-history.jsonl` 与 `artifacts/planmode-plan.md` 可 round-trip
+- pending Plan Mode 下 provider schema 只暴露规划 allowlist
+- `CompletionController` 阻断 write/edit/shell/todo/task/goal mutation/agent/queue/custom tools 和 `finish`
+- `submit_plan` 后进入 `awaiting_input` + `phase=plan_approval`，同批后续 tool call 得到合成错误 result
+- `request_user_input` 有 responder、无 responder、active handle 丢失、回答和取消补偿路径都有测试
+- approve 后追加 `meta.source=planmode_approval` 的 user message；revision 追加 `meta.source=planmode_revision`
+- 以 pending Plan Mode session 为 parent 的 queue/delegate 提交被拒绝；独立新 session/job 不受影响
 
 ### 4.4 Interrupt
 

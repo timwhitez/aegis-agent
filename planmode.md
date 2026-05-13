@@ -587,7 +587,7 @@ Plan Mode is awaiting approval. This tool is not available before the user appro
 当前 Engine 会在执行 tool 前先把 assistant message 和 tool call 落到 `messages.jsonl`，因此 `request_user_input` 不能只靠内存等待。v1 需要明确两条路径：
 
 - **同步等待路径**：TTY 或 Web-owned active handle 存在时，tool handler 可以阻塞等待回答；回答到达后立即返回 tool result，当前 provider loop 继续。
-- **可恢复暂停路径**：active handle 不存在、server 重启、context cancel 或等待超时时，`planmode.pending_request.tool_call_id` 必须成为恢复锚点。下一次 `/planmode/input` 或 `continue --answer-plan-input` 先 append 对应该 `tool_call_id` 的 tool result，再启动 provider turn；若用户取消，则 append `is_error=true` 的 tool result。
+- **可恢复暂停路径**：active handle 不存在、server 重启、context cancel 或等待超时时，`planmode.pending_request.tool_call_id` 必须成为恢复锚点。当前 v1 的回答补偿入口是 Web/API 的 `/planmode/input`；取消补偿可走 `/planmode/cancel` 或 CLI `continue --cancel-plan`。补偿时必须先 append 对应该 `tool_call_id` 的 tool result，再启动 provider turn；若用户取消，则 append `is_error=true` 的 tool result。
 
 这条补偿逻辑应放在 runtime/session 层，Web handler 只提交回答或取消动作。否则 Web 刷新、进程重启或 CLI 非交互路径会留下无法 replay 的悬空 tool call。
 

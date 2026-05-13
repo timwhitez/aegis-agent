@@ -27,6 +27,9 @@ v1 内置工具固定为：
 - `get_goal`
 - `create_goal`
 - `update_goal`
+- `get_plan_mode`
+- `submit_plan`
+- `request_user_input`
 - `todo_write`
 - `todo_read`
 - `task_create`
@@ -155,6 +158,31 @@ v1 内置工具固定为：
 - 模型侧只允许 `status=complete`
 - pause / resume / clear / budget_limited 由用户或系统控制
 - complete 前应基于文件、命令、events 或其他 session facts 做 completion audit
+
+### 4.9.2 Plan Mode Tools
+
+`get_plan_mode`
+
+- 读取当前 session 的 Plan Mode snapshot
+- 无 Plan Mode 时返回 `null`
+- 用于规划阶段查看 objective、pending question、plan version、approval status 和 approved plan context
+
+`submit_plan`
+
+- 仅在 `planmode.status=planning` 时可用
+- 接收 title、summary、完整 Markdown plan、assumptions、risks 与 verification 列表
+- 写入 `planmode.json`、`artifacts/planmode-history.jsonl` 和 `artifacts/planmode-plan.md`
+- 提交后当前 tool batch 必须停止，session 进入 `awaiting_input` + `phase=plan_approval`
+- 该工具不执行计划，也不自动生成 todo/task/child/queue
+
+`request_user_input`
+
+- 仅 Plan Mode planning 阶段使用，且仅 root session 可用
+- 一次请求 1-3 个短问题；每题必须有 2-3 个互斥选项，客户端可提供 free-form Other
+- 有交互 responder 时可以同步等待回答；active Web handle 丢失或进程重启后，回答/取消必须通过已持久化的 `pending_request.tool_call_id` 补齐 tool result
+- CLI 非交互且没有 responder 时，必须在写入 pending request 前返回可 replay 的工具错误
+
+Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必须只允许 read/search/load_skill、只读 goal/todo/task/feature-list、`get_plan_mode`、`request_user_input` 和 `submit_plan`；未知工具、skill command tools、workspace extension tools、mutating tools、agent/queue tools 与 `finish` 默认拒绝。
 
 ### 4.10 `task_update`
 

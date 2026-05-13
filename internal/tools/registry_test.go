@@ -228,6 +228,61 @@ func TestRequestUserInputResponderErrorKeepsRecoverablePendingRequest(t *testing
 	}
 }
 
+func TestRequestUserInputWithoutResponderFailsBeforePendingRequest(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan without an interactive responder"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "request_user_input", ExecContext{
+		SessionID:  meta.ID,
+		ToolCallID: "call_no_responder",
+		Workdir:    meta.Workdir,
+		Store:      store,
+		Config:     cfg,
+	}, json.RawMessage(`{
+		"questions":[{
+			"id":"scope_choice",
+			"header":"Scope",
+			"question":"Which scope should the plan use?",
+			"options":[
+				{"label":"Narrow (Recommended)","description":"Keep the implementation focused."},
+				{"label":"Broad","description":"Include adjacent cleanup."}
+			]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("request_user_input execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "interactive responder") {
+		t.Fatalf("expected no-responder error result, got %#v", result)
+	}
+	planMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusPlanning || planMode.PendingRequest != nil {
+		t.Fatalf("no-responder path must not leave pending request, got %#v", planMode)
+	}
+}
+
 func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
