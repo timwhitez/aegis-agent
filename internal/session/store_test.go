@@ -135,6 +135,15 @@ func containsString(items []string, target string) bool {
 	return false
 }
 
+func hasPlanModeHistoryType(items []PlanModeHistoryEntry, target string) bool {
+	for _, item := range items {
+		if item.Type == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -251,6 +260,126 @@ func TestStoreGoalApprovalCreatesLinkedPlanMode(t *testing.T) {
 	}
 	if created || again.PlanModeID != planMode.PlanModeID {
 		t.Fatalf("expected existing linked plan mode, created=%v again=%#v", created, again)
+	}
+}
+
+func TestStoreGoalApprovalRelinksExistingPendingPlanMode(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	initial, err := store.CreatePlanMode(meta.ID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Plan before implementing",
+		Source:    PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if initial.LinkedGoalID != "" {
+		t.Fatalf("expected initially unlinked plan mode, got %#v", initial)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:             true,
+		Mode:                GoalModeMission,
+		Objective:           "Plan before implementing",
+		RequirePlanApproval: true,
+		Source:              GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, created, err := store.EnsurePlanModeForGoal(meta.ID, goal, PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if created || planMode.PlanModeID != initial.PlanModeID || planMode.LinkedGoalID != goal.GoalID || planMode.Status != PlanModeStatusPlanning {
+		t.Fatalf("expected existing pending plan mode relinked, created=%v plan=%#v initial=%#v goal=%#v", created, planMode, initial, goal)
+	}
+	history, err := store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	if !hasPlanModeHistoryType(history, "planmode.linked_goal") {
+		t.Fatalf("expected relink history entry, got %#v", history)
+	}
+}
+
+func TestStoreGoalApprovalCreatesFreshPendingGateAfterNeedsApprovalReset(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:             true,
+		Mode:                GoalModeMission,
+		Objective:           "Plan before implementing",
+		RequirePlanApproval: true,
+		Source:              GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	first, created, err := store.EnsurePlanModeForGoal(meta.ID, goal, PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if !created || first.LinkedGoalID != goal.GoalID || first.Status != PlanModeStatusPlanning {
+		t.Fatalf("expected initial linked planning mode, created=%v plan=%#v goal=%#v", created, first, goal)
+	}
+	if _, err := store.SubmitPlanMode(meta.ID, PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Implement after approval.",
+		PlanMarkdown: "# Plan\n\nImplement after approval.\n\n# Verification\n\nRun tests.",
+		Verification: []string{"go test ./internal/session"},
+		Source:       PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := store.ApprovePlanMode(meta.ID, PlanModeSourceCLI); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	executing, err := store.MarkPlanModeExecuting(meta.ID, PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("mark plan mode executing: %v", err)
+	}
+	if executing.PlanModeID != first.PlanModeID || executing.Status != PlanModeStatusExecuting {
+		t.Fatalf("expected first plan mode executing, got %#v", executing)
+	}
+	goal, err = store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	goal.Mission.PlanStatus = "needs_approval"
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save reset goal: %v", err)
+	}
+	second, created, err := store.EnsurePlanModeForGoal(meta.ID, goal, PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure reset plan mode: %v", err)
+	}
+	if !created || second.PlanModeID == first.PlanModeID || second.LinkedGoalID != goal.GoalID || second.Status != PlanModeStatusPlanning {
+		t.Fatalf("expected fresh pending plan mode after needs_approval reset, created=%v first=%#v second=%#v goal=%#v", created, first, second, goal)
 	}
 }
 

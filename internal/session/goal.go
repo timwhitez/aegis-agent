@@ -381,12 +381,37 @@ func GoalRequiresPlanApproval(goal SessionGoal) bool {
 	return goal.Mission != nil && strings.EqualFold(strings.TrimSpace(goal.Mission.PlanStatus), "needs_approval")
 }
 
+func goalNeedsPendingPlanApproval(goal SessionGoal) bool {
+	return goal.Mission != nil && strings.EqualFold(strings.TrimSpace(goal.Mission.PlanStatus), "needs_approval")
+}
+
 func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source string) (PlanModeState, bool, error) {
 	if !GoalRequiresPlanApproval(goal) {
 		return PlanModeState{}, false, nil
 	}
+	needsPendingGate := goalNeedsPendingPlanApproval(goal)
 	if existing, err := s.LoadPlanMode(sessionID); err == nil && existing.PlanModeID != "" && existing.Enabled {
-		if IsPlanModePending(existing.Status) || IsPlanModeExecution(existing.Status) {
+		linkedToGoal := strings.TrimSpace(existing.LinkedGoalID) == goal.GoalID
+		if linkedToGoal && IsPlanModePending(existing.Status) {
+			return existing, false, nil
+		}
+		if linkedToGoal && IsPlanModeExecution(existing.Status) && !needsPendingGate {
+			return existing, false, nil
+		}
+		if strings.TrimSpace(existing.LinkedGoalID) == "" && IsPlanModePending(existing.Status) {
+			existing.LinkedGoalID = goal.GoalID
+			if err := s.SavePlanMode(sessionID, existing); err != nil {
+				return PlanModeState{}, false, err
+			}
+			_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+				PlanModeID: existing.PlanModeID,
+				Type:       "planmode.linked_goal",
+				Source:     normalizePlanModeSource(source),
+				Status:     existing.Status,
+				Data: map[string]any{
+					"linked_goal_id": goal.GoalID,
+				},
+			})
 			return existing, false, nil
 		}
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {

@@ -6,9 +6,9 @@
 
 2026-05-13 本轮收敛状态：
 
-- 已修复 P0-1：`require_plan_approval` / `needs_approval` 现在会确保存在 linked Plan Mode；pending Plan Mode 继续复用既有 provider schema 裁剪与 `CompletionController` gate，mission plan approve 也会走 Plan Mode approval / continue 路径，而不是只改展示字段。
-- 已修复 P0-2：`update_goal(status="complete")` 现在把 completion audit、evidence、criteria status 和 validation status 回写 `goal.json` 当前快照；`session.md` 和 Web Goal panel 可直接展示完成审计事实。
-- 未完成项仍是 P0-3 / P0-4 / P1：validation coverage checker、budget stop wrap-up、structured progress / handoff 工具、evaluator evidence 关联和 CLI-first mission controls。
+- 已修复 P0-1：`require_plan_approval` / `needs_approval` 现在会确保存在 linked Plan Mode；pending Plan Mode 继续复用既有 provider schema 裁剪与 `CompletionController` gate，mission plan approve 也会走 Plan Mode approval / continue 路径，而不是只改展示字段。本次三轮 review 发现并修复了 existing Plan Mode 复用边界：已批准/执行中的旧 Plan Mode 不会再被当作新的 `needs_approval` gate，未链接的 pending Plan Mode 会补 `linked_goal_id`。
+- 已修复 P0-2 主路径：模型工具 `update_goal(status="complete")` 现在把 completion audit、evidence、criteria status 和 validation status 回写 `goal.json` 当前快照；Web Goal panel 可展示该快照，`session.md` 在下一次 summary refresh / finish 后反映同一事实。CLI / Web 的人工 `goal complete` 仍是 operator override，只改完成状态或写空 audit，不等价于模型完成审计。
+- 未完成项仍是 P0-3 / P0-4 / P1：validation coverage checker、budget stop wrap-up、structured progress / handoff 工具、evaluator-specific evidence 关联和专用 CLI-first mission controls。
 
 ## 1. 设计边界
 
@@ -61,7 +61,7 @@
 
 当前实现：
 
-- `Store.EnsurePlanModeForGoal` 会在 goal/mission 要求审批时创建 linked Plan Mode。
+- `Store.EnsurePlanModeForGoal` 会在 goal/mission 要求审批时创建 linked Plan Mode；若已有 pending Plan Mode 但未链接当前 goal，会补写 `linked_goal_id`；若 mission 被重新置为 `needs_approval`，不会复用已 approved / executing 的旧 gate，而会创建新的 pending gate。
 - `Runner.Start` 在 `--goal-plan-approval` 或等价 StartRequest goal 控制下自动创建 pending Plan Mode，批准前复用 Plan Mode 工具裁剪和执行门禁。
 - `create_goal` tool 与 Web goal/mission patch 也会确保 linked Plan Mode，因此运行中创建的 mission approval 不再只是展示状态。
 - `Continue --approve-plan` / Web Plan approve 会同步 `mission.plan.approved`，Web mission approve endpoint 在存在 linked Plan Mode 时走 Plan Mode approval / continue 路径。
@@ -89,15 +89,16 @@
 
 - 不新建一套 workflow gate，复用现有 Plan Mode 机制。
 - 当 StartRequest 同时含 goal 且 `Goal.Control.RequirePlanApproval=true`，自动创建 linked Plan Mode，`linked_goal_id` 指向当前 goal。
-- pending linked Plan Mode 下继续使用现有 provider schema 裁剪与 `CompletionController.planModeGate`，只允许 read/search/load_skill/get_goal/get_plan_mode/request_user_input/submit_plan。
+- pending linked Plan Mode 下继续使用现有 provider schema 裁剪与 `CompletionController.planModeGate`，只允许 read/search/load_skill、只读 todo/task/feature-list、get_goal/get_plan_mode、request_user_input/submit_plan。
 - `mission/plan/approve` 应调用或复用 Plan Mode approve transition，而不是只改 `MissionPlan.PlanStatus`。
-- 如果用户只通过 REST patch 把 mission plan 改为 `needs_approval`，也要创建或恢复 linked Plan Mode；否则该字段应明确命名为 display-only，避免误导。
+- 如果用户只通过 REST patch 把 mission plan 改为 `needs_approval`，也要创建、恢复或重新创建 linked pending Plan Mode；否则该字段应明确命名为 display-only，避免误导。
 
 本轮验收：
 
-- `go-cli-agent run --goal ... --goal-mode mission --goal-plan-approval` 在 approval 前不能执行 `shell` / `write_file` / `edit_file` / `todo_write` / `task_create` / `agent_spawn` / `finish`。
+- `go-cli-agent run --goal ... --goal-mode mission --goal-plan-approval` 在 approval 前不能执行 `shell` / `write_file` / `edit_file` / `todo_write` / `task_create` / `update_goal` / `agent_spawn` / `agent_status` / `agent_list` / `finish`。
 - Web start payload `{goal:{enabled:true, require_plan_approval:true}}` 进入 pending Plan Mode，session detail 同时显示 goal 与 plan mode。
 - `POST /api/sessions/{id}/mission/plan/approve` 后 mutating tools 恢复可用，并写入 `mission.plan.approved` 与 `planmode.plan_approved`。
+- 已批准/执行后的 mission 若重新 patch 为 `needs_approval`，会重新进入 pending Plan Mode，mutating tools 再次被 gate 阻断。
 
 ### P0-2. Completion evidence 只进 history，不回写 goal snapshot
 
@@ -108,7 +109,8 @@
 - `SessionGoal` 增加 `completion_audit` 快照，包含 status、summary、evidence、completed_by、completed_at。
 - `update_goal` payload 增加 `completion_summary`、`criteria_statuses`、`validation_statuses`，但仍只允许 `status="complete"`。
 - `Store.CompleteGoal` 会同步更新 `goal.json` 的 completion audit、criteria evidence/status、validation evidence/status/last_run_at，并追加 `goal.completed` history。
-- `session.md` 输出 completion evidence 数量与 summary；Web Goal panel 展示 completion audit evidence。
+- `session.md` 在 summary refresh / finish 后输出 completion evidence 数量与 summary；Web Goal panel 展示 completion audit evidence。
+- CLI / Web 人工 complete 入口仍是用户覆盖动作：CLI 只写 complete 状态和时间，Web 写空 completion audit，不收集 detailed evidence / criteria status / validation status。
 
 上一轮现状：
 
@@ -137,13 +139,13 @@
   - `validation_statuses [{id,status,evidence,last_run_at}]`
   - 可选 `feature_statuses` / `milestone_statuses`
 - `update_goal` 保存 goal snapshot 时同步写入 evidence 和 verified status，再追加 history。
-- `session.md`、checkpoint 和 Web Goal panel 展示同一份 snapshot，而不是只依赖 history。
+- `session.md`、checkpoint 和 Web Goal panel 读取同一份 snapshot，而不是只依赖 history；其中 `session.md` / checkpoint 取决于后续 summary / checkpoint refresh。
 
 本轮验收：
 
 - 调用 `update_goal(status=complete, evidence=[...])` 后，`goal.json` 可见 completion evidence。
-- 若 payload 更新 criteria / validation，`session.md` 显示 verified 计数同步变化。
-- Web Goal panel 能展示 completion evidence，刷新后不丢失。
+- 若 payload 更新 criteria / validation，summary refresh 后 `session.md` 显示 verified 计数同步变化。
+- Web Goal panel 能展示模型 `update_goal` 写入的 completion evidence，刷新后不丢失。
 
 ### P0-3. Validation contract 尚未形成 coverage / assignment 机制
 
@@ -152,7 +154,7 @@
 - `GoalValidation` 和 `MissionPlan.ValidationContract` 已存在。
 - `MissionFeature` 有 `ClaimedAssertions []string`，可以表达 feature 覆盖哪些验证断言。
 - 但没有 coverage checker，没有 plan approval 前的“每个 assertion 至少被 feature / milestone 覆盖”检查。
-- `update_goal` 也不能按 assertion 更新验证状态。
+- `update_goal` 只能在完成审计时更新顶层 `ValidationPlan` item；不能独立更新 `MissionPlan.ValidationContract` assertion status，也不能基于 `claimed_assertions` 做覆盖 / 证据映射。
 
 影响：
 
@@ -161,7 +163,7 @@
 
 优化方案：
 
-- 给 `GoalValidation` / validation contract 建立稳定 ID 规范，默认 `validation_0001`，允许用户/agent 自定义。
+- 顶层 `GoalValidation` 已有默认 `validation_0001` ID；Mission validation contract 仍需要 checker 强制稳定 ID、识别空 ID / 重复 ID，并允许用户/agent 自定义。
 - 增加一个只读 checker，不直接执行 workflow：
   - `goal plan check <session-id>`
   - 或 model tool `check_goal_plan`
@@ -183,8 +185,8 @@
 
 现状：
 
-- `UpdateGoalAccounting` 会累加 token / time，并在预算达到后把 status 改成 `budget_limited`。
-- `goalPromptContext` 会提示“Budget exhaustion is not completion”。
+- `UpdateGoalAccounting` 会累加 token / time，并在预算达到后把 status 改成 `budget_limited`，同时写 `goal.budget_limited` history / event。
+- `goalPromptContext`、`session.md` / checkpoint hints 会提示“Budget exhaustion is not completion”。
 - 但 `GoalControl.StopOnBudget` 字段没有实际使用。
 - `CompletionController.goalCompletionGate` 对 `budget_limited` 直接允许 `finish`，没有确认是否正在做 wrap-up 或是否已记录剩余工作。
 
@@ -214,8 +216,8 @@
 现状：
 
 - 模型工具只有 `get_goal`、`create_goal`、`update_goal(status=complete)`。
-- Web REST 可以 patch mission plan / validation，但模型运行中不能用工具更新 feature / milestone / role plan / validation evidence。
-- 模型可以写 `reports/progress.md` / `reports/validation.md`，但这些不会自动同步 goal snapshot。
+- Web REST 可以 snapshot patch mission plan / validation，但模型运行中不能用工具以 append-friendly 方式更新 feature / milestone / role plan / validation evidence。
+- 模型可以写 `reports/progress.md` / `reports/validation.md`，但这些不会自动同步 goal snapshot 或追加结构化 goal progress history。
 
 影响：
 
@@ -249,12 +251,12 @@
 
 - `planner` / `generator` / `evaluator` role provider override 已实现。
 - `agent_spawn` 描述鼓励在宽任务、审计、独立验证时使用 evaluator。
-- Mission `role_plan` 可以记录 roles，并能填充 provider / model defaults。
-- 但 Goal / Mission 层没有明确把 evaluator child / queue job 的结果关联到 validation contract。
+- Mission `role_plan` 可以记录 roles，并能填充 provider / model defaults；features / milestones 已有通用 `child_session_ids`、`queue_job_ids`、`validation_ids` 字段，Web Goal panel 也会展示这些 linked facts。
+- 但 Goal / Mission 层没有 evaluator-specific 语义来表达“某条 validation assertion 由 evaluator child / queue job 独立验证通过”。
 
 影响：
 
-- 系统已经具备 reviewer lane 的技术能力，但 Mission 视角看不出“哪些 validation assertions 由独立 evaluator 验过”。
+- 系统已经具备 reviewer lane 和通用 child/queue link 的技术能力，但 Mission 视角看不出“哪些 validation assertions 由独立 evaluator 验过”。
 - 长任务可能仍退回实现者自评。
 
 优化方案：
@@ -275,12 +277,12 @@
 
 - CLI 只有 `goal show|pause|resume|clear|complete`。
 - Mission plan patch / approve / validation patch 主要在 Web REST。
-- `create_goal` tool 支持 initial mission fields，但 operator 在纯 CLI 下难以查看和批准 mission plan 细节。
+- `create_goal` tool 支持 initial mission fields；`goal show --json` 可原样查看完整 `goal.json`，但纯 CLI 下缺少专用 plan / validation 查看、检查和批准操作。
 
 影响：
 
 - 当前项目主路径是 CLI-first，但高级 Goal/Mission 控制面反而偏 Web/API。
-- 如果不补 CLI，Mission approval / validation contract 的可靠使用会依赖 experimental WebConsole。
+- 如果不补专用 CLI，Mission approval / validation contract 的可靠使用会依赖 experimental WebConsole 或直接读 JSON。
 
 优化方案：
 
@@ -300,9 +302,9 @@
 
 现状：
 
-- Web Goal panel 展示 goal snapshot、criteria、validation、features、milestones、roles。
-- Timeline 已识别 goal / mission events。
-- 但 panel 没有 history drilldown，没有 coverage summary，没有 completion evidence summary。
+- Web Goal panel 展示 goal snapshot、criteria、validation、features、milestones、roles 和 completion audit evidence。
+- Timeline 已识别多数组 goal / planmode events。
+- 但 panel 没有 goal history drilldown，没有 coverage summary，没有 unresolved evaluator / queue count，也没有 validation/evaluator attribution；session detail 不直接返回 `goal-history.jsonl`，部分 mission approval 事件也未进入紧凑 flow 展示。
 
 影响：
 

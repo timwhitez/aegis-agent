@@ -39,6 +39,58 @@ func TestProviderToolsExposePlanModeToolsOnlyWhilePending(t *testing.T) {
 	}
 }
 
+func TestPlanModeGateBlocksToolsAfterCreateGoalRequiresApproval(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	store := session.NewStore(cfg.Session.Dir)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "tool_execute", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := tools.NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	execCtx := tools.ExecContext{
+		SessionID: meta.ID,
+		Workdir:   meta.Workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+	result, err := registry.Execute(context.Background(), "create_goal", execCtx, json.RawMessage(`{
+		"objective":"Plan-gated mission",
+		"mode":"mission",
+		"require_plan_approval":true
+	}`))
+	if err != nil {
+		t.Fatalf("create_goal execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("create_goal returned error: %s", result.DisplayOutput)
+	}
+	planMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if !session.IsPlanModePending(planMode.Status) {
+		t.Fatalf("expected pending plan mode after create_goal, got %#v", planMode)
+	}
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluateToolCall(nil, "write_file", json.RawMessage(`{"path":"x.txt","content":"blocked"}`))
+	if decision.Status != GateBlock || decision.GateID != "plan_mode_pending" {
+		t.Fatalf("expected write_file blocked by pending plan mode, got %#v", decision)
+	}
+}
+
 func TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Plan this change before editing.")); err != nil {

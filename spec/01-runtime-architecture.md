@@ -113,7 +113,7 @@
 - 将 goal snapshot 注入 prompt、compaction summary、`session.md` 与 long-run checkpoint
 - 默认用户入口只是一个 Goal 开关：Web start 选中后直接使用 prompt 作为 objective；success criteria、validation contract、features、milestones 与 role hints 由 agent 在运行中拆分和沉淀
 - 只记录目标、可选内部结构化计划与用户控制状态；不得把 Goal 变成固定 DAG 或强制 child / queue 编排
-- 当 goal/mission 要求 `require_plan_approval` 或 mission plan 进入 `needs_approval` 时，必须确保存在 linked Plan Mode；审批前的执行门禁由 Plan Mode 负责，而不是靠 mission prompt 文本自觉
+- 当 goal/mission 要求 `require_plan_approval` 或 mission plan 进入 `needs_approval` 时，必须确保存在 linked Plan Mode；审批前的执行门禁由 Plan Mode 负责，而不是靠 mission prompt 文本自觉。若 mission 重新进入 `needs_approval`，已 approved / executing 的旧 Plan Mode 不能被当作新的 pending gate；pending 但未链接的 Plan Mode 必须补 `linked_goal_id` 或重新创建 linked gate。
 - `update_goal(status="complete")` 必须把 completion evidence、summary 和 criteria / validation item 状态回写 `goal.json` 的当前快照，同时追加 `artifacts/goal-history.jsonl`
 
 ### 2.8.2 SessionPlanModeManager
@@ -121,7 +121,7 @@
 职责：
 
 - 从 `StartRequest.PlanMode`、CLI `--plan/--plan-only`、Web Plan toggle 或 planmode API 创建 session-scoped Plan Mode
-- 也可由要求 plan approval 的 goal/mission 自动创建 linked Plan Mode，`linked_goal_id` 指向 current goal
+- 也可由要求 plan approval 的 goal/mission 自动创建或修复 linked Plan Mode，`linked_goal_id` 指向 current goal
 - 将 planning / input / approval / revision / cancellation / execution transition 写入 `planmode.json` 与 `artifacts/planmode-history.jsonl`
 - 通过 `submit_plan` 保存完整 Markdown plan，并派生写入 `artifacts/planmode-plan.md`
 - 通过 `request_user_input` 持久化 pending request、`tool_call_id` 和回答，使 active Web runner 与 crash/restart fallback 都能补齐 provider replay 所需 tool result
@@ -520,6 +520,7 @@ failed -> running
 - `mission.plan.approved`
 - `mission.validation.updated`
 - `planmode.created`
+- `planmode.linked_goal`
 - `planmode.input_requested`
 - `planmode.input_answered`
 - `planmode.input_cancelled`
