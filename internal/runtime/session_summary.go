@@ -104,6 +104,16 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 			verified, total := goalValidationCounts(goal.ValidationPlan)
 			b.WriteString(fmt.Sprintf("- validation: `%d/%d` verified\n", verified, total))
 		}
+		if goal.CompletionAudit != nil {
+			b.WriteString(fmt.Sprintf("- completion audit: evidence=`%d`", len(goal.CompletionAudit.Evidence)))
+			if goal.CompletionAudit.CompletedBy != "" {
+				b.WriteString(fmt.Sprintf(" by `%s`", goal.CompletionAudit.CompletedBy))
+			}
+			b.WriteString("\n")
+			if goal.CompletionAudit.Summary != "" {
+				b.WriteString(fmt.Sprintf("- completion summary: %s\n", truncateText(goal.CompletionAudit.Summary, 240)))
+			}
+		}
 		if goal.Mission != nil {
 			b.WriteString(fmt.Sprintf("- mission plan: `%s` features=`%d` milestones=`%d`\n", firstNonEmpty(goal.Mission.PlanStatus, "draft"), len(goal.Mission.Features), len(goal.Mission.Milestones)))
 		}

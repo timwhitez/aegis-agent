@@ -133,6 +133,73 @@ func TestParentLinkedQueueBlockedDuringPendingPlanMode(t *testing.T) {
 	}
 }
 
+func TestApproveLinkedPlanModeMarksMissionPlanApproved(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := runner.store.CreateGoal(sessionID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Approve linked mission plan",
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, created, err := runner.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected linked plan mode creation")
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.\n\n# Verification\n\nRun tests.",
+		Verification: []string{"go test ./internal/runtime"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	approved, err := runner.store.ApprovePlanMode(sessionID, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	executing, err := runner.store.MarkPlanModeExecuting(sessionID, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	if executing.PlanModeID != planMode.PlanModeID || executing.ApprovedVersion != approved.ApprovedVersion {
+		t.Fatalf("unexpected executing plan mode: %#v approved=%#v", executing, approved)
+	}
+	if err := runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI); err != nil {
+		t.Fatalf("approve linked mission plan: %v", err)
+	}
+	loaded, err := runner.store.LoadGoal(sessionID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.Mission == nil || loaded.Mission.PlanStatus != "approved" || loaded.Mission.ApprovedAt == "" {
+		t.Fatalf("expected mission plan approval synced from plan mode, got %#v", loaded.Mission)
+	}
+}
+
 func hasProviderTool(tools []provider.ToolSchema, name string) bool {
 	for _, tool := range tools {
 		if tool.Name == name {

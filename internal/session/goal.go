@@ -45,6 +45,7 @@ type SessionGoal struct {
 	ValidationPlan    []GoalValidation `json:"validation_plan,omitempty"`
 	Control           GoalControl      `json:"control,omitempty"`
 	Mission           *MissionPlan     `json:"mission,omitempty"`
+	CompletionAudit   *GoalCompletion  `json:"completion_audit,omitempty"`
 	Source            string           `json:"source"`
 	CreatedAt         string           `json:"created_at"`
 	UpdatedAt         string           `json:"updated_at"`
@@ -69,6 +70,30 @@ type GoalValidation struct {
 	Status      string   `json:"status"`
 	Evidence    []string `json:"evidence,omitempty"`
 	LastRunAt   string   `json:"last_run_at,omitempty"`
+}
+
+type GoalCompletion struct {
+	Status      string   `json:"status"`
+	Summary     string   `json:"summary,omitempty"`
+	Evidence    []string `json:"evidence,omitempty"`
+	CompletedBy string   `json:"completed_by,omitempty"`
+	CompletedAt string   `json:"completed_at"`
+}
+
+type GoalItemStatusUpdate struct {
+	ID        string   `json:"id"`
+	Status    string   `json:"status,omitempty"`
+	Evidence  []string `json:"evidence,omitempty"`
+	LastRunAt string   `json:"last_run_at,omitempty"`
+}
+
+type GoalCompletionInput struct {
+	Source             string
+	CompletedBy        string
+	Summary            string
+	Evidence           []string
+	CriteriaStatuses   []GoalItemStatusUpdate
+	ValidationStatuses []GoalItemStatusUpdate
 }
 
 type GoalControl struct {
@@ -343,6 +368,80 @@ func (s *Store) CreateGoal(sessionID string, draft GoalDraft) (SessionGoal, erro
 	}); err != nil {
 		return SessionGoal{}, err
 	}
+	return goal, nil
+}
+
+func GoalRequiresPlanApproval(goal SessionGoal) bool {
+	if goal.GoalID == "" {
+		return false
+	}
+	if goal.Control.RequirePlanApproval {
+		return true
+	}
+	return goal.Mission != nil && strings.EqualFold(strings.TrimSpace(goal.Mission.PlanStatus), "needs_approval")
+}
+
+func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source string) (PlanModeState, bool, error) {
+	if !GoalRequiresPlanApproval(goal) {
+		return PlanModeState{}, false, nil
+	}
+	if existing, err := s.LoadPlanMode(sessionID); err == nil && existing.PlanModeID != "" && existing.Enabled {
+		if IsPlanModePending(existing.Status) || IsPlanModeExecution(existing.Status) {
+			return existing, false, nil
+		}
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return PlanModeState{}, false, err
+	}
+	planMode, err := s.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: goal.Objective,
+		Source:    normalizePlanModeSource(source),
+	})
+	if err != nil {
+		return PlanModeState{}, false, err
+	}
+	return planMode, true, nil
+}
+
+func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (SessionGoal, error) {
+	goal, err := s.LoadGoal(sessionID)
+	if err != nil {
+		return SessionGoal{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := applyGoalCriterionUpdates(goal.SuccessCriteria, input.CriteriaStatuses, now); err != nil {
+		return SessionGoal{}, err
+	}
+	if err := applyGoalValidationUpdates(goal.ValidationPlan, input.ValidationStatuses, now); err != nil {
+		return SessionGoal{}, err
+	}
+	goal.Status = GoalStatusComplete
+	goal.CompletedAt = now
+	goal.CompletionAudit = &GoalCompletion{
+		Status:      GoalStatusComplete,
+		Summary:     strings.TrimSpace(input.Summary),
+		Evidence:    compactStringList(input.Evidence),
+		CompletedBy: strings.TrimSpace(input.CompletedBy),
+		CompletedAt: now,
+	}
+	if goal.CompletionAudit.CompletedBy == "" {
+		goal.CompletionAudit.CompletedBy = normalizeGoalSource(input.Source)
+	}
+	if err := s.SaveGoal(sessionID, goal); err != nil {
+		return SessionGoal{}, err
+	}
+	source := normalizeGoalSource(input.Source)
+	_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+		Type:   "goal.completed",
+		Source: source,
+		Status: goal.Status,
+		Data: map[string]any{
+			"summary":             goal.CompletionAudit.Summary,
+			"evidence":            append([]string(nil), goal.CompletionAudit.Evidence...),
+			"criteria_statuses":   append([]GoalItemStatusUpdate(nil), input.CriteriaStatuses...),
+			"validation_statuses": append([]GoalItemStatusUpdate(nil), input.ValidationStatuses...),
+		},
+	})
 	return goal, nil
 }
 
@@ -649,6 +748,100 @@ func goalBudgetExceeded(goal SessionGoal) bool {
 		return true
 	}
 	return false
+}
+
+func applyGoalCriterionUpdates(items []GoalCriterion, updates []GoalItemStatusUpdate, now string) error {
+	index := make(map[string]int, len(items))
+	for i, item := range items {
+		index[item.ID] = i
+	}
+	for _, update := range updates {
+		id := strings.TrimSpace(update.ID)
+		if id == "" {
+			return errors.New("criterion status update id is required")
+		}
+		i, ok := index[id]
+		if !ok {
+			return fmt.Errorf("unknown criterion id: %s", id)
+		}
+		status := normalizeGoalEvidenceStatus(update.Status)
+		if status != "" {
+			items[i].Status = status
+		}
+		items[i].Evidence = mergeStringLists(items[i].Evidence, update.Evidence)
+		items[i].UpdatedAt = now
+	}
+	return nil
+}
+
+func applyGoalValidationUpdates(items []GoalValidation, updates []GoalItemStatusUpdate, now string) error {
+	index := make(map[string]int, len(items))
+	for i, item := range items {
+		index[item.ID] = i
+	}
+	for _, update := range updates {
+		id := strings.TrimSpace(update.ID)
+		if id == "" {
+			return errors.New("validation status update id is required")
+		}
+		i, ok := index[id]
+		if !ok {
+			return fmt.Errorf("unknown validation id: %s", id)
+		}
+		status := normalizeGoalEvidenceStatus(update.Status)
+		if status != "" {
+			items[i].Status = status
+		}
+		items[i].Evidence = mergeStringLists(items[i].Evidence, update.Evidence)
+		if strings.TrimSpace(update.LastRunAt) != "" {
+			items[i].LastRunAt = strings.TrimSpace(update.LastRunAt)
+		} else if status != "" || len(update.Evidence) > 0 {
+			items[i].LastRunAt = now
+		}
+	}
+	return nil
+}
+
+func normalizeGoalEvidenceStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
+	case "pending", "verified", "failed", "skipped", "blocked":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func mergeStringLists(existing []string, additions []string) []string {
+	out := compactStringList(existing)
+	seen := make(map[string]struct{}, len(out))
+	for _, value := range out {
+		seen[value] = struct{}{}
+	}
+	for _, value := range additions {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func compactStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func cloneInt64Ptr(value *int64) *int64 {

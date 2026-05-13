@@ -213,6 +213,104 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	}
 }
 
+func TestStoreGoalApprovalCreatesLinkedPlanMode(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:             true,
+		Mode:                GoalModeMission,
+		Objective:           "Plan before implementing",
+		RequirePlanApproval: true,
+		Source:              GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, created, err := store.EnsurePlanModeForGoal(meta.ID, goal, PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if !created || planMode.LinkedGoalID != goal.GoalID || planMode.Status != PlanModeStatusPlanning {
+		t.Fatalf("expected linked planning mode, created=%v plan=%#v goal=%#v", created, planMode, goal)
+	}
+	again, created, err := store.EnsurePlanModeForGoal(meta.ID, goal, PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode again: %v", err)
+	}
+	if created || again.PlanModeID != planMode.PlanModeID {
+		t.Fatalf("expected existing linked plan mode, created=%v again=%#v", created, again)
+	}
+}
+
+func TestStoreCompleteGoalPersistsAuditAndItemEvidence(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:         true,
+		Objective:       "Finish with evidence",
+		SuccessCriteria: []string{"tests pass"},
+		ValidationPlan:  []string{"go test ./internal/session"},
+		Source:          GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal, err := store.CompleteGoal(meta.ID, GoalCompletionInput{
+		Source:      GoalSourceTool,
+		CompletedBy: "tool",
+		Summary:     "All requested checks passed.",
+		Evidence:    []string{"go test ./internal/session"},
+		CriteriaStatuses: []GoalItemStatusUpdate{{
+			ID:       "criterion_0001",
+			Status:   "verified",
+			Evidence: []string{"criterion evidence"},
+		}},
+		ValidationStatuses: []GoalItemStatusUpdate{{
+			ID:       "validation_0001",
+			Status:   "verified",
+			Evidence: []string{"validation evidence"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("complete goal: %v", err)
+	}
+	if goal.Status != GoalStatusComplete || goal.CompletedAt == "" || goal.CompletionAudit == nil {
+		t.Fatalf("expected completed goal audit, got %#v", goal)
+	}
+	if goal.CompletionAudit.Summary == "" || !containsString(goal.CompletionAudit.Evidence, "go test ./internal/session") {
+		t.Fatalf("expected completion evidence in snapshot, got %#v", goal.CompletionAudit)
+	}
+	if goal.SuccessCriteria[0].Status != "verified" || !containsString(goal.SuccessCriteria[0].Evidence, "criterion evidence") {
+		t.Fatalf("expected criterion evidence in snapshot, got %#v", goal.SuccessCriteria[0])
+	}
+	if goal.ValidationPlan[0].Status != "verified" || goal.ValidationPlan[0].LastRunAt == "" || !containsString(goal.ValidationPlan[0].Evidence, "validation evidence") {
+		t.Fatalf("expected validation evidence in snapshot, got %#v", goal.ValidationPlan[0])
+	}
+}
+
 func TestStoreHonorsConfiguredDirModeForDirectories(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o750)

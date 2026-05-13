@@ -371,6 +371,15 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		r.emit(meta.ID, "goal.created", "prepare", goalEventData(goal))
+		if (req.PlanMode == nil || !req.PlanMode.Enabled) && session.GoalRequiresPlanApproval(goal) {
+			planMode, created, err := r.store.EnsurePlanModeForGoal(meta.ID, goal, goal.Source)
+			if err != nil {
+				return r.failBeforeRun(meta.ID, state, "prepare", err)
+			}
+			if created {
+				r.emit(meta.ID, "planmode.created", "prepare", planModeEventData(planMode))
+			}
+		}
 	}
 	if req.PlanMode != nil && req.PlanMode.Enabled {
 		draft := *req.PlanMode
@@ -651,6 +660,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return RunResult{}, err
 		}
 		r.emit(meta.ID, "planmode.execution_started", "planmode", planModeEventData(executing))
+		if err := r.approveLinkedMissionPlan(meta.ID, executing, source); err != nil {
+			return RunResult{}, err
+		}
 		req.Message = fmt.Sprintf("Implement the approved Plan Mode plan version %d.", executing.ApprovedVersion)
 		extraUserMeta = map[string]any{
 			"source":       "planmode_approval",
@@ -709,6 +721,46 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	state.ProviderAutoResumeCount = 0
 	state.Status = session.StatusRunning
 	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+}
+
+func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.PlanModeState, source string) error {
+	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
+		return nil
+	}
+	goal, err := r.store.LoadGoal(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if goal.GoalID != planMode.LinkedGoalID || goal.Mission == nil {
+		return nil
+	}
+	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	goal.Mission.PlanStatus = "approved"
+	goal.Mission.ApprovedAt = approvedAt
+	if err := r.store.SaveGoal(sessionID, goal); err != nil {
+		return err
+	}
+	_ = r.store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+		Type:   "mission.plan.approved",
+		Source: session.GoalSourceSystem,
+		Status: goal.Status,
+		Data: map[string]any{
+			"approved_at":      approvedAt,
+			"approved_source":  source,
+			"plan_mode_id":     planMode.PlanModeID,
+			"approved_version": planMode.ApprovedVersion,
+		},
+	})
+	r.emit(sessionID, "mission.plan.approved", "planmode", map[string]any{
+		"goal_id":          goal.GoalID,
+		"plan_mode_id":     planMode.PlanModeID,
+		"approved_version": planMode.ApprovedVersion,
+		"approved_at":      approvedAt,
+	})
+	return nil
 }
 
 func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error {

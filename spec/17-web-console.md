@@ -192,6 +192,7 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 
 - objective、status、usage
 - success criteria 与 validation plan
+- completion audit evidence 与 summary
 - agent 拆分出的 plan status、features、milestones
 - goal 相关 events
 - 用户控制动作：pause、resume、clear、complete、approve goal plan
@@ -200,6 +201,7 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 
 - WebConsole 只是读写 `goal.json` 与 `artifacts/goal-history.jsonl` 的本地控制面，不维护第二套 goal 状态
 - complete 是用户控制动作；模型完成目标仍必须通过 `update_goal(status="complete")` 工具留下完成审计路径
+- approve goal plan 若存在 linked pending Plan Mode，必须走 Plan Mode approval / continue 路径；不能只把 mission plan status 改成 approved
 - Goal plan 展示不能暗示 runtime 会自动拆 DAG 或强制 child agent；child / queue 使用仍由模型或用户显式决定
 - features / milestones 可展示已存在的 `task_ids`、`child_session_ids`、`queue_job_ids`，其中 `create_tasks_from_plan` 只作为高级显式开关创建 durable task，不自动 spawn child、不提交 queue job、不生成固定 DAG
 

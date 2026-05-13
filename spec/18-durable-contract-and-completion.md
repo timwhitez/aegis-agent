@@ -59,13 +59,14 @@ Each session may write:
 The Plan Mode snapshot records:
 
 - objective and source
+- optional `linked_goal_id` when Plan Mode was created for a goal/mission approval gate
 - status: `planning`, `awaiting_user_input`, `awaiting_approval`, `approved`, `cancelled`, or `executing`
 - plan id/version and approved version
 - submitted Markdown plan, summary, assumptions, risks, and verification
 - pending `request_user_input` request, including `tool_call_id`
 - approval records
 
-Plan Mode is an execution gate, not a workflow engine. Pending Plan Mode suppresses mutating/execution tools through both provider schema filtering and `CompletionController`; it does not convert the plan into Todo/Task rows, does not force child agents, and does not replace Goal.
+Plan Mode is an execution gate, not a workflow engine. Pending Plan Mode suppresses mutating/execution tools through both provider schema filtering and `CompletionController`; it does not convert the plan into Todo/Task rows, does not force child agents, and does not replace Goal. A mission that sets `require_plan_approval` or `needs_approval` must reuse this gate through linked Plan Mode instead of relying on a display-only mission status.
 
 Approval must leave a replayable fact: the runtime appends a user message with `meta.source=planmode_approval` before execution resumes. Answering or cancelling pending `request_user_input` must append the matching tool result using the stored `tool_call_id`.
 
@@ -125,6 +126,8 @@ The generic required-artifact gate is only active when the contract has explicit
 
 The first migration is behavior-equivalent for existing guard kinds and messages. New generic artifact checks are limited to explicit required artifacts.
 When a current goal is `active`, `finish` is blocked until the model audits the objective, success criteria, and validation plan against concrete session evidence and calls `update_goal(status="complete")`. Paused or budget-limited goals may finish only as an explicit paused/wrap-up state; they must not be reported as complete unless the completion audit actually passed.
+
+`update_goal(status="complete")` persists the completion audit into `goal.json`, including evidence, optional summary, and any criteria / validation item status updates supplied by the model. `artifacts/goal-history.jsonl` remains the append-only audit trail, but Mission Control, `session.md`, checkpoints, and recovery prompts must be able to read the current completion evidence from the goal snapshot without reconstructing it from history.
 When Plan Mode is pending, `finish` and all mutating tools are blocked until the user approves or cancels the plan. This gate intentionally runs before goal completion audit so an active goal cannot pull execution through an unapproved plan.
 
 Events:

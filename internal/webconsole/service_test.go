@@ -145,9 +145,27 @@ func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
 	if goal.Mission == nil || len(goal.Mission.Features) != 1 || goal.Mission.Features[0].ID != "feature_api" {
 		t.Fatalf("expected patched mission features, got %#v", goal.Mission)
 	}
-	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusOK, &goal)
-	if goal.Mission == nil || goal.Mission.PlanStatus != "approved" || goal.Mission.ApprovedAt == "" {
-		t.Fatalf("expected approved mission plan, got %#v", goal.Mission)
+	planMode, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("expected linked plan mode after mission plan needs approval: %v", err)
+	}
+	if planMode.LinkedGoalID != goal.GoalID || planMode.Status != session.PlanModeStatusPlanning {
+		t.Fatalf("unexpected linked plan mode: %#v goal=%#v", planMode, goal)
+	}
+	approveReq, err := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatalf("new approve request: %v", err)
+	}
+	approveReq.Header.Set("Content-Type", "application/json")
+	approveReq.Header.Set(webMutationHeader, "1")
+	approveResp, err := http.DefaultClient.Do(approveReq)
+	if err != nil {
+		t.Fatalf("approve mission plan: %v", err)
+	}
+	defer approveResp.Body.Close()
+	if approveResp.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(approveResp.Body)
+		t.Fatalf("expected linked Plan Mode approval conflict before submit, got %d body=%s", approveResp.StatusCode, string(body))
 	}
 	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal/complete", map[string]any{}, http.StatusOK, &goal)
 	if goal.Status != session.GoalStatusComplete || goal.CompletedAt == "" {

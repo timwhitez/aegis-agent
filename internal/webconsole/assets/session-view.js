@@ -1542,10 +1542,12 @@ function renderGoalPanel(detail) {
   const features = maybeArray(mission?.features);
   const milestones = maybeArray(mission?.milestones);
   const roles = maybeArray(mission?.role_plan);
+  const completionAudit = goal.completion_audit || null;
   const canPause = goal.status === 'active' || goal.status === 'budget_limited';
   const canResume = goal.status === 'paused' || goal.status === 'budget_limited';
   const canComplete = goal.status !== 'complete';
-  const canApprove = mission && mission.plan_status !== 'approved';
+  const planMode = detail?.plan_mode || null;
+  const canApprove = mission && mission.plan_status !== 'approved' && (!planMode || planMode.status === 'awaiting_approval');
 
   return `
     <div class="goal-panel">
@@ -1568,6 +1570,7 @@ function renderGoalPanel(detail) {
         ${canApprove ? '<button class="mini-link-btn" type="button" data-goal-action="approve-plan">Approve plan</button>' : ''}
         <button class="mini-link-btn danger" type="button" data-goal-action="clear">Clear</button>
       </div>
+      ${completionAudit ? renderGoalCompletionAudit(completionAudit) : ''}
       ${renderGoalItems('Success criteria', criteria, 'text')}
       ${renderGoalItems('Validation', validations, 'validation')}
       ${mission ? `
@@ -1579,6 +1582,18 @@ function renderGoalPanel(detail) {
           ${roles.length ? renderGoalItems('Roles', roles, 'role') : ''}
         </div>
       ` : ''}
+    </div>
+  `;
+}
+
+function renderGoalCompletionAudit(audit) {
+  const evidence = maybeArray(audit?.evidence);
+  return `
+    <div class="goal-section">
+      <div class="goal-section-title">Completion audit</div>
+      ${audit?.summary ? `<div class="goal-meta-line">${escapeHTML(audit.summary)}</div>` : ''}
+      <div class="goal-meta-line">${escapeHTML([audit?.completed_by ? `by ${audit.completed_by}` : '', audit?.completed_at ? formatTimestamp(audit.completed_at) : ''].filter(Boolean).join(' · '))}</div>
+      ${evidence.length ? `<div class="goal-item-list">${evidence.map((item) => `<div class="goal-item"><div class="goal-meta-line">${escapeHTML(item)}</div></div>`).join('')}</div>` : ''}
     </div>
   `;
 }

@@ -54,7 +54,7 @@
 - 支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - 支持 `openai-compatible` 的 Responses 形状兼容入口
 - 支持 built-in tools、skills、hooks、session 持久化、todo + task graph
-- 支持一个 session 绑定一个 durable goal，用于长目标的目标契约、完成审计和恢复提示；默认用户入口只是一个 Goal 开关，prompt 本身就是目标，结构化计划和验证由 agent 在运行中拆分
+- 支持一个 session 绑定一个 durable goal，用于长目标的目标契约、完成审计和恢复提示；默认用户入口只是一个 Goal 开关，prompt 本身就是目标，结构化计划和验证由 agent 在运行中拆分；高级 mission 若要求 plan approval，必须复用 Plan Mode 的真实执行门禁
 - 支持显式 Plan Mode：用户通过 CLI flag、Web toggle 或 API 字段进入 planning gate；审批前只允许只读探索、`request_user_input` 和 `submit_plan`，审批后再恢复普通执行
 - 支持 `run` / `exec` / `steer` / `continue`
 - 支持 `Esc` 暂停、自然停顿进入 `awaiting_input`、`continue` 恢复
@@ -213,6 +213,7 @@ Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。R
 - 不把 child agent / queue / TUI 作为当前主路径
 - Web console 只作为显式 experimental surface 存在
 - Session Goal 是 core 收敛加固：它记录用户可见目标和完成审计，不把 runtime 改造成固定 DAG、plan graph 或 verification engine。原 Mission 能力收敛为 Goal 的内部结构化计划字段：agent 可在运行中沉淀 features、milestones、validation contract 和 role hints，但默认用户不需要选择 Goal/Mission 模式、不需要填写预算或拆分表单；child / queue 是否使用仍由模型或用户决定。
+- Mission 的 `require_plan_approval` 不是展示状态：它会创建 linked Plan Mode，并由 Plan Mode schema 裁剪与 `CompletionController` gate 在批准前阻断 shell/write/edit/todo/task/agent/queue/finish 等执行动作。批准后 runtime 同步 mission plan approved 状态，但不会把 plan 转成固定 workflow。
 
 ## 8. 非功能要求
 

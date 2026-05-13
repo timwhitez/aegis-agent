@@ -935,6 +935,16 @@ func (s *Service) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessi
 		writeError(w, status, err)
 		return
 	}
+	if planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	} else if created {
+		_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
+			"plan_mode_id":   planMode.PlanModeID,
+			"status":         planMode.Status,
+			"linked_goal_id": planMode.LinkedGoalID,
+		}))
+	}
 	if err := s.store.AppendEvent(sessionID, events.New(sessionID, "goal.created", "goal", webGoalEventData(goal))); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -980,6 +990,20 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		}
 		goal = syncedGoal
 		createdTasks = tasks
+	}
+	if session.GoalRequiresPlanApproval(goal) {
+		planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if created {
+			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
+				"plan_mode_id":   planMode.PlanModeID,
+				"status":         planMode.Status,
+				"linked_goal_id": planMode.LinkedGoalID,
+			}))
+		}
 	}
 	if err := s.appendGoalMutation(sessionID, goal, "goal.updated", map[string]any{
 		"created_task_ids": webTaskIDs(createdTasks),
@@ -1027,9 +1051,16 @@ func (s *Service) handleGoalStatus(w http.ResponseWriter, sessionID, status, eve
 	}
 	goal.Status = status
 	if status == session.GoalStatusComplete {
-		goal.CompletedAt = nowString()
+		completedAt := nowString()
+		goal.CompletedAt = completedAt
+		goal.CompletionAudit = &session.GoalCompletion{
+			Status:      session.GoalStatusComplete,
+			CompletedBy: session.GoalSourceWeb,
+			CompletedAt: completedAt,
+		}
 	} else {
 		goal.CompletedAt = ""
+		goal.CompletionAudit = nil
 	}
 	if err := s.store.SaveGoal(sessionID, goal); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1098,9 +1129,26 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		createdTasks = tasks
 		mission = ensureMissionPlan(goal.Mission)
 	}
+	planModeCreated := false
+	if session.GoalRequiresPlanApproval(goal) {
+		planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		planModeCreated = created
+		if created {
+			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
+				"plan_mode_id":   planMode.PlanModeID,
+				"status":         planMode.Status,
+				"linked_goal_id": planMode.LinkedGoalID,
+			}))
+		}
+	}
 	if err := s.appendGoalMutation(sessionID, goal, "mission.plan.updated", map[string]any{
-		"plan_status":      mission.PlanStatus,
-		"created_task_ids": webTaskIDs(createdTasks),
+		"plan_status":       mission.PlanStatus,
+		"created_task_ids":  webTaskIDs(createdTasks),
+		"plan_mode_created": planModeCreated,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1116,6 +1164,59 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, sessionID stri
 	}
 	goal.Mode = session.GoalModeMission
 	mission := ensureMissionPlan(goal.Mission)
+	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
+		switch planMode.Status {
+		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
+			if s.hasActiveHandle(sessionID) {
+				writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
+				return
+			}
+			if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+				SessionID:   sessionID,
+				ApprovePlan: true,
+				Source:      session.PlanModeSourceWeb,
+			}); err != nil {
+				writeError(w, planModeActionStatus(err), err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+			return
+		case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput:
+			writeError(w, http.StatusConflict, errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan"))
+			return
+		case session.PlanModeStatusExecuting:
+			mission.PlanStatus = "approved"
+			if mission.ApprovedAt == "" {
+				mission.ApprovedAt = nowString()
+			}
+			goal.Mission = mission
+			if err := s.store.SaveGoal(sessionID, goal); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, goal)
+			return
+		}
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if session.GoalRequiresPlanApproval(goal) {
+		planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if created {
+			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
+				"plan_mode_id":   planMode.PlanModeID,
+				"status":         planMode.Status,
+				"linked_goal_id": planMode.LinkedGoalID,
+			}))
+		}
+		writeError(w, http.StatusConflict, errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan"))
+		return
+	}
 	mission.PlanStatus = "approved"
 	mission.ApprovedAt = nowString()
 	goal.Mission = mission
@@ -3454,6 +3555,12 @@ func webGoalEventData(goal session.SessionGoal) map[string]any {
 	}
 	if goal.CompletedAt != "" {
 		data["completed_at"] = goal.CompletedAt
+	}
+	if goal.CompletionAudit != nil {
+		data["completion_evidence_count"] = len(goal.CompletionAudit.Evidence)
+		if goal.CompletionAudit.Summary != "" {
+			data["completion_summary"] = goal.CompletionAudit.Summary
+		}
 	}
 	if goal.Mission != nil {
 		data["mission_plan_status"] = goal.Mission.PlanStatus

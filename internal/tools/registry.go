@@ -274,6 +274,23 @@ func stringArraySchema() map[string]any {
 	}
 }
 
+func goalItemStatusUpdateArraySchema() map[string]any {
+	return map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":          map[string]any{"type": "string", "description": "Criterion or validation id to update."},
+				"status":      map[string]any{"type": "string", "description": "Item status such as verified, failed, skipped, blocked, or pending."},
+				"evidence":    withDescription(stringArraySchema(), "Concrete evidence refs for this item."),
+				"last_run_at": map[string]any{"type": "string", "description": "Optional RFC3339 validation run timestamp."},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		},
+	}
+}
+
 func withDescription(schema map[string]any, description string) map[string]any {
 	out := make(map[string]any, len(schema)+1)
 	for key, value := range schema {
@@ -1439,6 +1456,15 @@ func defCreateGoal() Definition {
 					"objective": goal.Objective,
 				})
 			}
+			if planMode, created, err := execCtx.Store.EnsurePlanModeForGoal(execCtx.SessionID, goal, session.PlanModeSourceTool); err != nil {
+				return errorResult("create_goal", err), nil
+			} else if created && execCtx.Emit != nil {
+				execCtx.Emit("planmode.created", map[string]any{
+					"plan_mode_id":   planMode.PlanModeID,
+					"status":         planMode.Status,
+					"linked_goal_id": planMode.LinkedGoalID,
+				})
+			}
 			data, _ := json.MarshalIndent(goal, "", "  ")
 			return session.ToolResult{
 				Name:          "create_goal",
@@ -1457,7 +1483,7 @@ func defCreateGoal() Definition {
 func defUpdateGoal() Definition {
 	return Definition{
 		Name:        "update_goal",
-		Description: "Mark the existing session goal complete after a concrete completion audit. The model may only set status=complete; pause, resume, clear, objective changes, and budget-limited status are user/system controlled.",
+		Description: "Mark the existing session goal complete after a concrete completion audit. The model may only set status=complete; pause, resume, clear, objective changes, and budget-limited status are user/system controlled. Evidence is persisted into goal.json, not only history.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1466,14 +1492,20 @@ func defUpdateGoal() Definition {
 					"enum":        []string{"complete"},
 					"description": "Only complete is allowed from the model tool.",
 				},
-				"evidence": withDescription(stringArraySchema(), "Optional concrete evidence refs for the completion audit."),
+				"evidence":            withDescription(stringArraySchema(), "Optional concrete evidence refs for the completion audit."),
+				"completion_summary":  withDescription(map[string]any{"type": "string"}, "Optional short completion audit summary."),
+				"criteria_statuses":   withDescription(goalItemStatusUpdateArraySchema(), "Optional status/evidence updates for success criteria by id."),
+				"validation_statuses": withDescription(goalItemStatusUpdateArraySchema(), "Optional status/evidence updates for validation plan items by id."),
 			},
 			"required": []string{"status"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
-				Status   string   `json:"status"`
-				Evidence []string `json:"evidence"`
+				Status             string                         `json:"status"`
+				Evidence           []string                       `json:"evidence"`
+				CompletionSummary  string                         `json:"completion_summary"`
+				CriteriaStatuses   []session.GoalItemStatusUpdate `json:"criteria_statuses"`
+				ValidationStatuses []session.GoalItemStatusUpdate `json:"validation_statuses"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("update_goal", err), nil
@@ -1481,32 +1513,24 @@ func defUpdateGoal() Definition {
 			if strings.TrimSpace(input.Status) != session.GoalStatusComplete {
 				return errorResult("update_goal", errors.New("update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system")), nil
 			}
-			goal, err := execCtx.Store.LoadGoal(execCtx.SessionID)
+			goal, err := execCtx.Store.CompleteGoal(execCtx.SessionID, session.GoalCompletionInput{
+				Source:             session.GoalSourceTool,
+				CompletedBy:        session.GoalSourceTool,
+				Summary:            input.CompletionSummary,
+				Evidence:           input.Evidence,
+				CriteriaStatuses:   input.CriteriaStatuses,
+				ValidationStatuses: input.ValidationStatuses,
+			})
 			if err != nil {
 				return errorResult("update_goal", err), nil
 			}
-			now := time.Now().UTC().Format(time.RFC3339Nano)
-			goal.Status = session.GoalStatusComplete
-			goal.CompletedAt = now
-			goal.UpdatedAt = now
-			if err := execCtx.Store.SaveGoal(execCtx.SessionID, goal); err != nil {
-				return errorResult("update_goal", err), nil
-			}
-			_ = execCtx.Store.AppendGoalHistory(execCtx.SessionID, session.GoalHistoryEntry{
-				Type:   "goal.completed",
-				Source: session.GoalSourceTool,
-				Status: goal.Status,
-				Data: map[string]any{
-					"evidence": append([]string(nil), input.Evidence...),
-				},
-			})
 			if execCtx.Emit != nil {
 				execCtx.Emit("goal.completed", map[string]any{
 					"goal_id":   goal.GoalID,
 					"mode":      goal.Mode,
 					"status":    goal.Status,
 					"objective": goal.Objective,
-					"evidence":  append([]string(nil), input.Evidence...),
+					"evidence":  append([]string(nil), goal.CompletionAudit.Evidence...),
 				})
 			}
 			data, _ := json.MarshalIndent(goal, "", "  ")

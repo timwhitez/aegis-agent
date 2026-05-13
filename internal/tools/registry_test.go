@@ -24,6 +24,15 @@ func (f failingPlanInputResponder) RequestPlanInput(context.Context, string, ses
 	return nil, f.err
 }
 
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
@@ -356,7 +365,13 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 		t.Fatalf("expected paused update rejection, got %#v", rejectResult)
 	}
 
-	completeResult, err := registry.Execute(context.Background(), "update_goal", execCtx, json.RawMessage(`{"status":"complete","evidence":["go test ./internal/tools"]}`))
+	completeResult, err := registry.Execute(context.Background(), "update_goal", execCtx, json.RawMessage(`{
+		"status":"complete",
+		"completion_summary":"Tools goal support is complete.",
+		"evidence":["go test ./internal/tools"],
+		"criteria_statuses":[{"id":"criterion_0001","status":"verified","evidence":["goal persisted"]}],
+		"validation_statuses":[{"id":"validation_0001","status":"verified","evidence":["go test ./internal/tools"]}]
+	}`))
 	if err != nil {
 		t.Fatalf("update_goal complete execute: %v", err)
 	}
@@ -370,7 +385,13 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	if goal.Status != session.GoalStatusComplete || goal.CompletedAt == "" {
 		t.Fatalf("expected completed goal, got %#v", goal)
 	}
-	if strings.Join(eventTypes, ",") != "goal.created,goal.completed" {
+	if goal.CompletionAudit == nil || !containsString(goal.CompletionAudit.Evidence, "go test ./internal/tools") {
+		t.Fatalf("expected completion audit evidence in goal snapshot, got %#v", goal.CompletionAudit)
+	}
+	if goal.SuccessCriteria[0].Status != "verified" || goal.ValidationPlan[0].Status != "verified" {
+		t.Fatalf("expected item status evidence in goal snapshot, got criteria=%#v validation=%#v", goal.SuccessCriteria, goal.ValidationPlan)
+	}
+	if strings.Join(eventTypes, ",") != "goal.created,planmode.created,goal.completed" {
 		t.Fatalf("expected goal event emissions, got %#v", eventTypes)
 	}
 }

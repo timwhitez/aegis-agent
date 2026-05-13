@@ -19,6 +19,39 @@ import (
 	"go-cli-agent/internal/session"
 )
 
+func containsToolName(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIRequestToolNames(value any) []string {
+	rawTools, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, rawTool := range rawTools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, ok := tool["name"].(string); ok && name != "" {
+			names = append(names, name)
+			continue
+		}
+		if fn, ok := tool["function"].(map[string]any); ok {
+			if name, ok := fn["name"].(string); ok && name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
 func TestRunnerSupportsOpenAICompatibleResponses(t *testing.T) {
 	cfg := config.Default()
 	cfg.DefaultProvider = "openai-compatible"
@@ -340,6 +373,90 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 	}
 	if !reflect.DeepEqual(meta.ProviderOptions.TimeoutPolicy, wantTimeout) {
 		t.Fatalf("unexpected timeout policy in session metadata: %#v", meta.ProviderOptions.TimeoutPolicy)
+	}
+}
+
+func TestRunnerStartGoalPlanApprovalCreatesLinkedPlanModeGate(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		defer r.Body.Close()
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		toolNames := openAIRequestToolNames(body["tools"])
+		if !containsToolName(toolNames, "submit_plan") || !containsToolName(toolNames, "get_plan_mode") {
+			t.Fatalf("expected Plan Mode tools in provider request, got %#v", toolNames)
+		}
+		if containsToolName(toolNames, "shell") || containsToolName(toolNames, "write_file") {
+			t.Fatalf("mutating tools leaked into mission planning request: %#v", toolNames)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{
+					"type":"function_call",
+					"call_id":"call_submit",
+					"name":"submit_plan",
+					"arguments":"{\"title\":\"Mission plan\",\"summary\":\"Plan before changes.\",\"plan_markdown\":\"# Plan\\n\\nPlan before changes.\\n\\n# Verification\\n\\nRun tests.\",\"verification\":[\"go test ./internal/runtime\"]}"
+				}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        30,
+		RequestTimeoutSec: 45,
+		WireAPI:           "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	result, err := runner.Start(context.Background(), StartRequest{
+		Prompt:   "Plan this mission before editing.",
+		Provider: "openai-compatible",
+		Workdir:  t.TempDir(),
+		Mode:     session.ModeExec,
+		Goal: &session.GoalDraft{
+			Enabled:             true,
+			Mode:                session.GoalModeMission,
+			Objective:           "Plan-gated mission",
+			RequirePlanApproval: true,
+			Source:              session.GoalSourceCLI,
+		},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting input after submitted plan, got %#v", result)
+	}
+	goal, err := runner.store.LoadGoal(result.SessionID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	planMode, err := runner.store.LoadPlanMode(result.SessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.LinkedGoalID != goal.GoalID || planMode.Status != session.PlanModeStatusAwaitingApproval {
+		t.Fatalf("expected linked awaiting approval plan mode, goal=%#v plan=%#v", goal, planMode)
 	}
 }
 
