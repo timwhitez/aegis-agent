@@ -55,6 +55,7 @@
 - 支持 `openai-compatible` 的 Responses 形状兼容入口
 - 支持 built-in tools、skills、hooks、session 持久化、todo + task graph
 - 支持一个 session 绑定一个 durable goal，用于长目标的目标契约、完成审计和恢复提示；默认用户入口只是一个 Goal 开关，prompt 本身就是目标，结构化计划和验证由 agent 在运行中拆分
+- 支持显式 Plan Mode：用户通过 CLI flag、Web toggle 或 API 字段进入 planning gate；审批前只允许只读探索、`request_user_input` 和 `submit_plan`，审批后再恢复普通执行
 - 支持 `run` / `exec` / `steer` / `continue`
 - 支持 `Esc` 暂停、自然停顿进入 `awaiting_input`、`continue` 恢复
 - 支持 provider generation / reasoning 选项通过 runtime 和 session metadata 传递
@@ -137,6 +138,7 @@
 - 恢复 `paused`、`awaiting_input`、`failed` session
 - 可追加新的 user message
 - 不重放旧的外部副作用
+- 可通过 `--approve-plan` 批准最新 Plan Mode plan 并追加可回放的 `planmode_approval` user message；普通 message 在 `awaiting_approval` 下默认视为 plan revision
 
 ## 6. 核心设计原则
 
@@ -170,6 +172,8 @@ TUI 只能是扩展观测面，不能成为主路径依赖。
 session、state、messages、events、goal、todo、tasks 都必须落盘。恢复依赖文件事实，而不是进程内临时状态。
 
 goal 与 goal history 属于 session 文件事实源；WebConsole 可以展示和控制 goal，但不能成为目标状态的权威来源。
+
+Plan Mode 同样是 session 文件事实：`planmode.json` 是权威状态，`artifacts/planmode-history.jsonl` 是状态流水，`artifacts/planmode-plan.md` 只是 operator-readable 派生计划。Plan Mode 不替代 Goal/Mission/Todo/Task，也不能从一句自然语言“先计划”自动启用硬门禁。
 
 ### 6.5 上下文要可持续
 

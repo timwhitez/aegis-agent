@@ -27,6 +27,7 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	artifacts, _ := store.LoadArtifactTracker(sessionID)
 	attempts, _ := store.LoadProviderAttempts(sessionID)
 	goal, goalErr := store.LoadGoal(sessionID)
+	planMode, planModeErr := store.LoadPlanMode(sessionID)
 	children, _ := store.ListChildren(sessionID, 100)
 	jobs, _ := store.ListJobsByParent(sessionID, 100)
 	notifications, _ := store.LoadBackgroundNotifications(sessionID)
@@ -105,6 +106,22 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		}
 		if goal.Mission != nil {
 			b.WriteString(fmt.Sprintf("- mission plan: `%s` features=`%d` milestones=`%d`\n", firstNonEmpty(goal.Mission.PlanStatus, "draft"), len(goal.Mission.Features), len(goal.Mission.Milestones)))
+		}
+	} else {
+		b.WriteString("not recorded\n")
+	}
+
+	b.WriteString("\n## Plan Mode\n\n")
+	if planModeErr == nil && planMode.PlanModeID != "" {
+		b.WriteString(fmt.Sprintf("- plan mode: `%s`\n", planMode.PlanModeID))
+		b.WriteString(fmt.Sprintf("- status: `%s`\n", planMode.Status))
+		b.WriteString(fmt.Sprintf("- objective: %s\n", truncateText(planMode.Objective, 240)))
+		b.WriteString(fmt.Sprintf("- version: `%d` approved=`%d`\n", planMode.PlanVersion, planMode.ApprovedVersion))
+		if planMode.Summary != "" {
+			b.WriteString(fmt.Sprintf("- summary: %s\n", truncateText(planMode.Summary, 240)))
+		}
+		if planMode.PendingRequest != nil {
+			b.WriteString(fmt.Sprintf("- pending input: `%s` questions=`%d`\n", planMode.PendingRequest.RequestID, len(planMode.PendingRequest.Questions)))
 		}
 	} else {
 		b.WriteString("not recorded\n")
@@ -247,6 +264,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	contract, contractErr := store.LoadContract(sessionID)
 	artifacts, _ := store.LoadArtifactTracker(sessionID)
 	goal, goalErr := store.LoadGoal(sessionID)
+	planMode, planModeErr := store.LoadPlanMode(sessionID)
 	todo, _ := store.LoadTodo(sessionID)
 	tasks, _ := store.ListTasks(sessionID)
 	children, _ := store.ListChildren(sessionID, 100)
@@ -257,7 +275,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
 
-	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, artifacts, tasks, children, jobs, state) {
+	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, planMode, planModeErr, artifacts, tasks, children, jobs, state) {
 		return nil
 	}
 	rootSessionID := meta.RootSessionID
@@ -296,6 +314,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		goalCopy := goal
 		checkpoint.GoalSnapshot = &goalCopy
 	}
+	if planModeErr == nil && planMode.PlanModeID != "" {
+		planModeCopy := planMode
+		checkpoint.PlanModeSnapshot = &planModeCopy
+	}
 	for _, child := range children {
 		if child.Status != session.StatusCompleted && child.Status != session.StatusFailed {
 			checkpoint.UnresolvedChildSessions = append(checkpoint.UnresolvedChildSessions, child.ID)
@@ -320,7 +342,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	return store.SaveLongRunCheckpoint(sessionID, checkpoint)
 }
 
-func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session.SessionContract, contractErr error, goal session.SessionGoal, goalErr error, artifacts []session.RequiredArtifact, tasks []session.Task, children []session.SessionSummary, jobs []session.QueueJob, state session.State) bool {
+func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session.SessionContract, contractErr error, goal session.SessionGoal, goalErr error, planMode session.PlanModeState, planModeErr error, artifacts []session.RequiredArtifact, tasks []session.Task, children []session.SessionSummary, jobs []session.QueueJob, state session.State) bool {
 	if meta.Depth > 0 || meta.ParentSessionID != "" || meta.QueueJobID != "" || len(children) > 0 || len(jobs) > 0 {
 		return true
 	}
@@ -331,6 +353,9 @@ func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session
 		return true
 	}
 	if goalErr == nil && goal.GoalID != "" {
+		return true
+	}
+	if planModeErr == nil && planMode.PlanModeID != "" {
 		return true
 	}
 	if len(artifacts) > 1 || len(tasks) > 0 {
@@ -430,6 +455,18 @@ func checkpointHints(checkpoint session.LongRunCheckpoint, state session.State) 
 			hints = append(hints, "budget-limited goal needs wrap-up or explicit resume")
 		case session.GoalStatusPaused:
 			hints = append(hints, "goal is paused; wait for explicit resume or redirect")
+		}
+	}
+	if checkpoint.PlanModeSnapshot != nil {
+		switch checkpoint.PlanModeSnapshot.Status {
+		case session.PlanModeStatusPlanning:
+			hints = append(hints, "continue Plan Mode planning before execution")
+		case session.PlanModeStatusAwaitingUserInput:
+			hints = append(hints, "answer pending Plan Mode user input")
+		case session.PlanModeStatusAwaitingApproval:
+			hints = append(hints, "approve, revise, or cancel the pending Plan Mode plan")
+		case session.PlanModeStatusApproved:
+			hints = append(hints, "start execution from the approved Plan Mode plan")
 		}
 	}
 	return hints

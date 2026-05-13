@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,6 +34,10 @@ type Runner struct {
 	activeMu        sync.Mutex
 	activeSessionID string
 	activeDepth     int
+
+	planInputMu       sync.Mutex
+	planInputWaiters  map[string]chan planInputResponse
+	planInputHandlers map[string]PlanInputHandler
 }
 
 const defaultSteerMaxMessageChars = 12000
@@ -62,17 +67,89 @@ func NewRunner(cfg *config.Config) *Runner {
 	control := &runControl{}
 	engine := NewEngine(cfg, store, bus, control)
 	r := &Runner{
-		cfg:     cfg,
-		store:   store,
-		bus:     bus,
-		control: control,
-		engine:  engine,
+		cfg:               cfg,
+		store:             store,
+		bus:               bus,
+		control:           control,
+		engine:            engine,
+		planInputWaiters:  map[string]chan planInputResponse{},
+		planInputHandlers: map[string]PlanInputHandler{},
 	}
 	engine.SetRunner(r)
 	return r
 }
 
 func (r *Runner) Bus() *events.Bus { return r.bus }
+
+func planInputWaiterKey(sessionID, requestID string) string {
+	return sessionID + ":" + requestID
+}
+
+func (r *Runner) setPlanInputHandler(sessionID string, handler PlanInputHandler) {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	if handler == nil {
+		delete(r.planInputHandlers, sessionID)
+		return
+	}
+	r.planInputHandlers[sessionID] = handler
+}
+
+func (r *Runner) clearPlanInputHandler(sessionID string) {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	delete(r.planInputHandlers, sessionID)
+}
+
+func (r *Runner) RequestPlanInput(ctx context.Context, sessionID string, request session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
+	r.planInputMu.Lock()
+	if handler := r.planInputHandlers[sessionID]; handler != nil {
+		r.planInputMu.Unlock()
+		return handler(ctx, request)
+	}
+	key := planInputWaiterKey(sessionID, request.RequestID)
+	ch := make(chan planInputResponse, 1)
+	r.planInputWaiters[key] = ch
+	r.planInputMu.Unlock()
+	defer func() {
+		r.planInputMu.Lock()
+		delete(r.planInputWaiters, key)
+		r.planInputMu.Unlock()
+	}()
+	select {
+	case response := <-ch:
+		if response.err != nil {
+			return nil, response.err
+		}
+		return response.answers, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (r *Runner) AnswerActivePlanInput(sessionID, requestID string, answers []session.PlanModeInputAnswer) bool {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	key := planInputWaiterKey(sessionID, requestID)
+	ch, ok := r.planInputWaiters[key]
+	if !ok {
+		return false
+	}
+	ch <- planInputResponse{answers: append([]session.PlanModeInputAnswer(nil), answers...)}
+	return true
+}
+
+func (r *Runner) CancelActivePlanInput(sessionID, requestID string) bool {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	key := planInputWaiterKey(sessionID, requestID)
+	ch, ok := r.planInputWaiters[key]
+	if !ok {
+		return false
+	}
+	ch <- planInputResponse{err: tools.ErrPlanInputCancelled}
+	return true
+}
 
 func (r *Runner) acquireRunSlot(sessionID string) (func(), error) {
 	sessionID = strings.TrimSpace(sessionID)
@@ -101,28 +178,44 @@ func (r *Runner) acquireRunSlot(sessionID string) (func(), error) {
 }
 
 type StartRequest struct {
-	Prompt          string
-	Provider        string
-	Model           string
-	ProviderOptions session.ProviderOptions
-	Workdir         string
-	Mode            string
-	SystemOverride  string
-	Goal            *session.GoalDraft
-	ParentSessionID string
-	AgentName       string
-	AgentRole       string
-	QueueJobID      string
-	IsolationMode   string
-	IsolationRoot   string
+	Prompt           string
+	Provider         string
+	Model            string
+	ProviderOptions  session.ProviderOptions
+	Workdir          string
+	Mode             string
+	SystemOverride   string
+	Goal             *session.GoalDraft
+	PlanMode         *session.PlanModeDraft
+	PlanInputHandler PlanInputHandler
+	ParentSessionID  string
+	AgentName        string
+	AgentRole        string
+	QueueJobID       string
+	IsolationMode    string
+	IsolationRoot    string
 }
 
 type ContinueRequest struct {
-	SessionID      string
-	Message        string
-	Provider       string
-	Model          string
-	SystemOverride string
+	SessionID          string
+	Message            string
+	Provider           string
+	Model              string
+	SystemOverride     string
+	PlanMode           *session.PlanModeDraft
+	PlanInputHandler   PlanInputHandler
+	ApprovePlan        bool
+	CancelPlan         bool
+	PlanInputRequestID string
+	PlanInputAnswers   []session.PlanModeInputAnswer
+	Source             string
+}
+
+type PlanInputHandler func(context.Context, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error)
+
+type planInputResponse struct {
+	answers []session.PlanModeInputAnswer
+	err     error
 }
 
 type SteerRequest struct {
@@ -279,6 +372,20 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		}
 		r.emit(meta.ID, "goal.created", "prepare", goalEventData(goal))
 	}
+	if req.PlanMode != nil && req.PlanMode.Enabled {
+		draft := *req.PlanMode
+		if strings.TrimSpace(draft.Source) == "" {
+			draft.Source = session.PlanModeSourceCLI
+		}
+		if strings.TrimSpace(draft.Objective) == "" {
+			draft.Objective = req.Prompt
+		}
+		planMode, err := r.store.CreatePlanMode(meta.ID, draft)
+		if err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+		r.emit(meta.ID, "planmode.created", "prepare", planModeEventData(planMode))
+	}
 	_ = writeSessionSummary(r.store, meta.ID)
 	r.emit(meta.ID, "session.created", "prepare", map[string]any{
 		"provider": meta.Provider,
@@ -294,7 +401,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
-	return r.runExisting(ctx, meta, state, req.SystemOverride)
+	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
 }
 
 func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) (string, error) {
@@ -506,6 +613,78 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 		return RunResult{}, err
 	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = session.PlanModeSourceCLI
+	}
+	if len(req.PlanInputAnswers) > 0 {
+		if err := r.appendPlanInputToolResult(meta.ID, req.PlanInputRequestID, source, req.PlanInputAnswers); err != nil {
+			return r.failBeforeRun(meta.ID, state, "plan_input", err)
+		}
+	}
+	if req.CancelPlan {
+		if err := r.appendPlanInputCancelToolResult(meta.ID, source); err != nil {
+			return r.failBeforeRun(meta.ID, state, "plan_input", err)
+		}
+		planMode, err := r.store.CancelPlanMode(meta.ID, source)
+		if err != nil {
+			return RunResult{}, err
+		}
+		r.emit(meta.ID, "planmode.cancelled", "planmode", planModeEventData(planMode))
+		state.Status = session.StatusAwaitingInput
+		state.Phase = "plan_cancelled"
+		if err := r.store.SaveState(meta.ID, state); err != nil {
+			return RunResult{}, err
+		}
+		_ = writeSessionSummary(r.store, meta.ID)
+		return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode cancelled."}, nil
+	}
+	var extraUserMeta map[string]any
+	if req.ApprovePlan {
+		approved, err := r.store.ApprovePlanMode(meta.ID, source)
+		if err != nil {
+			return RunResult{}, err
+		}
+		r.emit(meta.ID, "planmode.plan_approved", "planmode", planModeEventData(approved))
+		executing, err := r.store.MarkPlanModeExecuting(meta.ID, source)
+		if err != nil {
+			return RunResult{}, err
+		}
+		r.emit(meta.ID, "planmode.execution_started", "planmode", planModeEventData(executing))
+		req.Message = fmt.Sprintf("Implement the approved Plan Mode plan version %d.", executing.ApprovedVersion)
+		extraUserMeta = map[string]any{
+			"source":       "planmode_approval",
+			"plan_mode_id": executing.PlanModeID,
+			"plan_version": executing.ApprovedVersion,
+		}
+	}
+	if req.PlanMode != nil && req.PlanMode.Enabled {
+		draft := *req.PlanMode
+		if strings.TrimSpace(draft.Source) == "" {
+			draft.Source = source
+		}
+		if strings.TrimSpace(draft.Objective) == "" {
+			draft.Objective = firstNonEmpty(req.Message, "Plan Mode continuation")
+		}
+		planMode, err := r.store.CreatePlanMode(meta.ID, draft)
+		if err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+		r.emit(meta.ID, "planmode.created", "prepare", planModeEventData(planMode))
+	} else if !req.ApprovePlan && stringsTrim(req.Message) != "" {
+		if planMode, err := r.store.LoadPlanMode(meta.ID); err == nil && planMode.Status == session.PlanModeStatusAwaitingApproval {
+			revised, err := r.store.RevisePlanMode(meta.ID, source, req.Message)
+			if err != nil {
+				return r.failBeforeRun(meta.ID, state, "prepare", err)
+			}
+			r.emit(meta.ID, "planmode.plan_revised", "prepare", planModeEventData(revised))
+			extraUserMeta = map[string]any{
+				"source":       "planmode_revision",
+				"plan_mode_id": revised.PlanModeID,
+				"plan_version": revised.PlanVersion,
+			}
+		}
+	}
 	checkpointHint, checkpointWarnings, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
 	if checkpointErr != nil {
 		return RunResult{}, checkpointErr
@@ -518,7 +697,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		})
 	}
 	if stringsTrim(req.Message) != "" {
-		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, nil); err != nil {
+		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, extraUserMeta); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
@@ -529,10 +708,85 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	state.PauseReason = ""
 	state.ProviderAutoResumeCount = 0
 	state.Status = session.StatusRunning
-	return r.runExisting(ctx, meta, state, req.SystemOverride)
+	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
 }
 
-func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string) (RunResult, error) {
+func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error {
+	planMode, err := r.store.LoadPlanMode(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if planMode.PendingRequest == nil || strings.TrimSpace(planMode.PendingRequest.ToolCallID) == "" {
+		return nil
+	}
+	request := *planMode.PendingRequest
+	result := session.ToolResult{
+		ToolCallID:    request.ToolCallID,
+		Name:          "request_user_input",
+		LLMOutput:     "Error: Plan Mode input was cancelled by the user.",
+		DisplayOutput: "Error: Plan Mode input was cancelled by the user.",
+		IsError:       true,
+		Metadata: map[string]any{
+			"planmode":     true,
+			"request_id":   request.RequestID,
+			"cancelled":    true,
+			"plan_mode_id": planMode.PlanModeID,
+		},
+	}
+	if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
+		return err
+	}
+	_ = r.store.AppendPlanModeHistory(sessionID, session.PlanModeHistoryEntry{
+		PlanModeID: planMode.PlanModeID,
+		Type:       "planmode.input_cancelled",
+		Source:     source,
+		Status:     planMode.Status,
+		Data: map[string]any{
+			"request_id":   request.RequestID,
+			"tool_call_id": request.ToolCallID,
+		},
+	})
+	r.emit(sessionID, "planmode.input_cancelled", "plan_input", map[string]any{
+		"plan_mode_id": planMode.PlanModeID,
+		"request_id":   request.RequestID,
+		"recovered":    true,
+	})
+	return nil
+}
+
+func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, answers []session.PlanModeInputAnswer) error {
+	planMode, request, err := r.store.AnswerPlanModeInput(sessionID, requestID, source, answers)
+	if err != nil {
+		return err
+	}
+	result := session.ToolResult{
+		ToolCallID:    request.ToolCallID,
+		Name:          "request_user_input",
+		LLMOutput:     session.PlanModeAnswersJSON(answers),
+		DisplayOutput: session.PlanModeAnswersJSON(answers),
+		Metadata: map[string]any{
+			"planmode":     true,
+			"request_id":   request.RequestID,
+			"recovered":    true,
+			"plan_mode_id": planMode.PlanModeID,
+		},
+	}
+	if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
+		return err
+	}
+	r.emit(sessionID, "planmode.input_answered", "plan_input", map[string]any{
+		"plan_mode_id": planMode.PlanModeID,
+		"request_id":   request.RequestID,
+		"answers":      answers,
+		"recovered":    true,
+	})
+	return nil
+}
+
+func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string, planInputHandler PlanInputHandler) (RunResult, error) {
 	catalog, err := skills.Scan(r.cfg.Skills.Dirs)
 	if err != nil {
 		return RunResult{}, err
@@ -551,6 +805,8 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 	watcherCtx, cancelWatcher := context.WithCancel(ctx)
 	defer cancelWatcher()
 	go r.watchSteer(watcherCtx, meta.ID)
+	r.setPlanInputHandler(meta.ID, planInputHandler)
+	defer r.clearPlanInputHandler(meta.ID)
 	r.emit(meta.ID, "session.started", "prepare", map[string]any{
 		"provider": meta.Provider,
 		"model":    meta.Model,

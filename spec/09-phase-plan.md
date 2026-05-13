@@ -193,6 +193,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 
 - session contract snapshot：`contract.json` 与 `artifacts/contract-history.jsonl`
 - session goal snapshot：`goal.json` 与 `artifacts/goal-history.jsonl`，包含 objective、status、usage accounting、success criteria、validation plan 与内部结构化计划摘要；默认用户入口不暴露 Goal/Mission 分叉或预算表单
+- session Plan Mode gate：`planmode.json`、`artifacts/planmode-history.jsonl`、`artifacts/planmode-plan.md`，通过 CLI/Web/API 显式进入，审批前只暴露只读/规划工具并由 `submit_plan` 进入 `awaiting_approval`
 - required artifact tracker：`artifact-tracker.json`
 - centralized completion controller：统一复用既有 guard，并补充显式 artifact / parent coordination gate
 - active goal completion gate：active goal 下 `finish` 前必须先完成目标审计并由模型调用 `update_goal(status="complete")`；若高级入口设置了预算，budget_limited 只能触发 wrap-up，不等同完成
@@ -209,6 +210,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 - `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 - goal 的验收覆盖 store round-trip、model tools、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate、Web start payload 与 goal REST endpoints；Web 启动默认只需要 Goal 开关 + prompt
+- Plan Mode 的验收覆盖 store round-trip、tool schema 裁剪、CompletionController gate、`submit_plan` 同批 tool result 补偿、`request_user_input` active/recovery 路径、CLI `--plan/--plan-only/--approve-plan`、Web Plan inspector 与 parent-linked queue/delegate rejection
 
 ## 15. Extension Phases
 

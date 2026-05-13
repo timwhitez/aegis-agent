@@ -193,7 +193,7 @@ var experimentalRunnerLoader = loadExperimentalRunner
 var storeRunnerLoader = loadStoreRunner
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval"})
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval", "plan", "plan-only"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -212,6 +212,8 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		goalTokenBudget  = fs.Int64("goal-token-budget", 0, "")
 		goalTimeBudget   = fs.String("goal-time-budget", "", "")
 		goalPlanApproval = fs.Bool("goal-plan-approval", false, "")
+		planModeEnabled  = fs.Bool("plan", false, "")
+		planOnly         = fs.Bool("plan-only", false, "")
 		goalCriteria     stringSliceFlag
 		goalValidation   stringSliceFlag
 	)
@@ -284,16 +286,19 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
+	planDraft := planModeDraftFromCLI(*planModeEnabled || *planOnly, prompt)
 	result, err := runner.Start(runCtx, runtime.StartRequest{
-		Prompt:         prompt,
-		Provider:       *providerName,
-		Model:          *model,
-		Workdir:        *workdir,
-		Mode:           actualMode,
-		SystemOverride: *system,
-		Goal:           goalDraft,
-		IsolationMode:  *isolationMode,
-		IsolationRoot:  *isolationRoot,
+		Prompt:           prompt,
+		Provider:         *providerName,
+		Model:            *model,
+		Workdir:          *workdir,
+		Mode:             actualMode,
+		SystemOverride:   *system,
+		Goal:             goalDraft,
+		PlanMode:         planDraft,
+		PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
+		IsolationMode:    *isolationMode,
+		IsolationRoot:    *isolationRoot,
 	})
 	cancel()
 	cancelRender()
@@ -349,6 +354,59 @@ func goalDraftFromCLI(objective, mode string, tokenBudget int64, timeBudget stri
 	}, nil
 }
 
+func planModeDraftFromCLI(enabled bool, prompt string) *session.PlanModeDraft {
+	if !enabled {
+		return nil
+	}
+	return &session.PlanModeDraft{
+		Enabled:   true,
+		Objective: strings.TrimSpace(prompt),
+		Source:    session.PlanModeSourceCLI,
+	}
+}
+
+func cliPlanInputHandler(stdin io.Reader, stderr io.Writer) runtime.PlanInputHandler {
+	return func(ctx context.Context, request session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return nil, errors.New("request_user_input requires an interactive TTY or Web API responder")
+		}
+		reader := bufio.NewReader(stdin)
+		answers := make([]session.PlanModeInputAnswer, 0, len(request.Questions))
+		for _, question := range request.Questions {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			_, _ = fmt.Fprintf(stderr, "\n%s\n%s\n", question.Header, question.Question)
+			for i, option := range question.Options {
+				_, _ = fmt.Fprintf(stderr, "  %d. %s - %s\n", i+1, option.Label, option.Description)
+			}
+			_, _ = fmt.Fprintf(stderr, "  other. Enter custom answer\n")
+			_, _ = fmt.Fprint(stderr, "Select [1]: ")
+			line, err := reader.ReadString('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			value := strings.TrimSpace(line)
+			if value == "" {
+				value = "1"
+			}
+			answer := session.PlanModeInputAnswer{QuestionID: question.ID}
+			if len(value) == 1 && value[0] >= '1' && int(value[0]-'1') < len(question.Options) {
+				option := question.Options[int(value[0]-'1')]
+				answer.Label = option.Label
+				answer.Value = option.Label
+			} else {
+				answer.Value = value
+				answer.IsOther = true
+			}
+			answers = append(answers, answer)
+		}
+		return answers, nil
+	}
+}
+
 func parseGoalDurationSeconds(value string) (int64, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -377,16 +435,19 @@ func allDigits(value string) bool {
 }
 
 func continueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system"}, []string{"json"})
+	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system"}, []string{"json", "plan", "approve-plan", "cancel-plan"})
 	fs := flag.NewFlagSet("continue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		message    = fs.String("message", "", "")
-		provider   = fs.String("provider", "", "")
-		model      = fs.String("model", "", "")
-		configPath = fs.String("config", "", "")
-		jsonMode   = fs.Bool("json", false, "")
-		system     = fs.String("system", "", "")
+		message     = fs.String("message", "", "")
+		provider    = fs.String("provider", "", "")
+		model       = fs.String("model", "", "")
+		configPath  = fs.String("config", "", "")
+		jsonMode    = fs.Bool("json", false, "")
+		system      = fs.String("system", "", "")
+		planMode    = fs.Bool("plan", false, "")
+		approvePlan = fs.Bool("approve-plan", false, "")
+		cancelPlan  = fs.Bool("cancel-plan", false, "")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -419,11 +480,16 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		*message = string(data)
 	}
 	result, err := runner.Continue(ctx, runtime.ContinueRequest{
-		SessionID:      fs.Arg(0),
-		Message:        strings.TrimSpace(*message),
-		Provider:       *provider,
-		Model:          *model,
-		SystemOverride: *system,
+		SessionID:        fs.Arg(0),
+		Message:          strings.TrimSpace(*message),
+		Provider:         *provider,
+		Model:            *model,
+		SystemOverride:   *system,
+		PlanMode:         planModeDraftFromCLI(*planMode, strings.TrimSpace(*message)),
+		PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
+		ApprovePlan:      *approvePlan,
+		CancelPlan:       *cancelPlan,
+		Source:           session.PlanModeSourceCLI,
 	})
 	cancelRender()
 	<-done

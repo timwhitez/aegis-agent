@@ -332,6 +332,7 @@ function renderSessionActivityCard() {
   const counters = summarizeCurrentSession();
   const status = detail?.state?.status || (state.isGenerating ? 'running' : 'idle');
   const goal = detail?.goal || null;
+  const planMode = detail?.plan_mode || null;
   const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : state.liveActivity.title;
   const tone = toneForStatus(status);
   const failureSummary = detail ? summarizeProviderFailure(detail) : null;
@@ -350,6 +351,7 @@ function renderSessionActivityCard() {
         <div class="session-flow-meta">
           ${detail?.metadata?.id ? `<span class="tiny-code-chip">${escapeHTML(shortId(detail.metadata.id))}</span>` : `<span class="tiny-code-chip">${escapeHTML(shortId(state.sessionId))}</span>`}
           ${goal ? `<span class="surface-chip">${escapeHTML(goal.mode || 'goal')} · ${escapeHTML(humanizeStatus(goal.status || 'active'))}</span>` : ''}
+          ${planMode ? `<span class="surface-chip">plan · ${escapeHTML(humanizeStatus(planMode.status || 'planning'))}</span>` : ''}
           ${summary ? `<span class="surface-chip">${escapeHTML(summary)}</span>` : ''}
         </div>
       </div>
@@ -1385,6 +1387,7 @@ function renderInspectorPanel() {
   const tabs = [
     ['summary', 'Summary'],
     ['goal', 'Goal'],
+    ['plan', 'Plan'],
     ['tasks', 'Tasks'],
     ['agents', 'Background'],
     ['timeline', 'Timeline']
@@ -1394,6 +1397,8 @@ function renderInspectorPanel() {
     ? renderSummaryPanel(detail)
     : active === 'goal'
       ? renderGoalPanel(detail)
+    : active === 'plan'
+      ? renderPlanPanel(detail)
     : active === 'agents'
       ? renderAgentsPanel(detail)
       : active === 'timeline'
@@ -1411,6 +1416,118 @@ function renderInspectorPanel() {
       ${tabs.map(([key, label]) => `<button class="inspector-tab ${key === active ? 'active' : ''}" type="button" data-inspector-tab="${escapeAttr(key)}">${escapeHTML(label)}</button>`).join('')}
     </div>
     <div class="inspector-content">${panel}</div>
+  `;
+}
+
+function renderPlanPanel(detail) {
+  const planMode = detail?.plan_mode;
+  if (!planMode) {
+    return '<div class="empty-panel">No Plan Mode gate is attached to this session.</div>';
+  }
+  const status = planMode.status || 'planning';
+  const canApprove = status === 'awaiting_approval';
+  const canCancel = ['planning', 'awaiting_user_input', 'awaiting_approval'].includes(status);
+  const canRevise = status === 'awaiting_approval';
+  const pendingRequest = status === 'awaiting_user_input' ? planMode.pending_request || null : null;
+  const planMarkdown = String(planMode.plan_markdown || '').trim();
+  return `
+    <div class="goal-panel plan-panel">
+      <div class="goal-panel-head">
+        <div>
+          <div class="inspector-eyebrow">Plan Mode</div>
+          <h4>${escapeHTML(humanizeStatus(status))}</h4>
+        </div>
+        <span class="tiny-code-chip">${escapeHTML(shortId(planMode.plan_mode_id || 'plan'))}</span>
+      </div>
+      <div class="goal-objective">${escapeHTML(planMode.objective || '')}</div>
+      <div class="goal-budget-row">
+        ${renderMiniMetric('Version', String(planMode.plan_version || 0))}
+        ${renderMiniMetric('Approved', String(planMode.approved_version || 0))}
+      </div>
+      <div class="goal-actions">
+        ${canApprove ? '<button class="mini-link-btn" type="button" data-plan-action="approve">Approve & Run</button>' : ''}
+        ${canRevise ? '<button class="mini-link-btn" type="button" data-plan-action="revise">Ask for Changes</button>' : ''}
+        ${canCancel ? '<button class="mini-link-btn danger" type="button" data-plan-action="cancel">Cancel</button>' : ''}
+      </div>
+      ${pendingRequest ? renderPlanInputRequest(pendingRequest) : ''}
+      ${planMode.summary ? `
+        <div class="goal-section">
+          <div class="goal-section-title">Summary</div>
+          <div class="goal-meta-line">${escapeHTML(planMode.summary)}</div>
+        </div>
+      ` : ''}
+      ${renderPlanList('Assumptions', planMode.assumptions)}
+      ${renderPlanList('Risks', planMode.risks)}
+      ${renderPlanList('Verification', planMode.verification)}
+      ${planMarkdown ? `
+        <div class="goal-section">
+          <div class="goal-section-title">Plan</div>
+          <div class="message-bubble prose plan-markdown">${safeMarkdown(planMarkdown)}</div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderPlanInputRequest(request) {
+  const questions = maybeArray(request?.questions);
+  if (!questions.length) {
+    return '';
+  }
+  return `
+    <div class="goal-section">
+      <div class="goal-section-title">Input requested</div>
+      <div class="goal-item-list">
+        ${questions.map((question) => renderPlanInputQuestion(request.request_id, question)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderPlanInputQuestion(requestID, question) {
+  const options = maybeArray(question?.options);
+  return `
+    <div class="goal-item plan-question">
+      <div class="goal-item-top">
+        <span>${escapeHTML(question.header || question.id || 'Question')}</span>
+        <span class="status-badge queued">Input</span>
+      </div>
+      <div class="goal-meta-line">${escapeHTML(question.question || '')}</div>
+      <div class="goal-actions plan-option-row">
+        ${options.map((option) => `
+          <button class="mini-link-btn" type="button"
+            data-plan-input-action="answer"
+            data-request-id="${escapeAttr(requestID || '')}"
+            data-question-id="${escapeAttr(question.id || '')}"
+            data-label="${escapeAttr(option.label || '')}"
+            data-value="${escapeAttr(option.label || '')}">
+            ${escapeHTML(option.label || 'Option')}
+          </button>
+        `).join('')}
+        <button class="mini-link-btn" type="button"
+          data-plan-input-action="answer"
+          data-request-id="${escapeAttr(requestID || '')}"
+          data-question-id="${escapeAttr(question.id || '')}"
+          data-label="Other"
+          data-other="1">Other</button>
+      </div>
+      ${options.length ? `<div class="goal-meta-line">${escapeHTML(options.map((option) => option.description).filter(Boolean).join(' · '))}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderPlanList(label, items) {
+  const values = maybeArray(items).filter((item) => String(item || '').trim());
+  if (!values.length) {
+    return '';
+  }
+  return `
+    <div class="goal-section">
+      <div class="goal-section-title">${escapeHTML(label)}</div>
+      <div class="goal-item-list">
+        ${values.map((item) => `<div class="goal-item"><div class="goal-meta-line">${escapeHTML(String(item))}</div></div>`).join('')}
+      </div>
+    </div>
   `;
 }
 

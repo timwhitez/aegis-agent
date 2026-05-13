@@ -35,13 +35,21 @@ type Definition struct {
 }
 
 type ExecContext struct {
-	SessionID string
-	Workdir   string
-	Store     *session.Store
-	Config    *config.Config
-	Catalog   *skills.Catalog
-	Emit      func(string, map[string]any)
+	SessionID          string
+	ToolCallID         string
+	Workdir            string
+	Store              *session.Store
+	Config             *config.Config
+	Catalog            *skills.Catalog
+	Emit               func(string, map[string]any)
+	PlanInputResponder PlanInputResponder
 }
+
+type PlanInputResponder interface {
+	RequestPlanInput(context.Context, string, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error)
+}
+
+var ErrPlanInputCancelled = errors.New("plan mode input cancelled")
 
 type AgentSpawnRequest struct {
 	ParentSessionID string
@@ -114,6 +122,7 @@ var reservedNames = map[string]struct{}{
 	"finish": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
 	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_status": {},
 	"agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
+	"get_plan_mode": {}, "submit_plan": {}, "request_user_input": {},
 }
 
 func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane, trustedCommandWorkdir ...string) (*Registry, error) {
@@ -181,6 +190,9 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 		defGetGoal(),
 		defCreateGoal(),
 		defUpdateGoal(),
+		defGetPlanMode(),
+		defSubmitPlan(),
+		defRequestUserInput(),
 		defTodoWrite(),
 		defTodoRead(),
 		defTaskCreate(),
@@ -1506,6 +1518,225 @@ func defUpdateGoal() Definition {
 					"path":    filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "goal.json"),
 					"goal_id": goal.GoalID,
 					"status":  goal.Status,
+				},
+			}, nil
+		},
+	}
+}
+
+func defGetPlanMode() Definition {
+	return Definition{
+		Name:        "get_plan_mode",
+		Description: "Read the current session Plan Mode state. Use this in Plan Mode to inspect objective, pending questions, submitted plan version, approval status, and approved plan context. Returns null when Plan Mode is not enabled.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			planMode, err := execCtx.Store.LoadPlanMode(execCtx.SessionID)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return session.ToolResult{Name: "get_plan_mode", LLMOutput: "null", DisplayOutput: "null"}, nil
+				}
+				return errorResult("get_plan_mode", err), nil
+			}
+			data, _ := json.MarshalIndent(planMode, "", "  ")
+			return session.ToolResult{
+				Name:          "get_plan_mode",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":         filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "planmode.json"),
+					"plan_mode_id": planMode.PlanModeID,
+					"status":       planMode.Status,
+				},
+			}, nil
+		},
+	}
+}
+
+func defSubmitPlan() Definition {
+	return Definition{
+		Name:        "submit_plan",
+		Description: "Submit the complete Plan Mode plan for user approval. This records the plan and pauses execution; it does not implement the plan.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":         map[string]any{"type": "string", "description": "Short plan title."},
+				"summary":       map[string]any{"type": "string", "description": "Concise summary of the recommended implementation path."},
+				"plan_markdown": map[string]any{"type": "string", "description": "Complete Markdown plan with summary, implementation steps, interfaces/data model, verification, risks, and assumptions."},
+				"assumptions":   withDescription(stringArraySchema(), "Important assumptions the plan depends on."),
+				"risks":         withDescription(stringArraySchema(), "Risks or tradeoffs and expected mitigations."),
+				"verification":  withDescription(stringArraySchema(), "Tests, commands, manual checks, or evidence required before completion."),
+			},
+			"required": []string{"title", "summary", "plan_markdown", "verification"},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input session.PlanModeSubmitInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("submit_plan", err), nil
+			}
+			input.Source = session.PlanModeSourceTool
+			planMode, err := execCtx.Store.SubmitPlanMode(execCtx.SessionID, input)
+			if err != nil {
+				return errorResult("submit_plan", err), nil
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("planmode.plan_submitted", map[string]any{
+					"plan_mode_id": planMode.PlanModeID,
+					"plan_id":      planMode.PlanID,
+					"version":      planMode.PlanVersion,
+					"summary":      planMode.Summary,
+				})
+			}
+			data, _ := json.MarshalIndent(planMode, "", "  ")
+			return session.ToolResult{
+				Name:          "submit_plan",
+				LLMOutput:     string(data),
+				DisplayOutput: fmt.Sprintf("Plan submitted for approval (version %d).", planMode.PlanVersion),
+				Metadata: map[string]any{
+					"planmode":          true,
+					"planmode_terminal": "plan_submitted",
+					"path":              filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "planmode.json"),
+					"plan_path":         filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "artifacts", "planmode-plan.md"),
+					"plan_mode_id":      planMode.PlanModeID,
+					"plan_version":      planMode.PlanVersion,
+				},
+			}, nil
+		},
+	}
+}
+
+func defRequestUserInput() Definition {
+	return Definition{
+		Name:        "request_user_input",
+		Description: "Request user input for one to three short Plan Mode questions and wait for the response. This tool is only available in Plan Mode.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"questions": map[string]any{
+					"type":        "array",
+					"description": "Questions to show the user. Prefer 1 and do not exceed 3.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":       map[string]any{"type": "string", "description": "Stable identifier for mapping answers (snake_case)."},
+							"header":   map[string]any{"type": "string", "description": "Short header label shown in the UI (12 or fewer chars)."},
+							"question": map[string]any{"type": "string", "description": "Single-sentence prompt shown to the user."},
+							"options": map[string]any{
+								"type":        "array",
+								"description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an Other option; the client adds free-form Other automatically.",
+								"items": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"label":       map[string]any{"type": "string", "description": "User-facing label (1-5 words)."},
+										"description": map[string]any{"type": "string", "description": "One short sentence explaining impact/tradeoff if selected."},
+									},
+									"required": []string{"label", "description"},
+								},
+							},
+						},
+						"required": []string{"id", "header", "question", "options"},
+					},
+				},
+			},
+			"required": []string{"questions"},
+		},
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Questions []session.PlanModeInputQuestion `json:"questions"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("request_user_input", err), nil
+			}
+			meta, metaErr := execCtx.Store.LoadMetadata(execCtx.SessionID)
+			if metaErr != nil {
+				return errorResult("request_user_input", metaErr), nil
+			}
+			if strings.TrimSpace(meta.ParentSessionID) != "" {
+				return errorResult("request_user_input", errors.New("request_user_input is only available in the root session")), nil
+			}
+			if execCtx.PlanInputResponder == nil {
+				return errorResult("request_user_input", errors.New("request_user_input requires an interactive responder (TTY or Web API)")), nil
+			}
+			request := session.PlanModeInputRequest{
+				RequestID:  session.NewPlanModeQuestionID(),
+				ToolCallID: strings.TrimSpace(execCtx.ToolCallID),
+				Questions:  input.Questions,
+				Status:     "pending",
+				CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+			}
+			if request.ToolCallID == "" {
+				request.ToolCallID = request.RequestID
+			}
+			planMode, err := execCtx.Store.SetPlanModePendingRequest(execCtx.SessionID, request, session.PlanModeSourceTool)
+			if err != nil {
+				return errorResult("request_user_input", err), nil
+			}
+			state, stateErr := execCtx.Store.LoadState(execCtx.SessionID)
+			if stateErr == nil {
+				state.Status = session.StatusAwaitingInput
+				state.Phase = "plan_input"
+				_ = execCtx.Store.SaveState(execCtx.SessionID, state)
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("planmode.input_requested", map[string]any{
+					"plan_mode_id": planMode.PlanModeID,
+					"request_id":   request.RequestID,
+					"questions":    len(request.Questions),
+				})
+			}
+			answers, err := execCtx.PlanInputResponder.RequestPlanInput(ctx, execCtx.SessionID, request)
+			if err != nil {
+				if errors.Is(err, ErrPlanInputCancelled) {
+					planMode, cancelErr := execCtx.Store.CancelPlanMode(execCtx.SessionID, session.PlanModeSourceTool)
+					if cancelErr != nil {
+						return errorResult("request_user_input", cancelErr), nil
+					}
+					if execCtx.Emit != nil {
+						execCtx.Emit("planmode.input_cancelled", map[string]any{
+							"plan_mode_id": planMode.PlanModeID,
+							"request_id":   request.RequestID,
+						})
+						execCtx.Emit("planmode.cancelled", map[string]any{
+							"plan_mode_id": planMode.PlanModeID,
+							"request_id":   request.RequestID,
+						})
+					}
+					return session.ToolResult{
+						Name:          "request_user_input",
+						LLMOutput:     "Error: Plan Mode input was cancelled by the user.",
+						DisplayOutput: "Error: Plan Mode input was cancelled by the user.",
+						IsError:       true,
+						Metadata: map[string]any{
+							"planmode":          true,
+							"planmode_terminal": "plan_cancelled",
+							"request_id":        request.RequestID,
+							"plan_mode_id":      planMode.PlanModeID,
+						},
+					}, nil
+				}
+				return errorResult("request_user_input", err), nil
+			}
+			planMode, answered, err := execCtx.Store.AnswerPlanModeInput(execCtx.SessionID, request.RequestID, session.PlanModeSourceTool, answers)
+			if err != nil {
+				return errorResult("request_user_input", err), nil
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("planmode.input_answered", map[string]any{
+					"plan_mode_id": planMode.PlanModeID,
+					"request_id":   answered.RequestID,
+					"answers":      answers,
+				})
+			}
+			data, _ := json.Marshal(map[string]any{"answers": answers})
+			return session.ToolResult{
+				Name:          "request_user_input",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"planmode":   true,
+					"request_id": answered.RequestID,
 				},
 			}, nil
 		},

@@ -182,6 +182,347 @@ func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
 	}
 }
 
+func TestServicePlanModeGetAndParentQueueGate(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_planmode_api",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		RootSessionID:    "session_planmode_api",
+	}
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planMode, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan before queue", Source: session.PlanModeSourceWeb})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var loaded session.PlanModeState
+	resp, err := http.Get(ts.URL + "/api/sessions/" + meta.ID + "/planmode")
+	if err != nil {
+		t.Fatalf("get planmode: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected get status: %d body=%s", resp.StatusCode, string(body))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&loaded); err != nil {
+		t.Fatalf("decode planmode: %v", err)
+	}
+	if loaded.PlanModeID != planMode.PlanModeID || loaded.Status != session.PlanModeStatusPlanning {
+		t.Fatalf("unexpected planmode response: %#v", loaded)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/queue/jobs", map[string]any{
+		"parent_session_id": meta.ID,
+		"prompt":            "child work",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "plan mode is pending") {
+		t.Fatalf("expected pending plan mode queue error, got %#v", errResp)
+	}
+}
+
+func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
+	server := newSubmitPlanServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var result LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt": "Plan this change before editing.",
+		"mode":   "exec",
+		"plan_mode": map[string]any{
+			"enabled": true,
+		},
+	}, http.StatusAccepted, &result)
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(result.SessionID)
+		return err == nil && state.Status == session.StatusAwaitingInput && state.Phase == "plan_approval"
+	}, func() string {
+		state, err := svc.store.LoadState(result.SessionID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+	planMode, err := svc.store.LoadPlanMode(result.SessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingApproval || planMode.PlanVersion != 1 || !strings.Contains(planMode.PlanMarkdown, "Plan Mode test plan") {
+		t.Fatalf("expected submitted plan mode, got %#v", planMode)
+	}
+	detail, err := svc.sessionDetail(result.SessionID, 20)
+	if err != nil {
+		t.Fatalf("session detail: %v", err)
+	}
+	if detail.PlanMode == nil || detail.PlanMode.PlanModeID != planMode.PlanModeID {
+		t.Fatalf("expected detail plan mode snapshot, got %#v", detail.PlanMode)
+	}
+}
+
+func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
+	server := newFinishServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_planmode_approve")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Approve plan", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Approved plan should execute.",
+		PlanMarkdown: "# Plan\n\nExecute after approval.",
+		Verification: []string{"go test ./internal/webconsole"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var launch LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusAccepted, &launch)
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(meta.ID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string {
+		state, err := svc.store.LoadState(meta.ID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+	messages, err := svc.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var foundApproval bool
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "planmode_approval" && strings.Contains(msg.Text, "Implement the approved Plan Mode plan") {
+			foundApproval = true
+		}
+	}
+	if !foundApproval {
+		t.Fatalf("expected replayable planmode approval user message, got %#v", messages)
+	}
+}
+
+func TestServicePlanModeReviseInputAndCancelControls(t *testing.T) {
+	server := newSubmitPlanServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	revisionMeta := testSessionMetadata(t, "session_planmode_revise")
+	revisionMeta.Mode = session.ModeExec
+	revisionMeta.CompletionPolicy = session.CompletionPolicyAutonomous
+	revisionMeta.RootSessionID = revisionMeta.ID
+	if err := svc.store.Create(revisionMeta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create revision session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(revisionMeta.ID, session.PlanModeDraft{Enabled: true, Objective: "Revise plan", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create revision plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(revisionMeta.ID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Needs revision.",
+		PlanMarkdown: "# Plan\n\nNeeds revision.",
+		Verification: []string{"go test ./internal/webconsole"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit revision plan: %v", err)
+	}
+	var revisionLaunch LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/"+revisionMeta.ID+"/planmode/revise", map[string]any{"message": "Use a narrower implementation."}, http.StatusAccepted, &revisionLaunch)
+	waitFor(t, 4*time.Second, func() bool {
+		planMode, err := svc.store.LoadPlanMode(revisionMeta.ID)
+		return err == nil && planMode.Status == session.PlanModeStatusAwaitingApproval && planMode.PlanVersion >= 2
+	}, func() string {
+		planMode, err := svc.store.LoadPlanMode(revisionMeta.ID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(planMode)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+	messages, err := svc.store.LoadMessages(revisionMeta.ID)
+	if err != nil {
+		t.Fatalf("load revision messages: %v", err)
+	}
+	var foundRevision bool
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "planmode_revision" && strings.Contains(msg.Text, "narrower") {
+			foundRevision = true
+		}
+	}
+	if !foundRevision {
+		t.Fatalf("expected plan revision user message, got %#v", messages)
+	}
+
+	inputMeta := testSessionMetadata(t, "session_planmode_input")
+	inputMeta.Mode = session.ModeExec
+	inputMeta.CompletionPolicy = session.CompletionPolicyAutonomous
+	inputMeta.RootSessionID = inputMeta.ID
+	if err := svc.store.Create(inputMeta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create input session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(inputMeta.ID, session.PlanModeDraft{Enabled: true, Objective: "Answer plan input", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create input plan mode: %v", err)
+	}
+	inputRequest := session.PlanModeInputRequest{
+		RequestID:  "pmq_input",
+		ToolCallID: "call_input",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := svc.store.SetPlanModePendingRequest(inputMeta.ID, inputRequest, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set input pending request: %v", err)
+	}
+	var inputLaunch LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/"+inputMeta.ID+"/planmode/input", map[string]any{
+		"request_id": inputRequest.RequestID,
+		"answers": []map[string]any{{
+			"question_id": "scope_choice",
+			"label":       "Narrow (Recommended)",
+			"value":       "Narrow (Recommended)",
+		}},
+	}, http.StatusAccepted, &inputLaunch)
+	waitFor(t, 4*time.Second, func() bool {
+		planMode, err := svc.store.LoadPlanMode(inputMeta.ID)
+		return err == nil && planMode.Status == session.PlanModeStatusAwaitingApproval
+	}, func() string {
+		planMode, err := svc.store.LoadPlanMode(inputMeta.ID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(planMode)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+	inputMessages, err := svc.store.LoadMessages(inputMeta.ID)
+	if err != nil {
+		t.Fatalf("load input messages: %v", err)
+	}
+	var foundInputResult bool
+	for _, msg := range inputMessages {
+		for _, result := range msg.ToolResults {
+			if result.ToolCallID == inputRequest.ToolCallID && result.Name == "request_user_input" {
+				foundInputResult = true
+			}
+		}
+	}
+	if !foundInputResult {
+		t.Fatalf("expected recovered request_user_input tool result, got %#v", inputMessages)
+	}
+
+	cancelMeta := testSessionMetadata(t, "session_planmode_cancel")
+	cancelMeta.Mode = session.ModeExec
+	cancelMeta.CompletionPolicy = session.CompletionPolicyAutonomous
+	cancelMeta.RootSessionID = cancelMeta.ID
+	if err := svc.store.Create(cancelMeta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create cancel session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(cancelMeta.ID, session.PlanModeDraft{Enabled: true, Objective: "Cancel plan input", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create cancel plan mode: %v", err)
+	}
+	cancelRequest := inputRequest
+	cancelRequest.RequestID = "pmq_cancel"
+	cancelRequest.ToolCallID = "call_cancel"
+	if _, err := svc.store.SetPlanModePendingRequest(cancelMeta.ID, cancelRequest, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set cancel pending request: %v", err)
+	}
+	postJSON(t, ts.URL+"/api/sessions/"+cancelMeta.ID+"/planmode/cancel", map[string]any{}, http.StatusOK, nil)
+	cancelled, err := svc.store.LoadPlanMode(cancelMeta.ID)
+	if err != nil {
+		t.Fatalf("load cancelled plan mode: %v", err)
+	}
+	if cancelled.Status != session.PlanModeStatusCancelled {
+		t.Fatalf("expected cancelled plan mode, got %#v", cancelled)
+	}
+	cancelMessages, err := svc.store.LoadMessages(cancelMeta.ID)
+	if err != nil {
+		t.Fatalf("load cancel messages: %v", err)
+	}
+	var foundCancelResult bool
+	for _, msg := range cancelMessages {
+		for _, result := range msg.ToolResults {
+			if result.ToolCallID == cancelRequest.ToolCallID && result.Name == "request_user_input" && result.IsError {
+				foundCancelResult = true
+			}
+		}
+	}
+	if !foundCancelResult {
+		t.Fatalf("expected cancellation tool result, got %#v", cancelMessages)
+	}
+}
+
 func TestServiceStartSessionReturnsSessionID(t *testing.T) {
 	server := newFinishServer()
 	defer server.Close()
@@ -906,6 +1247,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, "plan-toggle-btn") || !strings.Contains(indexBody, "<span>Plan</span>") {
+		t.Fatalf("expected shell to expose Plan Mode toggle beside Goal, got shell body: %s", indexBody)
+	}
 	if !strings.Contains(indexBody, "Background Jobs") || !strings.Contains(indexBody, "<span>Sessions</span>") || strings.Contains(indexBody, "<span>Queue</span>") || strings.Contains(indexBody, "<span>History</span>") {
 		t.Fatalf("expected shell navigation to use simplified Background Jobs and Sessions labels, got shell body: %s", indexBody)
 	}
@@ -936,12 +1280,18 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(apiBody, "class APIError") || !strings.Contains(apiBody, "function requestJSON") || !strings.Contains(apiBody, "function startSession") || !strings.Contains(apiBody, "function continueSession") || !strings.Contains(apiBody, "function steerSession") {
 		t.Fatalf("unexpected api.js body: %s", apiBody)
 	}
+	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
+		t.Fatalf("expected api.js to expose Plan Mode helpers and snake_case input payload, got api.js body: %s", apiBody)
+	}
 	if strings.Contains(apiBody, "unpkg.com") || strings.Contains(apiBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected api.js to avoid external dependencies, got api.js body: %s", apiBody)
 	}
 	eventsBody := checkBody(server.URL + "/events.js")
 	if !strings.Contains(eventsBody, "describeTimelineItem") || !strings.Contains(eventsBody, "describeEventDescriptor") || !strings.Contains(eventsBody, "shouldRefreshAfterEvent") || !strings.Contains(eventsBody, "Background results accepted") {
 		t.Fatalf("unexpected events.js body: %s", eventsBody)
+	}
+	if !strings.Contains(eventsBody, "planmode.plan_submitted") || !strings.Contains(eventsBody, "planmode.input_requested") || !strings.Contains(eventsBody, "planmode.execution_started") {
+		t.Fatalf("expected events.js to describe Plan Mode timeline events, got events.js body: %s", eventsBody)
 	}
 	settingsBody := checkBody(server.URL + "/settings-view.js")
 	if !strings.Contains(settingsBody, "renderSettings") || !strings.Contains(settingsBody, "saveConfig") || !strings.Contains(settingsBody, "testConfig") || !strings.Contains(settingsBody, "settings-provider") || !strings.Contains(settingsBody, "settings-reasoning-mode") || !strings.Contains(settingsBody, "settings-test-btn") {
@@ -958,6 +1308,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
 		t.Fatalf("unexpected session-view.js body: %s", sessionBody)
 	}
+	if !strings.Contains(sessionBody, "renderPlanPanel") || !strings.Contains(sessionBody, "renderPlanInputRequest") || !strings.Contains(sessionBody, "data-plan-action=\"approve\"") || !strings.Contains(sessionBody, "data-plan-input-action=\"answer\"") {
+		t.Fatalf("expected session-view.js to render Plan Mode inspector and pending input controls, got session-view.js body: %s", sessionBody)
+	}
 	if !strings.Contains(sessionBody, "renderSessionStopButton") || !strings.Contains(sessionBody, "data-stop-session-id") {
 		t.Fatalf("expected session and sub-session cards to expose inline stop controls, got session-view.js body: %s", sessionBody)
 	}
@@ -971,6 +1324,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	jsBody := checkBody(server.URL + "/app.js")
 	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "renderQueueView") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "togglePlanMode") || !strings.Contains(jsBody, "collectPlanModeDraft") || !strings.Contains(jsBody, "handlePlanModeAction") || !strings.Contains(jsBody, "handlePlanInputAction") {
+		t.Fatalf("expected app.js to wire Plan Mode toggle and controls, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "renderOverviewView") || strings.Contains(jsBody, "data-worker-scale") || strings.Contains(jsBody, "Worker Pool") {
 		t.Fatalf("expected default UI to hide overview and worker-pool controls, got app.js body: %s", jsBody)
@@ -2929,6 +3285,20 @@ func newFinishServer() *httptest.Server {
 			"output":[
 				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},
 				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+}
+
+func newSubmitPlanServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_plan_1",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_submit_plan_1","name":"submit_plan","arguments":"{\"title\":\"Plan Mode test plan\",\"summary\":\"Submit a plan for approval.\",\"plan_markdown\":\"# Plan Mode test plan\\n\\n## Summary\\n\\nSubmit a plan for approval.\\n\\n## Verification\\n\\n- go test ./internal/webconsole\",\"verification\":[\"go test ./internal/webconsole\"],\"assumptions\":[\"service test\"],\"risks\":[\"none\"]}"}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))

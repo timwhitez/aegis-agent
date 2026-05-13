@@ -80,6 +80,9 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	if strings.TrimSpace(req.Prompt) == "" {
 		return tools.AgentSpawnResult{}, errors.New("prompt is required")
 	}
+	if err := r.rejectParentLinkedActionDuringPendingPlanMode(req.ParentSessionID, "agent_spawn"); err != nil {
+		return tools.AgentSpawnResult{}, err
+	}
 	agentRole, err := normalizeAgentRole(req.AgentRole, req.AgentName)
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
@@ -256,6 +259,9 @@ type QueueSubmitRequest struct {
 func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session.QueueJob, error) {
 	if strings.TrimSpace(req.Prompt) == "" {
 		return session.QueueJob{}, errors.New("prompt is required")
+	}
+	if err := r.rejectParentLinkedActionDuringPendingPlanMode(req.ParentSessionID, "queue submission"); err != nil {
+		return session.QueueJob{}, err
 	}
 	agentRole, err := normalizeAgentRole(req.AgentRole, req.AgentName)
 	if err != nil {

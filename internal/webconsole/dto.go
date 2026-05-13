@@ -10,17 +10,18 @@ const (
 )
 
 type StartSessionRequest struct {
-	Prompt         string            `json:"prompt"`
-	AgentName      string            `json:"agent_name"`
-	AgentRole      string            `json:"agent_role"`
-	Provider       string            `json:"provider"`
-	Model          string            `json:"model"`
-	Workdir        string            `json:"workdir"`
-	Mode           string            `json:"mode"`
-	SystemOverride string            `json:"system"`
-	IsolationMode  string            `json:"isolation_mode"`
-	IsolationRoot  string            `json:"isolation_root"`
-	Goal           *GoalDraftRequest `json:"goal,omitempty"`
+	Prompt         string                `json:"prompt"`
+	AgentName      string                `json:"agent_name"`
+	AgentRole      string                `json:"agent_role"`
+	Provider       string                `json:"provider"`
+	Model          string                `json:"model"`
+	Workdir        string                `json:"workdir"`
+	Mode           string                `json:"mode"`
+	SystemOverride string                `json:"system"`
+	IsolationMode  string                `json:"isolation_mode"`
+	IsolationRoot  string                `json:"isolation_root"`
+	Goal           *GoalDraftRequest     `json:"goal,omitempty"`
+	PlanMode       *PlanModeDraftRequest `json:"plan_mode,omitempty"`
 }
 
 type GoalDraftRequest struct {
@@ -38,6 +39,20 @@ type GoalDraftRequest struct {
 	Milestones                []string `json:"milestones,omitempty"`
 	AskBeforeLargeChanges     bool     `json:"ask_before_large_changes,omitempty"`
 	AskBeforeDependencyChange bool     `json:"ask_before_dependency_change,omitempty"`
+}
+
+type PlanModeDraftRequest struct {
+	Enabled   bool   `json:"enabled"`
+	Objective string `json:"objective,omitempty"`
+}
+
+type PlanModeReviseRequest struct {
+	Message string `json:"message"`
+}
+
+type PlanModeInputRequest struct {
+	RequestID string                        `json:"request_id,omitempty"`
+	Answers   []session.PlanModeInputAnswer `json:"answers"`
 }
 
 type GoalPatchRequest struct {
@@ -60,10 +75,11 @@ type MissionPlanPatchRequest struct {
 }
 
 type ContinueSessionRequest struct {
-	Message        string `json:"message"`
-	Provider       string `json:"provider"`
-	Model          string `json:"model"`
-	SystemOverride string `json:"system"`
+	Message        string                `json:"message"`
+	Provider       string                `json:"provider"`
+	Model          string                `json:"model"`
+	SystemOverride string                `json:"system"`
+	PlanMode       *PlanModeDraftRequest `json:"plan_mode,omitempty"`
 }
 
 type SteerSessionRequest struct {

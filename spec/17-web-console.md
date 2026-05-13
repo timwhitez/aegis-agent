@@ -14,6 +14,7 @@ Web console 解决三类问题：
 
 - 可以创建新 session
 - 可以在创建 session 时通过一个 optional Goal 开关附带 prompt-derived goal
+- 可以在创建或继续 session 时通过 Plan 开关进入 Plan Mode，并在 inspector 中审批、修订、取消或回答规划问题
 - 可以对运行中的 session 追加 steer
 - 可以对暂停或等待输入的 session 执行 continue
 - 可以提交 queue job
@@ -109,6 +110,7 @@ Session 工作区是新用户的默认落点，展示：
 
 - 空状态说明：从输入框开始一个 durable session
 - 输入区提供一个简单 Goal 开关；普通 prompt 不受影响，选中后用户仍只写 prompt，后端用 prompt 作为 objective，agent 在运行中自行拆分 criteria、validation、features / milestones
+- 输入区提供一个简单 Plan 开关；选中后后端创建 `planmode.json`，规划阶段只允许 read/search、`request_user_input` 和 `submit_plan`，不把普通 prompt 文案自动解释为硬 Plan Mode
 - 最近 session rail：只显示可直接打开的 session 摘要
 - 中央执行流：消息、工具调用、运行态和错误都在同一条 session timeline 中出现
 - 右侧 tracker：Summary / Goal / Tasks / Background / Timeline 按当前 session 聚焦展示
@@ -200,6 +202,22 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 - complete 是用户控制动作；模型完成目标仍必须通过 `update_goal(status="complete")` 工具留下完成审计路径
 - Goal plan 展示不能暗示 runtime 会自动拆 DAG 或强制 child agent；child / queue 使用仍由模型或用户显式决定
 - features / milestones 可展示已存在的 `task_ids`、`child_session_ids`、`queue_job_ids`，其中 `create_tasks_from_plan` 只作为高级显式开关创建 durable task，不自动 spawn child、不提交 queue job、不生成固定 DAG
+
+#### Plan Mode
+
+展示：
+
+- objective、status、plan version、approved version
+- `request_user_input` pending questions，以及后端自动添加的 free-form Other 入口
+- submitted plan summary、assumptions、risks、verification 和完整 Markdown plan
+- 用户控制动作：Approve & Run、Ask for Changes、Cancel
+
+约束：
+
+- WebConsole 只读写 `planmode.json`、`artifacts/planmode-history.jsonl` 和 `artifacts/planmode-plan.md`，不维护第二套 Plan 状态
+- Approve & Run 必须走 runtime continue path，追加 `meta.source=planmode_approval` 的 user message 后恢复普通执行
+- Ask for Changes 只是 plan revision user message；不会执行 plan，也不会变成 Todo/Task 写入
+- Pending Plan Mode 下，带当前 session `parent_session_id` 的 Web queue submit / delegate 类控制面必须被拒绝；无 parent 的独立 queue job 不受影响
 
 ### 4.5 右侧动作区
 
@@ -392,6 +410,7 @@ Settings API：
 - active handle status（是否被当前 server 托管）
 - `active_handle_owner`：区分 `current_process`、`running_not_owned`、`settled`，并暴露最近的 `process_start_id`、`pid`、`started_at`、`released_at` 线索
 - `goal?`：当前 `goal.json` snapshot，缺失时为空
+- `plan_mode?`：当前 `planmode.json` snapshot，缺失时为空
 
 ### 7.5 `POST /api/sessions/start`
 
@@ -411,6 +430,10 @@ Settings API：
   - `enabled`
   - Web 默认只发送 `enabled:true`；后端把 prompt 作为 objective，并默认使用统一 Goal 模式
   - REST/CLI 高级调用仍可传 `objective`、criteria、validation 或内部计划字段用于自动化和兼容
+- `plan_mode?`
+  - `enabled`
+  - `objective?`
+  - Web 默认只发送 `enabled:true`；后端把 prompt 作为 Plan Mode objective
 
 行为：
 
@@ -426,11 +449,13 @@ Settings API：
 - `provider?`
 - `model?`
 - `system?`
+- `plan_mode?`：可在 resumable session 上显式进入新一轮 Plan Mode
 
 行为：
 
 - 异步恢复该 session
 - 立即返回 `202`
+- 若当前 `planmode.status=awaiting_approval` 且传入普通 `message`，后端将其作为 plan revision user message，而不是执行计划
 
 ### 7.7 `POST /api/sessions/{id}/steer`
 
@@ -507,6 +532,30 @@ Settings API：
 
 - 更新 goal validation plan 或内部 validation contract
 
+### 7.13 Plan Mode APIs
+
+`GET /api/sessions/{id}/planmode`
+
+- 返回当前 Plan Mode snapshot；不存在时返回 404
+
+`POST /api/sessions/{id}/planmode/approve`
+
+- 批准 latest plan version，并通过 runtime continue path 追加 `planmode_approval` user message 后开始执行
+
+`POST /api/sessions/{id}/planmode/revise`
+
+- 输入 `{ "message": "..." }`
+- 把当前 awaiting approval plan 退回 planning，并将 message 作为 `planmode_revision` user fact 追加到 session
+
+`POST /api/sessions/{id}/planmode/cancel`
+
+- 取消 pending Plan Mode；如果正在等待 active `request_user_input`，先唤醒 active runner 写入取消 tool result；如果 active handle 已丢失，则由 continue path 根据 pending `tool_call_id` 补偿 tool result
+
+`POST /api/sessions/{id}/planmode/input`
+
+- 输入 `{ "request_id": "...", "answers": [...] }`
+- active runner 存在时直接投递回答；active handle 丢失时先 append 对应 `tool_call_id` 的 tool result，再恢复 planning turn
+
 `GET /api/config` / `POST /api/config`
 
 - Settings 暴露可折叠的 Role Provider Overrides，用于 `planner`、`generator`、`evaluator` 三类 role hint 的 provider/profile、API provider、base URL、model 默认值
@@ -514,7 +563,7 @@ Settings API：
 - role override 的每个字段都可留空；空字段继承默认 provider、parent session 或所选 provider profile，显式启动/委派请求中的 provider/model 覆盖 Settings 默认值
 - 该配置只影响带 role hint 的 session / child / queue provider 选择，不把 Goal/Mission 改造成固定 orchestrator / worker / validator runner
 
-### 7.13 `GET /api/queue/jobs`
+### 7.14 `GET /api/queue/jobs`
 
 参数：
 
@@ -522,11 +571,11 @@ Settings API：
 
 返回 queue jobs。
 
-### 7.14 `GET /api/queue/jobs/{id}`
+### 7.15 `GET /api/queue/jobs/{id}`
 
 返回单个 job。
 
-### 7.15 `POST /api/queue/jobs`
+### 7.16 `POST /api/queue/jobs`
 
 输入：
 
@@ -549,7 +598,7 @@ Settings API：
 - `mode=full-auto` 作为兼容别名按 `exec` 处理
 - `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 
-### 7.14 `GET /api/workers`
+### 7.17 `GET /api/workers`
 
 返回：
 
@@ -558,7 +607,7 @@ Settings API：
 - poll interval
 - last processed jobs
 
-### 7.15 `POST /api/workers`
+### 7.18 `POST /api/workers`
 
 输入：
 

@@ -177,6 +177,7 @@ type LongRunCheckpoint struct {
 	RootSessionID            string             `json:"root_session_id,omitempty"`
 	ContractSnapshot         *SessionContract   `json:"contract_snapshot,omitempty"`
 	GoalSnapshot             *SessionGoal       `json:"goal_snapshot,omitempty"`
+	PlanModeSnapshot         *PlanModeState     `json:"plan_mode_snapshot,omitempty"`
 	TodoSummary              []TodoItem         `json:"todo_summary,omitempty"`
 	TaskSummary              map[string]int     `json:"task_summary,omitempty"`
 	RequiredArtifactStatus   []RequiredArtifact `json:"required_artifact_status,omitempty"`
@@ -357,6 +358,9 @@ type SessionSummary struct {
 	GoalStatus      string `json:"goal_status,omitempty"`
 	GoalMode        string `json:"goal_mode,omitempty"`
 	GoalObjective   string `json:"goal_objective,omitempty"`
+	PlanModeStatus  string `json:"plan_mode_status,omitempty"`
+	PlanModeVersion int    `json:"plan_mode_version,omitempty"`
+	PlanModeSummary string `json:"plan_mode_summary,omitempty"`
 }
 
 type TaskBoard struct {

@@ -1,0 +1,143 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/provider"
+	"go-cli-agent/internal/session"
+	"go-cli-agent/internal/tools"
+)
+
+func TestProviderToolsExposePlanModeToolsOnlyWhilePending(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	store := session.NewStore(cfg.Session.Dir)
+	registry, err := tools.NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	defaultTools := providerToolsForPlanMode(registry, nil)
+	if hasProviderTool(defaultTools, "submit_plan") || hasProviderTool(defaultTools, "request_user_input") {
+		t.Fatalf("plan-only tools must not be exposed in default mode: %#v", defaultTools)
+	}
+	pending := &session.PlanModeState{Status: session.PlanModeStatusPlanning}
+	planTools := providerToolsForPlanMode(registry, pending)
+	for _, name := range []string{"read_file", "grep", "get_plan_mode", "request_user_input", "submit_plan"} {
+		if !hasProviderTool(planTools, name) {
+			t.Fatalf("expected %s in Plan Mode tools: %#v", name, planTools)
+		}
+	}
+	for _, name := range []string{"shell", "write_file", "todo_write", "agent_spawn", "finish"} {
+		if hasProviderTool(planTools, name) {
+			t.Fatalf("did not expect %s in Plan Mode tools: %#v", name, planTools)
+		}
+	}
+}
+
+func TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Plan this change before editing.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if _, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan this change"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if hasProviderTool(req.Tools, "write_file") {
+			t.Fatalf("write_file leaked into planning tools: %#v", req.Tools)
+		}
+		if !hasProviderTool(req.Tools, "submit_plan") {
+			t.Fatalf("submit_plan missing from planning tools: %#v", req.Tools)
+		}
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:   "call_submit",
+					Name: "submit_plan",
+					Arguments: json.RawMessage(`{
+						"title":"Plan",
+						"summary":"Add Plan Mode safely.",
+						"plan_markdown":"# Summary\n\nAdd Plan Mode safely.\n\n# Verification\n\nRun tests.",
+						"verification":["go test ./internal/runtime"]
+					}`),
+				},
+				{ID: "call_write", Name: "write_file", Arguments: json.RawMessage(`{"path":"x.txt","content":"no"}`)},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting input after submit_plan, got %#v", result)
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.Phase != "plan_approval" {
+		t.Fatalf("expected plan_approval phase, got %#v", loadedState)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "tool" || len(last.ToolResults) != 2 {
+		t.Fatalf("expected submit_plan plus synthetic later result, got %#v", last)
+	}
+	if !strings.Contains(last.ToolResults[1].LLMOutput, "submit_plan ended") {
+		t.Fatalf("expected synthetic result for later tool call, got %#v", last.ToolResults[1])
+	}
+	planMode, err := engine.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingApproval || planMode.PlanVersion != 1 {
+		t.Fatalf("unexpected submitted plan mode: %#v", planMode)
+	}
+}
+
+func TestParentLinkedQueueBlockedDuringPendingPlanMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	parentID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion: 1,
+		ID:            parentID,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:       t.TempDir(),
+		Mode:          session.ModeExec,
+		Provider:      "fake",
+		Model:         "fake",
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(parentID, session.PlanModeDraft{Enabled: true, Objective: "Plan before child work"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{ParentSessionID: parentID, Prompt: "child task"}); err == nil || !strings.Contains(err.Error(), "plan mode is pending") {
+		t.Fatalf("expected parent-linked queue rejection, got %v", err)
+	}
+	if _, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{Prompt: "independent task"}); err != nil {
+		t.Fatalf("independent queue job should not be blocked: %v", err)
+	}
+}
+
+func hasProviderTool(tools []provider.ToolSchema, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}

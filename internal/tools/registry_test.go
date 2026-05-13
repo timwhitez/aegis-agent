@@ -16,6 +16,14 @@ import (
 	"go-cli-agent/internal/skills"
 )
 
+type failingPlanInputResponder struct {
+	err error
+}
+
+func (f failingPlanInputResponder) RequestPlanInput(context.Context, string, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
+	return nil, f.err
+}
+
 func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
@@ -145,6 +153,78 @@ func TestTodoAndTaskToolsEmitStructuredEvents(t *testing.T) {
 		if eventTypes[i] != want {
 			t.Fatalf("expected event %q at index %d, got %#v", want, i, eventTypes)
 		}
+	}
+}
+
+func TestRequestUserInputResponderErrorKeepsRecoverablePendingRequest(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Resolve one planning decision"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID:          meta.ID,
+		ToolCallID:         "call_plan_input",
+		Workdir:            meta.Workdir,
+		Store:              store,
+		Config:             cfg,
+		PlanInputResponder: failingPlanInputResponder{err: errors.New("web input handle lost")},
+	}
+	result, err := registry.Execute(context.Background(), "request_user_input", execCtx, json.RawMessage(`{
+		"questions":[{
+			"id":"scope_choice",
+			"header":"Scope",
+			"question":"Which scope should the plan use?",
+			"options":[
+				{"label":"Narrow (Recommended)","description":"Keep the implementation focused."},
+				{"label":"Broad","description":"Include adjacent cleanup."}
+			]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("request_user_input execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "web input handle lost") {
+		t.Fatalf("expected responder error tool result, got %#v", result)
+	}
+	planMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil {
+		t.Fatalf("expected recoverable pending request to remain, got %#v", planMode)
+	}
+	if planMode.PendingRequest.ToolCallID != "call_plan_input" {
+		t.Fatalf("expected persisted tool call id, got %#v", planMode.PendingRequest)
+	}
+	loadedState, err := store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.Status != session.StatusAwaitingInput || loadedState.Phase != "plan_input" {
+		t.Fatalf("expected plan input awaiting state, got %#v", loadedState)
 	}
 }
 

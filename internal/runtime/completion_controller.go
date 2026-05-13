@@ -55,6 +55,9 @@ func (c *CompletionController) EvaluateToolCall(messages []session.Message, tool
 	if kind, text := toolGuard(c.workdir, messages, toolName, rawArgs, c.yolo); text != "" {
 		return c.block(kind, text, map[string]any{"source": "tool_guard", "tool_name": toolName})
 	}
+	if kind, text := c.planModeGate(toolName); text != "" {
+		return c.block(kind, text, map[string]any{"source": "plan_mode", "tool_name": toolName})
+	}
 	if kind, text := c.requiredArtifactGate(toolName); text != "" {
 		return c.block(kind, text, map[string]any{"source": "artifact_tracker", "tool_name": toolName})
 	}
@@ -65,6 +68,14 @@ func (c *CompletionController) EvaluateToolCall(messages []session.Message, tool
 		return c.block(kind, text, map[string]any{"source": "goal", "tool_name": toolName})
 	}
 	return GateDecision{Status: GateAllow}
+}
+
+func (c *CompletionController) planModeGate(toolName string) (string, string) {
+	planMode, err := c.store.LoadPlanMode(c.sessionID)
+	if err != nil || planMode.PlanModeID == "" {
+		return "", ""
+	}
+	return planModeToolGate(planMode, toolName)
 }
 
 func (c *CompletionController) MarkAllowed(toolName string) {

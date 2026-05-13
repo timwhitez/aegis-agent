@@ -74,7 +74,8 @@ const state = {
   loadingEarlier: false,
   loadedAllEarlierMessages: false,
   preserveScrollAfterRender: null,
-  goalEnabled: false
+  goalEnabled: false,
+  planModeEnabled: false
 };
 
 const nodes = {
@@ -98,6 +99,7 @@ const nodes = {
   todoFloatPanel: document.getElementById('todo-float-panel'),
   inputContainer: document.getElementById('input-container'),
   goalToggleBtn: document.getElementById('goal-toggle-btn'),
+  planToggleBtn: document.getElementById('plan-toggle-btn'),
   goalComposerPanel: document.getElementById('goal-composer-panel'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
@@ -372,6 +374,7 @@ function setupEventListeners() {
   nodes.interruptSessionBtn?.addEventListener('click', requestInterrupt);
   nodes.interruptToggleBtn?.addEventListener('click', toggleInterruptArm);
   nodes.goalToggleBtn?.addEventListener('click', toggleGoalMode);
+  nodes.planToggleBtn?.addEventListener('click', togglePlanMode);
   nodes.skillUploadBtn?.addEventListener('click', () => nodes.skillUpload?.click());
   nodes.newSessionBtn?.addEventListener('click', () => {
     const wasGenerating = state.isGenerating;
@@ -579,6 +582,18 @@ function setupEventListeners() {
     const goalAction = event.target.closest('[data-goal-action]');
     if (goalAction) {
       await handleGoalAction(goalAction);
+      return;
+    }
+
+    const planAction = event.target.closest('[data-plan-action]');
+    if (planAction) {
+      await handlePlanModeAction(planAction);
+      return;
+    }
+
+    const planInputAction = event.target.closest('[data-plan-input-action]');
+    if (planInputAction) {
+      await handlePlanInputAction(planInputAction);
       return;
     }
 
@@ -830,13 +845,33 @@ async function sendMessage() {
   const currentStatus = state.sessionDetail?.state?.status || '';
   if (hasDurableSession() && ['awaiting_input', 'paused', 'failed'].includes(currentStatus)) {
     try {
-      await requestContinueSession(state.sessionId, text, { silentToast: true });
+      const planMode = currentPlanMode();
+      if (planMode?.status === 'awaiting_approval') {
+        await revisePlanMode(state.sessionId, text);
+        showToast('Plan revision sent.', 'success');
+      } else {
+        const planDraft = collectPlanModeDraft(text);
+        if (planDraft?.error) {
+          removeOptimisticMessage(optimisticID);
+          showToast(planDraft.error, 'error');
+          updateUI();
+          renderCurrentSession();
+          return;
+        }
+        await requestContinueSession(state.sessionId, text, {
+          silentToast: true,
+          planMode: planDraft || undefined
+        });
+        if (planDraft) {
+          state.planModeEnabled = false;
+        }
+        showToast(planDraft ? 'Plan Mode started.' : 'Session continued.', 'success');
+      }
       setGenerating(true, {
         title: 'Continuing session',
         copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
         tone: 'live'
       });
-      showToast('Session continued.', 'success');
       queueSessionRefresh(60);
       queueOverviewRefresh(220);
     } catch (err) {
@@ -857,13 +892,23 @@ async function sendMessage() {
       renderCurrentSession();
       return;
     }
+    const planDraft = collectPlanModeDraft(text);
+    if (planDraft?.error) {
+      removeOptimisticMessage(optimisticID);
+      showToast(planDraft.error, 'error');
+      updateUI();
+      renderCurrentSession();
+      return;
+    }
     try {
       const resp = await startSession({
         prompt: text,
         workdir: selectedWorkspaceWorkdir(),
-        goal: goalDraft || undefined
+        goal: goalDraft || undefined,
+        planMode: planDraft || undefined
       });
       state.goalEnabled = false;
+      state.planModeEnabled = false;
       adoptSession(resp.session_id, true);
       setGenerating(true, {
         title: 'Launching session',
@@ -989,7 +1034,7 @@ async function requestStopViaBestAvailablePath(sessionID) {
 
 async function requestContinueSession(sessionID, message = '', options = {}) {
   try {
-    await continueSession(sessionID, { message });
+    await continueSession(sessionID, { message, planMode: options.planMode });
     if (!options.silentToast) {
       showToast('Session continued.', 'success');
     }
@@ -1048,6 +1093,7 @@ function resetChatSession() {
   state.liveEvents = [];
   state.nextSendInterrupt = false;
   state.goalEnabled = false;
+  state.planModeEnabled = false;
   state.liveActivity = {
     title: 'Ready for a new session',
     copy: 'Send a prompt to create a durable session. Answers, tool calls, and running flow will appear here.',
@@ -1113,11 +1159,7 @@ function updateUI() {
   if (nodes.interruptSessionBtn) {
     nodes.interruptSessionBtn.disabled = !state.isGenerating || !hasDurableSession();
   }
-  nodes.chatInput.placeholder = state.isGenerating && hasDurableSession()
-    ? state.nextSendInterrupt
-      ? 'Send an interrupt steer message to the running session...'
-      : 'Send a steer message into the running session...'
-    : 'Ask anything...';
+  nodes.chatInput.placeholder = chatInputPlaceholder();
 
   nodes.inputStatusText.textContent = inputActionLabel();
   renderGoalComposer();
@@ -1129,11 +1171,37 @@ function updateUI() {
   nodes.connectionDot.className = state.isGenerating ? 'dot busy' : 'dot online';
 }
 
+function chatInputPlaceholder() {
+  const planMode = currentPlanMode();
+  if (state.isGenerating && hasDurableSession()) {
+    return state.nextSendInterrupt
+      ? 'Send an interrupt steer message to the running session...'
+      : 'Send a steer message into the running session...';
+  }
+  if (planMode?.status === 'awaiting_approval') {
+    return 'Ask for changes to the submitted plan...';
+  }
+  if (state.planModeEnabled) {
+    return 'Describe the objective to plan before execution...';
+  }
+  return 'Ask anything...';
+}
+
 function inputActionLabel() {
   if (!state.isConnected) {
     return 'Live event relay reconnecting; REST session actions remain available.';
   }
   const status = state.sessionDetail?.state?.status || '';
+  const planMode = currentPlanMode();
+  if (planMode?.status === 'awaiting_approval') {
+    return 'Plan Mode awaiting approval: next send requests changes; use Approve & Run to execute.';
+  }
+  if (planMode?.status === 'awaiting_user_input') {
+    return 'Plan Mode is waiting for your answer in the Plan inspector.';
+  }
+  if (state.planModeEnabled) {
+    return 'Plan Mode enabled: next send starts a planning gate before execution.';
+  }
   if (state.isGenerating && hasDurableSession()) {
     return state.nextSendInterrupt
       ? 'Interrupt armed: next send requests preemption, then merges your steer prompt.'
@@ -1153,6 +1221,14 @@ function canShowGoalComposer() {
   return !state.isGenerating && (!hasDurableSession() || status === 'completed');
 }
 
+function canShowPlanComposer() {
+  const status = state.sessionDetail?.state?.status || '';
+  const planMode = currentPlanMode();
+  return !state.isGenerating &&
+    !isPendingPlanMode(planMode?.status) &&
+    (!hasDurableSession() || ['completed', 'awaiting_input', 'paused', 'failed'].includes(status));
+}
+
 function toggleGoalMode() {
   if (!canShowGoalComposer()) {
     return;
@@ -1162,15 +1238,28 @@ function toggleGoalMode() {
   updateDynamicLayoutMetrics();
 }
 
-function renderGoalComposer() {
-  if (!nodes.goalToggleBtn || !nodes.goalComposerPanel) {
+function togglePlanMode() {
+  if (!canShowPlanComposer()) {
     return;
   }
-  const visible = canShowGoalComposer();
-  nodes.goalToggleBtn.hidden = !visible;
-  nodes.goalToggleBtn.classList.toggle('is-active', state.goalEnabled && visible);
-  nodes.goalToggleBtn.setAttribute('aria-pressed', state.goalEnabled && visible ? 'true' : 'false');
+  state.planModeEnabled = !state.planModeEnabled;
+  renderGoalComposer();
+  updateDynamicLayoutMetrics();
+}
+
+function renderGoalComposer() {
+  if (!nodes.goalToggleBtn || !nodes.planToggleBtn || !nodes.goalComposerPanel) {
+    return;
+  }
+  const goalVisible = canShowGoalComposer();
+  const planVisible = canShowPlanComposer();
+  nodes.goalToggleBtn.hidden = !goalVisible;
+  nodes.goalToggleBtn.classList.toggle('is-active', state.goalEnabled && goalVisible);
+  nodes.goalToggleBtn.setAttribute('aria-pressed', state.goalEnabled && goalVisible ? 'true' : 'false');
   nodes.goalToggleBtn.setAttribute('aria-expanded', 'false');
+  nodes.planToggleBtn.hidden = !planVisible;
+  nodes.planToggleBtn.classList.toggle('is-active', state.planModeEnabled && planVisible);
+  nodes.planToggleBtn.setAttribute('aria-pressed', state.planModeEnabled && planVisible ? 'true' : 'false');
   if (nodes.goalComposerPanel) {
     nodes.goalComposerPanel.hidden = true;
     nodes.goalComposerPanel.innerHTML = '';
@@ -1190,6 +1279,135 @@ function collectGoalDraft(promptText) {
     mode: 'goal',
     objective
   };
+}
+
+function collectPlanModeDraft(promptText) {
+  if (!state.planModeEnabled) {
+    return null;
+  }
+  const objective = String(promptText || '').trim();
+  if (!objective) {
+    return { error: 'Plan Mode objective is required.' };
+  }
+  return {
+    enabled: true,
+    objective
+  };
+}
+
+function currentPlanMode() {
+  return state.sessionDetail?.plan_mode || null;
+}
+
+function isPendingPlanMode(status) {
+  return ['planning', 'awaiting_user_input', 'awaiting_approval'].includes(status || '');
+}
+
+async function handlePlanModeAction(button) {
+  if (!hasDurableSession()) {
+    showToast('No durable session is loaded.', 'info');
+    return;
+  }
+  const action = button.getAttribute('data-plan-action');
+  button.disabled = true;
+  try {
+    if (action === 'approve') {
+      await approvePlanMode(state.sessionId);
+      setGenerating(true, {
+        title: 'Executing approved plan',
+        copy: 'The approved Plan Mode plan is now running as the next durable turn.',
+        tone: 'live'
+      });
+      showToast('Plan approved and execution started.', 'success');
+    } else if (action === 'cancel') {
+      await cancelPlanMode(state.sessionId);
+      showToast('Plan Mode cancelled.', 'success');
+    } else if (action === 'revise') {
+      nodes.chatInput?.focus();
+      showToast('Type the requested plan change and send it.', 'info');
+    }
+    queueSessionRefresh(80);
+    queueOverviewRefresh(180);
+  } catch (err) {
+    showToast(err.message || 'Plan Mode action failed.', 'error');
+  } finally {
+    if (document.body.contains(button)) {
+      button.disabled = false;
+    }
+    renderCurrentSession();
+    updateUI();
+  }
+}
+
+async function handlePlanInputAction(button) {
+  if (!hasDurableSession()) {
+    showToast('No durable session is loaded.', 'info');
+    return;
+  }
+  const requestID = button.getAttribute('data-request-id') || '';
+  const questionID = button.getAttribute('data-question-id') || '';
+  const label = button.getAttribute('data-label') || '';
+  const isOther = button.getAttribute('data-other') === '1';
+  let value = button.getAttribute('data-value') || label;
+  if (isOther) {
+    value = window.prompt('Enter a custom answer for this Plan Mode question:', '') || '';
+    if (!value.trim()) {
+      return;
+    }
+  }
+  const planMode = currentPlanMode();
+  const request = planMode?.pending_request;
+  if (!request || !requestID || request.request_id !== requestID) {
+    showToast('Plan input request is no longer pending.', 'error');
+    return;
+  }
+  const answers = collectPlanInputAnswers(request, {
+    question_id: questionID,
+    label,
+    value,
+    is_other: isOther
+  });
+  if (!answers.length) {
+    showToast('Choose an answer before submitting.', 'error');
+    return;
+  }
+  button.disabled = true;
+  try {
+    await answerPlanModeInput(state.sessionId, { requestID, answers });
+    showToast('Plan input answered.', 'success');
+    queueSessionRefresh(80);
+    queueOverviewRefresh(180);
+  } catch (err) {
+    showToast(err.message || 'Failed to answer Plan Mode input.', 'error');
+  } finally {
+    if (document.body.contains(button)) {
+      button.disabled = false;
+    }
+    renderCurrentSession();
+  }
+}
+
+function collectPlanInputAnswers(request, selected) {
+  const questions = maybeArray(request?.questions);
+  if (!questions.length || !selected?.question_id) {
+    return [];
+  }
+  return questions.map((question) => {
+    if (question.id === selected.question_id) {
+      return {
+        question_id: question.id,
+        label: selected.label,
+        value: selected.value,
+        is_other: selected.is_other
+      };
+    }
+    const first = maybeArray(question.options)[0] || {};
+    return {
+      question_id: question.id,
+      label: first.label || 'Default',
+      value: first.label || 'Default'
+    };
+  });
 }
 
 async function handleGoalAction(button) {

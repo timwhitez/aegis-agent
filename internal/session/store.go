@@ -606,6 +606,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			QueueJobID:      meta.QueueJobID,
 		}
 		s.populateGoalSummary(&summary)
+		s.populatePlanModeSummary(&summary)
 		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -657,6 +658,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			QueueJobID:      meta.QueueJobID,
 		}
 		s.populateGoalSummary(&summary)
+		s.populatePlanModeSummary(&summary)
 		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -682,6 +684,19 @@ func (s *Store) populateGoalSummary(summary *SessionSummary) {
 	summary.GoalStatus = goal.Status
 	summary.GoalMode = goal.Mode
 	summary.GoalObjective = goal.Objective
+}
+
+func (s *Store) populatePlanModeSummary(summary *SessionSummary) {
+	if summary == nil || strings.TrimSpace(summary.ID) == "" {
+		return
+	}
+	planMode, err := s.LoadPlanMode(summary.ID)
+	if err != nil || planMode.PlanModeID == "" {
+		return
+	}
+	summary.PlanModeStatus = planMode.Status
+	summary.PlanModeVersion = planMode.PlanVersion
+	summary.PlanModeSummary = planMode.Summary
 }
 
 func (s *Store) NextTaskID(sessionID string) (string, error) {

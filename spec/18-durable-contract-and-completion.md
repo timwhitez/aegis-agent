@@ -6,6 +6,7 @@ This spec defines the core hardening layer added after core v1 convergence:
 
 - session-scoped contract snapshots
 - session-scoped goal snapshots
+- session-scoped Plan Mode snapshots
 - required artifact tracking
 - centralized completion decisions
 - provider attempt ledger
@@ -44,6 +45,29 @@ The model-facing tools are intentionally narrow:
 - `update_goal` may only mark an existing goal `complete`
 
 Pause, resume, clear, and budget-limited transitions are user/system controlled through CLI, WebConsole, or runtime accounting. Budget limited means the model should wrap up progress, evidence, blockers, and remaining work; it is not completion.
+
+## 1.2 Session Plan Mode
+
+Each session may write:
+
+```text
+.go-cli-agent/sessions/<id>/planmode.json
+.go-cli-agent/sessions/<id>/artifacts/planmode-history.jsonl
+.go-cli-agent/sessions/<id>/artifacts/planmode-plan.md
+```
+
+The Plan Mode snapshot records:
+
+- objective and source
+- status: `planning`, `awaiting_user_input`, `awaiting_approval`, `approved`, `cancelled`, or `executing`
+- plan id/version and approved version
+- submitted Markdown plan, summary, assumptions, risks, and verification
+- pending `request_user_input` request, including `tool_call_id`
+- approval records
+
+Plan Mode is an execution gate, not a workflow engine. Pending Plan Mode suppresses mutating/execution tools through both provider schema filtering and `CompletionController`; it does not convert the plan into Todo/Task rows, does not force child agents, and does not replace Goal.
+
+Approval must leave a replayable fact: the runtime appends a user message with `meta.source=planmode_approval` before execution resumes. Answering or cancelling pending `request_user_input` must append the matching tool result using the stored `tool_call_id`.
 
 ## 2. Session Contract
 
@@ -97,9 +121,11 @@ The generic required-artifact gate is only active when the contract has explicit
 - required artifact baseline/touched/changed gate
 - parent coordination unresolved work gate
 - active goal completion audit gate
+- pending Plan Mode gate, before artifact/parent/goal completion gates
 
 The first migration is behavior-equivalent for existing guard kinds and messages. New generic artifact checks are limited to explicit required artifacts.
 When a current goal is `active`, `finish` is blocked until the model audits the objective, success criteria, and validation plan against concrete session evidence and calls `update_goal(status="complete")`. Paused or budget-limited goals may finish only as an explicit paused/wrap-up state; they must not be reported as complete unless the completion audit actually passed.
+When Plan Mode is pending, `finish` and all mutating tools are blocked until the user approves or cancels the plan. This gate intentionally runs before goal completion audit so an active goal cannot pull execution through an unapproved plan.
 
 Events:
 
@@ -148,6 +174,7 @@ It summarizes:
 - parent/root/queue relation
 - contract and gates
 - goal status, usage, criteria, validation, and internal plan status
+- plan mode status, objective, version, pending input, and plan summary
 - required artifacts
 - todo and task state
 - recent provider attempts
@@ -165,7 +192,7 @@ Large-project, delegated, child/queue, isolation, explicit-contract, multi-artif
 .go-cli-agent/sessions/<id>/checkpoints/longrun-latest.json
 ```
 
-The checkpoint is a resume index, not a replacement for messages/events/state. It records contract snapshot, goal snapshot, todo/task summary, artifact status, latest compaction artifact, provider/model/options, workdir/isolation, unresolved child/queue state, and resume hints.
+The checkpoint is a resume index, not a replacement for messages/events/state. It records contract snapshot, goal snapshot, plan mode snapshot, todo/task summary, artifact status, latest compaction artifact, provider/model/options, workdir/isolation, unresolved child/queue state, and resume hints.
 
 Normal `continue` still works without a checkpoint. When a checkpoint exists, `continue` may inject a harness resume note and emits visible checkpoint events rather than silently changing behavior.
 

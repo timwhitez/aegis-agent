@@ -153,6 +153,7 @@ type SessionDetailResponse struct {
 	Metadata                session.SessionMetadata          `json:"metadata"`
 	State                   session.State                    `json:"state"`
 	Goal                    *session.SessionGoal             `json:"goal,omitempty"`
+	PlanMode                *session.PlanModeState           `json:"plan_mode,omitempty"`
 	Contract                *session.SessionContract         `json:"contract,omitempty"`
 	RequiredArtifacts       []session.RequiredArtifact       `json:"required_artifacts,omitempty"`
 	ProviderAttempts        []session.ProviderAttempt        `json:"provider_attempts,omitempty"`
@@ -370,7 +371,7 @@ func (s *Service) meta() (MetaResponse, error) {
 		DefaultMode:              cfg.Runtime.Isolation.DefaultMode,
 		QueuePollMS:              cfg.Runtime.Queue.PollIntervalMS,
 		WorkerCount:              s.workers.Snapshot().DesiredCount,
-		Capabilities:             []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks", "goals", "missions"},
+		Capabilities:             []string{"start", "steer", "continue", "interrupt", "stop", "queue", "children", "tasks", "goals", "missions", "plan_mode"},
 		DefaultVendor:            cfg.DefaultProvider,
 		Providers:                providers,
 	}, nil
@@ -535,6 +536,37 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) != 2 {
+		if len(parts) == 3 && parts[1] == "planmode" {
+			switch parts[2] {
+			case "approve":
+				if r.Method != http.MethodPost {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handlePlanModeApprove(w, sessionID)
+			case "revise":
+				if r.Method != http.MethodPost {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handlePlanModeRevise(w, r, sessionID)
+			case "cancel":
+				if r.Method != http.MethodPost {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handlePlanModeCancel(w, sessionID)
+			case "input":
+				if r.Method != http.MethodPost {
+					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+					return
+				}
+				s.handlePlanModeInput(w, r, sessionID)
+			default:
+				writeError(w, http.StatusNotFound, errors.New("session route not found"))
+			}
+			return
+		}
 		if len(parts) == 3 && parts[1] == "goal" {
 			switch parts[2] {
 			case "complete":
@@ -591,6 +623,12 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "planmode":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		s.handlePlanModeGet(w, sessionID)
 	case "goal":
 		switch r.Method {
 		case http.MethodGet:
@@ -769,6 +807,10 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if goal, err := s.store.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
 		goalPtr = &goal
 	}
+	var planModePtr *session.PlanModeState
+	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.PlanModeID != "" {
+		planModePtr = &planMode
+	}
 	ownerEvents := eventsList
 	hasMoreMessages := limit > 0 && len(messages) > limit
 	messages = tailMessages(messages, limit)
@@ -797,6 +839,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		Metadata:                meta,
 		State:                   state,
 		Goal:                    goalPtr,
+		PlanMode:                planModePtr,
 		Contract:                contractPtr,
 		RequiredArtifacts:       requiredArtifacts,
 		ProviderAttempts:        providerAttempts,
@@ -1192,6 +1235,7 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	planModeDraft := planModeDraftFromWebRequest(req.PlanMode, req.Prompt)
 	resp, err := s.startSession(runtime.StartRequest{
 		Prompt:         req.Prompt,
 		AgentName:      req.AgentName,
@@ -1202,6 +1246,7 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		Mode:           req.Mode,
 		SystemOverride: req.SystemOverride,
 		Goal:           goalDraft,
+		PlanMode:       planModeDraft,
 		IsolationMode:  req.IsolationMode,
 		IsolationRoot:  req.IsolationRoot,
 	})
@@ -1335,10 +1380,173 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 			Provider:       req.Provider,
 			Model:          req.Model,
 			SystemOverride: req.SystemOverride,
+			PlanMode:       planModeDraftFromWebRequest(req.PlanMode, req.Message),
+			Source:         session.PlanModeSourceWeb,
 		})
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
 	}()
 	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+}
+
+func (s *Service) handlePlanModeGet(w http.ResponseWriter, sessionID string) {
+	planMode, err := s.store.LoadPlanMode(sessionID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, fs.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, planMode)
+}
+
+func (s *Service) handlePlanModeApprove(w http.ResponseWriter, sessionID string) {
+	if s.hasActiveHandle(sessionID) {
+		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
+		return
+	}
+	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+		SessionID:   sessionID,
+		ApprovePlan: true,
+		Source:      session.PlanModeSourceWeb,
+	}); err != nil {
+		writeError(w, planModeActionStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+}
+
+func (s *Service) handlePlanModeRevise(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req PlanModeReviseRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("revision message is required"))
+		return
+	}
+	if s.hasActiveHandle(sessionID) {
+		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
+		return
+	}
+	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+		SessionID: sessionID,
+		Message:   strings.TrimSpace(req.Message),
+		Source:    session.PlanModeSourceWeb,
+	}); err != nil {
+		writeError(w, planModeActionStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+}
+
+func (s *Service) handlePlanModeCancel(w http.ResponseWriter, sessionID string) {
+	if handle, ok := s.handleForSession(sessionID); ok {
+		planMode, err := s.store.LoadPlanMode(sessionID)
+		if err != nil {
+			writeError(w, planModeActionStatus(err), err)
+			return
+		}
+		if planMode.PendingRequest == nil {
+			writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
+			return
+		}
+		if !handle.runner.CancelActivePlanInput(sessionID, planMode.PendingRequest.RequestID) {
+			writeError(w, http.StatusConflict, errors.New("plan input request is not waiting in this web console"))
+			return
+		}
+		writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+		return
+	}
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	runner := runtime.NewRunner(cfg)
+	result, err := runner.Continue(context.Background(), runtime.ContinueRequest{
+		SessionID:  sessionID,
+		CancelPlan: true,
+		Source:     session.PlanModeSourceWeb,
+	})
+	if err != nil {
+		writeError(w, planModeActionStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Service) handlePlanModeInput(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req PlanModeInputRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.Answers) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("answers are required"))
+		return
+	}
+	if handle, ok := s.handleForSession(sessionID); ok {
+		if handle.runner.AnswerActivePlanInput(sessionID, req.RequestID, req.Answers) {
+			writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+			return
+		}
+	}
+	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+		SessionID:          sessionID,
+		PlanInputRequestID: req.RequestID,
+		PlanInputAnswers:   req.Answers,
+		Source:             session.PlanModeSourceWeb,
+	}); err != nil {
+		writeError(w, planModeActionStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+}
+
+func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueRequest) error {
+	state, err := s.store.LoadState(sessionID)
+	if err != nil {
+		return err
+	}
+	switch state.Status {
+	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
+	default:
+		return newWebError(errorCodeSessionNotResumable, "session is not resumable", "only paused, awaiting_input, and failed sessions can be continued", "wait for the active run or choose another action")
+	}
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		return err
+	}
+	runner := runtime.NewRunner(cfg)
+	runCtx, cancel := context.WithCancel(context.Background())
+	handle := newLaunchHandle(sessionID, runner, cancel)
+	s.addHandle(handle)
+	go func() {
+		result, err := runner.Continue(runCtx, req)
+		s.finishHandle(handle, launchOutcome{result: result, err: err})
+	}()
+	return nil
+}
+
+func planModeActionStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return http.StatusNotFound
+	}
+	var webErr webError
+	if errors.As(err, &webErr) {
+		return http.StatusConflict
+	}
+	message := err.Error()
+	if strings.Contains(message, "not resumable") || strings.Contains(message, "not awaiting") || strings.Contains(message, "no pending") {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 func (s *Service) handleSteerSession(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -3176,6 +3384,21 @@ func goalDraftFromWebStartRequest(req *GoalDraftRequest, prompt string) (*sessio
 	return goalDraftFromWebRequest(&draftReq, session.GoalSourceWeb)
 }
 
+func planModeDraftFromWebRequest(req *PlanModeDraftRequest, fallbackObjective string) *session.PlanModeDraft {
+	if req == nil || !req.Enabled {
+		return nil
+	}
+	objective := strings.TrimSpace(req.Objective)
+	if objective == "" {
+		objective = strings.TrimSpace(fallbackObjective)
+	}
+	return &session.PlanModeDraft{
+		Enabled:   true,
+		Objective: objective,
+		Source:    session.PlanModeSourceWeb,
+	}
+}
+
 func goalStoreStatus(err error) int {
 	if errors.Is(err, fs.ErrNotExist) {
 		return http.StatusNotFound
@@ -3637,6 +3860,7 @@ func expectsJSONBody(path string) bool {
 		path == "/api/queue/jobs" ||
 		path == "/api/workers" ||
 		strings.HasSuffix(path, "/goal") ||
+		strings.Contains(path, "/planmode/") ||
 		strings.Contains(path, "/mission/") ||
 		strings.Contains(path, "/continue") ||
 		strings.Contains(path, "/steer")

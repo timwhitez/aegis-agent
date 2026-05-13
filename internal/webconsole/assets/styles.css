@@ -1993,6 +1993,16 @@ textarea {
   flex-wrap: wrap;
 }
 
+.plan-option-row {
+  align-items: stretch;
+}
+
+.plan-markdown {
+  max-height: 360px;
+  overflow: auto;
+  width: 100%;
+}
+
 .goal-section,
 .goal-item-list {
   display: flex;

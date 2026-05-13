@@ -258,6 +258,89 @@ func TestRunCommandParsesGoalFlags(t *testing.T) {
 	}
 }
 
+func TestRunCommandParsesPlanFlags(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusAwaitingInput,
+		FinalText: "Plan Mode is awaiting approval.",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "--json", "--plan-only", "plan this work"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	planMode := fake.startCalls[0].PlanMode
+	if planMode == nil || !planMode.Enabled || planMode.Objective != "plan this work" || planMode.Source != session.PlanModeSourceCLI {
+		t.Fatalf("unexpected plan mode draft: %#v", planMode)
+	}
+	if !strings.Contains(stdout.String(), `"status":"awaiting_input"`) {
+		t.Fatalf("expected awaiting_input to be a successful planned state, got %s", stdout.String())
+	}
+}
+
+func TestRunCommandDoesNotInferPlanModeFromPromptText(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusCompleted,
+		FinalText: "done",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "--json", "先计划一下再做这个任务"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	if fake.startCalls[0].PlanMode != nil {
+		t.Fatalf("natural language prompt must not enable Plan Mode, got %#v", fake.startCalls[0].PlanMode)
+	}
+}
+
+func TestContinueCommandParsesPlanApproval(t *testing.T) {
+	fake := newFakeRunner()
+	fake.continueResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusCompleted,
+		FinalText: "done",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"continue", "s1", "--json", "--approve-plan"}, &stdout, &stderr); err != nil {
+		t.Fatalf("continue: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.continueCalls) != 1 {
+		t.Fatalf("expected one continue call, got %d", len(fake.continueCalls))
+	}
+	call := fake.continueCalls[0]
+	if !call.ApprovePlan || call.CancelPlan || call.Source != session.PlanModeSourceCLI {
+		t.Fatalf("unexpected continue request: %#v", call)
+	}
+}
+
 func TestGoalCommandAcceptsFlagsAfterSessionID(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

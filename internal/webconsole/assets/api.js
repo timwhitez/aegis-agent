@@ -71,7 +71,8 @@ function startSession(payload) {
     system: payload.system,
     isolation_mode: payload.isolationMode,
     isolation_root: payload.isolationRoot,
-    goal: payload.goal
+    goal: payload.goal,
+    plan_mode: payload.planMode
   }));
 }
 
@@ -80,7 +81,31 @@ function continueSession(sessionID, payload = {}) {
     message: payload.message || '',
     provider: payload.provider,
     model: payload.model,
-    system: payload.system
+    system: payload.system,
+    plan_mode: payload.planMode
+  }));
+}
+
+function getPlanMode(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode`);
+}
+
+function approvePlanMode(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode/approve`, jsonRequest({}));
+}
+
+function revisePlanMode(sessionID, message) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode/revise`, jsonRequest({ message }));
+}
+
+function cancelPlanMode(sessionID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode/cancel`, jsonRequest({}));
+}
+
+function answerPlanModeInput(sessionID, payload = {}) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode/input`, jsonRequest({
+    request_id: payload.requestID,
+    answers: payload.answers || []
   }));
 }
 

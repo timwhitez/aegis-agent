@@ -52,6 +52,15 @@ function isCompactFlowEvent(eventType) {
     'goal.updated',
     'goal.budget_limited',
     'goal.completed',
+    'planmode.created',
+    'planmode.input_requested',
+    'planmode.input_answered',
+    'planmode.input_cancelled',
+    'planmode.plan_submitted',
+    'planmode.plan_approved',
+    'planmode.plan_revised',
+    'planmode.cancelled',
+    'planmode.execution_started',
     'mission.plan.updated',
     'mission.validation.updated',
     'provider.cancelled',
@@ -199,6 +208,27 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         tone: eventType === 'mission.plan.approved' ? 'live' : 'neutral',
         data: data ? prettyJSON(data) : ''
       };
+    case 'planmode.created':
+    case 'planmode.input_requested':
+    case 'planmode.input_answered':
+    case 'planmode.input_cancelled':
+    case 'planmode.plan_submitted':
+    case 'planmode.plan_approved':
+    case 'planmode.plan_revised':
+    case 'planmode.cancelled':
+    case 'planmode.execution_started':
+      return {
+        icon: planModeEventIcon(eventType),
+        title: planModeEventTitle(eventType),
+        copy: planModeEventCopy(eventType, data),
+        meta: data?.plan_version ? `v${data.plan_version}` : data?.status ? humanizeStatus(data.status) : phaseHeadline(phase),
+        tone: eventType === 'planmode.cancelled' || eventType === 'planmode.input_cancelled'
+          ? 'danger'
+          : eventType === 'planmode.execution_started' || eventType === 'planmode.plan_approved'
+            ? 'live'
+            : 'queued',
+        data: data ? prettyJSON(data) : ''
+      };
     case 'session.steer.requested':
     case 'session.steer.queued':
     case 'session.steer.accepted':
@@ -306,6 +336,14 @@ function shouldPromoteLiveActivity(type) {
     'queue.job.claimed',
     'queue.job.completed',
     'queue.job.failed',
+    'planmode.input_requested',
+    'planmode.input_answered',
+    'planmode.input_cancelled',
+    'planmode.plan_submitted',
+    'planmode.plan_approved',
+    'planmode.plan_revised',
+    'planmode.cancelled',
+    'planmode.execution_started',
     'provider.cancelled',
     'session.paused',
     'session.completed',
@@ -319,6 +357,14 @@ function shouldRefreshAfterEvent(type) {
     'tool.after',
     'tool.blocked',
     'tool.interrupted',
+    'planmode.input_requested',
+    'planmode.input_answered',
+    'planmode.input_cancelled',
+    'planmode.plan_submitted',
+    'planmode.plan_approved',
+    'planmode.plan_revised',
+    'planmode.cancelled',
+    'planmode.execution_started',
     'session.steer.accepted',
     'session.background.accepted',
     'session.child.spawned'
@@ -326,7 +372,7 @@ function shouldRefreshAfterEvent(type) {
 }
 
 function needsOverviewRefresh(type) {
-  return typeof type === 'string' && (type.startsWith('session.child') || type.startsWith('queue.'));
+  return typeof type === 'string' && (type.startsWith('session.child') || type.startsWith('queue.') || type.startsWith('planmode.'));
 }
 
 function humanizeEventType(value) {
@@ -344,4 +390,60 @@ function goalPlanEventTitle(eventType) {
     default:
       return humanizeEventType(eventType);
   }
+}
+
+function planModeEventIcon(eventType) {
+  switch (eventType) {
+    case 'planmode.plan_approved':
+    case 'planmode.execution_started':
+      return 'badge-check';
+    case 'planmode.cancelled':
+    case 'planmode.input_cancelled':
+      return 'x-circle';
+    case 'planmode.input_requested':
+      return 'message-circle-question';
+    case 'planmode.plan_submitted':
+      return 'clipboard-check';
+    default:
+      return 'map';
+  }
+}
+
+function planModeEventTitle(eventType) {
+  switch (eventType) {
+    case 'planmode.created':
+      return 'Plan Mode started';
+    case 'planmode.input_requested':
+      return 'Plan input requested';
+    case 'planmode.input_answered':
+      return 'Plan input answered';
+    case 'planmode.input_cancelled':
+      return 'Plan input cancelled';
+    case 'planmode.plan_submitted':
+      return 'Plan submitted';
+    case 'planmode.plan_approved':
+      return 'Plan approved';
+    case 'planmode.plan_revised':
+      return 'Plan revision requested';
+    case 'planmode.cancelled':
+      return 'Plan Mode cancelled';
+    case 'planmode.execution_started':
+      return 'Approved plan running';
+    default:
+      return humanizeEventType(eventType);
+  }
+}
+
+function planModeEventCopy(eventType, data) {
+  if (eventType === 'planmode.plan_submitted') {
+    return data?.summary || 'A plan is waiting for approval.';
+  }
+  if (eventType === 'planmode.input_requested') {
+    const count = Number(data?.questions || data?.pending_questions || 1);
+    return `${count} planning question${count === 1 ? '' : 's'} waiting for an answer.`;
+  }
+  if (eventType === 'planmode.execution_started') {
+    return 'The approved plan was appended as a durable user action and execution resumed.';
+  }
+  return data?.objective || data?.status || 'Plan Mode state changed.';
 }

@@ -9,6 +9,7 @@
 - Core v1 默认围绕 `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`
 - `run` 支持交互式执行和 `Esc` 暂停
 - `exec` 适合脚本或 CI，默认要求模型显式 `finish`
+- `run/exec --plan` 或 Web 的 Plan 开关会进入 session-scoped Plan Mode：审批前只允许读/搜索、`request_user_input` 和 `submit_plan`，批准后才执行
 - `steer` 通过文件控制队列向运行中 session 追加输入，`--interrupt` 是 best-effort 抢占
 - `continue` 恢复 `paused`、`awaiting_input`、`failed` session
 - session / state / messages / events / goal / todo / tasks 是本地文件事实源
@@ -48,6 +49,13 @@
 
 ```sh
 ./bin/go-cli-agent exec --provider anthropic --model claude-sonnet-4-6 "Summarize the current repository and call finish when done."
+```
+
+先产出可审批计划，不执行变更：
+
+```sh
+./bin/go-cli-agent exec --plan-only "Plan the provider contract migration."
+./bin/go-cli-agent continue <session-id> --approve-plan
 ```
 
 向运行中的 session 追加新输入：
@@ -148,6 +156,8 @@ providers:
 ## Experimental Web
 
 本地 Web 控制台只作为显式实验入口存在，用来观察 session、goal、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。启动区的 Goal 是一个简单开关；选中后用户仍只写 prompt，agent 在运行中自行拆分目标、计划和验证。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
+
+Web 的 Plan 开关对应同一个 Plan Mode 事实源：`planmode.json`、`artifacts/planmode-history.jsonl` 和 `artifacts/planmode-plan.md`。Plan inspector 可审批、要求修改、取消计划，并回答 `request_user_input` 的规划问题；pending Plan Mode 会拒绝以该 session 为 parent 的 child / queue 提交。
 
 ```sh
 ./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2

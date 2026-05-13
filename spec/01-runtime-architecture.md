@@ -98,6 +98,7 @@
 
 - 管理 `session.json`、`state.json`、`messages.jsonl`、`events.jsonl`、`control/`
 - 管理 `goal.json`、`artifacts/goal-history.jsonl`、`contract.json`、`artifact-tracker.json`、`provider-attempts.jsonl`、`parent-coordination.json`、`session.md` 与 `checkpoints/`
+- 管理 `planmode.json`、`artifacts/planmode-history.jsonl` 与 `artifacts/planmode-plan.md`
 - 写入 compaction artifacts
 - 为 `continue` 提供恢复数据
 - 持久化 `control/steer.jsonl` 与 `control/background.jsonl`
@@ -112,6 +113,16 @@
 - 将 goal snapshot 注入 prompt、compaction summary、`session.md` 与 long-run checkpoint
 - 默认用户入口只是一个 Goal 开关：Web start 选中后直接使用 prompt 作为 objective；success criteria、validation contract、features、milestones 与 role hints 由 agent 在运行中拆分和沉淀
 - 只记录目标、可选内部结构化计划与用户控制状态；不得把 Goal 变成固定 DAG 或强制 child / queue 编排
+
+### 2.8.2 SessionPlanModeManager
+
+职责：
+
+- 从 `StartRequest.PlanMode`、CLI `--plan/--plan-only`、Web Plan toggle 或 planmode API 创建 session-scoped Plan Mode
+- 将 planning / input / approval / revision / cancellation / execution transition 写入 `planmode.json` 与 `artifacts/planmode-history.jsonl`
+- 通过 `submit_plan` 保存完整 Markdown plan，并派生写入 `artifacts/planmode-plan.md`
+- 通过 `request_user_input` 持久化 pending request、`tool_call_id` 和回答，使 active Web runner 与 crash/restart fallback 都能补齐 provider replay 所需 tool result
+- 在 approve 时追加 `meta.source=planmode_approval` 的 user message；Plan Mode 不是 Goal/Mission/Todo/Task 的别名
 
 ### 2.9 LiveInputManager
 
@@ -155,6 +166,7 @@
 - 再执行 required-artifact baseline/touched/changed gate
 - 再执行 parent child/queue coordination gate
 - 再执行 active goal completion audit gate，要求模型在 `finish` 前读取 / 审计 goal，并只能通过 `update_goal(status="complete")` 标记完成
+- pending Plan Mode gate 位于基础 tool guard 之后、artifact/parent/goal completion gate 之前；它阻断 shell/write/edit/todo/task/goal update/finish/agent/queue/custom tools，只允许 read/search/load_skill/get_goal/get_plan_mode/request_user_input/submit_plan
 - 把 `completion.evaluate.*`、`completion.gate.*`、`artifact.gate.*`、`artifact.tracked` 事件写回 session
 
 ### 2.14 ProviderAttemptLedger

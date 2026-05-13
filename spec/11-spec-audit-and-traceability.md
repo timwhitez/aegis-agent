@@ -152,6 +152,24 @@
 - Mission 的长任务能力收敛为 Goal 的内部结构化计划：agent 可以在运行中保存 success criteria、validation contract、features、milestones、role hints 与 shared artifacts，但 runtime 不得据此硬编码 DAG、强制委派或强制验证顺序
 - Budget limited 只表示预算触顶，需要 wrap-up 和剩余工作说明；除非完成审计真实通过，否则不能被视为 complete
 
+### 2.11 Plan Mode
+
+来源：
+
+- Codex Plan Mode 的 collaboration-mode gate、`request_user_input` 限制与 approval-driven implementation entry
+- ForgeCode Muse 的 planning-only agent 与 Markdown checkbox / verification plan artifact 形式
+- 当前项目既有 session 文件事实源、CompletionController、Goal/Todo/Task 分层和 experimental WebConsole 边界
+
+结论：
+
+- Plan Mode 是 session-scoped execution gate，不是 Goal、Mission、Todo 或 Task 的别名；Goal 记录 durable objective，Plan Mode 只控制“审批前不执行变更”
+- v1 通过显式 CLI flag、Web toggle 或 API payload 启用；普通 prompt 中写“先计划”不自动切换 runtime mode
+- `planmode.json` 是事实源，`artifacts/planmode-history.jsonl` 记录状态流水，`artifacts/planmode-plan.md` 是 operator-readable 派生计划
+- v1 使用 `submit_plan` 工具作为计划事实源，不依赖 `<proposed_plan>` 流式 parser；`submit_plan` 后当前 turn 停在 `awaiting_approval`，同批后续 tool call 必须写合成错误 result
+- pending Plan Mode 下 provider schema 和 CompletionController 双层门禁必须一致：只允许 read/search/load_skill、只读 goal/todo/task/feature-list、`get_plan_mode`、`request_user_input`、`submit_plan`
+- `request_user_input` 保存 `pending_request.tool_call_id`，使 Web active runner、server restart fallback、取消和回答都能补齐 provider replay 所需 tool result
+- 以 pending Plan Mode session 为 parent 的 child/delegate/queue 提交必须拒绝；独立新 session 或无 parent queue job 不受影响
+
 ## 3. 已验证的 provider 协议事实
 
 ### 3.1 OpenAI Responses

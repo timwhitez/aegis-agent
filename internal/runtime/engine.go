@@ -142,6 +142,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err != nil {
 			return RunResult{}, err
 		}
+		planMode, err := loadPlanModeOptional(e.store, meta.ID)
+		if err != nil {
+			return RunResult{}, err
+		}
 		projectMemory := loadProjectMemoryStack(meta.Workdir)
 		contextData := contextLoadedEventData(meta, state.Turn, projectMemory, todo, tasks)
 		if goal != nil {
@@ -149,11 +153,23 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			contextData["goal_mode"] = goal.Mode
 			contextData["goal_id"] = goal.GoalID
 		}
+		if planMode != nil {
+			contextData["plan_mode_status"] = planMode.Status
+			contextData["plan_mode_id"] = planMode.PlanModeID
+			contextData["plan_version"] = planMode.PlanVersion
+		}
 		e.emit(meta.ID, "session.context.loaded", "prepare", contextData)
 
 		systemPrompt := buildSystemPrompt(meta.Workdir, meta.Mode, systemOverride, catalog.Summaries(), catalog.TrustedCommandTools(meta.Workdir), state, messages, meta.AgentName, meta.AgentRole)
 		if goal != nil {
 			if contextText := goalPromptContext(*goal); contextText != "" {
+				systemPrompt += "\n\n" + contextText
+			}
+		}
+		if planMode != nil {
+			if shouldUsePlanModeInstructions(planMode) {
+				systemPrompt += "\n\n" + buildPlanModeInstructions(*planMode)
+			} else if contextText := buildApprovedPlanContext(*planMode); contextText != "" {
 				systemPrompt += "\n\n" + contextText
 			}
 		}
@@ -181,6 +197,15 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		e.emit(meta.ID, "provider.call", state.Phase, map[string]any{"provider": meta.Provider})
 		requestMetadata := providerRequestMetadata(meta)
+		if planMode != nil {
+			requestMetadata["collaboration_mode"] = "plan"
+			if !session.IsPlanModePending(planMode.Status) {
+				requestMetadata["collaboration_mode"] = "default"
+			}
+			requestMetadata["plan_mode_id"] = planMode.PlanModeID
+			requestMetadata["plan_status"] = planMode.Status
+			requestMetadata["approved_plan_version"] = planMode.ApprovedVersion
+		}
 		if meta.ProviderOptions.SendMetadata != nil && !*meta.ProviderOptions.SendMetadata {
 			requestMetadata = nil
 		}
@@ -193,7 +218,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			Model:            meta.Model,
 			SystemPrompt:     systemPrompt,
 			Messages:         view,
-			Tools:            providerTools(registry),
+			Tools:            providerToolsForPlanMode(registry, planMode),
 			Metadata:         requestMetadata,
 			Temperature:      meta.ProviderOptions.Temperature,
 			TopP:             meta.ProviderOptions.TopP,
@@ -337,6 +362,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if len(result.ToolCalls) > 0 {
 			doneCandidates = 0
 			toolResults := make([]session.ToolResult, 0, len(result.ToolCalls))
+			planModeTerminal := ""
 			for callIndex, call := range result.ToolCalls {
 				argumentsText := prettyJSON(call.Arguments)
 				e.emit(meta.ID, "tool.before", "tool_execute", map[string]any{
@@ -412,12 +438,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				} else {
 					toolCtx, cancel := context.WithCancel(ctx)
 					e.control.setCancel(cancel)
+					var planInputResponder tools.PlanInputResponder
+					if responder, ok := e.runner.(tools.PlanInputResponder); ok {
+						planInputResponder = responder
+					}
 					toolResult, toolErr = registry.Execute(toolCtx, call.Name, tools.ExecContext{
-						SessionID: meta.ID,
-						Workdir:   meta.Workdir,
-						Store:     e.store,
-						Config:    e.cfg,
-						Catalog:   catalog,
+						SessionID:          meta.ID,
+						ToolCallID:         call.ID,
+						Workdir:            meta.Workdir,
+						Store:              e.store,
+						Config:             e.cfg,
+						Catalog:            catalog,
+						PlanInputResponder: planInputResponder,
 						Emit: func(eventType string, data map[string]any) {
 							e.emit(meta.ID, eventType, "tool_execute", data)
 						},
@@ -535,6 +567,13 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					eventData["metadata"] = toolResult.Metadata
 				}
 				e.emit(meta.ID, "tool.after", "tool_execute", eventData)
+				if action := terminalPlanModeAction(toolResult); action != "" {
+					planModeTerminal = action
+					if callIndex+1 < len(result.ToolCalls) {
+						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: submit_plan ended the Plan Mode turn; this later tool call was not executed")...)
+					}
+					break
+				}
 				if toolResult.Final {
 					if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
 						return RunResult{}, err
@@ -546,6 +585,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
 					return RunResult{}, err
 				}
+			}
+			if planModeTerminal == planModeTerminalPlanSubmitted {
+				return e.awaitingPlanApproval(ctx, meta, state, hookManager)
+			}
+			if planModeTerminal == planModeTerminalPlanCancelled {
+				return e.awaitingPlanCancelled(ctx, meta, state, hookManager)
 			}
 			allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 		nextTurn:
@@ -608,6 +653,38 @@ func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
+}
+
+func (e *Engine) awaitingPlanApproval(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
+	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	state.Status = session.StatusAwaitingInput
+	state.Phase = "plan_approval"
+	state.LastAssistantExcerpt = "Plan Mode is awaiting approval."
+	if err := e.store.SaveState(meta.ID, state); err != nil {
+		return RunResult{}, err
+	}
+	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_approval"})
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
+	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode is awaiting approval."}, nil
+}
+
+func (e *Engine) awaitingPlanCancelled(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
+	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	state.Status = session.StatusAwaitingInput
+	state.Phase = "plan_cancelled"
+	state.LastAssistantExcerpt = "Plan Mode cancelled."
+	if err := e.store.SaveState(meta.ID, state); err != nil {
+		return RunResult{}, err
+	}
+	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_cancelled"})
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
+	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode cancelled."}, nil
 }
 
 func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager) (RunResult, error) {
