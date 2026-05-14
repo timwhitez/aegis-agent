@@ -115,6 +115,7 @@ type Registry struct {
 	defs    map[string]Definition
 	order   []string
 	control ControlPlane
+	cfg     *config.Config
 }
 
 var reservedNames = map[string]struct{}{
@@ -126,7 +127,10 @@ var reservedNames = map[string]struct{}{
 }
 
 func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane, trustedCommandWorkdir ...string) (*Registry, error) {
-	registry := &Registry{defs: map[string]Definition{}, control: control}
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	registry := &Registry{defs: map[string]Definition{}, control: control, cfg: cfg}
 	for _, def := range builtinDefinitions(cfg, catalog, control) {
 		registry.Register(def)
 	}
@@ -172,6 +176,9 @@ func (r *Registry) Execute(ctx context.Context, name string, execCtx ExecContext
 	def, ok := r.defs[name]
 	if !ok {
 		return session.ToolResult{}, fmt.Errorf("unknown tool: %s", name)
+	}
+	if execCtx.Config == nil {
+		execCtx.Config = r.cfg
 	}
 	return def.Execute(ctx, execCtx, args)
 }

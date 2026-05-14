@@ -711,6 +711,51 @@ func TestShellDenyPolicyBlocksNoSpaceSecretRedirect(t *testing.T) {
 	}
 }
 
+func TestShellToolUsesRegistryConfigWhenExecContextConfigMissing(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store}, json.RawMessage(`{
+		"command":"printf ok"
+	}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	if result.IsError || strings.TrimSpace(result.DisplayOutput) != "ok" {
+		t.Fatalf("expected shell to use registry config fallback, got %#v", result)
+	}
+}
+
+func TestShellToolUsesDefaultConfigWhenRegistryConfigMissing(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(nil, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store}, json.RawMessage(`{
+		"command":"printf default-ok"
+	}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	if result.IsError || strings.TrimSpace(result.DisplayOutput) != "default-ok" {
+		t.Fatalf("expected shell to use default config fallback, got %#v", result)
+	}
+}
+
 func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -1924,6 +1969,38 @@ func TestSkillCommandToolExecutesFromSkillDirectory(t *testing.T) {
 	}
 	if !strings.Contains(result.DisplayOutput, skillDir) {
 		t.Fatalf("expected skill command output to include %q, got %q", skillDir, result.DisplayOutput)
+	}
+}
+
+func TestSkillCommandToolUsesRegistryConfigWhenExecContextConfigMissing(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: skill_echo\ndescription: Echo skill name\ncommand: [\"bash\", \"-lc\", \"printf $GO_CLI_AGENT_SKILL_NAME\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "skill_echo", ExecContext{
+		Workdir: root,
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.IsError || strings.TrimSpace(result.DisplayOutput) != "helpers" {
+		t.Fatalf("expected skill command to use registry config fallback, got %#v", result)
 	}
 }
 
