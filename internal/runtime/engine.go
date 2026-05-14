@@ -527,6 +527,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						if e.control.consumeSteerInterrupt() {
 							goto nextTurn
 						}
+						return e.fail(ctx, meta, state, toolErr, hookManager)
 					}
 					if toolResult.LLMOutput != "" || toolResult.DisplayOutput != "" || len(toolResult.Metadata) > 0 {
 						toolResult.IsError = true

@@ -1454,6 +1454,82 @@ func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 	}
 }
 
+func TestEngineStopsAfterReplayCompleteToolResultsWhenRunContextCancelsTool(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	started := make(chan struct{})
+	registry.Register(tools.Definition{
+		Name:        "slow_cancel",
+		Description: "slow cancel",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			close(started)
+			<-ctx.Done()
+			return session.ToolResult{}, ctx.Err()
+		},
+	})
+	laterExecuted := false
+	registry.Register(tools.Definition{
+		Name:        "later_tool",
+		Description: "must not run after cancellation",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			laterExecuted = true
+			return session.ToolResult{Name: "later_tool", LLMOutput: "later", DisplayOutput: "later"}, nil
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run slow then later")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_slow", Name: "slow_cancel", Arguments: json.RawMessage(`{}`)},
+				{ID: "call_later", Name: "later_tool", Arguments: json.RawMessage(`{}`)},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-started
+		cancel()
+	}()
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation error, got result=%#v err=%v", result, err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed result after run context cancellation, got %#v", result)
+	}
+	if laterExecuted {
+		t.Fatal("later tool executed after run context cancellation")
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var toolMessages []session.Message
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			toolMessages = append(toolMessages, msg)
+		}
+	}
+	if len(toolMessages) != 1 {
+		t.Fatalf("expected one replay-complete tool message, got %#v", toolMessages)
+	}
+	results := toolMessages[0].ToolResults
+	if len(results) != 2 {
+		t.Fatalf("expected interrupted current result plus synthetic later result, got %#v", results)
+	}
+	if results[0].ToolCallID != "call_slow" || !results[0].IsError || results[0].LLMOutput != "[Tool execution was interrupted]" {
+		t.Fatalf("unexpected interrupted current result: %#v", results[0])
+	}
+	if results[1].ToolCallID != "call_later" || !results[1].IsError || !strings.Contains(results[1].LLMOutput, "before this call ran") {
+		t.Fatalf("unexpected synthetic later result: %#v", results[1])
+	}
+}
+
 func TestEnginePreservesDeadlineToolResultMetadata(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	registry.Register(tools.Definition{
