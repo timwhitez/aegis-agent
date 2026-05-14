@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1122,7 +1123,11 @@ func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 func (s *Store) WriteArtifact(sessionID, relativePath string, payload any) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.sessionPath(sessionID, "artifacts", relativePath)
+	artifactPath, err := validateStoreRelativePath("artifact", relativePath)
+	if err != nil {
+		return "", err
+	}
+	path, err := s.sessionPath(sessionID, "artifacts", artifactPath)
 	if err != nil {
 		return "", err
 	}
@@ -1135,7 +1140,11 @@ func (s *Store) WriteArtifact(sessionID, relativePath string, payload any) (stri
 func (s *Store) WriteTranscript(sessionID, name string, messages []Message) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.sessionPath(sessionID, "artifacts", "transcripts", name)
+	transcriptPath, err := validateStoreRelativePath("transcript", name)
+	if err != nil {
+		return "", err
+	}
+	path, err := s.sessionPath(sessionID, "artifacts", "transcripts", transcriptPath)
 	if err != nil {
 		return "", err
 	}
@@ -1848,6 +1857,25 @@ func validateStoreID(kind, id string) error {
 		return fmt.Errorf("invalid %s id %q: path separators and traversal are not allowed", kind, id)
 	}
 	return nil
+}
+
+func validateStoreRelativePath(kind, value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%s path is required", kind)
+	}
+	if strings.TrimSpace(value) != value {
+		return "", fmt.Errorf("invalid %s path %q: leading or trailing whitespace is not allowed", kind, value)
+	}
+	normalized := strings.ReplaceAll(value, "\\", "/")
+	if path.IsAbs(normalized) || filepath.IsAbs(value) {
+		return "", fmt.Errorf("invalid %s path %q: absolute paths are not allowed", kind, value)
+	}
+	for _, part := range strings.Split(normalized, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("invalid %s path %q: empty, current, and parent path segments are not allowed", kind, value)
+		}
+	}
+	return filepath.FromSlash(path.Clean(normalized)), nil
 }
 
 func mergeSteerRequests(updated, current []SteerRequest) []SteerRequest {

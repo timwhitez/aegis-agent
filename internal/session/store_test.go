@@ -690,6 +690,58 @@ func TestStoreRejectsPathLikeRecordIDs(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsPathLikeArtifactPaths(t *testing.T) {
+	temp := t.TempDir()
+	root := filepath.Join(temp, "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create valid session: %v", err)
+	}
+	statePath := filepath.Join(store.SessionDir(meta.ID), "state.json")
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state before artifact write: %v", err)
+	}
+
+	if _, err := store.WriteArtifact(meta.ID, "../state.json", map[string]any{"bad": true}); err == nil {
+		t.Fatal("expected WriteArtifact to reject parent traversal")
+	}
+	if _, err := store.WriteArtifact(meta.ID, "../../../escaped.json", map[string]any{"bad": true}); err == nil {
+		t.Fatal("expected WriteArtifact to reject root escape")
+	}
+	if _, err := store.WriteArtifact(meta.ID, "/tmp/escaped.json", map[string]any{"bad": true}); err == nil {
+		t.Fatal("expected WriteArtifact to reject absolute path")
+	}
+	if _, err := store.WriteArtifact(meta.ID, `compactions\..\state.json`, map[string]any{"bad": true}); err == nil {
+		t.Fatal("expected WriteArtifact to reject backslash parent traversal")
+	}
+	if _, err := store.WriteTranscript(meta.ID, "../events.jsonl", []Message{NewMessage("user", "bad")}); err == nil {
+		t.Fatal("expected WriteTranscript to reject parent traversal")
+	}
+
+	stateAfter, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state after rejected artifact writes: %v", err)
+	}
+	if string(stateAfter) != string(stateBefore) {
+		t.Fatalf("state.json was modified by rejected artifact write:\nbefore: %s\nafter: %s", stateBefore, stateAfter)
+	}
+	if _, err := os.Stat(filepath.Join(temp, "escaped.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected escaped artifact to remain absent, got %v", err)
+	}
+}
+
 func TestUpdateSteerRequestsMergesConcurrentAppend(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)
