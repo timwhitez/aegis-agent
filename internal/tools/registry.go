@@ -590,7 +590,7 @@ func defReadFile() Definition {
 			if source == "workspace" && (isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path)) {
 				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
-			data, err := os.ReadFile(path)
+			data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 			if err != nil {
 				return errorResult("read_file", err), nil
 			}
@@ -733,7 +733,7 @@ func defEditFile() Definition {
 			if err := CheckWorkspaceWriteAllowed(execCtx.Workdir, path); err != nil {
 				return errorResult("edit_file", err), nil
 			}
-			content, err := os.ReadFile(path)
+			content, _, err := fileutil.ReadRegularFileNoSymlink(path)
 			if err != nil {
 				return errorResult("edit_file", err), nil
 			}
@@ -866,7 +866,7 @@ func defGrep() Definition {
 				if !info.Mode().IsRegular() {
 					return nil
 				}
-				data, readErr := os.ReadFile(path)
+				data, _, readErr := fileutil.ReadRegularFileNoSymlink(path)
 				if readErr != nil {
 					return nil
 				}
@@ -1305,7 +1305,7 @@ func walkTextSearchFiles(workdir, root, include string, fn func(path string, dat
 		if include != "" && !pathMatchesInclude(workdir, path, include) {
 			return nil
 		}
-		data, readErr := os.ReadFile(path)
+		data, _, readErr := fileutil.ReadRegularFileNoSymlink(path)
 		if readErr != nil {
 			return nil
 		}
