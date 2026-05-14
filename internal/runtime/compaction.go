@@ -226,11 +226,8 @@ func recentMessagesForCompaction(messages []session.Message, minCount int) []ses
 			}
 		}
 		if msg.Role == "assistant" {
-			for _, call := range msg.ToolCalls {
-				delete(pendingToolCalls, call.ID)
-				if strings.TrimSpace(call.ProviderCallID) != "" {
-					delete(pendingToolCalls, call.ProviderCallID)
-				}
+			for _, callID := range assistantToolCallIDs(msg) {
+				delete(pendingToolCalls, callID)
 			}
 		}
 	}
@@ -306,20 +303,48 @@ func compactGoalSnapshot(goal session.SessionGoal) map[string]any {
 }
 
 func assistantMatchesPendingToolCall(msg session.Message, pending map[string]struct{}) bool {
-	if msg.Role != "assistant" || len(msg.ToolCalls) == 0 || len(pending) == 0 {
+	if msg.Role != "assistant" || len(pending) == 0 {
 		return false
 	}
-	for _, call := range msg.ToolCalls {
-		if _, ok := pending[call.ID]; ok {
+	for _, callID := range assistantToolCallIDs(msg) {
+		if _, ok := pending[callID]; ok {
 			return true
-		}
-		if strings.TrimSpace(call.ProviderCallID) != "" {
-			if _, ok := pending[call.ProviderCallID]; ok {
-				return true
-			}
 		}
 	}
 	return false
+}
+
+func assistantToolCallIDs(msg session.Message) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, call := range msg.ToolCalls {
+		add(call.ID)
+		add(call.ProviderCallID)
+	}
+	for _, block := range msg.ProviderContentBlocks {
+		switch block.Provider {
+		case "anthropic":
+			if block.Type == "tool_use" {
+				add(block.ID)
+			}
+		case "google":
+			if block.Type == "function_call" {
+				add(block.ID)
+			}
+		}
+	}
+	return out
 }
 
 func compactOldToolContext(messages []session.Message, keepRecent int) {

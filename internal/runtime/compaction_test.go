@@ -634,6 +634,117 @@ func TestCompactorPreservesAssistantToolCallsForRetainedToolResults(t *testing.T
 	}
 }
 
+func TestCompactorPreservesProviderBlockToolCallsForRetainedToolResults(t *testing.T) {
+	tests := []struct {
+		name       string
+		callID     string
+		provider   string
+		blockType  string
+		makeBlocks func(callID string) []session.ProviderContentBlock
+	}{
+		{
+			name:      "anthropic tool_use block",
+			callID:    "toolu_old",
+			provider:  "anthropic",
+			blockType: "tool_use",
+			makeBlocks: func(callID string) []session.ProviderContentBlock {
+				return []session.ProviderContentBlock{{
+					Provider: "anthropic",
+					Type:     "tool_use",
+					ID:       callID,
+					Name:     "shell",
+					Input:    json.RawMessage(`{"command":"pwd"}`),
+				}}
+			},
+		},
+		{
+			name:      "google function_call block",
+			callID:    "gcall_old",
+			provider:  "google",
+			blockType: "function_call",
+			makeBlocks: func(callID string) []session.ProviderContentBlock {
+				return []session.ProviderContentBlock{{
+					Provider: "google",
+					Type:     "function_call",
+					ID:       callID,
+					Name:     "shell",
+					Args:     json.RawMessage(`{"command":"pwd"}`),
+				}}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := session.NewStore(t.TempDir())
+			meta := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               session.NewSessionID(),
+				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+				Workdir:          t.TempDir(),
+				Mode:             session.ModeRun,
+				Provider:         tc.provider,
+				Model:            "test-model",
+				CompletionPolicy: session.CompletionPolicyInteractive,
+			}
+			state := session.State{
+				Status:    session.StatusRunning,
+				Phase:     "prepare",
+				UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			}
+			if err := store.Create(meta, state); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+
+			assistant := session.NewAssistantMessage("", "provider thinking", nil)
+			assistant.ProviderContentBlocks = tc.makeBlocks(tc.callID)
+			messages := []session.Message{
+				session.NewMessage("user", "Initial request"),
+				assistant,
+				session.NewToolMessage([]session.ToolResult{{
+					ToolCallID:    tc.callID,
+					Name:          "shell",
+					LLMOutput:     "old output",
+					DisplayOutput: "old output",
+				}}),
+				session.NewAssistantMessage("filler one", "", nil),
+				session.NewAssistantMessage("filler two", "", nil),
+				session.NewAssistantMessage("filler three", "", nil),
+				session.NewMessage("user", "Latest external instruction."),
+				session.NewAssistantMessage("Recent answer.", "", nil),
+			}
+
+			view, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, messages, nil, nil, 1, 10, func(events.Event) {})
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+
+			var assistantIndex, toolIndex = -1, -1
+			for i, msg := range view {
+				for _, block := range msg.ProviderContentBlocks {
+					if block.Provider == tc.provider && block.Type == tc.blockType && block.ID == tc.callID {
+						assistantIndex = i
+					}
+				}
+				for _, result := range msg.ToolResults {
+					if result.ToolCallID == tc.callID {
+						toolIndex = i
+					}
+				}
+			}
+			if assistantIndex == -1 {
+				t.Fatalf("expected retained provider block assistant for %s, got %#v", tc.callID, view)
+			}
+			if toolIndex == -1 {
+				t.Fatalf("expected retained tool result for %s, got %#v", tc.callID, view)
+			}
+			if assistantIndex >= toolIndex {
+				t.Fatalf("expected provider block assistant before tool result, got assistant=%d tool=%d", assistantIndex, toolIndex)
+			}
+		})
+	}
+}
+
 func TestDeduplicateToolResults(t *testing.T) {
 	messages := []session.Message{
 		session.NewMessage("user", "Read the file"),
