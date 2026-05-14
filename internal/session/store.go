@@ -1340,6 +1340,9 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 	meta, state, messages, ok := s.findSessionForQueueJob(job.ID)
 	if !ok {
 		if job.Status != QueueStatusRunning {
+			if isTerminalQueueStatus(job.Status) {
+				s.ensureTerminalQueueJobParentState(job)
+			}
 			return job, false
 		}
 		if !queueJobIsStale(job, time.Now().UTC()) {
@@ -1349,13 +1352,10 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 		job.SessionStatus = StatusFailed
 		job.LastError = "queue job stale: running job has no linked session and heartbeat is stale"
 		_ = s.SaveJob(job)
-		if job.Status != originalStatus {
+		if isTerminalQueueStatus(job.Status) {
+			s.ensureTerminalQueueJobParentState(job)
+		} else if job.Status != originalStatus {
 			s.reconcileParentQueueJobStatus(job)
-		}
-		if job.ParentSessionID != "" {
-			s.ensureBackgroundNotification(job)
-			s.ensureQueueLifecycleEvent(job, "queue.job.notified")
-			s.ensureQueueLifecycleEvent(job, "queue.job.failed")
 		}
 		return job, true
 	}
@@ -1409,23 +1409,16 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 		}
 	}
 	if !changed {
+		if isTerminalQueueStatus(job.Status) {
+			s.ensureTerminalQueueJobParentState(job)
+		}
 		return job, false
 	}
 	_ = s.SaveJob(job)
-	if job.Status != originalStatus || (isTerminalQueueStatus(job.Status) && changed) {
+	if isTerminalQueueStatus(job.Status) {
+		s.ensureTerminalQueueJobParentState(job)
+	} else if job.Status != originalStatus {
 		s.reconcileParentQueueJobStatus(job)
-	}
-	if job.ParentSessionID != "" {
-		switch job.Status {
-		case QueueStatusCompleted, QueueStatusFailed:
-			s.ensureBackgroundNotification(job)
-			s.ensureQueueLifecycleEvent(job, "queue.job.notified")
-			if job.Status == QueueStatusFailed {
-				s.ensureQueueLifecycleEvent(job, "queue.job.failed")
-			} else {
-				s.ensureQueueLifecycleEvent(job, "queue.job.completed")
-			}
-		}
 	}
 	return job, true
 }
@@ -1611,6 +1604,20 @@ func (s *Store) findSessionForQueueJob(jobID string) (SessionMetadata, State, []
 
 func (s *Store) ensureBackgroundNotification(job QueueJob) {
 	_ = s.EnsureBackgroundNotification(job.ParentSessionID, NewBackgroundNotification(job))
+}
+
+func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) {
+	if strings.TrimSpace(job.ParentSessionID) == "" || !isTerminalQueueStatus(job.Status) {
+		return
+	}
+	s.reconcileParentQueueJobStatus(job)
+	s.ensureBackgroundNotification(job)
+	s.ensureQueueLifecycleEvent(job, "queue.job.notified")
+	if job.Status == QueueStatusFailed {
+		s.ensureQueueLifecycleEvent(job, "queue.job.failed")
+		return
+	}
+	s.ensureQueueLifecycleEvent(job, "queue.job.completed")
 }
 
 func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) {

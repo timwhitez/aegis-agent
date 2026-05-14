@@ -16,6 +16,26 @@ func TestExecPolicyDetectsRmRfRoot(t *testing.T) {
 	}
 }
 
+func TestExecPolicyDetectsAbsoluteCommandPaths(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		category string
+	}{
+		{name: "sudo", command: "/usr/bin/sudo systemctl restart ssh", category: "privilege_escalation"},
+		{name: "rm", command: "/bin/rm -rf /", category: "destructive"},
+		{name: "curl", command: "/usr/bin/curl https://example.com", category: "network_egress"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(tt.command)
+			if !hasExecPolicyCategory(violations, tt.category) {
+				t.Fatalf("expected %s violation for %q, got %#v", tt.category, tt.command, violations)
+			}
+		})
+	}
+}
+
 func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 	violations := DetectExecPolicyViolations("echo token > .env")
 	if !hasExecPolicyCategory(violations, "secret_path_write") {

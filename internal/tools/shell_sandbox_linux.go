@@ -14,8 +14,12 @@ func shellSandboxCommand(sandbox, workdir, shellPath, shellArg, command string) 
 }
 
 func sandboxCommand(sandbox, workdir string, argv []string) (string, []string, string, error) {
-	if strings.ToLower(strings.TrimSpace(sandbox)) != "bwrap" {
+	normalized := strings.ToLower(strings.TrimSpace(sandbox))
+	if normalized == "" {
 		return argv[0], argv[1:], "off", nil
+	}
+	if normalized != "bwrap" {
+		return "", nil, "unsupported", fmt.Errorf("unsupported shell sandbox: %s", sandbox)
 	}
 	bwrapPath, err := exec.LookPath("bwrap")
 	if err != nil {

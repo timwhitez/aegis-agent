@@ -756,6 +756,33 @@ func TestShellToolUsesDefaultConfigWhenRegistryConfigMissing(t *testing.T) {
 	}
 }
 
+func TestShellToolRejectsUnsupportedSandboxConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Shell.Sandbox = "firejail"
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"command":"printf should-not-run"
+	}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "unsupported shell sandbox") {
+		t.Fatalf("expected unsupported sandbox error, got %#v", result)
+	}
+	if result.Metadata["sandbox"] != "unsupported" {
+		t.Fatalf("expected unsupported sandbox metadata, got %#v", result.Metadata)
+	}
+}
+
 func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

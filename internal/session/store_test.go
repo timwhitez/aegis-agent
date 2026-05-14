@@ -1442,6 +1442,92 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
+func TestLoadJobRepairsMissingTerminalBackgroundNotification(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_missing_notification",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_missing_notification",
+	}
+	parentState := State{
+		Status:    StatusCompleted,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(parentMeta, parentState); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_missing_notification",
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		Status:          QueueStatusCompleted,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       "child_missing_notification",
+		SessionStatus:   StatusCompleted,
+		AgentName:       "child",
+		AgentRole:       "generator",
+		Prompt:          "already completed",
+		Mode:            ModeExec,
+		Background:      true,
+		FinalText:       "done",
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save terminal job: %v", err)
+	}
+	before, err := store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load notifications before repair: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("expected missing notification before repair, got %#v", before)
+	}
+	if _, err := store.LoadJob(job.ID); err != nil {
+		t.Fatalf("load terminal job: %v", err)
+	}
+	notifications, err := store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load notifications after repair: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].QueueJobID != job.ID {
+		t.Fatalf("expected repaired notification for %s, got %#v", job.ID, notifications)
+	}
+	eventsList, err := store.LoadEvents(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load events after repair: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, evt := range eventsList {
+		jobID, _ := evt.Data["job_id"].(string)
+		if jobID == job.ID {
+			seen[evt.Type] = true
+		}
+	}
+	if !seen["queue.job.notified"] || !seen["queue.job.completed"] {
+		t.Fatalf("expected repaired lifecycle events, got %#v", seen)
+	}
+	if _, err := store.LoadJob(job.ID); err != nil {
+		t.Fatalf("reload terminal job: %v", err)
+	}
+	notifications, err = store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("reload notifications: %v", err)
+	}
+	if len(notifications) != 1 {
+		t.Fatalf("expected repair to stay idempotent, got %#v", notifications)
+	}
+}
+
 func TestSyncQueueVisiblePathsRejectsRequestedSymlinkEscape(t *testing.T) {
 	requestedWorkdir := t.TempDir()
 	effectiveWorkdir := t.TempDir()
