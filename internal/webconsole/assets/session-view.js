@@ -1543,6 +1543,7 @@ function renderGoalPanel(detail) {
   const milestones = maybeArray(mission?.milestones);
   const roles = maybeArray(mission?.role_plan);
   const completionAudit = goal.completion_audit || null;
+  const goalFacts = detail?.goal_facts || null;
   const canPause = goal.status === 'active' || goal.status === 'budget_limited';
   const canResume = goal.status === 'paused' || goal.status === 'budget_limited';
   const canComplete = goal.status !== 'complete';
@@ -1570,6 +1571,7 @@ function renderGoalPanel(detail) {
         ${canApprove ? '<button class="mini-link-btn" type="button" data-goal-action="approve-plan">Approve plan</button>' : ''}
         <button class="mini-link-btn danger" type="button" data-goal-action="clear">Clear</button>
       </div>
+      ${goalFacts ? renderGoalFacts(goalFacts) : ''}
       ${completionAudit ? renderGoalCompletionAudit(completionAudit) : ''}
       ${renderGoalItems('Success criteria', criteria, 'text')}
       ${renderGoalItems('Validation', validations, 'validation')}
@@ -1580,6 +1582,52 @@ function renderGoalPanel(detail) {
           ${features.length ? renderGoalItems('Features', features, 'feature') : ''}
           ${milestones.length ? renderGoalItems('Milestones', milestones, 'milestone') : ''}
           ${roles.length ? renderGoalItems('Roles', roles, 'role') : ''}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderGoalFacts(facts) {
+  const coverage = facts?.coverage || {};
+  const latest = facts?.latest_history || null;
+  const progress = maybeArray(facts?.progress).slice(-3).reverse();
+  const unresolvedChildren = maybeArray(facts?.unresolved_child_session_ids);
+  const unresolvedJobs = maybeArray(facts?.unresolved_queue_job_ids);
+  const lines = [];
+  if (Number(coverage.validation_total || 0) > 0) {
+    lines.push(`coverage ${Number(coverage.covered_assertions || 0)}/${Number(coverage.validation_total || 0)}`);
+    if (coverage.approval_blocked) {
+      lines.push('approval blocked');
+    }
+  }
+  if (Number(facts?.evaluator_evidence_count || 0) > 0) {
+    lines.push(`evaluator evidence ${Number(facts.evaluator_evidence_count)}`);
+  }
+  if (unresolvedChildren.length || unresolvedJobs.length) {
+    lines.push(`unresolved child/queue ${unresolvedChildren.length}/${unresolvedJobs.length}`);
+  }
+  if (facts?.latest_blocker) {
+    lines.push(`blocker ${facts.latest_blocker}`);
+  }
+  return `
+    <div class="goal-section">
+      <div class="goal-section-title">Mission facts</div>
+      ${lines.length ? `<div class="goal-meta-line">${escapeHTML(lines.join(' · '))}</div>` : '<div class="goal-meta-line">No coverage or linked evaluator facts recorded.</div>'}
+      ${maybeArray(coverage.uncovered_assertions).length ? `<div class="goal-meta-line">Uncovered ${escapeHTML(maybeArray(coverage.uncovered_assertions).join(', '))}</div>` : ''}
+      ${latest ? `<div class="goal-meta-line">Latest ${escapeHTML(latest.type || 'goal event')} · ${escapeHTML(formatTimestamp(latest.created_at))}</div>` : ''}
+      ${progress.length ? `
+        <div class="goal-item-list">
+          ${progress.map((item) => `
+            <div class="goal-item">
+              <div class="goal-item-top">
+                <span>${escapeHTML(item.summary || item.kind || 'progress')}</span>
+                <span class="status-badge neutral">${escapeHTML(item.kind || 'progress')}</span>
+              </div>
+              ${maybeArray(item.evidence).length ? `<div class="goal-meta-line">${escapeHTML(maybeArray(item.evidence).join(' · '))}</div>` : ''}
+              ${maybeArray(item.blockers).length ? `<div class="goal-meta-line">${escapeHTML(`blockers ${maybeArray(item.blockers).join(' · ')}`)}</div>` : ''}
+            </div>
+          `).join('')}
         </div>
       ` : ''}
     </div>
@@ -1643,6 +1691,7 @@ function renderGoalLinkedFacts(item) {
   const tasks = maybeArray(item?.task_ids);
   const children = maybeArray(item?.child_session_ids);
   const queueJobs = maybeArray(item?.queue_job_ids);
+  const evaluatorEvidence = maybeArray(item?.evaluator_evidence);
   if (tasks.length) {
     parts.push(`tasks ${tasks.map(shortId).join(', ')}`);
   }
@@ -1651,6 +1700,13 @@ function renderGoalLinkedFacts(item) {
   }
   if (queueJobs.length) {
     parts.push(`queue ${queueJobs.map(shortId).join(', ')}`);
+  }
+  if (evaluatorEvidence.length) {
+    const refs = evaluatorEvidence
+      .map((evidence) => evidence.child_session_id || evidence.queue_job_id || evidence.artifact || evidence.summary)
+      .filter(Boolean)
+      .map(shortId);
+    parts.push(`validated by evaluator ${refs.length ? refs.join(', ') : evaluatorEvidence.length}`);
   }
   if (!parts.length) {
     return '';

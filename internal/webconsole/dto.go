@@ -34,6 +34,7 @@ type GoalDraftRequest struct {
 	TimeBudgetMinutes         *int64   `json:"time_budget_minutes,omitempty"`
 	Autonomy                  string   `json:"autonomy,omitempty"`
 	RequirePlanApproval       bool     `json:"require_plan_approval,omitempty"`
+	StopOnBudget              bool     `json:"stop_on_budget,omitempty"`
 	CreateTasksFromPlan       bool     `json:"create_tasks_from_plan,omitempty"`
 	Features                  []string `json:"features,omitempty"`
 	Milestones                []string `json:"milestones,omitempty"`
@@ -72,6 +73,10 @@ type MissionPlanPatchRequest struct {
 	KnowledgeArtifacts  []string                     `json:"knowledge_artifacts,omitempty"`
 	PlanStatus          string                       `json:"plan_status,omitempty"`
 	CreateTasksFromPlan *bool                        `json:"create_tasks_from_plan,omitempty"`
+}
+
+type MissionPlanApproveRequest struct {
+	OverrideCoverage bool `json:"override_coverage,omitempty"`
 }
 
 type ContinueSessionRequest struct {

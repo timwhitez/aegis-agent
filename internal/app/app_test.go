@@ -234,6 +234,7 @@ func TestRunCommandParsesGoalFlags(t *testing.T) {
 		"--goal-success", "tests pass",
 		"--goal-validate", "go test ./internal/app",
 		"--goal-plan-approval",
+		"--goal-stop-on-budget",
 	}, &stdout, &stderr); err != nil {
 		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
@@ -253,7 +254,7 @@ func TestRunCommandParsesGoalFlags(t *testing.T) {
 	if len(goal.SuccessCriteria) != 1 || goal.SuccessCriteria[0] != "tests pass" || len(goal.ValidationPlan) != 1 {
 		t.Fatalf("unexpected criteria/validation: %#v", goal)
 	}
-	if !goal.RequirePlanApproval || goal.Source != session.GoalSourceCLI {
+	if !goal.RequirePlanApproval || !goal.StopOnBudget || goal.Source != session.GoalSourceCLI {
 		t.Fatalf("unexpected goal controls/source: %#v", goal)
 	}
 }
@@ -388,6 +389,79 @@ func TestGoalCommandAcceptsFlagsAfterSessionID(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"objective":"Show goal through CLI"`) {
 		t.Fatalf("expected json goal output, got %s", stdout.String())
+	}
+}
+
+func TestGoalMissionPlanAndValidationCommands(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_plan_cli",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_plan_cli",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:        true,
+		Mode:           session.GoalModeMission,
+		Objective:      "Plan through CLI",
+		ValidationPlan: []string{"go test ./internal/app"},
+		Features:       []string{"CLI plan"},
+		Milestones:     []string{"CLI validation"},
+		Source:         session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.Features[0].ClaimedAssertions = []string{"validation_0001"}
+	goal.Mission.Milestones[0].ValidationIDs = []string{"validation_0001"}
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"goal", "plan", "check", meta.ID, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("goal plan check: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"covered_assertions":1`) || !strings.Contains(stdout.String(), `"approval_blocked":false`) {
+		t.Fatalf("expected covered plan check, got %s", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"goal", "validation", "show", meta.ID}, &stdout, &stderr); err != nil {
+		t.Fatalf("goal validation show: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "validation_contract: 1") {
+		t.Fatalf("expected validation contract output, got %s", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"goal", "plan", "approve", meta.ID, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("goal plan approve: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	approved, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load approved goal: %v", err)
+	}
+	if approved.Mission.PlanStatus != "approved" {
+		t.Fatalf("expected approved mission plan, got %#v", approved.Mission)
 	}
 }
 

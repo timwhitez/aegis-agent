@@ -51,6 +51,8 @@ function isCompactFlowEvent(eventType) {
     'goal.created',
     'goal.updated',
     'goal.budget_limited',
+    'goal.budget_wrapup_required',
+    'goal.progress.recorded',
     'goal.completed',
     'planmode.created',
     'planmode.input_requested',
@@ -62,6 +64,7 @@ function isCompactFlowEvent(eventType) {
     'planmode.cancelled',
     'planmode.execution_started',
     'mission.plan.updated',
+    'mission.plan.approved',
     'mission.validation.updated',
     'provider.cancelled',
     'session.paused',
@@ -187,14 +190,16 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
     case 'goal.paused':
     case 'goal.resumed':
     case 'goal.budget_limited':
+    case 'goal.budget_wrapup_required':
+    case 'goal.progress.recorded':
     case 'goal.completed':
     case 'goal.cleared':
       return {
-        icon: eventType === 'goal.completed' ? 'badge-check' : eventType === 'goal.budget_limited' ? 'timer-off' : 'target',
+        icon: eventType === 'goal.completed' ? 'badge-check' : eventType === 'goal.budget_limited' || eventType === 'goal.budget_wrapup_required' ? 'timer-off' : 'target',
         title: humanizeEventType(eventType),
-        copy: data?.objective ? truncateText(data.objective, 180) : 'Session goal state changed.',
+        copy: data?.summary || data?.objective ? truncateText(data.summary || data.objective, 180) : 'Session goal state changed.',
         meta: data?.status ? humanizeStatus(data.status) : phaseHeadline(phase),
-        tone: eventType === 'goal.budget_limited' ? 'queued' : eventType === 'goal.completed' ? 'live' : 'neutral',
+        tone: eventType === 'goal.budget_limited' || eventType === 'goal.budget_wrapup_required' ? 'queued' : eventType === 'goal.completed' ? 'live' : 'neutral',
         data: data ? prettyJSON(data) : ''
       };
     case 'mission.plan.updated':

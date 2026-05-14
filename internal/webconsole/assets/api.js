@@ -90,8 +90,8 @@ function getPlanMode(sessionID) {
   return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode`);
 }
 
-function approvePlanMode(sessionID) {
-  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode/approve`, jsonRequest({}));
+function approvePlanMode(sessionID, payload = {}) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode/approve`, jsonRequest(payload));
 }
 
 function revisePlanMode(sessionID, message) {
@@ -156,8 +156,8 @@ function patchMissionPlan(sessionID, payload = {}) {
   return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/mission/plan`, jsonRequest(payload, { method: 'PATCH' }));
 }
 
-function approveMissionPlan(sessionID) {
-  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/mission/plan/approve`, { method: 'POST' });
+function approveMissionPlan(sessionID, payload = {}) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/mission/plan/approve`, jsonRequest(payload, { method: 'POST' }));
 }
 
 function patchMissionValidation(sessionID, payload = {}) {

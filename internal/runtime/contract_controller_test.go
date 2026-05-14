@@ -325,6 +325,41 @@ func TestGoalCompletionGateBlocksActiveGoalAndAllowsCompletedGoal(t *testing.T) 
 	}
 }
 
+func TestGoalCompletionGateRequiresBudgetWrapUpWhenStopOnBudget(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	tokenBudget := int64(1)
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Mode:         session.GoalModeGoal,
+		Objective:    "Stop cleanly on budget",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, limited, err := store.UpdateGoalAccounting(meta.ID, session.GoalUsageDelta{TokensUsedDelta: 2, SourceTurn: 1}); err != nil || !limited {
+		t.Fatalf("expected budget limit, limited=%v err=%v", limited, err)
+	}
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"stopped"}`))
+	if decision.Status != GateBlock || decision.GateID != "goal_budget_wrapup" {
+		t.Fatalf("expected budget wrap-up gate, got %#v", decision)
+	}
+	if _, _, err := store.RecordGoalProgress(meta.ID, session.GoalProgressInput{
+		Source:   session.GoalSourceTool,
+		Kind:     "budget_wrapup",
+		Summary:  "Recorded remaining work.",
+		Blockers: []string{"needs more budget"},
+	}); err != nil {
+		t.Fatalf("record budget wrap-up: %v", err)
+	}
+	decision = controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"stopped"}`))
+	if decision.Status != GateAllow {
+		t.Fatalf("expected finish after budget wrap-up record, got %#v", decision)
+	}
+}
+
 func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := store.AppendBackgroundNotification(meta.ID, session.NewBackgroundNotification(session.QueueJob{

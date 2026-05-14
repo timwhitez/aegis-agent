@@ -119,7 +119,7 @@ type Registry struct {
 
 var reservedNames = map[string]struct{}{
 	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
-	"finish": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
+	"finish": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "record_goal_progress": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
 	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_status": {},
 	"agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
 	"get_plan_mode": {}, "submit_plan": {}, "request_user_input": {},
@@ -189,6 +189,7 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 		defLoadSkill(catalog),
 		defGetGoal(),
 		defCreateGoal(),
+		defRecordGoalProgress(),
 		defUpdateGoal(),
 		defGetPlanMode(),
 		defSubmitPlan(),
@@ -289,6 +290,102 @@ func goalItemStatusUpdateArraySchema() map[string]any {
 			"additionalProperties": false,
 		},
 	}
+}
+
+func goalProgressCommandArraySchema() map[string]any {
+	return withDescription(map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command":   map[string]any{"type": "string", "description": "Command that was run or should be handed off."},
+				"exit_code": map[string]any{"type": "integer", "description": "Observed exit code when known."},
+				"artifact":  map[string]any{"type": "string", "description": "Output artifact or evidence path for the command."},
+				"summary":   map[string]any{"type": "string", "description": "Short command result summary."},
+			},
+			"additionalProperties": false,
+		},
+	}, "Command results or handoff commands linked to this progress update.")
+}
+
+func missionFeatureUpdateArraySchema() map[string]any {
+	return withDescription(map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":                 map[string]any{"type": "string", "description": "Mission feature id to update."},
+				"status":             map[string]any{"type": "string", "description": "Feature status such as pending, in_progress, completed, blocked, or skipped."},
+				"evidence":           withDescription(stringArraySchema(), "Evidence refs for this feature."),
+				"claimed_assertions": withDescription(stringArraySchema(), "Validation contract ids this feature covers."),
+				"task_ids":           withDescription(stringArraySchema(), "Durable task ids linked to this feature."),
+				"child_session_ids":  withDescription(stringArraySchema(), "Child session ids linked to this feature."),
+				"queue_job_ids":      withDescription(stringArraySchema(), "Queue job ids linked to this feature."),
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		},
+	}, "Append-friendly updates for mission features by id.")
+}
+
+func missionMilestoneUpdateArraySchema() map[string]any {
+	return withDescription(map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":                map[string]any{"type": "string", "description": "Mission milestone id to update."},
+				"status":            map[string]any{"type": "string", "description": "Milestone status such as pending, in_progress, completed, blocked, or skipped."},
+				"evidence":          withDescription(stringArraySchema(), "Evidence refs for this milestone."),
+				"feature_ids":       withDescription(stringArraySchema(), "Feature ids linked to this milestone."),
+				"validation_ids":    withDescription(stringArraySchema(), "Validation contract ids this milestone covers."),
+				"task_ids":          withDescription(stringArraySchema(), "Durable task ids linked to this milestone."),
+				"child_session_ids": withDescription(stringArraySchema(), "Child session ids linked to this milestone."),
+				"queue_job_ids":     withDescription(stringArraySchema(), "Queue job ids linked to this milestone."),
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		},
+	}, "Append-friendly updates for mission milestones by id.")
+}
+
+func missionValidationUpdateArraySchema() map[string]any {
+	return withDescription(map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":                 map[string]any{"type": "string", "description": "Validation id to update in the goal validation plan or mission validation contract."},
+				"status":             map[string]any{"type": "string", "description": "Validation status such as verified, failed, skipped, blocked, or pending."},
+				"evidence":           withDescription(stringArraySchema(), "Evidence refs for this validation item."),
+				"last_run_at":        map[string]any{"type": "string", "description": "Optional RFC3339 validation run timestamp."},
+				"child_session_ids":  withDescription(stringArraySchema(), "Child session ids that produced validation evidence."),
+				"queue_job_ids":      withDescription(stringArraySchema(), "Queue job ids that produced validation evidence."),
+				"evaluator_evidence": evaluatorEvidenceArraySchema(),
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		},
+	}, "Append-friendly updates for validation plan or validation contract items by id.")
+}
+
+func evaluatorEvidenceArraySchema() map[string]any {
+	return withDescription(map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"role":             map[string]any{"type": "string", "description": "Usually evaluator when evidence came from independent validation."},
+				"child_session_id": map[string]any{"type": "string", "description": "Evaluator child session id."},
+				"queue_job_id":     map[string]any{"type": "string", "description": "Evaluator queue job id."},
+				"artifact":         map[string]any{"type": "string", "description": "Evidence artifact path or id."},
+				"summary":          map[string]any{"type": "string", "description": "Short evaluator result summary."},
+				"status":           map[string]any{"type": "string", "description": "Evaluator result status."},
+				"created_at":       map[string]any{"type": "string", "description": "Optional RFC3339 timestamp."},
+			},
+			"additionalProperties": false,
+		},
+	}, "Independent evaluator evidence links for this validation item.")
 }
 
 func withDescription(schema map[string]any, description string) map[string]any {
@@ -1403,6 +1500,10 @@ func defCreateGoal() Definition {
 					"type":        "boolean",
 					"description": "When true, mission plan starts in needs_approval.",
 				},
+				"stop_on_budget": map[string]any{
+					"type":        "boolean",
+					"description": "When true, budget exhaustion records a budget-limited goal and allows only a wrap-up turn instead of open-ended continuation.",
+				},
 				"create_tasks_from_plan": map[string]any{
 					"type":        "boolean",
 					"description": "When true, the mission plan may be synced into durable tasks by explicit follow-up work.",
@@ -1421,6 +1522,7 @@ func defCreateGoal() Definition {
 				Features            []string `json:"features"`
 				Milestones          []string `json:"milestones"`
 				RequirePlanApproval bool     `json:"require_plan_approval"`
+				StopOnBudget        bool     `json:"stop_on_budget"`
 				CreateTasksFromPlan bool     `json:"create_tasks_from_plan"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
@@ -1440,6 +1542,7 @@ func defCreateGoal() Definition {
 				TokenBudget:         input.TokenBudget,
 				TimeBudgetSeconds:   seconds,
 				RequirePlanApproval: input.RequirePlanApproval,
+				StopOnBudget:        input.StopOnBudget,
 				CreateTasksFromPlan: input.CreateTasksFromPlan,
 				Features:            input.Features,
 				Milestones:          input.Milestones,
@@ -1474,6 +1577,90 @@ func defCreateGoal() Definition {
 					"path":    filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "goal.json"),
 					"goal_id": goal.GoalID,
 					"status":  goal.Status,
+				},
+			}, nil
+		},
+	}
+}
+
+func defRecordGoalProgress() Definition {
+	return Definition{
+		Name:        "record_goal_progress",
+		Description: "Append structured progress, handoff, validation evidence, evaluator child/queue attribution, commands, artifacts, blockers, or budget wrap-up facts to the current durable goal. This does not change the objective, pause/resume/clear the goal, approve plans, or mark completion; use update_goal only after a real completion audit.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind": map[string]any{
+					"type":        "string",
+					"description": "Optional record kind such as progress, handoff, validation, blocker, or budget_wrapup.",
+				},
+				"summary":            withDescription(map[string]any{"type": "string"}, "Short progress or handoff summary."),
+				"evidence":           withDescription(stringArraySchema(), "Concrete evidence references."),
+				"linked_artifacts":   withDescription(stringArraySchema(), "Files or artifacts that support this progress record."),
+				"commands":           goalProgressCommandArraySchema(),
+				"blockers":           withDescription(stringArraySchema(), "Current blockers or remaining risks."),
+				"child_session_ids":  withDescription(stringArraySchema(), "Child session ids related to this progress or handoff."),
+				"queue_job_ids":      withDescription(stringArraySchema(), "Queue job ids related to this progress or handoff."),
+				"validation_ids":     withDescription(stringArraySchema(), "Validation ids related to this progress or handoff."),
+				"feature_updates":    missionFeatureUpdateArraySchema(),
+				"milestone_updates":  missionMilestoneUpdateArraySchema(),
+				"validation_updates": missionValidationUpdateArraySchema(),
+			},
+		},
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Kind              string                                   `json:"kind"`
+				Summary           string                                   `json:"summary"`
+				Evidence          []string                                 `json:"evidence"`
+				LinkedArtifacts   []string                                 `json:"linked_artifacts"`
+				Commands          []session.GoalProgressCommand            `json:"commands"`
+				Blockers          []string                                 `json:"blockers"`
+				ChildSessionIDs   []string                                 `json:"child_session_ids"`
+				QueueJobIDs       []string                                 `json:"queue_job_ids"`
+				ValidationIDs     []string                                 `json:"validation_ids"`
+				FeatureUpdates    []session.MissionFeatureProgressUpdate   `json:"feature_updates"`
+				MilestoneUpdates  []session.MissionMilestoneProgressUpdate `json:"milestone_updates"`
+				ValidationUpdates []session.GoalValidationProgressUpdate   `json:"validation_updates"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("record_goal_progress", err), nil
+			}
+			goal, record, err := execCtx.Store.RecordGoalProgress(execCtx.SessionID, session.GoalProgressInput{
+				Source:            session.GoalSourceTool,
+				Kind:              input.Kind,
+				Summary:           input.Summary,
+				Evidence:          input.Evidence,
+				LinkedArtifacts:   input.LinkedArtifacts,
+				Commands:          input.Commands,
+				Blockers:          input.Blockers,
+				ChildSessionIDs:   input.ChildSessionIDs,
+				QueueJobIDs:       input.QueueJobIDs,
+				ValidationIDs:     input.ValidationIDs,
+				FeatureUpdates:    input.FeatureUpdates,
+				MilestoneUpdates:  input.MilestoneUpdates,
+				ValidationUpdates: input.ValidationUpdates,
+			})
+			if err != nil {
+				return errorResult("record_goal_progress", err), nil
+			}
+			if execCtx.Emit != nil {
+				execCtx.Emit("goal.progress.recorded", map[string]any{
+					"goal_id":     goal.GoalID,
+					"status":      goal.Status,
+					"kind":        record.Kind,
+					"progress_id": record.ID,
+				})
+			}
+			data, _ := json.MarshalIndent(goal, "", "  ")
+			return session.ToolResult{
+				Name:          "record_goal_progress",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"path":        filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "goal.json"),
+					"goal_id":     goal.GoalID,
+					"status":      goal.Status,
+					"progress_id": record.ID,
 				},
 			}, nil
 		},

@@ -200,6 +200,102 @@ func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
 	}
 }
 
+func TestServiceGoalFactsAndMissionCoverageApproval(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_facts",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_facts",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:        true,
+		Mode:           session.GoalModeMission,
+		Objective:      "Expose mission facts",
+		ValidationPlan: []string{"manual: validate coverage"},
+		Features:       []string{"facts panel"},
+		Milestones:     []string{"validation pass"},
+		Source:         session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+	approveReq, err := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatalf("new approve request: %v", err)
+	}
+	approveReq.Header.Set("Content-Type", "application/json")
+	approveReq.Header.Set(webMutationHeader, "1")
+	approveResp, err := http.DefaultClient.Do(approveReq)
+	if err != nil {
+		t.Fatalf("approve mission plan: %v", err)
+	}
+	defer approveResp.Body.Close()
+	if approveResp.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(approveResp.Body)
+		t.Fatalf("expected coverage conflict, got %d body=%s", approveResp.StatusCode, string(body))
+	}
+	if _, _, err := svc.store.RecordGoalProgress(meta.ID, session.GoalProgressInput{
+		Source:  session.GoalSourceTool,
+		Kind:    "handoff",
+		Summary: "Evaluator evidence recorded.",
+		FeatureUpdates: []session.MissionFeatureProgressUpdate{{
+			ID:                "feature_0001",
+			ClaimedAssertions: []string{"validation_0001"},
+			ChildSessionIDs:   []string{"child_eval"},
+		}},
+		MilestoneUpdates: []session.MissionMilestoneProgressUpdate{{
+			ID:            "milestone_0001",
+			ValidationIDs: []string{"validation_0001"},
+		}},
+		ValidationUpdates: []session.GoalValidationProgressUpdate{{
+			ID:     "validation_0001",
+			Status: "verified",
+			EvaluatorEvidence: []session.GoalEvaluatorEvidence{{
+				ChildSessionID: "child_eval",
+				Summary:        "independent evaluator passed",
+				Status:         "verified",
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("record progress: %v", err)
+	}
+	detail, err := svc.sessionDetail(meta.ID, 40)
+	if err != nil {
+		t.Fatalf("session detail: %v", err)
+	}
+	if detail.Goal == nil || detail.GoalFacts == nil {
+		t.Fatalf("expected goal facts in detail: %#v", detail)
+	}
+	if detail.GoalFacts.Coverage.ApprovalBlocked || detail.GoalFacts.Coverage.CoveredAssertions != 1 {
+		t.Fatalf("expected covered validation facts, got %#v", detail.GoalFacts.Coverage)
+	}
+	if detail.GoalFacts.EvaluatorEvidenceCount != 1 || len(detail.GoalFacts.Progress) != 1 {
+		t.Fatalf("expected evaluator evidence and progress facts, got %#v", detail.GoalFacts)
+	}
+	var approved session.SessionGoal
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusOK, &approved)
+	if approved.GoalID != goal.GoalID || approved.Mission.PlanStatus != "approved" {
+		t.Fatalf("expected mission approved after coverage, got %#v", approved.Mission)
+	}
+}
+
 func TestServicePlanModeGetAndParentQueueGate(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

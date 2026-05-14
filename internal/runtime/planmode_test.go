@@ -240,7 +240,7 @@ func TestApproveLinkedPlanModeMarksMissionPlanApproved(t *testing.T) {
 	if executing.PlanModeID != planMode.PlanModeID || executing.ApprovedVersion != approved.ApprovedVersion {
 		t.Fatalf("unexpected executing plan mode: %#v approved=%#v", executing, approved)
 	}
-	if err := runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI); err != nil {
+	if err := runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI, false); err != nil {
 		t.Fatalf("approve linked mission plan: %v", err)
 	}
 	loaded, err := runner.store.LoadGoal(sessionID)
@@ -249,6 +249,77 @@ func TestApproveLinkedPlanModeMarksMissionPlanApproved(t *testing.T) {
 	}
 	if loaded.Mission == nil || loaded.Mission.PlanStatus != "approved" || loaded.Mission.ApprovedAt == "" {
 		t.Fatalf("expected mission plan approval synced from plan mode, got %#v", loaded.Mission)
+	}
+}
+
+func TestApproveLinkedPlanModeBlocksUncoveredMissionValidation(t *testing.T) {
+	cfg := config.Default()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := runner.store.CreateGoal(sessionID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Approve only covered plans",
+		ValidationPlan:      []string{"go test ./internal/runtime"},
+		Features:            []string{"runtime change"},
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, _, err := runner.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Do the work.",
+		PlanMarkdown: "# Plan\n\nDo the work.",
+		Verification: []string{"go test ./internal/runtime"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan: %v", err)
+	}
+	if err := runner.checkPlanModeGoalCoverage(sessionID, false); err == nil || !strings.Contains(err.Error(), "coverage blocks approval") {
+		t.Fatalf("expected coverage approval block, got %v", err)
+	}
+	loaded, err := runner.store.LoadGoal(sessionID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	loaded.Mission.Features[0].ClaimedAssertions = []string{"validation_0001"}
+	loaded.Mission.Milestones = []session.MissionMilestone{{ID: "milestone_0001", Title: "validation", Status: "pending", ValidationIDs: []string{"validation_0001"}}}
+	if err := runner.store.SaveGoal(sessionID, loaded); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+	approved, err := runner.store.ApprovePlanMode(sessionID, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	executing, err := runner.store.MarkPlanModeExecuting(sessionID, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	if executing.PlanModeID != planMode.PlanModeID || approved.ApprovedVersion == 0 {
+		t.Fatalf("unexpected plan mode state: approved=%#v executing=%#v", approved, executing)
+	}
+	if err := runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI, false); err != nil {
+		t.Fatalf("approve linked mission plan after coverage fix: %v", err)
 	}
 }
 

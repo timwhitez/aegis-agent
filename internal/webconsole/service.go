@@ -153,6 +153,7 @@ type SessionDetailResponse struct {
 	Metadata                session.SessionMetadata          `json:"metadata"`
 	State                   session.State                    `json:"state"`
 	Goal                    *session.SessionGoal             `json:"goal,omitempty"`
+	GoalFacts               *GoalFactsResponse               `json:"goal_facts,omitempty"`
 	PlanMode                *session.PlanModeState           `json:"plan_mode,omitempty"`
 	Contract                *session.SessionContract         `json:"contract,omitempty"`
 	RequiredArtifacts       []session.RequiredArtifact       `json:"required_artifacts,omitempty"`
@@ -169,6 +170,19 @@ type SessionDetailResponse struct {
 	Timeline                []TimelineEntry                  `json:"timeline"`
 	ActiveHandle            bool                             `json:"active_handle"`
 	ActiveHandleOwner       ActiveHandleOwner                `json:"active_handle_owner"`
+}
+
+type GoalFactsResponse struct {
+	Coverage                  session.MissionPlanCoverage  `json:"coverage"`
+	LatestHistory             *session.GoalHistoryEntry    `json:"latest_history,omitempty"`
+	History                   []session.GoalHistoryEntry   `json:"history,omitempty"`
+	Progress                  []session.GoalProgressRecord `json:"progress,omitempty"`
+	LinkedChildSessionIDs     []string                     `json:"linked_child_session_ids,omitempty"`
+	LinkedQueueJobIDs         []string                     `json:"linked_queue_job_ids,omitempty"`
+	UnresolvedChildSessionIDs []string                     `json:"unresolved_child_session_ids,omitempty"`
+	UnresolvedQueueJobIDs     []string                     `json:"unresolved_queue_job_ids,omitempty"`
+	EvaluatorEvidenceCount    int                          `json:"evaluator_evidence_count"`
+	LatestBlocker             string                       `json:"latest_blocker,omitempty"`
 }
 
 type ActiveHandleOwner struct {
@@ -543,7 +557,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 					return
 				}
-				s.handlePlanModeApprove(w, sessionID)
+				s.handlePlanModeApprove(w, r, sessionID)
 			case "revise":
 				if r.Method != http.MethodPost {
 					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -616,7 +630,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 				return
 			}
-			s.handleMissionPlanApprove(w, sessionID)
+			s.handleMissionPlanApprove(w, r, sessionID)
 			return
 		}
 		writeError(w, http.StatusNotFound, errors.New("session route not found"))
@@ -804,8 +818,10 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		parentCoordinationPtr = &coordination
 	}
 	var goalPtr *session.SessionGoal
+	var goalFacts *GoalFactsResponse
 	if goal, err := s.store.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
 		goalPtr = &goal
+		goalFacts = s.goalFacts(sessionID, goal, children, background)
 	}
 	var planModePtr *session.PlanModeState
 	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.PlanModeID != "" {
@@ -839,6 +855,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		Metadata:                meta,
 		State:                   state,
 		Goal:                    goalPtr,
+		GoalFacts:               goalFacts,
 		PlanMode:                planModePtr,
 		Contract:                contractPtr,
 		RequiredArtifacts:       requiredArtifacts,
@@ -1156,7 +1173,11 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, goal)
 }
 
-func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, sessionID string) {
+func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Request, sessionID string) {
+	req, ok := decodeOptionalMissionPlanApproveRequest(w, r)
+	if !ok {
+		return
+	}
 	goal, err := s.store.LoadGoal(sessionID)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
@@ -1164,6 +1185,10 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, sessionID stri
 	}
 	goal.Mode = session.GoalModeMission
 	mission := ensureMissionPlan(goal.Mission)
+	if err := ensureWebMissionCoverage(goal, req.OverrideCoverage); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
 		switch planMode.Status {
 		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
@@ -1172,9 +1197,10 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, sessionID stri
 				return
 			}
 			if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
-				SessionID:   sessionID,
-				ApprovePlan: true,
-				Source:      session.PlanModeSourceWeb,
+				SessionID:            sessionID,
+				ApprovePlan:          true,
+				OverrideGoalCoverage: req.OverrideCoverage,
+				Source:               session.PlanModeSourceWeb,
 			}); err != nil {
 				writeError(w, planModeActionStatus(err), err)
 				return
@@ -1225,7 +1251,8 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, sessionID stri
 		return
 	}
 	if err := s.appendGoalMutation(sessionID, goal, "mission.plan.approved", map[string]any{
-		"approved_at": mission.ApprovedAt,
+		"approved_at":       mission.ApprovedAt,
+		"coverage_override": req.OverrideCoverage,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1502,15 +1529,20 @@ func (s *Service) handlePlanModeGet(w http.ResponseWriter, sessionID string) {
 	writeJSON(w, http.StatusOK, planMode)
 }
 
-func (s *Service) handlePlanModeApprove(w http.ResponseWriter, sessionID string) {
+func (s *Service) handlePlanModeApprove(w http.ResponseWriter, r *http.Request, sessionID string) {
+	req, ok := decodeOptionalMissionPlanApproveRequest(w, r)
+	if !ok {
+		return
+	}
 	if s.hasActiveHandle(sessionID) {
 		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
 		return
 	}
 	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
-		SessionID:   sessionID,
-		ApprovePlan: true,
-		Source:      session.PlanModeSourceWeb,
+		SessionID:            sessionID,
+		ApprovePlan:          true,
+		OverrideGoalCoverage: req.OverrideCoverage,
+		Source:               session.PlanModeSourceWeb,
 	}); err != nil {
 		writeError(w, planModeActionStatus(err), err)
 		return
@@ -3449,6 +3481,7 @@ func goalDraftFromWebRequest(req *GoalDraftRequest, source string) (*session.Goa
 		TimeBudgetSeconds:         timeBudgetSeconds,
 		Autonomy:                  req.Autonomy,
 		RequirePlanApproval:       req.RequirePlanApproval,
+		StopOnBudget:              req.StopOnBudget,
 		CreateTasksFromPlan:       req.CreateTasksFromPlan,
 		Features:                  append([]string(nil), req.Features...),
 		Milestones:                append([]string(nil), req.Milestones...),
@@ -3521,6 +3554,26 @@ func ensureMissionPlan(plan *session.MissionPlan) *session.MissionPlan {
 	return &copyPlan
 }
 
+func decodeOptionalMissionPlanApproveRequest(w http.ResponseWriter, r *http.Request) (MissionPlanApproveRequest, bool) {
+	var req MissionPlanApproveRequest
+	if r.Body == nil || r.ContentLength == 0 {
+		return req, true
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return MissionPlanApproveRequest{}, false
+	}
+	return req, true
+}
+
+func ensureWebMissionCoverage(goal session.SessionGoal, override bool) error {
+	coverage := session.CheckMissionPlanCoverage(goal)
+	if !coverage.ApprovalBlocked || override {
+		return nil
+	}
+	return fmt.Errorf("mission validation coverage blocks approval: %s", coverage.BlockingSummary())
+}
+
 func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {
 	data := webGoalEventData(goal)
 	for key, value := range extra {
@@ -3536,6 +3589,146 @@ func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal,
 		return err
 	}
 	return s.store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", data))
+}
+
+func (s *Service) goalFacts(sessionID string, goal session.SessionGoal, children ChildrenResponse, background []session.BackgroundNotification) *GoalFactsResponse {
+	history, _ := s.store.LoadGoalHistory(sessionID)
+	if len(history) > 20 {
+		history = history[len(history)-20:]
+	}
+	var latest *session.GoalHistoryEntry
+	if len(history) > 0 {
+		copyLatest := history[len(history)-1]
+		latest = &copyLatest
+	}
+	childIDs, queueIDs, evaluatorCount, latestBlocker := linkedGoalFacts(goal)
+	unresolvedChildren := unresolvedLinkedChildren(childIDs, children.Sessions)
+	unresolvedJobs := unresolvedLinkedJobs(queueIDs, children.Jobs)
+	if len(unresolvedChildren) == 0 || len(unresolvedJobs) == 0 {
+		for _, notification := range background {
+			if notification.DeliveryStatus != session.BackgroundNotificationPending {
+				continue
+			}
+			if notification.SessionID != "" {
+				unresolvedChildren = appendUniqueString(unresolvedChildren, notification.SessionID)
+			}
+			if notification.QueueJobID != "" {
+				unresolvedJobs = appendUniqueString(unresolvedJobs, notification.QueueJobID)
+			}
+		}
+	}
+	return &GoalFactsResponse{
+		Coverage:                  session.CheckMissionPlanCoverage(goal),
+		LatestHistory:             latest,
+		History:                   history,
+		Progress:                  append([]session.GoalProgressRecord(nil), goal.Progress...),
+		LinkedChildSessionIDs:     childIDs,
+		LinkedQueueJobIDs:         queueIDs,
+		UnresolvedChildSessionIDs: unresolvedChildren,
+		UnresolvedQueueJobIDs:     unresolvedJobs,
+		EvaluatorEvidenceCount:    evaluatorCount,
+		LatestBlocker:             latestBlocker,
+	}
+}
+
+func linkedGoalFacts(goal session.SessionGoal) ([]string, []string, int, string) {
+	childIDs := []string{}
+	queueIDs := []string{}
+	evaluatorCount := 0
+	evaluatorKeys := map[string]struct{}{}
+	latestBlocker := ""
+	addValidation := func(validation session.GoalValidation) {
+		childIDs = mergeUniqueStrings(childIDs, validation.ChildSessionIDs)
+		queueIDs = mergeUniqueStrings(queueIDs, validation.QueueJobIDs)
+		for _, evidence := range validation.EvaluatorEvidence {
+			key := strings.Join([]string{evidence.ChildSessionID, evidence.QueueJobID, evidence.Artifact, evidence.Summary}, "\x00")
+			if _, ok := evaluatorKeys[key]; !ok {
+				evaluatorKeys[key] = struct{}{}
+				evaluatorCount++
+			}
+			if evidence.ChildSessionID != "" {
+				childIDs = appendUniqueString(childIDs, evidence.ChildSessionID)
+			}
+			if evidence.QueueJobID != "" {
+				queueIDs = appendUniqueString(queueIDs, evidence.QueueJobID)
+			}
+		}
+	}
+	for _, validation := range goal.ValidationPlan {
+		addValidation(validation)
+	}
+	if goal.Mission != nil {
+		for _, validation := range goal.Mission.ValidationContract {
+			addValidation(validation)
+		}
+		for _, feature := range goal.Mission.Features {
+			childIDs = mergeUniqueStrings(childIDs, feature.ChildSessionIDs)
+			queueIDs = mergeUniqueStrings(queueIDs, feature.QueueJobIDs)
+		}
+		for _, milestone := range goal.Mission.Milestones {
+			childIDs = mergeUniqueStrings(childIDs, milestone.ChildSessionIDs)
+			queueIDs = mergeUniqueStrings(queueIDs, milestone.QueueJobIDs)
+		}
+	}
+	for _, record := range goal.Progress {
+		childIDs = mergeUniqueStrings(childIDs, record.ChildSessionIDs)
+		queueIDs = mergeUniqueStrings(queueIDs, record.QueueJobIDs)
+		if len(record.Blockers) > 0 {
+			latestBlocker = record.Blockers[len(record.Blockers)-1]
+		}
+	}
+	return childIDs, queueIDs, evaluatorCount, latestBlocker
+}
+
+func unresolvedLinkedChildren(ids []string, children []session.SessionSummary) []string {
+	statusByID := map[string]string{}
+	for _, child := range children {
+		statusByID[child.ID] = child.Status
+	}
+	out := []string{}
+	for _, id := range ids {
+		status := statusByID[id]
+		if status == "" || (status != session.StatusCompleted && status != session.StatusFailed) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func unresolvedLinkedJobs(ids []string, jobs []session.QueueJob) []string {
+	statusByID := map[string]string{}
+	for _, job := range jobs {
+		statusByID[job.ID] = job.Status
+	}
+	out := []string{}
+	for _, id := range ids {
+		status := statusByID[id]
+		if status == "" || (status != session.QueueStatusCompleted && status != session.QueueStatusFailed) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func mergeUniqueStrings(existing []string, additions []string) []string {
+	out := append([]string(nil), existing...)
+	for _, value := range additions {
+		out = appendUniqueString(out, value)
+	}
+	return out
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func webGoalEventData(goal session.SessionGoal) map[string]any {
@@ -3566,6 +3759,18 @@ func webGoalEventData(goal session.SessionGoal) map[string]any {
 		data["mission_plan_status"] = goal.Mission.PlanStatus
 		data["mission_feature_count"] = len(goal.Mission.Features)
 		data["mission_milestone_count"] = len(goal.Mission.Milestones)
+		coverage := session.CheckMissionPlanCoverage(goal)
+		if coverage.ValidationTotal > 0 {
+			data["mission_validation_total"] = coverage.ValidationTotal
+			data["mission_validation_covered"] = coverage.CoveredAssertions
+			data["mission_validation_approval_blocked"] = coverage.ApprovalBlocked
+		}
+	}
+	if len(goal.Progress) > 0 {
+		latest := goal.Progress[len(goal.Progress)-1]
+		data["progress_id"] = latest.ID
+		data["kind"] = latest.Kind
+		data["summary"] = latest.Summary
 	}
 	return data
 }

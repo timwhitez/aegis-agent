@@ -197,6 +197,8 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 - required artifact tracker：`artifact-tracker.json`
 - centralized completion controller：统一复用既有 guard，并补充显式 artifact / parent coordination gate
 - active goal completion gate：active goal 下 `finish` 前必须先完成目标审计并由模型调用 `update_goal(status="complete")`；completion evidence 和 criteria / validation 状态必须回写 `goal.json` 快照；若高级入口设置了预算，budget_limited 只能触发 wrap-up，不等同完成
+- mission validation coverage：`goal plan check` / Web detail / approval gate 必须从同一份 `goal.json` 派生 coverage report；mission plan approval 默认阻断 uncovered 或 invalid validation contract，除非 CLI/API 明确 override
+- structured goal progress：模型工具 `record_goal_progress` 可追加 feature / milestone / validation / evaluator / child / queue / artifact / command / blocker / handoff / budget wrap-up 事实，并同步 `goal-history.jsonl`、`goal.json`、`session.md` / checkpoint；该工具不能改变 objective 或完成状态
 - provider attempt ledger：`provider-attempts.jsonl`
 - operator session summary：`session.md`
 - long-run checkpoint：`checkpoints/longrun-latest.json`
@@ -210,6 +212,7 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 - `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 - goal 的验收覆盖 store round-trip、model tools、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate、Web start payload 与 goal REST endpoints；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
+- CLI-first mission controls 至少覆盖 `goal plan show/check/approve` 与 `goal validation show`；它们读取 / 更新 session store 权威事实，不维护第二套状态，也不引入 TUI
 - Plan Mode 的验收覆盖 store round-trip、tool schema 裁剪、CompletionController gate、`submit_plan` 同批 tool result 补偿、`request_user_input` active/recovery 路径、CLI `--plan/--plan-only/--approve-plan`、Web Plan inspector 与 parent-linked queue/delegate rejection
 
 ## 15. Extension Phases

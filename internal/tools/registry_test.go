@@ -365,6 +365,33 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 		t.Fatalf("expected paused update rejection, got %#v", rejectResult)
 	}
 
+	progressResult, err := registry.Execute(context.Background(), "record_goal_progress", execCtx, json.RawMessage(`{
+		"kind":"handoff",
+		"summary":"feature implemented and handed off",
+		"linked_artifacts":["reports/progress.md"],
+		"commands":[{"command":"go test ./internal/tools","exit_code":0,"summary":"passed"}],
+		"blockers":["browser smoke pending"],
+		"feature_updates":[{"id":"feature_0001","status":"completed","claimed_assertions":["validation_0001"],"evidence":["feature evidence"],"child_session_ids":["child_eval"]}],
+		"milestone_updates":[{"id":"milestone_0001","status":"completed","validation_ids":["validation_0001"]}],
+		"validation_updates":[{"id":"validation_0001","status":"verified","evidence":["validator evidence"],"evaluator_evidence":[{"child_session_id":"child_eval","summary":"independent evaluator passed","status":"verified"}]}]
+	}`))
+	if err != nil {
+		t.Fatalf("record_goal_progress execute: %v", err)
+	}
+	if progressResult.IsError {
+		t.Fatalf("record_goal_progress returned error: %s", progressResult.DisplayOutput)
+	}
+	progressGoal, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load progress goal: %v", err)
+	}
+	if len(progressGoal.Progress) != 1 || progressGoal.Progress[0].Kind != "handoff" {
+		t.Fatalf("expected progress record in goal snapshot, got %#v", progressGoal.Progress)
+	}
+	if progressGoal.Mission.Features[0].Status != "completed" || len(progressGoal.Mission.ValidationContract[0].EvaluatorEvidence) != 1 {
+		t.Fatalf("expected feature and evaluator evidence updates, got goal=%#v", progressGoal)
+	}
+
 	completeResult, err := registry.Execute(context.Background(), "update_goal", execCtx, json.RawMessage(`{
 		"status":"complete",
 		"completion_summary":"Tools goal support is complete.",
@@ -391,7 +418,7 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	if goal.SuccessCriteria[0].Status != "verified" || goal.ValidationPlan[0].Status != "verified" {
 		t.Fatalf("expected item status evidence in goal snapshot, got criteria=%#v validation=%#v", goal.SuccessCriteria, goal.ValidationPlan)
 	}
-	if strings.Join(eventTypes, ",") != "goal.created,planmode.created,goal.completed" {
+	if strings.Join(eventTypes, ",") != "goal.created,planmode.created,goal.progress.recorded,goal.completed" {
 		t.Fatalf("expected goal event emissions, got %#v", eventTypes)
 	}
 }

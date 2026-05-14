@@ -142,6 +142,28 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err != nil {
 			return RunResult{}, err
 		}
+		budgetWrapUpTurn := false
+		if goal != nil && goal.Status == session.GoalStatusBudgetLimited && goal.Control.StopOnBudget && goal.BudgetWrapUpRequestedAt != "" && !session.HasBudgetWrapUpRecord(*goal) {
+			goalCopy := *goal
+			if session.MarkBudgetWrapUpTurnStarted(&goalCopy) {
+				if err := e.store.SaveGoal(meta.ID, goalCopy); err != nil {
+					return RunResult{}, err
+				}
+				_ = e.store.AppendGoalHistory(meta.ID, session.GoalHistoryEntry{
+					Type:   "goal.budget_wrapup_turn_started",
+					Source: session.GoalSourceSystem,
+					Status: goalCopy.Status,
+					Data: map[string]any{
+						"budget_wrapup_turn_started_at": goalCopy.BudgetWrapUpTurnStartedAt,
+					},
+				})
+				e.emit(meta.ID, "goal.budget_wrapup_turn_started", "prepare", goalEventData(goalCopy))
+				goal = &goalCopy
+				budgetWrapUpTurn = true
+			} else {
+				return e.awaitingBudgetWrapUp(ctx, meta, state, hookManager)
+			}
+		}
 		planMode, err := loadPlanModeOptional(e.store, meta.ID)
 		if err != nil {
 			return RunResult{}, err
@@ -283,9 +305,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 		}
 		recordProviderSuccess(e.store, meta, state.Turn, result)
-		if err := e.updateGoalAccounting(meta.ID, state.Turn, result.Usage, time.Since(providerStart)); err != nil {
+		accountedGoal, budgetLimited, err := e.updateGoalAccounting(meta.ID, state.Turn, result.Usage, time.Since(providerStart))
+		if err != nil {
 			return e.fail(ctx, meta, state, err, hookManager)
 		}
+		budgetStopRequested := budgetLimited && accountedGoal.Control.StopOnBudget
 		_ = writeSessionSummary(e.store, meta.ID)
 		if state.ProviderAutoResumeCount != 0 {
 			state.ProviderAutoResumeCount = 0
@@ -325,6 +349,19 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				"status": state.Status,
 			})
 			result.Text = assistantText
+		}
+
+		if budgetStopRequested {
+			if len(result.ToolCalls) > 0 {
+				toolResults := syntheticToolResults(result.ToolCalls, "Error: goal budget limit reached and stop_on_budget is true; this tool call was not executed. Wrap up with record_goal_progress kind=\"budget_wrapup\" on the next turn.")
+				if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
+					return RunResult{}, err
+				}
+			}
+			if _, err := e.appendHarnessReminder(meta, "turn_decide", goalBudgetWrapUpPrompt(), "goal_budget_wrapup_required"); err != nil {
+				return RunResult{}, err
+			}
+			continue
 		}
 
 		if len(result.ToolCalls) == 0 {
@@ -460,6 +497,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					annotateTargetConsistencyResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateReviewArtifactResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					controller.TrackToolResult(call.Name, toolResult, state.Turn)
+					if call.Name == "record_goal_progress" && !toolResult.IsError {
+						_ = writeSessionSummary(e.store, meta.ID)
+						_ = writeLongRunCheckpoint(e.store, meta.ID)
+					}
 				}
 				toolResult.ToolCallID = call.ID
 				toolResult.Name = call.Name
@@ -594,9 +635,15 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 		nextTurn:
+			if budgetWrapUpTurn {
+				return e.awaitingBudgetWrapUp(ctx, meta, state, hookManager)
+			}
 			continue
 		}
 		allowResolutionTurn = false
+		if budgetWrapUpTurn {
+			return e.awaitingBudgetWrapUp(ctx, meta, state, hookManager)
+		}
 
 		switch meta.Mode {
 		case session.ModeRun:
@@ -650,6 +697,26 @@ func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{})
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
+	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
+}
+
+func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
+	text := "Goal budget limit reached. stop_on_budget is true, so execution is awaiting input after the budget wrap-up boundary."
+	if goal, err := e.store.LoadGoal(meta.ID); err == nil && session.HasBudgetWrapUpRecord(goal) {
+		text = "Goal budget limit reached and budget wrap-up was recorded. Execution is awaiting input because stop_on_budget is true."
+	}
+	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	state.Status = session.StatusAwaitingInput
+	state.Phase = "goal_budget_limited"
+	state.LastAssistantExcerpt = truncateText(text, 500)
+	if err := e.store.SaveState(meta.ID, state); err != nil {
+		return RunResult{}, err
+	}
+	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "goal_budget_limited"})
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil

@@ -151,6 +151,8 @@
 - 模型工具面只允许 `get_goal`、`create_goal`、`update_goal(status=complete)`；pause / resume / clear / budget-limited 由用户或系统控制
 - Mission 的长任务能力收敛为 Goal 的内部结构化计划：agent 可以在运行中保存 success criteria、validation contract、features、milestones、role hints 与 shared artifacts，但 runtime 不得据此硬编码 DAG、强制委派或强制验证顺序
 - Mission plan approval 只采用已有 Plan Mode 门禁：`require_plan_approval` / `needs_approval` 会确保 linked Plan Mode 存在，pending 状态下由 Plan Mode 裁剪工具和阻断 mutating/execution actions；批准后同步 mission plan approved 事实
+- `record_goal_progress` 是唯一新增的模型可写 progress/handoff 工具：它只对当前 goal 的结构化计划、validation evidence、evaluator/child/queue 链接、commands、artifacts、blockers 和 budget wrap-up 做 append-friendly 更新，不允许改 objective、用户控制状态或完成状态
+- Mission validation coverage 是 approval 前的事实检查，不是 workflow engine：未覆盖或 invalid validation contract 默认阻断 plan approval，但 CLI/API 可显式 override 并留下历史事实
 - `update_goal(status=complete)` 的 evidence、summary、criteria status 与 validation status 是 `goal.json` 当前快照的一部分，不能只作为 `goal-history.jsonl` 的附属事件
 - Budget limited 只表示预算触顶，需要 wrap-up 和剩余工作说明；除非完成审计真实通过，否则不能被视为 complete
 

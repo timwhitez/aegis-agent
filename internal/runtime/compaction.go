@@ -277,6 +277,30 @@ func compactGoalSnapshot(goal session.SessionGoal) map[string]any {
 		out["mission_plan_status"] = goal.Mission.PlanStatus
 		out["mission_feature_count"] = len(goal.Mission.Features)
 		out["mission_milestone_count"] = len(goal.Mission.Milestones)
+		coverage := session.CheckMissionPlanCoverage(goal)
+		if coverage.ValidationTotal > 0 {
+			out["mission_validation_coverage"] = map[string]any{
+				"covered":          coverage.CoveredAssertions,
+				"total":            coverage.ValidationTotal,
+				"approval_blocked": coverage.ApprovalBlocked,
+				"uncovered":        coverage.UncoveredAssertions,
+			}
+		}
+	}
+	if len(goal.Progress) > 0 {
+		latest := goal.Progress[len(goal.Progress)-1]
+		out["latest_progress"] = map[string]any{
+			"kind":       latest.Kind,
+			"summary":    latest.Summary,
+			"created_at": latest.CreatedAt,
+			"blockers":   latest.Blockers,
+		}
+	}
+	if goal.Status == session.GoalStatusBudgetLimited && goal.Control.StopOnBudget {
+		out["budget_wrapup"] = map[string]any{
+			"requested_at": goal.BudgetWrapUpRequestedAt,
+			"recorded":     session.HasBudgetWrapUpRecord(goal),
+		}
 	}
 	return out
 }

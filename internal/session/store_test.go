@@ -144,6 +144,15 @@ func hasPlanModeHistoryType(items []PlanModeHistoryEntry, target string) bool {
 	return false
 }
 
+func hasGoalHistoryType(items []GoalHistoryEntry, target string) bool {
+	for _, item := range items {
+		if item.Type == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -437,6 +446,129 @@ func TestStoreCompleteGoalPersistsAuditAndItemEvidence(t *testing.T) {
 	}
 	if goal.ValidationPlan[0].Status != "verified" || goal.ValidationPlan[0].LastRunAt == "" || !containsString(goal.ValidationPlan[0].Evidence, "validation evidence") {
 		t.Fatalf("expected validation evidence in snapshot, got %#v", goal.ValidationPlan[0])
+	}
+}
+
+func TestMissionPlanCoverageReportsUncoveredAndInvalidAssignments(t *testing.T) {
+	goal := SessionGoal{
+		SchemaVersion: 1,
+		SessionID:     "session_cov",
+		GoalID:        "goal_cov",
+		Mode:          GoalModeMission,
+		Objective:     "Check coverage",
+		Status:        GoalStatusActive,
+		Mission: &MissionPlan{
+			ValidationContract: []GoalValidation{
+				{ID: "validation_api", Status: "pending"},
+				{ID: "validation_cli", Status: "pending"},
+				{ID: "validation_docs", Status: "pending"},
+			},
+			Features: []MissionFeature{
+				{ID: "feature_api", Title: "API", Status: "pending", ClaimedAssertions: []string{"validation_api", "validation_unknown"}},
+				{ID: "feature_empty", Title: "Empty", Status: "pending"},
+			},
+			Milestones: []MissionMilestone{
+				{ID: "milestone_cli", Title: "CLI", Status: "pending", ValidationIDs: []string{"validation_cli"}},
+				{ID: "milestone_empty", Title: "Empty", Status: "pending"},
+			},
+		},
+	}
+	coverage := CheckMissionPlanCoverage(goal)
+	if coverage.ValidationTotal != 3 || coverage.CoveredAssertions != 2 || !coverage.ApprovalBlocked {
+		t.Fatalf("unexpected coverage summary: %#v", coverage)
+	}
+	if !containsString(coverage.UncoveredAssertions, "validation_docs") || !containsString(coverage.FeaturesWithoutAssertions, "feature_empty") || !containsString(coverage.MilestonesWithoutValidation, "milestone_empty") {
+		t.Fatalf("expected uncovered and unassigned facts, got %#v", coverage)
+	}
+	if !containsString(coverage.UnknownClaimedAssertions, "validation_unknown") {
+		t.Fatalf("expected unknown claimed assertion, got %#v", coverage)
+	}
+}
+
+func TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:        true,
+		Mode:           GoalModeMission,
+		Objective:      "Record durable progress",
+		ValidationPlan: []string{"go test ./internal/session"},
+		Features:       []string{"feature work"},
+		Milestones:     []string{"milestone work"},
+		StopOnBudget:   true,
+		Source:         GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Status = GoalStatusBudgetLimited
+	goal.BudgetWrapUpRequestedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save budget goal: %v", err)
+	}
+	exitCode := 0
+	updated, record, err := store.RecordGoalProgress(meta.ID, GoalProgressInput{
+		Source:          GoalSourceTool,
+		Kind:            "budget_wrapup",
+		Summary:         "Implemented feature work; remaining docs.",
+		Evidence:        []string{"go test ./internal/session"},
+		LinkedArtifacts: []string{"reports/progress.md"},
+		Commands:        []GoalProgressCommand{{Command: "go test ./internal/session", ExitCode: &exitCode, Summary: "passed"}},
+		Blockers:        []string{"manual browser validation pending"},
+		FeatureUpdates: []MissionFeatureProgressUpdate{{
+			ID:                "feature_0001",
+			Status:            "completed",
+			Evidence:          []string{"feature evidence"},
+			ClaimedAssertions: []string{"validation_0001"},
+			ChildSessionIDs:   []string{"child_eval"},
+		}},
+		MilestoneUpdates: []MissionMilestoneProgressUpdate{{
+			ID:            "milestone_0001",
+			Status:        "completed",
+			ValidationIDs: []string{"validation_0001"},
+		}},
+		ValidationUpdates: []GoalValidationProgressUpdate{{
+			ID:              "validation_0001",
+			Status:          "verified",
+			Evidence:        []string{"validator evidence"},
+			ChildSessionIDs: []string{"child_eval"},
+			EvaluatorEvidence: []GoalEvaluatorEvidence{{
+				ChildSessionID: "child_eval",
+				Summary:        "independent evaluator passed",
+				Status:         "verified",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("record progress: %v", err)
+	}
+	if record.Kind != "budget_wrapup" || updated.BudgetWrapUpRecordedAt == "" || !HasBudgetWrapUpRecord(updated) {
+		t.Fatalf("expected budget wrap-up record, record=%#v goal=%#v", record, updated)
+	}
+	if updated.Mission.Features[0].Status != "completed" || !containsString(updated.Mission.Features[0].ClaimedAssertions, "validation_0001") {
+		t.Fatalf("expected feature progress update, got %#v", updated.Mission.Features[0])
+	}
+	if updated.Mission.ValidationContract[0].Status != "verified" || len(updated.Mission.ValidationContract[0].EvaluatorEvidence) != 1 {
+		t.Fatalf("expected validation evaluator evidence, got %#v", updated.Mission.ValidationContract[0])
+	}
+	history, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	if !hasGoalHistoryType(history, "goal.progress.recorded") || !hasGoalHistoryType(history, "mission.validation.updated") {
+		t.Fatalf("expected progress and validation history, got %#v", history)
 	}
 }
 

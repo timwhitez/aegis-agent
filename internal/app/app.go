@@ -71,7 +71,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "sessions":
 		err = sessionsCommand(args[1:], stdout)
 	case "goal":
-		err = goalCommand(args[1:], stdout, stderr)
+		err = goalCommand(ctx, args[1:], stdout, stderr)
 	case "tasks":
 		err = tasksCommand(args[1:], stdout, stderr)
 	case "probe-provider":
@@ -196,7 +196,7 @@ var stdinIsTerminal = func() bool {
 }
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval", "plan", "plan-only"})
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -215,6 +215,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		goalTokenBudget  = fs.Int64("goal-token-budget", 0, "")
 		goalTimeBudget   = fs.String("goal-time-budget", "", "")
 		goalPlanApproval = fs.Bool("goal-plan-approval", false, "")
+		goalStopOnBudget = fs.Bool("goal-stop-on-budget", false, "")
 		planModeEnabled  = fs.Bool("plan", false, "")
 		planOnly         = fs.Bool("plan-only", false, "")
 		goalCriteria     stringSliceFlag
@@ -285,7 +286,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *initMode {
 		actualMode = session.ModeInit
 	}
-	goalDraft, err := goalDraftFromCLI(*goalObjective, *goalMode, *goalTokenBudget, *goalTimeBudget, *goalPlanApproval, goalCriteria, goalValidation)
+	goalDraft, err := goalDraftFromCLI(*goalObjective, *goalMode, *goalTokenBudget, *goalTimeBudget, *goalPlanApproval, *goalStopOnBudget, goalCriteria, goalValidation)
 	if err != nil {
 		return err
 	}
@@ -323,9 +324,9 @@ func (f *stringSliceFlag) Set(value string) error {
 	return nil
 }
 
-func goalDraftFromCLI(objective, mode string, tokenBudget int64, timeBudget string, requirePlanApproval bool, criteria, validation []string) (*session.GoalDraft, error) {
+func goalDraftFromCLI(objective, mode string, tokenBudget int64, timeBudget string, requirePlanApproval bool, stopOnBudget bool, criteria, validation []string) (*session.GoalDraft, error) {
 	objective = strings.TrimSpace(objective)
-	hasGoalFields := objective != "" || tokenBudget > 0 || strings.TrimSpace(timeBudget) != "" || requirePlanApproval || len(criteria) > 0 || len(validation) > 0 || strings.TrimSpace(mode) == session.GoalModeMission
+	hasGoalFields := objective != "" || tokenBudget > 0 || strings.TrimSpace(timeBudget) != "" || requirePlanApproval || stopOnBudget || len(criteria) > 0 || len(validation) > 0 || strings.TrimSpace(mode) == session.GoalModeMission
 	if !hasGoalFields {
 		return nil, nil
 	}
@@ -353,6 +354,7 @@ func goalDraftFromCLI(objective, mode string, tokenBudget int64, timeBudget stri
 		SuccessCriteria:     append([]string(nil), criteria...),
 		ValidationPlan:      append([]string(nil), validation...),
 		RequirePlanApproval: requirePlanApproval,
+		StopOnBudget:        stopOnBudget,
 		Source:              session.GoalSourceCLI,
 	}, nil
 }
@@ -438,19 +440,20 @@ func allDigits(value string) bool {
 }
 
 func continueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system"}, []string{"json", "plan", "approve-plan", "cancel-plan"})
+	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system"}, []string{"json", "plan", "approve-plan", "cancel-plan", "override-goal-coverage"})
 	fs := flag.NewFlagSet("continue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		message     = fs.String("message", "", "")
-		provider    = fs.String("provider", "", "")
-		model       = fs.String("model", "", "")
-		configPath  = fs.String("config", "", "")
-		jsonMode    = fs.Bool("json", false, "")
-		system      = fs.String("system", "", "")
-		planMode    = fs.Bool("plan", false, "")
-		approvePlan = fs.Bool("approve-plan", false, "")
-		cancelPlan  = fs.Bool("cancel-plan", false, "")
+		message              = fs.String("message", "", "")
+		provider             = fs.String("provider", "", "")
+		model                = fs.String("model", "", "")
+		configPath           = fs.String("config", "", "")
+		jsonMode             = fs.Bool("json", false, "")
+		system               = fs.String("system", "", "")
+		planMode             = fs.Bool("plan", false, "")
+		approvePlan          = fs.Bool("approve-plan", false, "")
+		overrideGoalCoverage = fs.Bool("override-goal-coverage", false, "")
+		cancelPlan           = fs.Bool("cancel-plan", false, "")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -483,16 +486,17 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		*message = string(data)
 	}
 	result, err := runner.Continue(ctx, runtime.ContinueRequest{
-		SessionID:        fs.Arg(0),
-		Message:          strings.TrimSpace(*message),
-		Provider:         *provider,
-		Model:            *model,
-		SystemOverride:   *system,
-		PlanMode:         planModeDraftFromCLI(*planMode, strings.TrimSpace(*message)),
-		PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
-		ApprovePlan:      *approvePlan,
-		CancelPlan:       *cancelPlan,
-		Source:           session.PlanModeSourceCLI,
+		SessionID:            fs.Arg(0),
+		Message:              strings.TrimSpace(*message),
+		Provider:             *provider,
+		Model:                *model,
+		SystemOverride:       *system,
+		PlanMode:             planModeDraftFromCLI(*planMode, strings.TrimSpace(*message)),
+		PlanInputHandler:     cliPlanInputHandler(os.Stdin, stderr),
+		ApprovePlan:          *approvePlan,
+		OverrideGoalCoverage: *overrideGoalCoverage,
+		CancelPlan:           *cancelPlan,
+		Source:               session.PlanModeSourceCLI,
 	})
 	cancelRender()
 	<-done
@@ -578,12 +582,18 @@ func sessionsCommand(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func goalCommand(args []string, stdout, stderr io.Writer) error {
+func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal <show|pause|resume|clear|complete> <session-id> [--json] [--config path]")
+		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal <show|pause|resume|clear|complete|plan|validation> <session-id> [--json] [--config path]")
 		return flag.ErrHelp
 	}
 	subcommand := args[0]
+	switch subcommand {
+	case "plan":
+		return goalPlanCommand(ctx, args[1:], stdout, stderr)
+	case "validation":
+		return goalValidationCommand(args[1:], stdout, stderr)
+	}
 	subArgs := normalizeInterspersedFlags(args[1:], []string{"config"}, []string{"json"})
 	fs := flag.NewFlagSet("goal "+subcommand, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -655,6 +665,193 @@ func goalCommand(args []string, stdout, stderr io.Writer) error {
 	}
 }
 
+func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal plan <show|check|approve> <session-id> [--json] [--config path]")
+		return flag.ErrHelp
+	}
+	subcommand := args[0]
+	subArgs := normalizeInterspersedFlags(args[1:], []string{"config"}, []string{"json", "override-coverage"})
+	fs := flag.NewFlagSet("goal plan "+subcommand, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "")
+	jsonMode := fs.Bool("json", false, "")
+	overrideCoverage := fs.Bool("override-coverage", false, "")
+	if err := fs.Parse(subArgs); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("goal plan %s requires <session-id>", subcommand)
+	}
+	sessionID := fs.Arg(0)
+	cwd, _ := os.Getwd()
+	switch subcommand {
+	case "show":
+		runner, _, err := storeRunnerLoader(*configPath, cwd)
+		if err != nil {
+			return err
+		}
+		goal, err := runner.Store().LoadGoal(sessionID)
+		if err != nil {
+			return err
+		}
+		if *jsonMode {
+			return json.NewEncoder(stdout).Encode(goal.Mission)
+		}
+		printMissionPlan(stdout, goal)
+		return nil
+	case "check":
+		runner, _, err := storeRunnerLoader(*configPath, cwd)
+		if err != nil {
+			return err
+		}
+		goal, err := runner.Store().LoadGoal(sessionID)
+		if err != nil {
+			return err
+		}
+		coverage := session.CheckMissionPlanCoverage(goal)
+		if *jsonMode {
+			return json.NewEncoder(stdout).Encode(coverage)
+		}
+		printMissionCoverage(stdout, coverage)
+		return nil
+	case "approve":
+		return goalPlanApproveCommand(ctx, sessionID, *configPath, *jsonMode, *overrideCoverage, stdout)
+	default:
+		return fmt.Errorf("unknown goal plan subcommand: %s", subcommand)
+	}
+}
+
+func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, jsonMode bool, overrideCoverage bool, stdout io.Writer) error {
+	cwd, _ := os.Getwd()
+	storeRunner, _, err := storeRunnerLoader(configPath, cwd)
+	if err != nil {
+		return err
+	}
+	store := storeRunner.Store()
+	goal, err := store.LoadGoal(sessionID)
+	if err != nil {
+		return err
+	}
+	if err := approveMissionCoverage(goal, overrideCoverage); err != nil {
+		return err
+	}
+	planMode, planModeErr := store.LoadPlanMode(sessionID)
+	if planModeErr == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
+		switch planMode.Status {
+		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
+			runner, _, err := runnerLoader(configPath, cwd)
+			if err != nil {
+				return err
+			}
+			result, err := runner.Continue(ctx, runtime.ContinueRequest{
+				SessionID:            sessionID,
+				ApprovePlan:          true,
+				OverrideGoalCoverage: overrideCoverage,
+				Source:               session.PlanModeSourceCLI,
+			})
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				return json.NewEncoder(stdout).Encode(result)
+			}
+			_, _ = fmt.Fprintf(stdout, "goal plan approval accepted: %s (%s)\n", result.SessionID, result.Status)
+			return nil
+		case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput:
+			return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
+		}
+	} else if planModeErr != nil && !errors.Is(planModeErr, fs.ErrNotExist) {
+		return planModeErr
+	}
+	if session.GoalRequiresPlanApproval(goal) {
+		if _, _, err := store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI); err != nil {
+			return err
+		}
+		return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
+	}
+	if goal.Mission == nil {
+		goal.Mode = session.GoalModeMission
+		goal.Mission = &session.MissionPlan{PlanStatus: "draft"}
+	}
+	goal.Mission.PlanStatus = "approved"
+	if goal.Mission.ApprovedAt == "" {
+		goal.Mission.ApprovedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if err := store.SaveGoal(sessionID, goal); err != nil {
+		return err
+	}
+	_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+		GoalID: goal.GoalID,
+		Type:   "mission.plan.approved",
+		Source: session.GoalSourceCLI,
+		Status: goal.Status,
+		Data: map[string]any{
+			"approved_at":       goal.Mission.ApprovedAt,
+			"coverage_override": overrideCoverage,
+		},
+	})
+	_ = store.AppendEvent(sessionID, events.New(sessionID, "mission.plan.approved", "goal", map[string]any{
+		"goal_id":           goal.GoalID,
+		"plan_status":       goal.Mission.PlanStatus,
+		"approved_at":       goal.Mission.ApprovedAt,
+		"coverage_override": overrideCoverage,
+	}))
+	if jsonMode {
+		return json.NewEncoder(stdout).Encode(goal)
+	}
+	_, _ = fmt.Fprintf(stdout, "goal plan approved: %s\n", goal.GoalID)
+	return nil
+}
+
+func goalValidationCommand(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal validation show <session-id> [--json] [--config path]")
+		return flag.ErrHelp
+	}
+	subcommand := args[0]
+	subArgs := normalizeInterspersedFlags(args[1:], []string{"config"}, []string{"json"})
+	fs := flag.NewFlagSet("goal validation "+subcommand, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "")
+	jsonMode := fs.Bool("json", false, "")
+	if err := fs.Parse(subArgs); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("goal validation %s requires <session-id>", subcommand)
+	}
+	if subcommand != "show" {
+		return fmt.Errorf("unknown goal validation subcommand: %s", subcommand)
+	}
+	cwd, _ := os.Getwd()
+	runner, _, err := storeRunnerLoader(*configPath, cwd)
+	if err != nil {
+		return err
+	}
+	goal, err := runner.Store().LoadGoal(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if *jsonMode {
+		return json.NewEncoder(stdout).Encode(map[string]any{
+			"validation_plan":     goal.ValidationPlan,
+			"validation_contract": missionValidationContract(goal),
+			"coverage":            session.CheckMissionPlanCoverage(goal),
+		})
+	}
+	printGoalValidation(stdout, goal)
+	return nil
+}
+
+func approveMissionCoverage(goal session.SessionGoal, override bool) error {
+	coverage := session.CheckMissionPlanCoverage(goal)
+	if !coverage.ApprovalBlocked || override {
+		return nil
+	}
+	return fmt.Errorf("mission validation coverage blocks approval: %s; use --override-coverage to approve anyway", coverage.BlockingSummary())
+}
+
 func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status, eventType, label string, jsonMode bool) error {
 	goal, err := store.LoadGoal(sessionID)
 	if err != nil {
@@ -713,6 +910,103 @@ func printGoal(stdout io.Writer, goal session.SessionGoal) {
 	if goal.Mission != nil {
 		fmt.Fprintf(stdout, "mission_plan_status: %s\n", goal.Mission.PlanStatus)
 	}
+}
+
+func printMissionPlan(stdout io.Writer, goal session.SessionGoal) {
+	if goal.Mission == nil {
+		fmt.Fprintln(stdout, "mission_plan: not recorded")
+		return
+	}
+	mission := goal.Mission
+	fmt.Fprintf(stdout, "mission_plan_status: %s\n", firstNonEmpty(mission.PlanStatus, "draft"))
+	if mission.ApprovedAt != "" {
+		fmt.Fprintf(stdout, "approved_at: %s\n", mission.ApprovedAt)
+	}
+	fmt.Fprintf(stdout, "features: %d\n", len(mission.Features))
+	for _, feature := range mission.Features {
+		fmt.Fprintf(stdout, "- %s [%s] %s", feature.ID, firstNonEmpty(feature.Status, "pending"), feature.Title)
+		if len(feature.ClaimedAssertions) > 0 {
+			fmt.Fprintf(stdout, " assertions=%s", strings.Join(feature.ClaimedAssertions, ","))
+		}
+		fmt.Fprintln(stdout)
+	}
+	fmt.Fprintf(stdout, "milestones: %d\n", len(mission.Milestones))
+	for _, milestone := range mission.Milestones {
+		fmt.Fprintf(stdout, "- %s [%s] %s", milestone.ID, firstNonEmpty(milestone.Status, "pending"), milestone.Title)
+		if len(milestone.ValidationIDs) > 0 {
+			fmt.Fprintf(stdout, " validation=%s", strings.Join(milestone.ValidationIDs, ","))
+		}
+		fmt.Fprintln(stdout)
+	}
+}
+
+func printMissionCoverage(stdout io.Writer, coverage session.MissionPlanCoverage) {
+	fmt.Fprintf(stdout, "validation_assertions: %d\n", coverage.ValidationTotal)
+	fmt.Fprintf(stdout, "covered_assertions: %d\n", coverage.CoveredAssertions)
+	fmt.Fprintf(stdout, "feature_covered_assertions: %d\n", coverage.FeatureCoveredAssertions)
+	fmt.Fprintf(stdout, "milestone_covered_assertions: %d\n", coverage.MilestoneCoveredAssertions)
+	fmt.Fprintf(stdout, "approval_blocked: %t\n", coverage.ApprovalBlocked)
+	printStringList(stdout, "uncovered_assertions", coverage.UncoveredAssertions)
+	printStringList(stdout, "features_without_assertions", coverage.FeaturesWithoutAssertions)
+	printStringList(stdout, "milestones_without_validation", coverage.MilestonesWithoutValidation)
+	printStringList(stdout, "duplicate_validation_ids", coverage.DuplicateValidationIDs)
+	printStringList(stdout, "unknown_claimed_assertions", coverage.UnknownClaimedAssertions)
+	printStringList(stdout, "unknown_milestone_validation_ids", coverage.UnknownMilestoneValidationIDs)
+	if len(coverage.BlankValidationIndexes) > 0 {
+		fmt.Fprintf(stdout, "blank_validation_indexes: %v\n", coverage.BlankValidationIndexes)
+	}
+}
+
+func printGoalValidation(stdout io.Writer, goal session.SessionGoal) {
+	fmt.Fprintf(stdout, "validation_plan: %d\n", len(goal.ValidationPlan))
+	for _, validation := range goal.ValidationPlan {
+		fmt.Fprintf(stdout, "- %s [%s] %s\n", validation.ID, firstNonEmpty(validation.Status, "pending"), validationDisplayText(validation))
+	}
+	contract := missionValidationContract(goal)
+	fmt.Fprintf(stdout, "validation_contract: %d\n", len(contract))
+	for _, validation := range contract {
+		fmt.Fprintf(stdout, "- %s [%s] %s\n", validation.ID, firstNonEmpty(validation.Status, "pending"), validationDisplayText(validation))
+	}
+	printMissionCoverage(stdout, session.CheckMissionPlanCoverage(goal))
+}
+
+func missionValidationContract(goal session.SessionGoal) []session.GoalValidation {
+	if goal.Mission == nil {
+		return nil
+	}
+	return append([]session.GoalValidation(nil), goal.Mission.ValidationContract...)
+}
+
+func validationDisplayText(validation session.GoalValidation) string {
+	if strings.TrimSpace(validation.Command) != "" {
+		return validation.Command
+	}
+	if strings.TrimSpace(validation.Artifact) != "" {
+		return validation.Artifact
+	}
+	if strings.TrimSpace(validation.Description) != "" {
+		return validation.Description
+	}
+	return validation.Kind
+}
+
+func printStringList(stdout io.Writer, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "%s:\n", label)
+	for _, value := range values {
+		fmt.Fprintf(stdout, "- %s\n", value)
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func tasksCommand(args []string, stdout, stderr io.Writer) error {

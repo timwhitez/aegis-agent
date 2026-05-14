@@ -194,6 +194,7 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 - success criteria 与 validation plan
 - completion audit evidence 与 summary
 - agent 拆分出的 plan status、features、milestones
+- validation coverage summary、latest goal history event、progress / handoff records、evaluator / child / queue linked facts
 - goal 相关 events
 - 用户控制动作：pause、resume、clear、complete、approve goal plan
 
@@ -202,6 +203,7 @@ assistant thinking summary 作为消息内折叠块展示；provider-native repl
 - WebConsole 只是读写 `goal.json` 与 `artifacts/goal-history.jsonl` 的本地控制面，不维护第二套 goal 状态
 - complete 是用户控制动作；模型完成目标仍必须通过 `update_goal(status="complete")` 工具留下完成审计路径
 - approve goal plan 若存在 linked pending Plan Mode，必须走 Plan Mode approval / continue 路径；不能只把 mission plan status 改成 approved
+- approve goal plan 默认受 validation coverage checker 约束；未覆盖或 invalid contract 返回 conflict，只有请求带 explicit override 时才能继续
 - Goal plan 展示不能暗示 runtime 会自动拆 DAG 或强制 child agent；child / queue 使用仍由模型或用户显式决定
 - features / milestones 可展示已存在的 `task_ids`、`child_session_ids`、`queue_job_ids`，其中 `create_tasks_from_plan` 只作为高级显式开关创建 durable task，不自动 spawn child、不提交 queue job、不生成固定 DAG
 
@@ -528,11 +530,13 @@ Settings API：
 
 `POST /api/sessions/{id}/mission/plan/approve`
 
-- 将 goal 内部 plan 标记为 approved
+- 将 goal 内部 plan 标记为 approved；若存在 linked Plan Mode，走 Plan Mode approval / continue 路径；请求体可带 `override_coverage:true` 显式越过 validation coverage 阻断
 
 `PATCH /api/sessions/{id}/mission/validation`
 
 - 更新 goal validation plan 或内部 validation contract
+
+Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal facts，包括 coverage summary、最近 history、progress/handoff、evaluator evidence count 以及 unresolved child / queue IDs；Web 不维护第二套 Mission Control 状态。
 
 ### 7.13 Plan Mode APIs
 

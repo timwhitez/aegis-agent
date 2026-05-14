@@ -31,25 +31,30 @@ const (
 )
 
 type SessionGoal struct {
-	SchemaVersion     int              `json:"schema_version"`
-	SessionID         string           `json:"session_id"`
-	GoalID            string           `json:"goal_id"`
-	Mode              string           `json:"mode"`
-	Objective         string           `json:"objective"`
-	Status            string           `json:"status"`
-	TokenBudget       *int64           `json:"token_budget,omitempty"`
-	TokensUsed        int64            `json:"tokens_used"`
-	TimeBudgetSeconds *int64           `json:"time_budget_seconds,omitempty"`
-	TimeUsedSeconds   int64            `json:"time_used_seconds"`
-	SuccessCriteria   []GoalCriterion  `json:"success_criteria,omitempty"`
-	ValidationPlan    []GoalValidation `json:"validation_plan,omitempty"`
-	Control           GoalControl      `json:"control,omitempty"`
-	Mission           *MissionPlan     `json:"mission,omitempty"`
-	CompletionAudit   *GoalCompletion  `json:"completion_audit,omitempty"`
-	Source            string           `json:"source"`
-	CreatedAt         string           `json:"created_at"`
-	UpdatedAt         string           `json:"updated_at"`
-	CompletedAt       string           `json:"completed_at,omitempty"`
+	SchemaVersion             int                  `json:"schema_version"`
+	SessionID                 string               `json:"session_id"`
+	GoalID                    string               `json:"goal_id"`
+	Mode                      string               `json:"mode"`
+	Objective                 string               `json:"objective"`
+	Status                    string               `json:"status"`
+	TokenBudget               *int64               `json:"token_budget,omitempty"`
+	TokensUsed                int64                `json:"tokens_used"`
+	TimeBudgetSeconds         *int64               `json:"time_budget_seconds,omitempty"`
+	TimeUsedSeconds           int64                `json:"time_used_seconds"`
+	BudgetLimitedAt           string               `json:"budget_limited_at,omitempty"`
+	BudgetWrapUpRequestedAt   string               `json:"budget_wrapup_requested_at,omitempty"`
+	BudgetWrapUpTurnStartedAt string               `json:"budget_wrapup_turn_started_at,omitempty"`
+	BudgetWrapUpRecordedAt    string               `json:"budget_wrapup_recorded_at,omitempty"`
+	SuccessCriteria           []GoalCriterion      `json:"success_criteria,omitempty"`
+	ValidationPlan            []GoalValidation     `json:"validation_plan,omitempty"`
+	Control                   GoalControl          `json:"control,omitempty"`
+	Mission                   *MissionPlan         `json:"mission,omitempty"`
+	CompletionAudit           *GoalCompletion      `json:"completion_audit,omitempty"`
+	Progress                  []GoalProgressRecord `json:"progress,omitempty"`
+	Source                    string               `json:"source"`
+	CreatedAt                 string               `json:"created_at"`
+	UpdatedAt                 string               `json:"updated_at"`
+	CompletedAt               string               `json:"completed_at,omitempty"`
 }
 
 type GoalCriterion struct {
@@ -62,14 +67,27 @@ type GoalCriterion struct {
 }
 
 type GoalValidation struct {
-	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`
-	Command     string   `json:"command,omitempty"`
-	Artifact    string   `json:"artifact,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Status      string   `json:"status"`
-	Evidence    []string `json:"evidence,omitempty"`
-	LastRunAt   string   `json:"last_run_at,omitempty"`
+	ID                string                  `json:"id"`
+	Kind              string                  `json:"kind"`
+	Command           string                  `json:"command,omitempty"`
+	Artifact          string                  `json:"artifact,omitempty"`
+	Description       string                  `json:"description,omitempty"`
+	Status            string                  `json:"status"`
+	Evidence          []string                `json:"evidence,omitempty"`
+	LastRunAt         string                  `json:"last_run_at,omitempty"`
+	ChildSessionIDs   []string                `json:"child_session_ids,omitempty"`
+	QueueJobIDs       []string                `json:"queue_job_ids,omitempty"`
+	EvaluatorEvidence []GoalEvaluatorEvidence `json:"evaluator_evidence,omitempty"`
+}
+
+type GoalEvaluatorEvidence struct {
+	Role           string `json:"role,omitempty"`
+	ChildSessionID string `json:"child_session_id,omitempty"`
+	QueueJobID     string `json:"queue_job_id,omitempty"`
+	Artifact       string `json:"artifact,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	Status         string `json:"status,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
 }
 
 type GoalCompletion struct {
@@ -85,6 +103,75 @@ type GoalItemStatusUpdate struct {
 	Status    string   `json:"status,omitempty"`
 	Evidence  []string `json:"evidence,omitempty"`
 	LastRunAt string   `json:"last_run_at,omitempty"`
+}
+
+type GoalProgressCommand struct {
+	Command  string `json:"command,omitempty"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+}
+
+type GoalProgressRecord struct {
+	ID              string                `json:"id"`
+	Kind            string                `json:"kind"`
+	Summary         string                `json:"summary,omitempty"`
+	Evidence        []string              `json:"evidence,omitempty"`
+	LinkedArtifacts []string              `json:"linked_artifacts,omitempty"`
+	Commands        []GoalProgressCommand `json:"commands,omitempty"`
+	Blockers        []string              `json:"blockers,omitempty"`
+	ChildSessionIDs []string              `json:"child_session_ids,omitempty"`
+	QueueJobIDs     []string              `json:"queue_job_ids,omitempty"`
+	ValidationIDs   []string              `json:"validation_ids,omitempty"`
+	Source          string                `json:"source"`
+	CreatedAt       string                `json:"created_at"`
+}
+
+type MissionFeatureProgressUpdate struct {
+	ID                string   `json:"id"`
+	Status            string   `json:"status,omitempty"`
+	Evidence          []string `json:"evidence,omitempty"`
+	ClaimedAssertions []string `json:"claimed_assertions,omitempty"`
+	TaskIDs           []string `json:"task_ids,omitempty"`
+	ChildSessionIDs   []string `json:"child_session_ids,omitempty"`
+	QueueJobIDs       []string `json:"queue_job_ids,omitempty"`
+}
+
+type MissionMilestoneProgressUpdate struct {
+	ID              string   `json:"id"`
+	Status          string   `json:"status,omitempty"`
+	Evidence        []string `json:"evidence,omitempty"`
+	FeatureIDs      []string `json:"feature_ids,omitempty"`
+	ValidationIDs   []string `json:"validation_ids,omitempty"`
+	TaskIDs         []string `json:"task_ids,omitempty"`
+	ChildSessionIDs []string `json:"child_session_ids,omitempty"`
+	QueueJobIDs     []string `json:"queue_job_ids,omitempty"`
+}
+
+type GoalValidationProgressUpdate struct {
+	ID                string                  `json:"id"`
+	Status            string                  `json:"status,omitempty"`
+	Evidence          []string                `json:"evidence,omitempty"`
+	LastRunAt         string                  `json:"last_run_at,omitempty"`
+	ChildSessionIDs   []string                `json:"child_session_ids,omitempty"`
+	QueueJobIDs       []string                `json:"queue_job_ids,omitempty"`
+	EvaluatorEvidence []GoalEvaluatorEvidence `json:"evaluator_evidence,omitempty"`
+}
+
+type GoalProgressInput struct {
+	Source            string
+	Kind              string
+	Summary           string
+	Evidence          []string
+	LinkedArtifacts   []string
+	Commands          []GoalProgressCommand
+	Blockers          []string
+	ChildSessionIDs   []string
+	QueueJobIDs       []string
+	ValidationIDs     []string
+	FeatureUpdates    []MissionFeatureProgressUpdate
+	MilestoneUpdates  []MissionMilestoneProgressUpdate
+	ValidationUpdates []GoalValidationProgressUpdate
 }
 
 type GoalCompletionInput struct {
@@ -171,6 +258,7 @@ type GoalDraft struct {
 	TimeBudgetSeconds         *int64
 	Autonomy                  string
 	RequirePlanApproval       bool
+	StopOnBudget              bool
 	CreateTasksFromPlan       bool
 	Features                  []string
 	Milestones                []string
@@ -235,6 +323,7 @@ func NewSessionGoalFromDraft(sessionID string, draft GoalDraft) (SessionGoal, er
 		Control: GoalControl{
 			Autonomy:                  normalizeGoalAutonomy(draft.Autonomy),
 			RequirePlanApproval:       draft.RequirePlanApproval,
+			StopOnBudget:              draft.StopOnBudget,
 			AskBeforeLargeChanges:     draft.AskBeforeLargeChanges,
 			AskBeforeDependencyChange: draft.AskBeforeDependencyChange,
 			CheckpointPolicy:          strings.TrimSpace(draft.CheckpointPolicy),
@@ -600,6 +689,11 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 	budgetLimited := false
 	if goal.Status == GoalStatusActive && goalBudgetExceeded(goal) {
 		goal.Status = GoalStatusBudgetLimited
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		goal.BudgetLimitedAt = now
+		if goal.Control.StopOnBudget && goal.BudgetWrapUpRequestedAt == "" {
+			goal.BudgetWrapUpRequestedAt = now
+		}
 		budgetLimited = true
 	}
 	if err := s.SaveGoal(sessionID, goal); err != nil {
@@ -627,8 +721,19 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 				"token_budget":      goal.TokenBudget,
 				"time_used_seconds": goal.TimeUsedSeconds,
 				"time_budget":       goal.TimeBudgetSeconds,
+				"stop_on_budget":    goal.Control.StopOnBudget,
 			},
 		})
+		if goal.Control.StopOnBudget {
+			_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+				Type:   "goal.budget_wrapup_required",
+				Source: GoalSourceSystem,
+				Status: goal.Status,
+				Data: map[string]any{
+					"budget_wrapup_requested_at": goal.BudgetWrapUpRequestedAt,
+				},
+			})
+		}
 	}
 	return goal, budgetLimited, nil
 }
@@ -649,6 +754,10 @@ func NewGoalID() string {
 
 func NewGoalHistoryID() string {
 	return "goalhist_" + randomHex(6)
+}
+
+func NewGoalProgressID() string {
+	return "goalprog_" + randomHex(6)
 }
 
 func normalizeGoalMode(value string) string {

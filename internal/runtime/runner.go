@@ -197,18 +197,19 @@ type StartRequest struct {
 }
 
 type ContinueRequest struct {
-	SessionID          string
-	Message            string
-	Provider           string
-	Model              string
-	SystemOverride     string
-	PlanMode           *session.PlanModeDraft
-	PlanInputHandler   PlanInputHandler
-	ApprovePlan        bool
-	CancelPlan         bool
-	PlanInputRequestID string
-	PlanInputAnswers   []session.PlanModeInputAnswer
-	Source             string
+	SessionID            string
+	Message              string
+	Provider             string
+	Model                string
+	SystemOverride       string
+	PlanMode             *session.PlanModeDraft
+	PlanInputHandler     PlanInputHandler
+	ApprovePlan          bool
+	OverrideGoalCoverage bool
+	CancelPlan           bool
+	PlanInputRequestID   string
+	PlanInputAnswers     []session.PlanModeInputAnswer
+	Source               string
 }
 
 type PlanInputHandler func(context.Context, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error)
@@ -650,6 +651,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	}
 	var extraUserMeta map[string]any
 	if req.ApprovePlan {
+		if err := r.checkPlanModeGoalCoverage(meta.ID, req.OverrideGoalCoverage); err != nil {
+			return RunResult{}, err
+		}
 		approved, err := r.store.ApprovePlanMode(meta.ID, source)
 		if err != nil {
 			return RunResult{}, err
@@ -660,7 +664,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return RunResult{}, err
 		}
 		r.emit(meta.ID, "planmode.execution_started", "planmode", planModeEventData(executing))
-		if err := r.approveLinkedMissionPlan(meta.ID, executing, source); err != nil {
+		if err := r.approveLinkedMissionPlan(meta.ID, executing, source, req.OverrideGoalCoverage); err != nil {
 			return RunResult{}, err
 		}
 		req.Message = fmt.Sprintf("Implement the approved Plan Mode plan version %d.", executing.ApprovedVersion)
@@ -723,7 +727,11 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
 }
 
-func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.PlanModeState, source string) error {
+func (r *Runner) checkPlanModeGoalCoverage(sessionID string, override bool) error {
+	planMode, err := r.store.LoadPlanMode(sessionID)
+	if err != nil {
+		return err
+	}
 	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
 		return nil
 	}
@@ -737,6 +745,34 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 	if goal.GoalID != planMode.LinkedGoalID || goal.Mission == nil {
 		return nil
 	}
+	return ensureMissionCoverageForApproval(goal, override)
+}
+
+func ensureMissionCoverageForApproval(goal session.SessionGoal, override bool) error {
+	coverage := session.CheckMissionPlanCoverage(goal)
+	if !coverage.ApprovalBlocked || override {
+		return nil
+	}
+	return fmt.Errorf("mission validation coverage blocks approval: %s", coverage.BlockingSummary())
+}
+
+func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.PlanModeState, source string, overrideCoverage bool) error {
+	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
+		return nil
+	}
+	goal, err := r.store.LoadGoal(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if goal.GoalID != planMode.LinkedGoalID || goal.Mission == nil {
+		return nil
+	}
+	if err := ensureMissionCoverageForApproval(goal, overrideCoverage); err != nil {
+		return err
+	}
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	goal.Mission.PlanStatus = "approved"
 	goal.Mission.ApprovedAt = approvedAt
@@ -748,17 +784,19 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 		Source: session.GoalSourceSystem,
 		Status: goal.Status,
 		Data: map[string]any{
-			"approved_at":      approvedAt,
-			"approved_source":  source,
-			"plan_mode_id":     planMode.PlanModeID,
-			"approved_version": planMode.ApprovedVersion,
+			"approved_at":       approvedAt,
+			"approved_source":   source,
+			"plan_mode_id":      planMode.PlanModeID,
+			"approved_version":  planMode.ApprovedVersion,
+			"coverage_override": overrideCoverage,
 		},
 	})
 	r.emit(sessionID, "mission.plan.approved", "planmode", map[string]any{
-		"goal_id":          goal.GoalID,
-		"plan_mode_id":     planMode.PlanModeID,
-		"approved_version": planMode.ApprovedVersion,
-		"approved_at":      approvedAt,
+		"goal_id":           goal.GoalID,
+		"plan_mode_id":      planMode.PlanModeID,
+		"approved_version":  planMode.ApprovedVersion,
+		"approved_at":       approvedAt,
+		"coverage_override": overrideCoverage,
 	})
 	return nil
 }

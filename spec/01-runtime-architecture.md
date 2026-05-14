@@ -114,6 +114,9 @@
 - 默认用户入口只是一个 Goal 开关：Web start 选中后直接使用 prompt 作为 objective；success criteria、validation contract、features、milestones 与 role hints 由 agent 在运行中拆分和沉淀
 - 只记录目标、可选内部结构化计划与用户控制状态；不得把 Goal 变成固定 DAG 或强制 child / queue 编排
 - 当 goal/mission 要求 `require_plan_approval` 或 mission plan 进入 `needs_approval` 时，必须确保存在 linked Plan Mode；审批前的执行门禁由 Plan Mode 负责，而不是靠 mission prompt 文本自觉。若 mission 重新进入 `needs_approval`，已 approved / executing 的旧 Plan Mode 不能被当作新的 pending gate；pending 但未链接的 Plan Mode 必须补 `linked_goal_id` 或重新创建 linked gate。
+- mission validation contract 有只读 coverage checker：它核对 contract assertion ID、feature `claimed_assertions`、milestone `validation_ids`、未覆盖断言、无 assertion feature、无 validation milestone、重复/空 ID 与未知引用；mission plan approval 默认因 uncovered / invalid contract 阻断，只有显式 override 才能继续
+- 模型可用 `record_goal_progress` 对当前 goal 追加结构化 progress / handoff / validation evidence / evaluator child 或 queue 关联 / command / blocker / budget wrap-up 事实；该工具不得改 objective、不得 pause/resume/clear、不得 approve plan、不得跳过 `update_goal(status="complete")` 完成审计
+- `stop_on_budget=true` 时，budget 触顶会写入 durable budget wrap-up request，最多允许一轮模型 wrap-up；若未通过 `record_goal_progress(kind="budget_wrapup")` 写入 wrap-up 事实，则 `finish` 被 completion gate 阻断，并且 runtime 回到 `awaiting_input` 而不是无限继续 provider turns
 - `update_goal(status="complete")` 必须把 completion evidence、summary 和 criteria / validation item 状态回写 `goal.json` 的当前快照，同时追加 `artifacts/goal-history.jsonl`
 
 ### 2.8.2 SessionPlanModeManager

@@ -42,9 +42,14 @@ The model-facing tools are intentionally narrow:
 
 - `get_goal` reads the current durable goal
 - `create_goal` creates one current goal when explicitly asked
+- `record_goal_progress` appends structured progress, handoff, validation, feature, milestone, child / queue, evaluator, command, artifact, blocker, or budget wrap-up facts to the current goal
 - `update_goal` may only mark an existing goal `complete`
 
+`record_goal_progress` is a snapshot patch and history append tool, not a workflow runner. It must not edit the objective, pause / resume / clear the goal, approve plans, change completion status, or bypass the completion audit. Feature / milestone / validation updates are ID-based and append-friendly; validation evidence can record evaluator child sessions or queue jobs without forcing the runtime to spawn them.
+
 Pause, resume, clear, and budget-limited transitions are user/system controlled through CLI, WebConsole, or runtime accounting. Budget limited means the model should wrap up progress, evidence, blockers, and remaining work; it is not completion.
+
+Mission validation contracts are checked as a read-only coverage report. The report counts validation assertions, assertions covered by feature `claimed_assertions` or milestone `validation_ids`, uncovered assertions, features with no assertions, milestones with no validation IDs, duplicate / blank contract IDs, and unknown references. Mission plan approval must block when the validation contract has uncovered or invalid assertions unless the operator uses an explicit override flag / API field. The checker does not run tests and does not require ordinary goals to define a validation contract.
 
 ## 1.2 Session Plan Mode
 
@@ -129,6 +134,8 @@ When a current goal is `active`, `finish` is blocked until the model audits the 
 
 `update_goal(status="complete")` persists the completion audit into `goal.json`, including evidence, optional summary, and any criteria / validation item status updates supplied by the model. `artifacts/goal-history.jsonl` remains the append-only audit trail, but Mission Control, `session.md`, checkpoints, and recovery prompts must be able to read the current completion evidence from the goal snapshot without reconstructing it from history.
 When Plan Mode is pending, `finish` and all mutating tools are blocked until the user approves or cancels the plan. This gate intentionally runs before goal completion audit so an active goal cannot pull execution through an unapproved plan.
+
+When runtime accounting moves a goal to `budget_limited` and `stop_on_budget=true`, the runtime records a budget wrap-up request and allows at most one model wrap-up turn. That turn should call `record_goal_progress` with `kind="budget_wrapup"` and include progress, evidence, remaining work, commands, and blockers. After that wrap-up opportunity, the runtime stops further provider turns by returning to `awaiting_input` unless the model has legitimately completed the goal through `update_goal(status="complete")` and the normal finish path. A budget-limited goal with `stop_on_budget=true` cannot call `finish` until a budget wrap-up record exists.
 
 Events:
 

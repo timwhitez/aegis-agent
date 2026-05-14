@@ -116,6 +116,24 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		}
 		if goal.Mission != nil {
 			b.WriteString(fmt.Sprintf("- mission plan: `%s` features=`%d` milestones=`%d`\n", firstNonEmpty(goal.Mission.PlanStatus, "draft"), len(goal.Mission.Features), len(goal.Mission.Milestones)))
+			coverage := session.CheckMissionPlanCoverage(goal)
+			if coverage.ValidationTotal > 0 {
+				b.WriteString(fmt.Sprintf("- mission validation coverage: `%d/%d` covered", coverage.CoveredAssertions, coverage.ValidationTotal))
+				if coverage.ApprovalBlocked {
+					b.WriteString(" approval_blocked=`true`")
+				}
+				b.WriteString("\n")
+			}
+		}
+		if len(goal.Progress) > 0 {
+			latest := goal.Progress[len(goal.Progress)-1]
+			b.WriteString(fmt.Sprintf("- latest progress: `%s` %s\n", latest.Kind, truncateText(latest.Summary, 180)))
+			if len(latest.Blockers) > 0 {
+				b.WriteString(fmt.Sprintf("- latest blocker: %s\n", truncateText(latest.Blockers[len(latest.Blockers)-1], 180)))
+			}
+		}
+		if goal.Status == session.GoalStatusBudgetLimited && goal.Control.StopOnBudget {
+			b.WriteString(fmt.Sprintf("- budget wrap-up: requested=`%t` recorded=`%t`\n", goal.BudgetWrapUpRequestedAt != "", session.HasBudgetWrapUpRecord(goal)))
 		}
 	} else {
 		b.WriteString("not recorded\n")
