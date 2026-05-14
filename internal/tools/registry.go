@@ -505,6 +505,7 @@ func defShell() Definition {
 				}, nil
 			}
 			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
+			prepareCommandCancellation(cmd)
 			cmd.Dir = workdir
 			cmd.Env = filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist)
 			output, err := cmd.CombinedOutput()
@@ -2591,6 +2592,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				}, nil
 			}
 			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
+			prepareCommandCancellation(cmd)
 			cmd.Dir = skillDir
 			cmd.Env = append(
 				filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist),
