@@ -237,6 +237,16 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if mode == "run" && !term.IsTerminal(int(os.Stdin.Fd())) && !*jsonMode {
 		_, _ = fmt.Fprintln(stderr, "warning: stdin is not a TTY; Esc interrupt is disabled in run mode. Prefer exec for zero-interaction runs.")
 	}
+	prompt, err := resolvePrompt(fs.Args(), os.Stdin)
+	if err != nil {
+		return err
+	}
+	goalDraft, err := goalDraftFromCLI(*goalObjective, *goalMode, *goalTokenBudget, *goalTimeBudget, *goalPlanApproval, *goalStopOnBudget, goalCriteria, goalValidation)
+	if err != nil {
+		return err
+	}
+	planDraft := planModeDraftFromCLI(*planModeEnabled || *planOnly, prompt)
+
 	renderer := output.New(*jsonMode, stdout)
 	sub := runner.Bus().Subscribe(128)
 	var sessionID string
@@ -260,10 +270,6 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		}
 	}()
 
-	prompt, err := resolvePrompt(fs.Args(), os.Stdin)
-	if err != nil {
-		return err
-	}
 	runCtx := ctx
 	var cancel context.CancelFunc
 	if *timeoutSec > 0 {
@@ -286,11 +292,6 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *initMode {
 		actualMode = session.ModeInit
 	}
-	goalDraft, err := goalDraftFromCLI(*goalObjective, *goalMode, *goalTokenBudget, *goalTimeBudget, *goalPlanApproval, *goalStopOnBudget, goalCriteria, goalValidation)
-	if err != nil {
-		return err
-	}
-	planDraft := planModeDraftFromCLI(*planModeEnabled || *planOnly, prompt)
 	result, err := runner.Start(runCtx, runtime.StartRequest{
 		Prompt:           prompt,
 		Provider:         *providerName,
