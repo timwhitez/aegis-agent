@@ -1971,10 +1971,55 @@ func (s *Store) ensureDir(path string) error {
 	path = filepath.Clean(path)
 	targets := modeTargets(s.root, path)
 	for _, target := range targets {
+		if err := rejectSymlinkPathAncestors(target); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(target, s.dirMode); err != nil {
 			return err
 		}
+		if err := rejectSymlinkPathAncestors(target); err != nil {
+			return err
+		}
 		chmodBestEffort(target, s.dirMode)
+	}
+	return nil
+}
+
+func rejectSymlinkPathAncestors(path string) error {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(abs)
+	rest := strings.TrimPrefix(abs, volume)
+	separator := string(os.PathSeparator)
+	current := volume
+	if strings.HasPrefix(rest, separator) {
+		current += separator
+		rest = strings.TrimPrefix(rest, separator)
+	}
+	if current == "" {
+		current = "."
+	}
+	for _, part := range strings.Split(rest, separator) {
+		if part == "" {
+			continue
+		}
+		if current == separator || strings.HasSuffix(current, separator) {
+			current += part
+		} else {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to use symlinked session path: %s", current)
+		}
 	}
 	return nil
 }

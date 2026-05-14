@@ -1038,6 +1038,43 @@ func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 	}
 }
 
+func TestAppendSteerRequestRejectsSymlinkControlDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	controlDir := filepath.Join(store.SessionDir(meta.ID), "control")
+	if err := os.RemoveAll(controlDir); err != nil {
+		t.Fatalf("remove control dir: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, controlDir); err != nil {
+		t.Fatalf("symlink control dir: %v", err)
+	}
+
+	if err := store.AppendSteerRequest(meta.ID, NewSteerRequest("hello", false)); err == nil {
+		t.Fatal("expected symlinked control dir to fail")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "steer.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside control target should not receive steer.jsonl, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "steer.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside control target should not receive steer.lock, got %v", err)
+	}
+}
+
 func TestStoreListIncludesLastErrorInSummaries(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
