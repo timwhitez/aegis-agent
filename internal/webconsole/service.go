@@ -2876,7 +2876,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		if err := os.RemoveAll(targetPath); err != nil {
 			return extractedCount, err
 		}
-		if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		if err := fileutil.MkdirAllNoSymlink(targetPath, 0o755); err != nil {
 			return extractedCount, err
 		}
 
@@ -2912,12 +2912,12 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			}
 
 			if f.FileInfo().IsDir() {
-				if err := os.MkdirAll(outPath, f.Mode()); err != nil {
+				if err := fileutil.MkdirAllNoSymlink(outPath, f.Mode()); err != nil {
 					return extractedCount, err
 				}
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			if err := fileutil.MkdirAllNoSymlink(filepath.Dir(outPath), 0o755); err != nil {
 				return extractedCount, err
 			}
 
@@ -2962,7 +2962,7 @@ func prepareSkillZipDestination(globalDest string) (string, error) {
 		return "", err
 	}
 	resolved := canonicalManagedPath(cleaned)
-	if err := os.MkdirAll(resolved, 0o755); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(resolved, 0o755); err != nil {
 		return "", err
 	}
 	if info, err := os.Lstat(resolved); err != nil {

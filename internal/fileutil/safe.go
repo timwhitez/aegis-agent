@@ -105,6 +105,34 @@ func ReadRegularFileNoSymlink(path string) ([]byte, os.FileInfo, error) {
 	return data, info, nil
 }
 
+func MkdirAllNoSymlink(path string, mode os.FileMode) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("path is required")
+	}
+	path = filepath.Clean(path)
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(path, mode); err != nil {
+		return err
+	}
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to use symlinked directory: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path is not a directory: %s", path)
+	}
+	return nil
+}
+
 func rejectExistingSymlinkAncestors(path string) error {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {

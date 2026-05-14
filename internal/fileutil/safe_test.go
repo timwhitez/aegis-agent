@@ -42,3 +42,19 @@ func TestReadRegularFileNoSymlinkRejectsSymlinkFile(t *testing.T) {
 		t.Fatalf("expected symlink error, got %v", err)
 	}
 }
+
+func TestMkdirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "skills")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := MkdirAllNoSymlink(filepath.Join(root, "skills", "demo", "references"), 0o755)
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink ancestor rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "demo", "references")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
