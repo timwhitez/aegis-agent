@@ -889,6 +889,39 @@ func TestRunnerProcessNextJobCopiesVisibleOutputsIntoRequestedWorkspace(t *testi
 	}
 }
 
+func TestSyncVisibleSessionOutputsRejectsDeniedSymlinkAlias(t *testing.T) {
+	requestedWorkdir := t.TempDir()
+	effectiveWorkdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(effectiveWorkdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir effective reports: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(effectiveWorkdir, "reports", "queue-output.md"), []byte("# child output"), 0o600); err != nil {
+		t.Fatalf("write child output: %v", err)
+	}
+	envPath := filepath.Join(requestedWorkdir, ".env")
+	if err := os.WriteFile(envPath, []byte("KEEP=1\n"), 0o600); err != nil {
+		t.Fatalf("write requested env: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(requestedWorkdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir requested reports: %v", err)
+	}
+	if err := os.Symlink(envPath, filepath.Join(requestedWorkdir, "reports", "queue-output.md")); err != nil {
+		t.Fatalf("symlink visible output alias: %v", err)
+	}
+
+	synced := syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir, []string{"reports/queue-output.md"})
+	if len(synced) != 0 {
+		t.Fatalf("expected denied symlink alias not to sync, got %#v", synced)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read requested env: %v", err)
+	}
+	if string(data) != "KEEP=1\n" {
+		t.Fatalf("expected .env to remain unchanged, got %q", data)
+	}
+}
+
 func TestRunnerDelegateCopiesVisibleOutputsIntoRequestedWorkspace(t *testing.T) {
 	var mu sync.Mutex
 	callCount := 0

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/tools"
 )
@@ -571,6 +572,9 @@ func syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir string, visibl
 	}
 	out := make([]string, 0, len(visiblePaths))
 	for _, rel := range visiblePaths {
+		if err := tools.CheckWorkspaceWriteInputAllowed(requestedRoot, rel); err != nil {
+			continue
+		}
 		src, err := tools.ResolveWorkspacePath(effectiveRoot, rel)
 		if err != nil {
 			continue
@@ -579,14 +583,14 @@ func syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir string, visibl
 		if err != nil {
 			continue
 		}
+		if err := tools.CheckWorkspaceWriteAllowed(requestedRoot, dst); err != nil {
+			continue
+		}
 		data, err := os.ReadFile(src)
 		if err != nil {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			continue
-		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := fileutil.AtomicWriteFileNoSymlink(dst, data, 0o644); err != nil {
 			continue
 		}
 		out = append(out, rel)
