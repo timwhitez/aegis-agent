@@ -1268,7 +1268,12 @@ func (s *Store) writeBytesFile(path string, data []byte) error {
 }
 
 func readJSONFile(path string, target any) error {
-	data, err := os.ReadFile(path)
+	file, err := openNoSymlink(path, unix.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return err
 	}
@@ -1796,7 +1801,7 @@ func relativePathWithinRoot(root, target string) (string, bool) {
 }
 
 func readJSONL[T any](path string, out *[]T) error {
-	file, err := os.Open(path)
+	file, err := openNoSymlink(path, unix.O_RDONLY, 0)
 	if err != nil {
 		return err
 	}

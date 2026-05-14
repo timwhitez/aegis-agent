@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -212,6 +213,80 @@ func TestStoreSaveStateIgnoresPredictableTempSymlink(t *testing.T) {
 		t.Fatalf("stat state: %v", err)
 	} else if info.Mode()&os.ModeSymlink != 0 {
 		t.Fatal("state path should not be a symlink")
+	}
+}
+
+func TestStoreLoadStateRejectsSymlinkJSON(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside-state.json")
+	if err := os.WriteFile(outside, []byte(`{"status":"completed","phase":"outside"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	statePath := filepath.Join(store.SessionDir(meta.ID), "state.json")
+	if err := os.Remove(statePath); err != nil {
+		t.Fatalf("remove state: %v", err)
+	}
+	if err := os.Symlink(outside, statePath); err != nil {
+		t.Fatalf("symlink state: %v", err)
+	}
+
+	if _, err := store.LoadState(meta.ID); err == nil {
+		t.Fatal("expected symlinked state.json read to fail")
+	}
+}
+
+func TestStoreLoadMessagesRejectsSymlinkJSONL(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	outsideMessage, err := json.Marshal(NewMessage("user", "outside"))
+	if err != nil {
+		t.Fatalf("marshal outside message: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-messages.jsonl")
+	if err := os.WriteFile(outside, append(outsideMessage, '\n'), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	messagePath := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	if err := os.Remove(messagePath); err != nil {
+		t.Fatalf("remove messages: %v", err)
+	}
+	if err := os.Symlink(outside, messagePath); err != nil {
+		t.Fatalf("symlink messages: %v", err)
+	}
+
+	if _, err := store.LoadMessages(meta.ID); err == nil {
+		t.Fatal("expected symlinked messages.jsonl read to fail")
 	}
 }
 
