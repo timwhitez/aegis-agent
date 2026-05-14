@@ -350,6 +350,79 @@ func TestServiceMissionPlanPatchResetsApprovedPlanToPendingGate(t *testing.T) {
 	}
 }
 
+func TestServiceMissionPlanPatchNoopKeepsApprovedPlan(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_mission_patch_noop_keeps_approved",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_mission_patch_noop_keeps_approved",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Keep approval on no-op patch",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	goal.Mission.PlanStatus = session.MissionPlanStatusApproved
+	goal.Mission.ApprovedAt = approvedAt
+	if err := svc.store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save approved goal: %v", err)
+	}
+	firstPlan, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Approved plan", Source: session.PlanModeSourceWeb})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Approved plan",
+		Summary:      "Approved plan",
+		PlanMarkdown: "## Summary\nApproved.\n\n## Verification\nManual.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := svc.store.ApprovePlanMode(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	if _, err := svc.store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var patched session.SessionGoal
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{}, http.StatusOK, &patched)
+	if patched.Mission == nil || patched.Mission.PlanStatus != session.MissionPlanStatusApproved || patched.Mission.ApprovedAt != approvedAt {
+		t.Fatalf("no-op patch should preserve approved mission, got %#v", patched.Mission)
+	}
+	secondPlan, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if secondPlan.PlanModeID != firstPlan.PlanModeID || secondPlan.Status != session.PlanModeStatusExecuting {
+		t.Fatalf("no-op patch should not create a new pending gate, first=%#v second=%#v", firstPlan, secondPlan)
+	}
+}
+
 func TestServiceGoalPatchMissionResetsApprovedPlanToPendingGate(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -811,6 +884,67 @@ func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
 	}
 	if !foundApproval {
 		t.Fatalf("expected replayable planmode approval user message, got %#v", messages)
+	}
+}
+
+func TestServicePlanModeApproveReturnsConflictWhenLinkedMissionCoverageBlocks(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_planmode_approve_coverage_conflict")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Reject uncovered mission approval",
+		ValidationPlan:      []string{"go test ./internal/webconsole"},
+		Features:            []string{"web approval"},
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, created, err := svc.store.EnsurePlanModeForGoal(meta.ID, goal, session.PlanModeSourceWeb)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if !created || planMode.LinkedGoalID != goal.GoalID {
+		t.Fatalf("expected linked plan mode, created=%v plan=%#v goal=%#v", created, planMode, goal)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Coverage is still incomplete.",
+		PlanMarkdown: "# Plan\n\nDo it.",
+		Verification: []string{"go test ./internal/webconsole"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusConflict)
+	if !strings.Contains(errResp.Error, "mission validation coverage blocks approval") {
+		t.Fatalf("expected coverage conflict, got %#v", errResp)
+	}
+	after, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode after conflict: %v", err)
+	}
+	if after.Status != session.PlanModeStatusAwaitingApproval {
+		t.Fatalf("coverage conflict should not advance plan mode, got %#v", after)
+	}
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatalf("coverage conflict should not launch background continue")
 	}
 }
 

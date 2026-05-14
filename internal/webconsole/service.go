@@ -1115,6 +1115,7 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	}
 	goal.Mode = session.GoalModeMission
 	mission := ensureMissionPlan(goal.Mission)
+	approvalScopedPatch := missionPlanPatchTouchesApprovalScopedContent(req)
 	if req.Requirements != nil {
 		mission.Requirements = append([]session.MissionRequirement(nil), req.Requirements...)
 	}
@@ -1144,7 +1145,7 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		}
 		mission.PlanStatus = status
 		mission.ApprovedAt = ""
-	} else if session.NormalizeMissionPlanStatus(mission.PlanStatus) == session.MissionPlanStatusApproved {
+	} else if approvalScopedPatch && session.NormalizeMissionPlanStatus(mission.PlanStatus) == session.MissionPlanStatusApproved {
 		mission.PlanStatus = session.MissionPlanStatusNeedsApproval
 		mission.ApprovedAt = ""
 	}
@@ -1590,6 +1591,10 @@ func (s *Service) handlePlanModeApprove(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
 		return
 	}
+	if err := s.ensurePlanModeApprovalPreflight(sessionID, req.OverrideCoverage); err != nil {
+		writeError(w, planModeActionStatus(err), err)
+		return
+	}
 	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
 		SessionID:            sessionID,
 		ApprovePlan:          true,
@@ -1716,6 +1721,27 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 	return nil
 }
 
+func (s *Service) ensurePlanModeApprovalPreflight(sessionID string, overrideCoverage bool) error {
+	planMode, err := s.store.LoadPlanMode(sessionID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
+		return nil
+	}
+	goal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if goal.GoalID != planMode.LinkedGoalID || goal.Mission == nil {
+		return nil
+	}
+	return ensureWebMissionCoverage(goal, overrideCoverage)
+}
+
 func planModeActionStatus(err error) int {
 	if err == nil {
 		return http.StatusOK
@@ -1728,7 +1754,10 @@ func planModeActionStatus(err error) int {
 		return http.StatusConflict
 	}
 	message := err.Error()
-	if strings.Contains(message, "not resumable") || strings.Contains(message, "not awaiting") || strings.Contains(message, "no pending") {
+	if strings.Contains(message, "not resumable") ||
+		strings.Contains(message, "not awaiting") ||
+		strings.Contains(message, "no pending") ||
+		strings.Contains(message, "coverage blocks approval") {
 		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
@@ -3624,6 +3653,16 @@ func rejectMissionPlanApprovalByPatch(value string) error {
 		return errors.New("mission plan approval must use the mission plan approve endpoint")
 	}
 	return nil
+}
+
+func missionPlanPatchTouchesApprovalScopedContent(req MissionPlanPatchRequest) bool {
+	return req.Requirements != nil ||
+		req.Features != nil ||
+		req.Milestones != nil ||
+		req.ValidationContract != nil ||
+		req.RolePlan != nil ||
+		req.SharedArtifacts != nil ||
+		req.KnowledgeArtifacts != nil
 }
 
 func decodeOptionalMissionPlanApproveRequest(w http.ResponseWriter, r *http.Request) (MissionPlanApproveRequest, bool) {
