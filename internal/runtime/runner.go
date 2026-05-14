@@ -813,6 +813,13 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 		return nil
 	}
 	request := *planMode.PendingRequest
+	exists, err := r.hasToolResult(sessionID, request.ToolCallID, "request_user_input")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
 	result := session.ToolResult{
 		ToolCallID:    request.ToolCallID,
 		Name:          "request_user_input",
@@ -845,6 +852,29 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 		"recovered":    true,
 	})
 	return nil
+}
+
+func (r *Runner) hasToolResult(sessionID, toolCallID, name string) (bool, error) {
+	toolCallID = strings.TrimSpace(toolCallID)
+	name = strings.TrimSpace(name)
+	if toolCallID == "" || name == "" {
+		return false, nil
+	}
+	messages, err := r.store.LoadMessages(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults {
+			if result.ToolCallID == toolCallID && result.Name == name {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, answers []session.PlanModeInputAnswer) error {

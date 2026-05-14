@@ -185,6 +185,73 @@ func TestParentLinkedQueueBlockedDuringPendingPlanMode(t *testing.T) {
 	}
 }
 
+func TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Cancel plan input"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	request := session.PlanModeInputRequest{
+		RequestID:  "pmq_cancel",
+		ToolCallID: "call_cancel",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := runner.store.SetPlanModePendingRequest(sessionID, request, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, CancelPlan: true, Source: session.PlanModeSourceCLI})
+		if err != nil {
+			t.Fatalf("cancel plan %d: %v", i+1, err)
+		}
+		if result.Status != session.StatusAwaitingInput {
+			t.Fatalf("expected awaiting input after cancel %d, got %#v", i+1, result)
+		}
+	}
+
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var count int
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults {
+			if result.ToolCallID == request.ToolCallID && result.Name == "request_user_input" {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one recovered cancellation result for %s, got %d messages=%#v", request.ToolCallID, count, messages)
+	}
+}
+
 func TestApproveLinkedPlanModeMarksMissionPlanApproved(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
