@@ -67,6 +67,9 @@ func Prepare(req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if !isWithin(resolvedRoot, resolvedTarget) {
+		return Result{}, fmt.Errorf("isolation target escapes root: %s", target)
+	}
 	if isWithin(parentWorkdir, resolvedRoot) {
 		return Result{}, fmt.Errorf("isolation root must not be inside source workdir")
 	}
@@ -167,7 +170,7 @@ func isWithin(parent, child string) bool {
 func copyTree(src, dst string) error {
 	src = filepath.Clean(src)
 	dst = filepath.Clean(dst)
-	if err := os.MkdirAll(dst, 0o700); err != nil {
+	if err := mkdirAllNoSymlink(dst, 0o700); err != nil {
 		return err
 	}
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
@@ -187,7 +190,7 @@ func copyTree(src, dst string) error {
 			if err != nil {
 				return err
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			if err := mkdirAllNoSymlink(filepath.Dir(target), 0o700); err != nil {
 				return err
 			}
 			return os.Symlink(link, target)
@@ -197,14 +200,18 @@ func copyTree(src, dst string) error {
 			return err
 		}
 		if d.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
+			return mkdirAllNoSymlink(target, info.Mode().Perm())
 		}
 		return copyFile(path, target, info.Mode())
 	})
 }
 
 func copyFile(src, dst string, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+	parent := filepath.Dir(dst)
+	if err := mkdirAllNoSymlink(parent, 0o700); err != nil {
+		return err
+	}
+	if err := rejectSymlinkOrDirectory(dst); err != nil {
 		return err
 	}
 	in, err := os.Open(src)
@@ -212,13 +219,110 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
+
+	tmp, err := os.CreateTemp(parent, "."+filepath.Base(dst)+".*.tmp")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return out.Chmod(mode.Perm())
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := rejectSymlinkOrDirectory(dst); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mkdirAllNoSymlink(path string, mode fs.FileMode) error {
+	path = filepath.Clean(path)
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(path, mode); err != nil {
+		return err
+	}
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to use symlinked directory: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path is not a directory: %s", path)
+	}
+	return nil
+}
+
+func rejectExistingSymlinkAncestors(path string) error {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(abs)
+	rest := strings.TrimPrefix(abs, volume)
+	separator := string(os.PathSeparator)
+	current := volume
+	if strings.HasPrefix(rest, separator) {
+		current += separator
+		rest = strings.TrimPrefix(rest, separator)
+	}
+	if current == "" {
+		current = "."
+	}
+	for _, part := range strings.Split(rest, separator) {
+		if part == "" {
+			continue
+		}
+		if current == separator || strings.HasSuffix(current, separator) {
+			current += part
+		} else {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to use symlinked path: %s", current)
+		}
+	}
+	return nil
+}
+
+func rejectSymlinkOrDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to overwrite symlink target: %s", path)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("refusing to overwrite directory: %s", path)
+	}
+	return nil
 }

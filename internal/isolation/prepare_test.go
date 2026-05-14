@@ -61,6 +61,67 @@ func TestPrepareRejectsSymlinkedRootInsideParent(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsSymlinkedSessionTargetOutsideRoot(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parent, "hello.txt"), []byte("world"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "session-copy")); err != nil {
+		t.Fatalf("symlink session target: %v", err)
+	}
+
+	_, err := Prepare(Request{
+		SessionID:     "session-copy",
+		ParentWorkdir: parent,
+		RequestedMode: "copy",
+		RootDir:       root,
+	})
+	if err == nil {
+		t.Fatal("expected symlinked session target outside isolation root to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "hello.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target was modified, stat err: %v", statErr)
+	}
+}
+
+func TestPrepareCopyRejectsPreexistingOutputSymlink(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parent, "hello.txt"), []byte("world"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "session-copy")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("mkdir session target: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(target, "hello.txt")); err != nil {
+		t.Fatalf("symlink output file: %v", err)
+	}
+
+	_, err := Prepare(Request{
+		SessionID:     "session-copy",
+		ParentWorkdir: parent,
+		RequestedMode: "copy",
+		RootDir:       root,
+	})
+	if err == nil {
+		t.Fatal("expected preexisting output symlink to be rejected")
+	}
+	data, readErr := os.ReadFile(outside)
+	if readErr != nil {
+		t.Fatalf("read outside file: %v", readErr)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("outside file was overwritten: %q", data)
+	}
+}
+
 func TestPrepareAutoUsesGitWorktreeInsideRepository(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required for worktree test")
