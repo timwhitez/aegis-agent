@@ -609,6 +609,24 @@ func TestToolGuardBlocksValidationSuccessContradictedBySupportingDoc(t *testing.
 	}
 }
 
+func TestValidationFailureEvidenceRejectsSymlinkEscapedSupportingDoc(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "validation.md")
+	if err := os.WriteFile(outside, []byte("Validation failed: command exited with code 1.\n"), 0o600); err != nil {
+		t.Fatalf("write outside validation: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workdir, "reports", "validation.md")); err != nil {
+		t.Fatalf("symlink validation: %v", err)
+	}
+
+	if evidence, ok := validationFailureEvidenceFromSupportingDocs(workdir); ok {
+		t.Fatalf("expected symlink-escaped supporting doc to be ignored, got %q", evidence)
+	}
+}
+
 func TestToolGuardBlocksFinishWhenSupportingDocsChangedAfterFinalReport(t *testing.T) {
 	workdir := t.TempDir()
 	finalPath := filepath.Join(workdir, "reports", "assessment-report.md")

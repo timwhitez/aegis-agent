@@ -818,7 +818,10 @@ func validationFailureEvidenceFromToolResult(result session.ToolResult) (string,
 
 func validationFailureEvidenceFromSupportingDocs(workdir string) (string, bool) {
 	for _, rel := range []string{filepath.Join("reports", "progress.md"), filepath.Join("reports", "validation.md")} {
-		path := filepath.Join(workdir, rel)
+		path, err := tools.ResolveWorkspacePath(workdir, rel)
+		if err != nil {
+			continue
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
