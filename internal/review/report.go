@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"go-cli-agent/internal/tools"
 )
 
 var (
@@ -557,18 +559,11 @@ func resolveEvidencePath(workdir, rel string) (string, bool) {
 	if target == "" {
 		return "", false
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(base, target)
-	}
-	target = filepath.Clean(target)
-	relative, err := filepath.Rel(base, target)
+	resolved, err := tools.ResolveWorkspacePath(base, target)
 	if err != nil {
 		return "", false
 	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	return target, true
+	return resolved, true
 }
 
 func snippetMatchesEvidenceLines(snippet, lines string) bool {

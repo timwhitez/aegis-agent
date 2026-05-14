@@ -386,6 +386,41 @@ Why it matters: default surface is too wide
 	}
 }
 
+func TestValidateMarkdownArtifactWithWorkspaceRejectsSymlinkEscapedEvidence(t *testing.T) {
+	workdir := t.TempDir()
+	linkPath := filepath.Join(workdir, "internal", "app", "app.go")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(outside, []byte("package outside\n\nfunc externalProof() {}\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, linkPath); err != nil {
+		t.Fatalf("symlink evidence path: %v", err)
+	}
+	report := `# audit
+
+## findings
+### Finding 1
+Severity: medium
+Confidence: high
+Evidence: internal/app/app.go:3
+Snippet: "externalProof"
+Why it matters: symlink-escaped evidence should not validate a workspace finding
+
+## unresolved questions
+- None`
+
+	result := ValidateMarkdownArtifactWithWorkspace(workdir, report)
+	if result.Valid {
+		t.Fatalf("expected invalid artifact for symlink-escaped evidence, got %#v", result)
+	}
+	if !strings.Contains(strings.Join(result.Issues, "\n"), "readable in-workspace files") {
+		t.Fatalf("expected readable-path error, got %#v", result.Issues)
+	}
+}
+
 func TestValidateMarkdownArtifactWithWorkspaceAcceptsSamePathMultiWindowShorthand(t *testing.T) {
 	workdir := t.TempDir()
 	path := filepath.Join(workdir, "internal", "app", "app.go")
