@@ -1802,7 +1802,10 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		}
 		cfg.Providers[cfg.DefaultProvider] = providerCfg
 	}
-	effectiveSessionDir := defaultString(*sessionDir, cfg.Session.Dir)
+	effectiveSessionDir := strings.TrimSpace(*sessionDir)
+	if effectiveSessionDir == "" {
+		effectiveSessionDir = defaultInitSessionDir(cwd, cfg.Session.Dir)
+	}
 	effectiveSkillDir := defaultString(*skillDir, "./skills")
 	cfg.Session.Dir = effectiveSessionDir
 	cfg.Skills.Dirs = []string{effectiveSkillDir}
@@ -1867,6 +1870,25 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	_, _ = fmt.Fprintf(stdout, "next: ./bin/go-cli-agent probe-provider --config %s\n", target)
 	_, _ = fmt.Fprintln(stdout, "next: ./bin/go-cli-agent run \"Describe the current repository.\"")
 	return nil
+}
+
+func defaultInitSessionDir(cwd, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return configured
+	}
+	resolved := configured
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(cwd, resolved)
+	}
+	if !strings.HasPrefix(filepath.Clean(resolved), "/mnt/") {
+		return configured
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return configured
+	}
+	return filepath.Join(home, ".go-cli-agent", "sessions")
 }
 
 func resolvePrompt(args []string, stdin io.Reader) (string, error) {

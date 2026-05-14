@@ -80,6 +80,12 @@ core v1 的默认命令面固定为：
 - `--skill-dir`
 - `--session-dir`
 
+默认行为：
+
+- 未显式传入 `--session-dir` 时，`init` 生成的配置应优先满足 session root owner-only 约束。
+- 如果当前工作目录位于 WSL `/mnt/...` 这类通常无法可靠执行 POSIX owner-only 权限的挂载路径，`init` 应默认把 `session.dir` 写到用户 home 下的 `.go-cli-agent/sessions`。
+- 显式 `--session-dir` 必须按用户输入写入；后续由 `doctor` 报告该目录是否真正支持 owner-only 权限。
+
 ### 5.2 `run`
 
 作用：

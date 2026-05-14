@@ -1435,6 +1435,24 @@ func TestInitGeneratesConfigSkillAndHookAssets(t *testing.T) {
 	}
 }
 
+func TestDefaultInitSessionDirUsesHomeFallbackForMountedWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := defaultInitSessionDir("/mnt/c/project", ".go-cli-agent/sessions")
+	want := filepath.Join(home, ".go-cli-agent", "sessions")
+	if got != want {
+		t.Fatalf("expected mounted workspace default session dir %q, got %q", want, got)
+	}
+}
+
+func TestDefaultInitSessionDirKeepsNonMountedWorkspaceDefault(t *testing.T) {
+	got := defaultInitSessionDir("/home/user/project", ".go-cli-agent/sessions")
+	if got != ".go-cli-agent/sessions" {
+		t.Fatalf("expected non-mounted workspace to keep relative default, got %q", got)
+	}
+}
+
 func TestCheckSessionRootStrategyWarnsAndRecommendsPOSIXFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
