@@ -171,6 +171,50 @@ func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
 	}
 }
 
+func TestStoreSaveStateIgnoresPredictableTempSymlink(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	statePath := filepath.Join(store.SessionDir(meta.ID), "state.json")
+	outside := filepath.Join(t.TempDir(), "outside-state.tmp")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Symlink(outside, statePath+".tmp"); err != nil {
+		t.Fatalf("symlink predictable state tmp: %v", err)
+	}
+
+	if err := store.SaveState(meta.ID, State{Status: StatusAwaitingInput, Phase: "turn_decide"}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("outside predictable state tmp symlink target was modified: %q", string(data))
+	}
+	if info, err := os.Lstat(statePath); err != nil {
+		t.Fatalf("stat state: %v", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("state path should not be a symlink")
+	}
+}
+
 func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

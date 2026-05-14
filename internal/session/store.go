@@ -1264,16 +1264,7 @@ func (s *Store) writeBytesFile(path string, data []byte) error {
 	if err := s.ensureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, s.fileMode); err != nil {
-		return err
-	}
-	chmodBestEffort(tmp, s.fileMode)
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	chmodBestEffort(path, s.fileMode)
-	return nil
+	return fileutil.AtomicWriteFileNoSymlink(path, data, s.fileMode)
 }
 
 func readJSONFile(path string, target any) error {
