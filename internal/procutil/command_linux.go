@@ -1,6 +1,6 @@
 //go:build linux
 
-package tools
+package procutil
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func prepareCommandCancellation(cmd *exec.Cmd) {
+func PrepareCommandCancellation(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
 	}

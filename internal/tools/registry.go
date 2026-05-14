@@ -21,6 +21,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/fileutil"
+	"go-cli-agent/internal/procutil"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/skills"
 )
@@ -505,7 +506,7 @@ func defShell() Definition {
 				}, nil
 			}
 			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
-			prepareCommandCancellation(cmd)
+			procutil.PrepareCommandCancellation(cmd)
 			cmd.Dir = workdir
 			cmd.Env = filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist)
 			output, err := cmd.CombinedOutput()
@@ -2592,7 +2593,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				}, nil
 			}
 			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
-			prepareCommandCancellation(cmd)
+			procutil.PrepareCommandCancellation(cmd)
 			cmd.Dir = skillDir
 			cmd.Env = append(
 				filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist),

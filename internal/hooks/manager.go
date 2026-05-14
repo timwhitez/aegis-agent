@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/procutil"
 )
 
 type EmitFunc func(eventType string, data map[string]any)
@@ -158,6 +159,7 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 			goto afterCommand
 		}
 		cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
+		procutil.PrepareCommandCancellation(cmd)
 		cmd.Dir = m.workdir
 		cmd.Env = minimalEnv(next)
 		cmd.Stdin = bytes.NewReader(stdin)
