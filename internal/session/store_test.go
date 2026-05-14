@@ -251,6 +251,41 @@ func TestStoreLoadStateRejectsSymlinkJSON(t *testing.T) {
 	}
 }
 
+func TestStoreLoadStateRejectsSymlinkSessionDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "state.json"), []byte(`{"status":"completed","phase":"outside"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write outside state: %v", err)
+	}
+	sessionDir := store.SessionDir(meta.ID)
+	if err := os.RemoveAll(sessionDir); err != nil {
+		t.Fatalf("remove session dir: %v", err)
+	}
+	if err := os.Symlink(outside, sessionDir); err != nil {
+		t.Fatalf("symlink session dir: %v", err)
+	}
+
+	if _, err := store.LoadState(meta.ID); err == nil {
+		t.Fatal("expected symlinked session dir read to fail")
+	}
+}
+
 func TestStoreLoadMessagesRejectsSymlinkJSONL(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
