@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const webAuditLogName = "webconsole-audit.jsonl"
@@ -23,10 +26,7 @@ func (s *Service) appendAuditEvent(eventType string, data map[string]any) error 
 		return nil
 	}
 	path := webAuditLogPath(s.store.Root())
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	file, err := openAuditLogNoSymlink(path)
 	if err != nil {
 		return err
 	}
@@ -39,6 +39,77 @@ func (s *Service) appendAuditEvent(eventType string, data map[string]any) error 
 		Data:          data,
 	}
 	return json.NewEncoder(file).Encode(event)
+}
+
+func openAuditLogNoSymlink(path string) (*os.File, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return nil, fmt.Errorf("audit log path is required")
+	}
+	parent := filepath.Dir(path)
+	if err := rejectAuditSymlinkAncestors(parent); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, err
+	}
+	if err := rejectAuditSymlinkAncestors(parent); err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("refusing to append to symlinked audit log: %s", path)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("refusing to append to audit log directory: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_WRONLY|unix.O_APPEND|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+func rejectAuditSymlinkAncestors(path string) error {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(abs)
+	rest := strings.TrimPrefix(abs, volume)
+	separator := string(os.PathSeparator)
+	current := volume
+	if strings.HasPrefix(rest, separator) {
+		current += separator
+		rest = strings.TrimPrefix(rest, separator)
+	}
+	if current == "" {
+		current = "."
+	}
+	for _, part := range strings.Split(rest, separator) {
+		if part == "" {
+			continue
+		}
+		if current == separator || strings.HasSuffix(current, separator) {
+			current += part
+		} else {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to append through symlinked audit path: %s", current)
+		}
+	}
+	return nil
 }
 
 func webAuditLogPath(sessionRoot string) string {

@@ -1730,6 +1730,38 @@ func TestAPIKeyWriteDoesNotLogSecretValue(t *testing.T) {
 	}
 }
 
+func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if err := os.MkdirAll(filepath.Dir(auditPath), 0o700); err != nil {
+		t.Fatalf("mkdir audit dir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-audit.jsonl")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write outside audit: %v", err)
+	}
+	if err := os.Symlink(outside, auditPath); err != nil {
+		t.Fatalf("symlink audit log: %v", err)
+	}
+
+	if err := svc.appendAuditEvent("web.test", nil); err == nil {
+		t.Fatal("expected symlinked audit log append to fail")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside audit: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("outside audit log was modified: %q", data)
+	}
+}
+
 func TestSensitiveWebActionsEmitAuditEvents(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")
