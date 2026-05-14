@@ -367,7 +367,7 @@ func compactOldToolContext(messages []session.Message, keepRecent int) {
 		}
 	}
 	for i := range messages {
-		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+		if messages[i].Role != "assistant" {
 			continue
 		}
 		for j := range messages[i].ToolCalls {
@@ -381,6 +381,9 @@ func compactOldToolContext(messages []session.Message, keepRecent int) {
 					compactToolCallArguments(&messages[i].ToolCalls[j])
 				}
 			}
+		}
+		for j := range messages[i].ProviderContentBlocks {
+			compactProviderToolCallArguments(&messages[i].ProviderContentBlocks[j], oldCallIDs)
 		}
 	}
 	for _, index := range oldIndices {
@@ -405,10 +408,50 @@ func compactToolCallArguments(call *session.ToolCall) {
 	if call == nil || len(call.Arguments) == 0 {
 		return
 	}
-	text := string(call.Arguments)
+	compacted := compactRawJSONForContext(call.Arguments)
+	if string(compacted) == string(call.Arguments) {
+		return
+	}
+	call.Arguments = compacted
+}
+
+func compactProviderToolCallArguments(block *session.ProviderContentBlock, oldCallIDs map[string]struct{}) {
+	if block == nil || !toolCallIDInSet(oldCallIDs, block.ID) {
+		return
+	}
+	switch block.Provider {
+	case "anthropic":
+		if block.Type == "tool_use" {
+			block.Input = compactRawJSONForContext(block.Input)
+		}
+	case "google":
+		if block.Type == "function_call" {
+			block.Args = compactRawJSONForContext(block.Args)
+		}
+	}
+}
+
+func toolCallIDInSet(ids map[string]struct{}, values ...string) bool {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := ids[value]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func compactRawJSONForContext(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	text := string(raw)
 	compacted := compactTextForContext(text, "previous_tool_arguments")
 	if compacted == text {
-		return
+		return raw
 	}
 	payload := map[string]any{
 		"compacted_for_context": true,
@@ -417,9 +460,9 @@ func compactToolCallArguments(call *session.ToolCall) {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return raw
 	}
-	call.Arguments = json.RawMessage(data)
+	return json.RawMessage(data)
 }
 
 func compactTextForContext(text, reason string) string {
@@ -561,10 +604,13 @@ func cloneMessages(messages []session.Message) []session.Message {
 	for i, msg := range messages {
 		out[i] = msg
 		if msg.ToolCalls != nil {
-			out[i].ToolCalls = append([]session.ToolCall{}, msg.ToolCalls...)
+			out[i].ToolCalls = cloneToolCalls(msg.ToolCalls)
 		}
 		if msg.ToolResults != nil {
-			out[i].ToolResults = append([]session.ToolResult{}, msg.ToolResults...)
+			out[i].ToolResults = cloneToolResults(msg.ToolResults)
+		}
+		if msg.ProviderContentBlocks != nil {
+			out[i].ProviderContentBlocks = cloneProviderContentBlocks(msg.ProviderContentBlocks)
 		}
 		if msg.Meta != nil {
 			meta := map[string]any{}
@@ -575,6 +621,49 @@ func cloneMessages(messages []session.Message) []session.Message {
 		}
 	}
 	return out
+}
+
+func cloneToolCalls(calls []session.ToolCall) []session.ToolCall {
+	out := append([]session.ToolCall{}, calls...)
+	for i := range out {
+		out[i].Arguments = cloneRawMessage(calls[i].Arguments)
+	}
+	return out
+}
+
+func cloneToolResults(results []session.ToolResult) []session.ToolResult {
+	out := append([]session.ToolResult{}, results...)
+	for i := range out {
+		if results[i].Metadata != nil {
+			metadata := map[string]any{}
+			for key, value := range results[i].Metadata {
+				metadata[key] = value
+			}
+			out[i].Metadata = metadata
+		}
+	}
+	return out
+}
+
+func cloneProviderContentBlocks(blocks []session.ProviderContentBlock) []session.ProviderContentBlock {
+	out := append([]session.ProviderContentBlock{}, blocks...)
+	for i := range out {
+		out[i].Summary = append([]string{}, blocks[i].Summary...)
+		out[i].Input = cloneRawMessage(blocks[i].Input)
+		out[i].Args = cloneRawMessage(blocks[i].Args)
+		if blocks[i].Thought != nil {
+			thought := *blocks[i].Thought
+			out[i].Thought = &thought
+		}
+	}
+	return out
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
 }
 
 func summarizeLatestMessages(messages []session.Message) []string {

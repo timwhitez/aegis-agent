@@ -484,6 +484,171 @@ func TestCompactionTruncatesOldToolOutput(t *testing.T) {
 	}
 }
 
+func TestCompactionTruncatesProviderBlockToolArguments(t *testing.T) {
+	tests := []struct {
+		name       string
+		provider   string
+		callID     string
+		makeBlock  func(callID string, raw json.RawMessage) session.ProviderContentBlock
+		blockValue func(block session.ProviderContentBlock) json.RawMessage
+	}{
+		{
+			name:     "anthropic tool_use input",
+			provider: "anthropic",
+			callID:   "toolu_old",
+			makeBlock: func(callID string, raw json.RawMessage) session.ProviderContentBlock {
+				return session.ProviderContentBlock{
+					Provider: "anthropic",
+					Type:     "tool_use",
+					ID:       callID,
+					Name:     "shell",
+					Input:    raw,
+				}
+			},
+			blockValue: func(block session.ProviderContentBlock) json.RawMessage { return block.Input },
+		},
+		{
+			name:     "google function_call args",
+			provider: "google",
+			callID:   "gcall_old",
+			makeBlock: func(callID string, raw json.RawMessage) session.ProviderContentBlock {
+				return session.ProviderContentBlock{
+					Provider: "google",
+					Type:     "function_call",
+					ID:       callID,
+					Name:     "shell",
+					Args:     raw,
+				}
+			},
+			blockValue: func(block session.ProviderContentBlock) json.RawMessage { return block.Args },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := session.NewStore(t.TempDir())
+			meta := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               session.NewSessionID(),
+				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+				Workdir:          t.TempDir(),
+				Mode:             session.ModeRun,
+				Provider:         tc.provider,
+				Model:            "test-model",
+				CompletionPolicy: session.CompletionPolicyInteractive,
+			}
+			state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+			if err := store.Create(meta, state); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			oldArgs := json.RawMessage(`{"command":"` + strings.Repeat("A", 1800) + `MIDDLE` + strings.Repeat("Z", 1800) + `"}`)
+			assistant := session.NewAssistantMessage("", "provider thinking", nil)
+			assistant.ProviderContentBlocks = []session.ProviderContentBlock{tc.makeBlock(tc.callID, oldArgs)}
+			messages := []session.Message{
+				session.NewMessage("user", "Run tools."),
+				assistant,
+				session.NewToolMessage([]session.ToolResult{{
+					ToolCallID:    tc.callID,
+					Name:          "shell",
+					LLMOutput:     "old output",
+					DisplayOutput: "old output",
+				}}),
+				session.NewAssistantMessage("", "", []session.ToolCall{{
+					ID:        "new_call",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"pwd"}`),
+				}}),
+				session.NewToolMessage([]session.ToolResult{{
+					ToolCallID:    "new_call",
+					Name:          "shell",
+					LLMOutput:     "new output",
+					DisplayOutput: "new output",
+				}}),
+			}
+
+			view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) {})
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if didCompact {
+				t.Fatal("expected micro compaction only")
+			}
+			if len(view) < 2 || len(view[1].ProviderContentBlocks) != 1 {
+				t.Fatalf("expected retained provider block assistant, got %#v", view)
+			}
+			got := string(tc.blockValue(view[1].ProviderContentBlocks[0]))
+			if !strings.Contains(got, "compacted_for_context") || !strings.Contains(got, "TAIL") {
+				t.Fatalf("expected compacted old provider block arguments, got %s", got)
+			}
+			if strings.Contains(got, "MIDDLE") {
+				t.Fatalf("expected middle of old provider block arguments to be omitted, got %s", got)
+			}
+			if string(tc.blockValue(messages[1].ProviderContentBlocks[0])) != string(oldArgs) {
+				t.Fatalf("expected source provider block arguments to remain unchanged, got %s", string(tc.blockValue(messages[1].ProviderContentBlocks[0])))
+			}
+		})
+	}
+}
+
+func TestCompactorDoesNotMutateSourceToolResultMetadata(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	metadata := map[string]any{"path": "reports/large.log"}
+	messages := []session.Message{
+		session.NewMessage("user", "Run tools."),
+		session.NewAssistantMessage("", "", []session.ToolCall{{
+			ID:        "old_call",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"pwd"}`),
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID:    "old_call",
+			Name:          "shell",
+			LLMOutput:     strings.Repeat("O", 2000),
+			DisplayOutput: strings.Repeat("O", 2000),
+			Metadata:      metadata,
+		}}),
+		session.NewAssistantMessage("", "", []session.ToolCall{{
+			ID:        "new_call",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"pwd"}`),
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID:    "new_call",
+			Name:          "shell",
+			LLMOutput:     "new output",
+			DisplayOutput: "new output",
+		}}),
+	}
+
+	view, _, _, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) {})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if got := view[2].ToolResults[0].Metadata["compacted_for_context"]; got != true {
+		t.Fatalf("expected compacted view metadata marker, got %#v", view[2].ToolResults[0].Metadata)
+	}
+	if _, ok := metadata["compacted_for_context"]; ok {
+		t.Fatalf("source metadata map was mutated: %#v", metadata)
+	}
+	if _, ok := messages[2].ToolResults[0].Metadata["compaction_reason"]; ok {
+		t.Fatalf("source message metadata was mutated: %#v", messages[2].ToolResults[0].Metadata)
+	}
+}
+
 func TestCompactionKeepsArtifactProofMemory(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()

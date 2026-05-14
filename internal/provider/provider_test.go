@@ -462,6 +462,54 @@ func TestGoogleReplayDropsThoughtOnlyAssistantBlocks(t *testing.T) {
 	}
 }
 
+func TestProviderReplaySerializesCompactedProviderBlockToolCalls(t *testing.T) {
+	compactedArgs := json.RawMessage(`{"compacted_for_context":true,"original_chars":3600,"head_tail":"TAIL"}`)
+
+	anthropicAssistant := session.NewAssistantMessage("", "", nil)
+	anthropicAssistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "anthropic", Type: "thinking", Thinking: "reasoning", Signature: "sig_thinking_1"},
+		{Provider: "anthropic", Type: "tool_use", ID: "toolu_old", Name: "shell", Input: compactedArgs},
+	}
+	anthropicReplay := anthropicMessages([]session.Message{
+		anthropicAssistant,
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_old", Name: "shell", LLMOutput: "ok"}}),
+	}, "claude-sonnet-4-6", "", "")
+	anthropicData, _ := json.Marshal(anthropicReplay)
+	anthropicBody := string(anthropicData)
+	for _, want := range []string{
+		`"type":"tool_use"`,
+		`"tool_use_id":"toolu_old"`,
+		`"compacted_for_context":true`,
+		`"head_tail":"TAIL"`,
+	} {
+		if !strings.Contains(anthropicBody, want) {
+			t.Fatalf("expected %s in compacted anthropic replay body: %s", want, anthropicBody)
+		}
+	}
+
+	googleAssistant := session.NewAssistantMessage("", "", nil)
+	googleAssistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "google", Type: "function_call", ID: "gcall_old", Name: "shell", Args: compactedArgs, ThoughtSignature: "sig_call_1"},
+	}
+	googleReplay := googleContents([]session.Message{
+		googleAssistant,
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "gcall_old", Name: "shell", LLMOutput: `{"output":"ok"}`}}),
+	}, "gemini-2.5-flash", "", "")
+	googleData, _ := json.Marshal(googleReplay)
+	googleBody := string(googleData)
+	for _, want := range []string{
+		`"functionCall"`,
+		`"functionResponse"`,
+		`"id":"gcall_old"`,
+		`"compacted_for_context":true`,
+		`"head_tail":"TAIL"`,
+	} {
+		if !strings.Contains(googleBody, want) {
+			t.Fatalf("expected %s in compacted google replay body: %s", want, googleBody)
+		}
+	}
+}
+
 func TestOpenAIAdapterClassifiesHTTPErrorWithProviderName(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad key", http.StatusUnauthorized)
