@@ -1029,6 +1029,65 @@ func TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing(t *testing.T) {
 	}
 }
 
+func TestDoctorCommandAPIKeyEnvOverrideControlsProbeSkip(t *testing.T) {
+	fake := newFakeRunner()
+	fake.probeResult = runtime.ProbeResult{
+		Provider:      "openai-compatible",
+		Model:         "gpt-5.4",
+		BaseURL:       "http://example/v1",
+		WireAPI:       "responses",
+		StopReason:    "tool_use",
+		ToolCallNames: []string{"finish"},
+		FinishMessage: "provider probe ok",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.DefaultProvider = "openai-compatible"
+		cfg.Providers["openai-compatible"] = config.Provider{
+			APIKeyEnv: "TEST_MISSING_KEY",
+			BaseURL:   "http://example/v1",
+			Model:     "gpt-5.4",
+			WireAPI:   "responses",
+		}
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+	_ = os.Unsetenv("TEST_MISSING_KEY")
+	t.Setenv("TEST_OVERRIDE_KEY", "present")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"doctor", "--provider", "openai-compatible", "--api-key-env", "TEST_OVERRIDE_KEY", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.probeCalls) != 1 {
+		t.Fatalf("expected probe to run with override env, got %d calls; output=%s", len(fake.probeCalls), stdout.String())
+	}
+	if fake.probeCalls[0].APIKeyEnv != "TEST_OVERRIDE_KEY" {
+		t.Fatalf("expected probe request to use override env, got %#v", fake.probeCalls[0])
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal report: %v output=%s", err, stdout.String())
+	}
+	var keyCheck, probeCheck *doctorCheck
+	for i := range report.Checks {
+		switch report.Checks[i].Name {
+		case "provider.api_key_env":
+			keyCheck = &report.Checks[i]
+		case "provider.probe":
+			probeCheck = &report.Checks[i]
+		}
+	}
+	if keyCheck == nil || keyCheck.Status != "ok" || keyCheck.Details["env"] != "TEST_OVERRIDE_KEY" || keyCheck.Details["present"] != true {
+		t.Fatalf("expected API key env override to be reported present, got %#v", keyCheck)
+	}
+	if probeCheck == nil || probeCheck.Status != "ok" {
+		t.Fatalf("expected provider probe to run successfully, got %#v", probeCheck)
+	}
+}
+
 func TestDoctorCommandJSONIncludesEffectiveOpenAICompatibleSettings(t *testing.T) {
 	fake := newFakeRunner()
 	restore := runnerLoader

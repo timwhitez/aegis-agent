@@ -1384,7 +1384,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		Details: doctorProviderConfigDetails(selectedProvider, providerCfg),
 	})
 
-	apiKey := cfg.APIKey(selectedProvider)
+	apiKey := providerCfg.ResolvedAPIKey()
 	apiKeyStatus := "ok"
 	if apiKey == "" {
 		apiKeyStatus = "warn"
