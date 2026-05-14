@@ -1215,6 +1215,49 @@ func TestReadFileBlocksSymlinkedArtifactsAlias(t *testing.T) {
 	}
 }
 
+func TestGrepToolsBlockExplicitInternalArtifacts(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, ".artifacts", "tool-outputs"), 0o755); err != nil {
+		t.Fatalf("mkdir artifacts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, ".artifacts", "tool-outputs", "shell.txt"), []byte("secret artifact needle"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	grepResult, err := registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"pattern":"needle",
+		"path":".artifacts/tool-outputs/shell.txt"
+	}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if !grepResult.IsError || !strings.Contains(grepResult.DisplayOutput, "internal generated artifact") {
+		t.Fatalf("expected explicit artifact grep to be blocked, got %#v", grepResult)
+	}
+
+	grepFilesResult, err := registry.Execute(context.Background(), "grep_files", execCtx, json.RawMessage(`{
+		"pattern":"needle",
+		"path":".artifacts/tool-outputs"
+	}`))
+	if err != nil {
+		t.Fatalf("grep_files: %v", err)
+	}
+	if !grepFilesResult.IsError || !strings.Contains(grepFilesResult.DisplayOutput, "internal generated artifact") {
+		t.Fatalf("expected explicit artifact grep_files to be blocked, got %#v", grepFilesResult)
+	}
+}
+
 func TestGlobSkipsSymlinkEscapes(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

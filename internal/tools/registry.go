@@ -836,6 +836,9 @@ func defGrep() Definition {
 				if err != nil {
 					return errorResult("grep", err), nil
 				}
+				if isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path) {
+					return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
+				}
 				root = path
 			}
 			matcher, regexErr := regexp.Compile(input.Pattern)
@@ -927,6 +930,9 @@ func defGrepFiles() Definition {
 			root, err := resolveGrepRoot(execCtx.Workdir, input.Path)
 			if err != nil {
 				return errorResult("grep_files", err), nil
+			}
+			if input.Path != "" && (isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, root)) {
+				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			matcher, useRegex := compileGrepMatcher(input.Pattern)
 			limit := input.Limit

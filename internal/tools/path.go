@@ -93,12 +93,18 @@ func CheckWorkspaceWriteAllowed(workdir, resolvedPath string) error {
 	if err != nil {
 		return err
 	}
+	if !isWithin(base, resolvedPath) {
+		return errors.New("path escapes workspace")
+	}
 	rel, err := filepath.Rel(base, resolvedPath)
 	if err != nil {
 		return err
 	}
 	displayPath := filepath.ToSlash(rel)
-	return checkWorkspaceWriteDisplayPath(displayPath, filepath.Base(resolvedPath))
+	if err := checkWorkspaceWriteDisplayPath(displayPath, filepath.Base(resolvedPath)); err != nil {
+		return err
+	}
+	return checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath)
 }
 
 func CheckWorkspaceWriteInputAllowed(workdir, inputPath string) error {
@@ -131,6 +137,53 @@ func checkWorkspaceWriteDisplayPath(displayPath, baseName string) error {
 		}
 	}
 	return nil
+}
+
+func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) error {
+	for _, denied := range deniedWorkspaceWriteDirs {
+		deniedPath, ok, err := resolveExistingWorkspacePolicyPath(base, denied)
+		if err != nil {
+			return err
+		}
+		if ok && isWithin(deniedPath, resolvedPath) {
+			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s/'", displayPath, denied)
+		}
+	}
+	for _, denied := range deniedWorkspaceWriteFiles {
+		deniedPath, ok, err := resolveExistingWorkspacePolicyPath(base, denied)
+		if err != nil {
+			return err
+		}
+		if ok && sameCleanPath(deniedPath, resolvedPath) {
+			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s'", displayPath, denied)
+		}
+	}
+	return nil
+}
+
+func resolveExistingWorkspacePolicyPath(base, rel string) (string, bool, error) {
+	path := filepath.Join(base, rel)
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if !isWithin(base, resolved) {
+		return "", false, nil
+	}
+	return resolved, true, nil
+}
+
+func sameCleanPath(left, right string) bool {
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func pathBaseFromSlash(path string) string {

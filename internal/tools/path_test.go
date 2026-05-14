@@ -83,12 +83,47 @@ func TestWriteDeniedSensitiveSymlinkAlias(t *testing.T) {
 	if strings.Contains(filepath.ToSlash(resolved), "/.git/") {
 		t.Fatalf("expected symlink to resolve away from .git alias, got %s", resolved)
 	}
-	if err := CheckWorkspaceWriteAllowed(root, resolved); err != nil {
-		t.Fatalf("resolved path alone should not carry lexical alias, got %v", err)
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.git/'") {
+		t.Fatalf("expected resolved .git target to be denied, got %v", err)
 	}
 	err = CheckWorkspaceWriteInputAllowed(root, ".git/config")
 	if err == nil || !strings.Contains(err.Error(), ".git/") {
 		t.Fatalf("expected lexical .git alias to be denied, got %v", err)
+	}
+}
+
+func TestWriteDeniedSensitiveSymlinkFileTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+	target := filepath.Join(root, "secrets", "env-real")
+	if err := os.WriteFile(target, []byte("SECRET=old\n"), 0o600); err != nil {
+		t.Fatalf("write env target: %v", err)
+	}
+	if err := os.Symlink("secrets/env-real", filepath.Join(root, ".env")); err != nil {
+		t.Fatalf("symlink .env: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "secrets/env-real")
+	if err != nil {
+		t.Fatalf("resolve env target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.env'") {
+		t.Fatalf("expected resolved .env target to be denied, got %v", err)
+	}
+}
+
+func TestWriteDeniedBrokenSensitiveSymlinkDoesNotBlockUnrelatedFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink("missing-env-target", filepath.Join(root, ".env")); err != nil {
+		t.Fatalf("symlink .env: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "reports/result.md")
+	if err != nil {
+		t.Fatalf("resolve normal file: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err != nil {
+		t.Fatalf("expected broken sensitive alias not to block unrelated writes: %v", err)
 	}
 }
 
