@@ -118,6 +118,55 @@ func TestEngineWritesReplayCompleteToolResultsWhenBeforeHookFails(t *testing.T) 
 	}
 }
 
+func TestEngineWritesSyntheticToolResultsAfterFinishInSameTurn(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish then ignore later tools")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)},
+				{ID: "call_later", Name: "shell", Arguments: json.RawMessage(`{"command":"touch should-not-run"}`)},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(meta.Workdir, "should-not-run")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("later shell tool should not execute after finish, stat err=%v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var toolMessages []session.Message
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			toolMessages = append(toolMessages, msg)
+		}
+	}
+	if len(toolMessages) != 1 {
+		t.Fatalf("expected one replay-complete tool message, got %#v", toolMessages)
+	}
+	results := toolMessages[0].ToolResults
+	if len(results) != 2 {
+		t.Fatalf("expected finish result plus synthetic later result, got %#v", results)
+	}
+	if results[0].ToolCallID != "call_finish" || !results[0].Final || results[0].DisplayOutput != "done" {
+		t.Fatalf("unexpected finish result: %#v", results[0])
+	}
+	if results[1].ToolCallID != "call_later" || !results[1].IsError || !strings.Contains(results[1].LLMOutput, "finish completed the session") {
+		t.Fatalf("unexpected synthetic later result: %#v", results[1])
+	}
+}
+
 func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
 	for _, stopReason := range []string{"max_tokens", "blocked", "error"} {
 		t.Run(stopReason, func(t *testing.T) {

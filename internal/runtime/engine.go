@@ -617,6 +617,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					break
 				}
 				if toolResult.Final {
+					if callIndex+1 < len(result.ToolCalls) {
+						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: finish completed the session; this later tool call was not executed")...)
+					}
 					if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
 						return RunResult{}, err
 					}
