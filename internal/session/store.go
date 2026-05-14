@@ -78,7 +78,7 @@ func (s *Store) withFileLock(lockPath string, fn func() error) error {
 	if err := s.ensureDir(filepath.Dir(lockPath)); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, s.fileMode)
+	file, err := openNoSymlink(lockPath, unix.O_CREAT|unix.O_RDWR, s.fileMode)
 	if err != nil {
 		return err
 	}
@@ -1321,14 +1321,18 @@ func (s *Store) writeJSONL(path string, payload any) error {
 }
 
 func openAppendNoSymlink(path string, mode fs.FileMode) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_APPEND|unix.O_CREAT|unix.O_WRONLY|unix.O_NOFOLLOW, uint32(mode))
+	return openNoSymlink(path, unix.O_APPEND|unix.O_CREAT|unix.O_WRONLY, mode)
+}
+
+func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
+	fd, err := unix.Open(path, flags|unix.O_NOFOLLOW, uint32(mode))
 	if err != nil {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), path)
 	if file == nil {
 		_ = unix.Close(fd)
-		return nil, errors.New("failed to open jsonl file")
+		return nil, errors.New("failed to open session file")
 	}
 	return file, nil
 }

@@ -932,6 +932,37 @@ func TestUpdateSteerRequestsMergesConcurrentAppend(t *testing.T) {
 	}
 }
 
+func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.lock")
+	lockPath := filepath.Join(store.SessionDir(meta.ID), "control", "steer.lock")
+	if err := os.Symlink(outside, lockPath); err != nil {
+		t.Fatalf("symlink lock: %v", err)
+	}
+
+	if err := store.AppendSteerRequest(meta.ID, NewSteerRequest("hello", false)); err == nil {
+		t.Fatal("expected symlinked steer lock to fail")
+	}
+	if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside lock target should not be created, got %v", err)
+	}
+}
+
 func TestStoreListIncludesLastErrorInSummaries(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
