@@ -1127,6 +1127,70 @@ func TestFeatureListToolsPersistUpdateAndReadSnapshot(t *testing.T) {
 	}
 }
 
+func TestFeatureListToolsRejectSymlinkedSnapshot(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   meta.Workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside-feature-list.json")
+	original := []byte(`{"features":[{"id":"feature_0001","status":"pending"}]}` + "\n")
+	if err := os.WriteFile(outside, original, 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(store.SessionDir(meta.ID), "feature_list.json")); err != nil {
+		t.Fatalf("symlink feature list: %v", err)
+	}
+
+	readResult, err := registry.Execute(context.Background(), "feature_list_read", execCtx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("feature_list_read execute: %v", err)
+	}
+	if !readResult.IsError || !strings.Contains(readResult.LLMOutput, "symlinked session path") {
+		t.Fatalf("expected symlink read error, got %#v", readResult)
+	}
+	updateResult, err := registry.Execute(context.Background(), "feature_list_update", execCtx, json.RawMessage(`{"id":"feature_0001","status":"completed"}`))
+	if err != nil {
+		t.Fatalf("feature_list_update execute: %v", err)
+	}
+	if !updateResult.IsError || !strings.Contains(updateResult.LLMOutput, "symlinked session path") {
+		t.Fatalf("expected symlink update error, got %#v", updateResult)
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside: %v", err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("outside symlink target was modified: %q", string(data))
+	}
+}
+
 func TestShellTimeoutIsCappedByRuntimeCommandTimeout(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.CommandTimeoutSec = 1

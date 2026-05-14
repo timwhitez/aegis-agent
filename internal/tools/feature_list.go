@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -67,13 +66,8 @@ func defFeatureListCreate() Definition {
 			}
 
 			featureList := session.FeatureList{Features: features}
-			data, err := json.MarshalIndent(featureList, "", "  ")
-			if err != nil {
-				return errorResult("feature_list_create", err), nil
-			}
-
 			path := featureListPath(execCtx)
-			if err := writeAtomically(path, data, 0o644); err != nil {
+			if err := execCtx.Store.SaveFeatureList(execCtx.SessionID, featureList); err != nil {
 				return errorResult("feature_list_create", err), nil
 			}
 
@@ -109,15 +103,9 @@ func defFeatureListUpdate() Definition {
 				return errorResult("feature_list_update", err), nil
 			}
 
-			path := featureListPath(execCtx)
-			data, err := os.ReadFile(path)
+			featureList, err := execCtx.Store.LoadFeatureList(execCtx.SessionID)
 			if err != nil {
 				return errorResult("feature_list_update", fmt.Errorf("feature list not found: %w", err)), nil
-			}
-
-			var featureList session.FeatureList
-			if err := json.Unmarshal(data, &featureList); err != nil {
-				return errorResult("feature_list_update", err), nil
 			}
 
 			found := false
@@ -139,12 +127,7 @@ func defFeatureListUpdate() Definition {
 				return errorResult("feature_list_update", fmt.Errorf("feature not found: %s", input.ID)), nil
 			}
 
-			data, err = json.MarshalIndent(featureList, "", "  ")
-			if err != nil {
-				return errorResult("feature_list_update", err), nil
-			}
-
-			if err := writeAtomically(path, data, 0o644); err != nil {
+			if err := execCtx.Store.SaveFeatureList(execCtx.SessionID, featureList); err != nil {
 				return errorResult("feature_list_update", err), nil
 			}
 
@@ -166,15 +149,9 @@ func defFeatureListRead() Definition {
 			"properties": map[string]any{},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			path := featureListPath(execCtx)
-			data, err := os.ReadFile(path)
+			featureList, err := execCtx.Store.LoadFeatureList(execCtx.SessionID)
 			if err != nil {
 				return errorResult("feature_list_read", fmt.Errorf("feature list not found: %w", err)), nil
-			}
-
-			var featureList session.FeatureList
-			if err := json.Unmarshal(data, &featureList); err != nil {
-				return errorResult("feature_list_read", err), nil
 			}
 
 			output, _ := json.MarshalIndent(featureList, "", "  ")

@@ -360,6 +360,23 @@ func TestGoalCompletionGateRequiresBudgetWrapUpWhenStopOnBudget(t *testing.T) {
 	}
 }
 
+func TestPreCompletionFeatureGateIgnoresSymlinkedFeatureList(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	outside := filepath.Join(t.TempDir(), "outside-feature-list.json")
+	if err := os.WriteFile(outside, []byte(`{"features":[{"id":"feature_0001","status":"pending"}]}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write outside feature list: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(store.SessionDir(meta.ID), "feature_list.json")); err != nil {
+		t.Fatalf("symlink feature list: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluatePreCompletionFeatures(true)
+	if decision.Status != GateAllow {
+		t.Fatalf("expected symlinked feature list to be ignored, got %#v", decision)
+	}
+}
+
 func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := store.AppendBackgroundNotification(meta.ID, session.NewBackgroundNotification(session.QueueJob{

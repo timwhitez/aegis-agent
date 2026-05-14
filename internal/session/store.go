@@ -397,6 +397,26 @@ func (s *Store) SaveTodo(sessionID string, todo []TodoItem) error {
 	return s.writeJSONFile(path, todo)
 }
 
+func (s *Store) LoadFeatureList(sessionID string) (FeatureList, error) {
+	var featureList FeatureList
+	path, err := s.sessionPath(sessionID, "feature_list.json")
+	if err != nil {
+		return featureList, err
+	}
+	err = readJSONFile(path, &featureList)
+	return featureList, err
+}
+
+func (s *Store) SaveFeatureList(sessionID string, featureList FeatureList) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "feature_list.json")
+	if err != nil {
+		return err
+	}
+	return s.writeJSONFile(path, featureList)
+}
+
 func (s *Store) AppendSteerRequest(sessionID string, request SteerRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

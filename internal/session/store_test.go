@@ -121,6 +121,50 @@ func TestStoreAppendMessageRejectsSymlinkJSONL(t *testing.T) {
 	}
 }
 
+func TestStoreFeatureListRejectsSymlink(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside-feature-list.json")
+	original := []byte(`{"features":[{"id":"feature_0001","status":"pending"}]}` + "\n")
+	if err := os.WriteFile(outside, original, 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	featureListPath := filepath.Join(store.SessionDir(meta.ID), "feature_list.json")
+	if err := os.Symlink(outside, featureListPath); err != nil {
+		t.Fatalf("symlink feature list: %v", err)
+	}
+
+	if _, err := store.LoadFeatureList(meta.ID); err == nil {
+		t.Fatal("expected symlinked feature_list.json load to fail")
+	}
+	err := store.SaveFeatureList(meta.ID, FeatureList{Features: []Feature{{ID: "feature_0001", Status: "completed"}}})
+	if err == nil {
+		t.Fatal("expected symlinked feature_list.json save to fail")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside: %v", err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("outside symlink target was modified: %q", string(data))
+	}
+}
+
 func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

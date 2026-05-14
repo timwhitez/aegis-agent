@@ -3,7 +3,6 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -131,12 +130,8 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	highValueProofs := collectHighValueProofs(sourceMessages, workdir, 10)
 
 	var featureList *session.FeatureList
-	featureListPath := filepath.Join(c.store.SessionDir(sessionID), "feature_list.json")
-	if data, err := os.ReadFile(featureListPath); err == nil {
-		var fl session.FeatureList
-		if json.Unmarshal(data, &fl) == nil {
-			featureList = &fl
-		}
+	if fl, err := c.store.LoadFeatureList(sessionID); err == nil {
+		featureList = &fl
 	}
 
 	summary := map[string]any{

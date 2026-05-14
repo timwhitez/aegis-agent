@@ -3,7 +3,6 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -91,12 +90,8 @@ func (c *CompletionController) EvaluatePreCompletionFeatures(enabled bool) GateD
 		return GateDecision{Status: GateAllow}
 	}
 	featureListPath := filepath.Join(c.store.SessionDir(c.sessionID), "feature_list.json")
-	data, err := os.ReadFile(featureListPath)
+	featureList, err := c.store.LoadFeatureList(c.sessionID)
 	if err != nil {
-		return GateDecision{Status: GateAllow}
-	}
-	var featureList session.FeatureList
-	if json.Unmarshal(data, &featureList) != nil {
 		return GateDecision{Status: GateAllow}
 	}
 	var incomplete []string
