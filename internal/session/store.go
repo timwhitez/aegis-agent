@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -1287,7 +1288,7 @@ func (s *Store) appendJSONL(path string, payload any) error {
 	if err := s.ensureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, s.fileMode)
+	file, err := openAppendNoSymlink(path, s.fileMode)
 	if err != nil {
 		return err
 	}
@@ -1301,47 +1302,44 @@ func (s *Store) writeJSONL(path string, payload any) error {
 	if err := s.ensureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, s.fileMode)
-	if err != nil {
-		return err
-	}
-	chmodBestEffort(tmp, s.fileMode)
-	enc := json.NewEncoder(file)
+	var data bytes.Buffer
+	enc := json.NewEncoder(&data)
 	switch items := payload.(type) {
 	case []Message:
 		for _, item := range items {
 			if err := enc.Encode(item); err != nil {
-				file.Close()
 				return err
 			}
 		}
 	case []SteerRequest:
 		for _, item := range items {
 			if err := enc.Encode(item); err != nil {
-				file.Close()
 				return err
 			}
 		}
 	case []BackgroundNotification:
 		for _, item := range items {
 			if err := enc.Encode(item); err != nil {
-				file.Close()
 				return err
 			}
 		}
 	default:
-		file.Close()
 		return fmt.Errorf("unsupported jsonl payload %T", payload)
 	}
-	if err := file.Close(); err != nil {
-		return err
+	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
+}
+
+func openAppendNoSymlink(path string, mode fs.FileMode) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_APPEND|unix.O_CREAT|unix.O_WRONLY|unix.O_NOFOLLOW, uint32(mode))
+	if err != nil {
+		return nil, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("failed to open jsonl file")
 	}
-	chmodBestEffort(path, s.fileMode)
-	return nil
+	return file, nil
 }
 
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {

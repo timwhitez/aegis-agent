@@ -78,6 +78,99 @@ func TestStoreAppendMessageReappliesParentAndFileModes(t *testing.T) {
 	}
 }
 
+func TestStoreAppendMessageRejectsSymlinkJSONL(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	messagePath := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	if err := os.Remove(messagePath); err != nil {
+		t.Fatalf("remove messages: %v", err)
+	}
+	if err := os.Symlink(outside, messagePath); err != nil {
+		t.Fatalf("symlink messages: %v", err)
+	}
+
+	if err := store.AppendMessage(meta.ID, NewMessage("user", "hello")); err == nil {
+		t.Fatal("expected symlinked messages.jsonl append to fail")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("outside symlink target was modified: %q", string(data))
+	}
+}
+
+func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	transcriptPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "transcripts", "audit.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o700); err != nil {
+		t.Fatalf("mkdir transcript dir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.tmp")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Symlink(outside, transcriptPath+".tmp"); err != nil {
+		t.Fatalf("symlink predictable tmp: %v", err)
+	}
+
+	written, err := store.WriteTranscript(meta.ID, "audit.jsonl", []Message{NewMessage("user", "hello")})
+	if err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	if written != transcriptPath {
+		t.Fatalf("unexpected transcript path: %s", written)
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("outside predictable tmp symlink target was modified: %q", string(data))
+	}
+	if info, err := os.Lstat(transcriptPath); err != nil {
+		t.Fatalf("stat transcript: %v", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("transcript path should not be a symlink")
+	}
+}
+
 func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
