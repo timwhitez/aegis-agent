@@ -1733,7 +1733,7 @@ func syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir string, visiblePat
 		if !ok {
 			continue
 		}
-		data, err := os.ReadFile(src)
+		data, _, err := fileutil.ReadRegularFileNoSymlink(src)
 		if err != nil {
 			continue
 		}

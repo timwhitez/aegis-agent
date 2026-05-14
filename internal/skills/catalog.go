@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"go-cli-agent/internal/fileutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -128,7 +129,7 @@ func (c *Catalog) LoadBody(name string) (string, error) {
 		return skill.Body, nil
 	}
 
-	data, err := os.ReadFile(skill.Path)
+	data, _, err := fileutil.ReadRegularFileNoSymlink(skill.Path)
 	if err != nil {
 		return "", err
 	}
@@ -299,7 +300,7 @@ func readCatalogFile(rootReal, allowedDirReal, path string) ([]byte, string, err
 	if !pathWithin(rootReal, realPath) || !pathWithin(allowedDirReal, realPath) {
 		return nil, "", fmt.Errorf("skill catalog file escapes skill root: %s", path)
 	}
-	data, err := os.ReadFile(realPath)
+	data, _, err := fileutil.ReadRegularFileNoSymlink(realPath)
 	if err != nil {
 		return nil, "", err
 	}

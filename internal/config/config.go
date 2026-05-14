@@ -384,7 +384,7 @@ func Load(explicitPath, cwd string) (*Config, error) {
 		if explicitPath == "" && sameCleanPath(path, workspaceConfigPath) && !workspaceConfigTrusted(cwd) {
 			continue
 		}
-		data, err := os.ReadFile(path)
+		data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue

@@ -3,10 +3,10 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/review"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/tools"
@@ -294,7 +294,7 @@ func requestedArtifactWrite(workdir, toolName string, rawArgs json.RawMessage) (
 		if !ok {
 			return artifactWriteTarget{}, false
 		}
-		current, err := os.ReadFile(path)
+		current, _, err := fileutil.ReadRegularFileNoSymlink(path)
 		if err != nil {
 			return artifactWriteTarget{}, false
 		}

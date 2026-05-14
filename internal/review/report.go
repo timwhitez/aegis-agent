@@ -1,12 +1,12 @@
 package review
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/tools"
 )
 
@@ -532,7 +532,7 @@ func readEvidenceLines(workdir string, ref evidenceReference) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	data, err := os.ReadFile(path)
+	data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 	if err != nil {
 		return "", false
 	}

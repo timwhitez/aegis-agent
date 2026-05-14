@@ -586,7 +586,7 @@ func syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir string, visibl
 		if err := tools.CheckWorkspaceWriteAllowed(requestedRoot, dst); err != nil {
 			continue
 		}
-		data, err := os.ReadFile(src)
+		data, _, err := fileutil.ReadRegularFileNoSymlink(src)
 		if err != nil {
 			continue
 		}

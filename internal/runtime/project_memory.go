@@ -1,10 +1,10 @@
 package runtime
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/tools"
 )
 
@@ -35,7 +35,7 @@ func loadProjectMemoryFile(workdir, name, rel string) projectMemoryFile {
 	if err != nil {
 		return entry
 	}
-	data, err := os.ReadFile(path)
+	data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 	if err != nil {
 		return entry
 	}

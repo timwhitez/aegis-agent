@@ -24,7 +24,7 @@ func LoadEnvFile(path string) error {
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -72,7 +72,7 @@ func UpsertEnvFile(path, key, value string) error {
 	}
 
 	var lines []string
-	if data, err := os.ReadFile(path); err == nil {
+	if data, _, err := fileutil.ReadRegularFileNoSymlink(path); err == nil {
 		content := strings.ReplaceAll(string(data), "\r\n", "\n")
 		lines = strings.Split(content, "\n")
 	} else if !os.IsNotExist(err) {

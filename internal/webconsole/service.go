@@ -2111,7 +2111,7 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
-	content, err := os.ReadFile(fullPath)
+	content, _, err := fileutil.ReadRegularFileNoSymlink(fullPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2736,7 +2736,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			skillDir := filepath.Join(dir, entry.Name())
-			mdData, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+			mdData, _, err := fileutil.ReadRegularFileNoSymlink(filepath.Join(skillDir, "SKILL.md"))
 			desc := "Local skill"
 			name := entry.Name()
 			if err == nil {

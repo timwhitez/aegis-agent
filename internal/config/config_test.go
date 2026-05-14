@@ -320,6 +320,26 @@ func TestLoadEnvFilePreservesExistingNonEmptyEnv(t *testing.T) {
 	}
 }
 
+func TestLoadEnvFileRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "external.env")
+	if err := os.WriteFile(target, []byte("OPENAI_API_KEY=external\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(root, ".env")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+
+	if err := LoadEnvFile(link); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "" {
+		t.Fatalf("expected symlinked env file not to load API key, got %q", got)
+	}
+}
+
 func TestUpsertEnvFilePreservesOtherEntries(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envPath, []byte("# keep\nANTHROPIC_API_KEY=anthropic\nOPENAI_API_KEY=old\n"), 0o600); err != nil {
@@ -361,6 +381,21 @@ func TestUpsertEnvFileRejectsSymlink(t *testing.T) {
 	}
 	if strings.Contains(string(data), "new") {
 		t.Fatalf("symlink target was modified: %q", string(data))
+	}
+}
+
+func TestLoadExplicitConfigRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "external-config.yaml")
+	if err := os.WriteFile(target, []byte("default_provider: evil\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(root, "config.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if _, err := Load(link, t.TempDir()); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink config rejection, got %v", err)
 	}
 }
 

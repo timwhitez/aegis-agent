@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/skills"
 	"go-cli-agent/internal/tools"
@@ -527,7 +527,7 @@ func targetConsistencySatisfiedByMessages(workdir string, messages []session.Mes
 		return true
 	}
 	if strings.TrimSpace(pos.Path) != "" {
-		if data, err := os.ReadFile(pos.Path); err == nil {
+		if data, _, err := fileutil.ReadRegularFileNoSymlink(pos.Path); err == nil {
 			return targetContentSatisfiesRequirement(string(data), req) && !contentHasTargetScopeConflict(string(data), req)
 		}
 	}
@@ -604,7 +604,7 @@ func reportConsistencyGuard(workdir string, messages []session.Message, toolName
 		if !final.Valid || strings.TrimSpace(final.Path) == "" {
 			return "", ""
 		}
-		if data, err := os.ReadFile(final.Path); err == nil {
+		if data, _, err := fileutil.ReadRegularFileNoSymlink(final.Path); err == nil {
 			content := string(data)
 			if validationFactConsistencyTarget(messages, final.Path, content) {
 				if evidence, ok := validationSuccessContradiction(workdir, messages, content); ok {
@@ -822,7 +822,7 @@ func validationFailureEvidenceFromSupportingDocs(workdir string) (string, bool) 
 		if err != nil {
 			continue
 		}
-		data, err := os.ReadFile(path)
+		data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 		if err != nil {
 			continue
 		}
@@ -3020,7 +3020,7 @@ func loadAgentsChain(workdir string) []agentsDoc {
 	if err != nil {
 		return nil
 	}
-	if data, err := os.ReadFile(path); err == nil {
+	if data, _, err := fileutil.ReadRegularFileNoSymlink(path); err == nil {
 		return []agentsDoc{{Path: path, Content: strings.TrimSpace(string(data))}}
 	}
 	return nil
