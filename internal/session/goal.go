@@ -22,6 +22,10 @@ const (
 	GoalModeGoal    = "goal"
 	GoalModeMission = "mission"
 
+	MissionPlanStatusDraft         = "draft"
+	MissionPlanStatusNeedsApproval = "needs_approval"
+	MissionPlanStatusApproved      = "approved"
+
 	GoalSourceCLI    = "cli"
 	GoalSourceWeb    = "web"
 	GoalSourceTool   = "tool"
@@ -333,9 +337,9 @@ func NewSessionGoalFromDraft(sessionID string, draft GoalDraft) (SessionGoal, er
 		UpdatedAt: now,
 	}
 	if mode == GoalModeMission {
-		planStatus := "draft"
+		planStatus := MissionPlanStatusDraft
 		if draft.RequirePlanApproval {
-			planStatus = "needs_approval"
+			planStatus = MissionPlanStatusNeedsApproval
 		}
 		validationContract := append([]GoalValidation(nil), goal.ValidationPlan...)
 		goal.Mission = &MissionPlan{
@@ -378,6 +382,9 @@ func ValidateGoal(goal SessionGoal) error {
 	if goal.TimeBudgetSeconds != nil && *goal.TimeBudgetSeconds <= 0 {
 		return errors.New("goal time budget must be positive")
 	}
+	if goal.Mission != nil && !IsMissionPlanStatus(goal.Mission.PlanStatus) {
+		return fmt.Errorf("invalid mission plan status: %s", goal.Mission.PlanStatus)
+	}
 	return nil
 }
 
@@ -407,6 +414,9 @@ func (s *Store) SaveGoal(sessionID string, goal SessionGoal) error {
 	}
 	if goal.CreatedAt == "" {
 		goal.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if goal.Mission != nil {
+		goal.Mission.PlanStatus = NormalizeMissionPlanStatus(goal.Mission.PlanStatus)
 	}
 	goal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := ValidateGoal(goal); err != nil {
@@ -467,11 +477,11 @@ func GoalRequiresPlanApproval(goal SessionGoal) bool {
 	if goal.Control.RequirePlanApproval {
 		return true
 	}
-	return goal.Mission != nil && strings.EqualFold(strings.TrimSpace(goal.Mission.PlanStatus), "needs_approval")
+	return goal.Mission != nil && strings.EqualFold(strings.TrimSpace(goal.Mission.PlanStatus), MissionPlanStatusNeedsApproval)
 }
 
 func goalNeedsPendingPlanApproval(goal SessionGoal) bool {
-	return goal.Mission != nil && strings.EqualFold(strings.TrimSpace(goal.Mission.PlanStatus), "needs_approval")
+	return goal.Mission != nil && strings.EqualFold(strings.TrimSpace(goal.Mission.PlanStatus), MissionPlanStatusNeedsApproval)
 }
 
 func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source string) (PlanModeState, bool, error) {
@@ -768,6 +778,30 @@ func normalizeGoalMode(value string) string {
 		return GoalModeMission
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func NormalizeMissionPlanStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return MissionPlanStatusDraft
+	case MissionPlanStatusDraft:
+		return MissionPlanStatusDraft
+	case MissionPlanStatusNeedsApproval:
+		return MissionPlanStatusNeedsApproval
+	case MissionPlanStatusApproved:
+		return MissionPlanStatusApproved
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func IsMissionPlanStatus(value string) bool {
+	switch NormalizeMissionPlanStatus(value) {
+	case MissionPlanStatusDraft, MissionPlanStatusNeedsApproval, MissionPlanStatusApproved:
+		return true
+	default:
+		return false
 	}
 }
 

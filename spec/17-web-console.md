@@ -527,6 +527,7 @@ Settings API：
 `PATCH /api/sessions/{id}/mission/plan`
 
 - 高级/agent 控制面：更新 goal 的内部结构化 plan，包括 requirements、features、milestones、validation contract、role plan、shared artifacts、knowledge artifacts、plan status 或 task-sync hint；默认 Web 启动表单不暴露这些字段
+- 该 endpoint 不能直接把 plan status 写成 `approved`；批准必须走 `mission/plan/approve` 或 linked Plan Mode approve 路径。若已 approved 的 mission plan 被 patch 修改，后端必须清空 `approved_at`、重置为 `needs_approval`，并创建或恢复 pending linked Plan Mode。
 
 `POST /api/sessions/{id}/mission/plan/approve`
 
@@ -535,6 +536,7 @@ Settings API：
 `PATCH /api/sessions/{id}/mission/validation`
 
 - 更新 goal validation plan 或内部 validation contract
+- 若已 approved 的 mission validation contract 被 patch 修改，后端必须清空 `approved_at`、重置为 `needs_approval`，并创建或恢复 pending linked Plan Mode。
 
 Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal facts，包括 coverage summary、最近 history、progress/handoff、evaluator evidence count 以及 unresolved child / queue IDs；Web 不维护第二套 Mission Control 状态。
 

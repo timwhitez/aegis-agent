@@ -7,6 +7,7 @@
 2026-05-14 本轮收敛状态：
 
 - 已修复 P0-1：`require_plan_approval` / `needs_approval` 现在会确保存在 linked Plan Mode；pending Plan Mode 继续复用既有 provider schema 裁剪与 `CompletionController` gate，mission plan approve 也会走 Plan Mode approval / continue 路径，而不是只改展示字段。本次三轮 review 发现并修复了 existing Plan Mode 复用边界：已批准/执行中的旧 Plan Mode 不会再被当作新的 `needs_approval` gate，未链接的 pending Plan Mode 会补 `linked_goal_id`。
+- 已补充修复 P0-1 的 Web/API patch 旁路：mission plan / goal patch 不能直接把 `plan_status` 写成 `approved`；已 approved 的 mission plan 或 validation contract 被编辑时会清空 `approved_at`、重置为 `needs_approval`，并创建 fresh pending linked Plan Mode。
 - 已修复 P0-2 主路径：模型工具 `update_goal(status="complete")` 现在把 completion audit、evidence、criteria status 和 validation status 回写 `goal.json` 当前快照；Web Goal panel 可展示该快照，`session.md` 在下一次 summary refresh / finish 后反映同一事实。CLI / Web 的人工 `goal complete` 仍是 operator override，只改完成状态或写空 audit，不等价于模型完成审计。
 - 已修复 P0-3：新增 mission validation coverage checker，覆盖 `MissionPlan.ValidationContract`、feature `claimed_assertions` 与 milestone `validation_ids`；CLI/Web/session detail 可查看覆盖情况，mission plan approval 默认阻断 uncovered / invalid contract，CLI/API 可显式 override。
 - 已修复 P0-4：`stop_on_budget` 现在有实际语义；budget 触顶会写入 budget-limited 与 wrap-up request，runtime 最多允许一轮 wrap-up，`finish` 在未记录 `record_goal_progress(kind="budget_wrapup")` 前会被 gate 阻断。

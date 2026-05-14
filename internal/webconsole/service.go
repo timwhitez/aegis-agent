@@ -991,7 +991,19 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 	}
 	if req.Mission != nil {
 		goal.Mode = session.GoalModeMission
+		wasApproved := goal.Mission != nil && session.NormalizeMissionPlanStatus(goal.Mission.PlanStatus) == session.MissionPlanStatusApproved
 		mission := *req.Mission
+		if err := rejectMissionPlanApprovalByPatch(mission.PlanStatus); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		mission.PlanStatus = session.NormalizeMissionPlanStatus(mission.PlanStatus)
+		if wasApproved && mission.PlanStatus != session.MissionPlanStatusNeedsApproval {
+			mission.PlanStatus = session.MissionPlanStatusNeedsApproval
+		}
+		if mission.PlanStatus != session.MissionPlanStatusApproved {
+			mission.ApprovedAt = ""
+		}
 		goal.Mission = &mission
 	}
 	if err := s.store.SaveGoal(sessionID, goal); err != nil {
@@ -1125,7 +1137,16 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		mission.KnowledgeArtifacts = append([]string(nil), req.KnowledgeArtifacts...)
 	}
 	if strings.TrimSpace(req.PlanStatus) != "" {
-		mission.PlanStatus = strings.TrimSpace(req.PlanStatus)
+		status, err := normalizeMissionPlanPatchStatus(req.PlanStatus)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		mission.PlanStatus = status
+		mission.ApprovedAt = ""
+	} else if session.NormalizeMissionPlanStatus(mission.PlanStatus) == session.MissionPlanStatusApproved {
+		mission.PlanStatus = session.MissionPlanStatusNeedsApproval
+		mission.ApprovedAt = ""
 	}
 	if req.CreateTasksFromPlan != nil {
 		mission.CreateTasksFromPlan = *req.CreateTasksFromPlan
@@ -1220,6 +1241,15 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
+			if err := s.appendGoalMutation(sessionID, goal, "mission.plan.approved", map[string]any{
+				"approved_at":       mission.ApprovedAt,
+				"plan_mode_id":      planMode.PlanModeID,
+				"approved_version":  planMode.ApprovedVersion,
+				"coverage_override": req.OverrideCoverage,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 			writeJSON(w, http.StatusOK, goal)
 			return
 		}
@@ -1281,13 +1311,35 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 		goal.Mode = session.GoalModeMission
 		mission := ensureMissionPlan(goal.Mission)
 		mission.ValidationContract = append([]session.GoalValidation(nil), req.ValidationContract...)
+		if session.NormalizeMissionPlanStatus(mission.PlanStatus) == session.MissionPlanStatusApproved {
+			mission.PlanStatus = session.MissionPlanStatusNeedsApproval
+			mission.ApprovedAt = ""
+		}
 		goal.Mission = mission
 	}
 	if err := s.store.SaveGoal(sessionID, goal); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.appendGoalMutation(sessionID, goal, "mission.validation.updated", nil); err != nil {
+	planModeCreated := false
+	if req.ValidationContract != nil && session.GoalRequiresPlanApproval(goal) {
+		planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		planModeCreated = created
+		if created {
+			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
+				"plan_mode_id":   planMode.PlanModeID,
+				"status":         planMode.Status,
+				"linked_goal_id": planMode.LinkedGoalID,
+			}))
+		}
+	}
+	if err := s.appendGoalMutation(sessionID, goal, "mission.validation.updated", map[string]any{
+		"plan_mode_created": planModeCreated,
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -3545,13 +3597,33 @@ func goalStoreStatus(err error) int {
 
 func ensureMissionPlan(plan *session.MissionPlan) *session.MissionPlan {
 	if plan == nil {
-		return &session.MissionPlan{PlanStatus: "draft"}
+		return &session.MissionPlan{PlanStatus: session.MissionPlanStatusDraft}
 	}
 	copyPlan := *plan
-	if strings.TrimSpace(copyPlan.PlanStatus) == "" {
-		copyPlan.PlanStatus = "draft"
-	}
+	copyPlan.PlanStatus = session.NormalizeMissionPlanStatus(copyPlan.PlanStatus)
 	return &copyPlan
+}
+
+func normalizeMissionPlanPatchStatus(value string) (string, error) {
+	status := session.NormalizeMissionPlanStatus(value)
+	if !session.IsMissionPlanStatus(status) {
+		return "", fmt.Errorf("invalid mission plan status: %s", strings.TrimSpace(value))
+	}
+	if status == session.MissionPlanStatusApproved {
+		return "", errors.New("mission plan approval must use the mission plan approve endpoint")
+	}
+	return status, nil
+}
+
+func rejectMissionPlanApprovalByPatch(value string) error {
+	status := session.NormalizeMissionPlanStatus(value)
+	if !session.IsMissionPlanStatus(status) {
+		return fmt.Errorf("invalid mission plan status: %s", strings.TrimSpace(value))
+	}
+	if status == session.MissionPlanStatusApproved {
+		return errors.New("mission plan approval must use the mission plan approve endpoint")
+	}
+	return nil
 }
 
 func decodeOptionalMissionPlanApproveRequest(w http.ResponseWriter, r *http.Request) (MissionPlanApproveRequest, bool) {

@@ -200,6 +200,353 @@ func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
 	}
 }
 
+func TestServiceMissionPatchCannotApproveWithoutApprovalEndpoint(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_mission_patch_approve_blocked",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_mission_patch_approve_blocked",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Ship mission approval safely",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	patchReq, err := http.NewRequest(http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", bytes.NewBufferString(`{"plan_status":"approved"}`))
+	if err != nil {
+		t.Fatalf("new mission patch request: %v", err)
+	}
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set(webMutationHeader, "1")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("mission patch request: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(patchResp.Body)
+		t.Fatalf("expected direct mission plan approval patch to fail, got %d body=%s", patchResp.StatusCode, string(body))
+	}
+
+	goalPatchReq, err := http.NewRequest(http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", bytes.NewBufferString(`{"mission":{"plan_status":"approved"}}`))
+	if err != nil {
+		t.Fatalf("new goal patch request: %v", err)
+	}
+	goalPatchReq.Header.Set("Content-Type", "application/json")
+	goalPatchReq.Header.Set(webMutationHeader, "1")
+	goalPatchResp, err := http.DefaultClient.Do(goalPatchReq)
+	if err != nil {
+		t.Fatalf("goal patch request: %v", err)
+	}
+	defer goalPatchResp.Body.Close()
+	if goalPatchResp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(goalPatchResp.Body)
+		t.Fatalf("expected direct goal mission approval patch to fail, got %d body=%s", goalPatchResp.StatusCode, string(body))
+	}
+
+	loaded, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.GoalID != goal.GoalID || loaded.Mission == nil || loaded.Mission.PlanStatus == session.MissionPlanStatusApproved {
+		t.Fatalf("mission patch should not approve goal, got %#v", loaded.Mission)
+	}
+}
+
+func TestServiceMissionPlanPatchResetsApprovedPlanToPendingGate(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_mission_patch_resets_gate",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_mission_patch_resets_gate",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Reset approval when plan changes",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.PlanStatus = session.MissionPlanStatusApproved
+	goal.Mission.ApprovedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := svc.store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save approved goal: %v", err)
+	}
+	firstPlan, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Approved plan", Source: session.PlanModeSourceWeb})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Approved plan",
+		Summary:      "Approved plan",
+		PlanMarkdown: "## Summary\nApproved.\n\n## Implementation Steps\nDo it.\n\n## Interfaces and Data Model\nNone.\n\n## Verification\nManual.\n\n## Risks\nNone.\n\n## Assumptions\nNone.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := svc.store.ApprovePlanMode(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	if _, err := svc.store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var patched session.SessionGoal
+	patchBody := map[string]any{
+		"features": []map[string]any{{"id": "feature_after_approval", "title": "Changed scope", "status": "pending"}},
+	}
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", patchBody, http.StatusOK, &patched)
+	if patched.Mission == nil || patched.Mission.PlanStatus != session.MissionPlanStatusNeedsApproval || patched.Mission.ApprovedAt != "" {
+		t.Fatalf("expected plan patch to reset approved mission, got %#v", patched.Mission)
+	}
+	secondPlan, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load reset plan mode: %v", err)
+	}
+	if secondPlan.PlanModeID == firstPlan.PlanModeID || secondPlan.LinkedGoalID != goal.GoalID || secondPlan.Status != session.PlanModeStatusPlanning {
+		t.Fatalf("expected fresh pending linked plan mode, first=%#v second=%#v", firstPlan, secondPlan)
+	}
+}
+
+func TestServiceGoalPatchMissionResetsApprovedPlanToPendingGate(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_patch_resets_gate",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_patch_resets_gate",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Reset approval through generic goal patch",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.PlanStatus = session.MissionPlanStatusApproved
+	goal.Mission.ApprovedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := svc.store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save approved goal: %v", err)
+	}
+	firstPlan, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Approved plan", Source: session.PlanModeSourceWeb})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Approved plan",
+		Summary:      "Approved plan",
+		PlanMarkdown: "## Summary\nApproved.\n\n## Implementation Steps\nDo it.\n\n## Interfaces and Data Model\nNone.\n\n## Verification\nManual.\n\n## Risks\nNone.\n\n## Assumptions\nNone.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := svc.store.ApprovePlanMode(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	if _, err := svc.store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var patched session.SessionGoal
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"mission": map[string]any{
+			"features": []map[string]any{{"id": "feature_goal_patch", "title": "Changed scope", "status": "pending"}},
+		},
+	}, http.StatusOK, &patched)
+	if patched.Mission == nil || patched.Mission.PlanStatus != session.MissionPlanStatusNeedsApproval || patched.Mission.ApprovedAt != "" {
+		t.Fatalf("expected goal mission patch to reset approved mission, got %#v", patched.Mission)
+	}
+	secondPlan, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load reset plan mode: %v", err)
+	}
+	if secondPlan.PlanModeID == firstPlan.PlanModeID || secondPlan.LinkedGoalID != goal.GoalID || secondPlan.Status != session.PlanModeStatusPlanning {
+		t.Fatalf("expected fresh pending linked plan mode, first=%#v second=%#v", firstPlan, secondPlan)
+	}
+}
+
+func TestServiceMissionValidationPatchResetsApprovedPlanToPendingGate(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_mission_validation_resets_gate",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_mission_validation_resets_gate",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Reset approval when validation changes",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.PlanStatus = session.MissionPlanStatusApproved
+	goal.Mission.ApprovedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := svc.store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save approved goal: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var patched session.SessionGoal
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/validation", map[string]any{
+		"validation_contract": []map[string]any{{"id": "validation_new", "kind": "manual", "description": "new validation", "status": "pending"}},
+	}, http.StatusOK, &patched)
+	if patched.Mission == nil || patched.Mission.PlanStatus != session.MissionPlanStatusNeedsApproval || patched.Mission.ApprovedAt != "" {
+		t.Fatalf("expected validation patch to reset approved mission, got %#v", patched.Mission)
+	}
+	planMode, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("expected linked plan mode after validation reset: %v", err)
+	}
+	if planMode.LinkedGoalID != goal.GoalID || planMode.Status != session.PlanModeStatusPlanning {
+		t.Fatalf("unexpected reset plan mode: %#v", planMode)
+	}
+}
+
+func TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_mission_approve_executing_fact",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_mission_approve_executing_fact",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Append approval facts",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Approved plan", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Approved plan",
+		Summary:      "Approved plan",
+		PlanMarkdown: "## Summary\nApproved.\n\n## Implementation Steps\nDo it.\n\n## Interfaces and Data Model\nNone.\n\n## Verification\nManual.\n\n## Risks\nNone.\n\n## Assumptions\nNone.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := svc.store.ApprovePlanMode(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	if _, err := svc.store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var approved session.SessionGoal
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusOK, &approved)
+	if approved.GoalID != goal.GoalID || approved.Mission == nil || approved.Mission.PlanStatus != session.MissionPlanStatusApproved {
+		t.Fatalf("expected executing plan approval to sync mission snapshot, got %#v", approved.Mission)
+	}
+	history, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	if !goalHistoryContainsType(history, "mission.plan.approved") {
+		t.Fatalf("expected mission.plan.approved history after executing plan approval, got %#v", history)
+	}
+}
+
 func TestServiceGoalFactsAndMissionCoverageApproval(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -3533,19 +3880,24 @@ func postGetJSON(t *testing.T, url string, target any) {
 
 func postJSON(t *testing.T, url string, payload any, wantStatus int, target any) {
 	t.Helper()
+	requestJSONWithMethod(t, http.MethodPost, url, payload, wantStatus, target)
+}
+
+func requestJSONWithMethod(t *testing.T, method string, url string, payload any, wantStatus int, target any) {
+	t.Helper()
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	req, err := http.NewRequest(method, url, bytes.NewReader(data))
 	if err != nil {
-		t.Fatalf("new post %s: %v", url, err)
+		t.Fatalf("new %s %s: %v", method, url, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(webMutationHeader, "1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("post %s: %v", url, err)
+		t.Fatalf("%s %s: %v", method, url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != wantStatus {
@@ -3558,6 +3910,20 @@ func postJSON(t *testing.T, url string, payload any, wantStatus int, target any)
 			t.Fatalf("decode response: %v", err)
 		}
 	}
+}
+
+func postJSONWithMethod(t *testing.T, method string, url string, payload any, wantStatus int, target any) {
+	t.Helper()
+	requestJSONWithMethod(t, method, url, payload, wantStatus, target)
+}
+
+func goalHistoryContainsType(history []session.GoalHistoryEntry, target string) bool {
+	for _, entry := range history {
+		if entry.Type == target {
+			return true
+		}
+	}
+	return false
 }
 
 func postJSONError(t *testing.T, url string, payload any, wantStatus int) ErrorResponse {
