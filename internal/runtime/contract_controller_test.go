@@ -119,6 +119,33 @@ func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 	}
 }
 
+func TestRequiredArtifactGateRejectsSymlinkedArtifactAfterContractCreation(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh contract: %v", err)
+	}
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-final.md")
+	if err := os.WriteFile(outside, []byte("outside final"), 0o600); err != nil {
+		t.Fatalf("write outside artifact: %v", err)
+	}
+	if err := os.Symlink(outside, artifactPath); err != nil {
+		t.Fatalf("symlink artifact: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	kind, text := controller.requiredArtifactGate("finish")
+	if kind != "required_artifact" || !strings.Contains(text, "missing reports/final.md") {
+		t.Fatalf("expected symlinked artifact to remain missing, kind=%q text=%q", kind, text)
+	}
+}
+
 func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

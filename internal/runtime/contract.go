@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
 )
 
@@ -94,8 +95,8 @@ func contractProfile(meta session.SessionMetadata, messages []session.Message) s
 }
 
 func artifactSnapshot(path string) session.ArtifactSnapshot {
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
+	data, info, err := fileutil.ReadRegularFileNoSymlink(path)
+	if err != nil || info == nil {
 		return session.ArtifactSnapshot{Exists: false}
 	}
 	snapshot := session.ArtifactSnapshot{
@@ -103,10 +104,8 @@ func artifactSnapshot(path string) session.ArtifactSnapshot {
 		Size:   info.Size(),
 		MTime:  info.ModTime().UTC().Format(time.RFC3339Nano),
 	}
-	if data, err := os.ReadFile(path); err == nil {
-		sum := sha256.Sum256(data)
-		snapshot.Hash = hex.EncodeToString(sum[:])
-	}
+	sum := sha256.Sum256(data)
+	snapshot.Hash = hex.EncodeToString(sum[:])
 	return snapshot
 }
 

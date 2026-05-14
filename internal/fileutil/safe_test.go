@@ -22,3 +22,23 @@ func TestAtomicWriteFileNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 		t.Fatalf("outside target should not be created, stat err=%v", statErr)
 	}
 }
+
+func TestReadRegularFileNoSymlinkRejectsSymlinkFile(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	link := filepath.Join(root, "artifact.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	data, info, err := ReadRegularFileNoSymlink(link)
+	if err == nil {
+		t.Fatalf("expected symlink read rejection, got data=%q info=%#v", string(data), info)
+	}
+	if !strings.Contains(err.Error(), "symlinked") && !strings.Contains(err.Error(), "too many levels") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}

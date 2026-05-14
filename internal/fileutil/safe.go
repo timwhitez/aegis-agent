@@ -3,9 +3,12 @@ package fileutil
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
@@ -72,6 +75,34 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 		return err
 	}
 	return os.Chmod(path, mode)
+}
+
+func ReadRegularFileNoSymlink(path string) ([]byte, os.FileInfo, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil, errors.New("path is required")
+	}
+	path = filepath.Clean(path)
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return nil, nil, err
+	}
+	file, err := os.OpenFile(path, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, info, fmt.Errorf("not a regular file: %s", path)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
 }
 
 func rejectExistingSymlinkAncestors(path string) error {
