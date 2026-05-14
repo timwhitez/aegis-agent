@@ -3744,6 +3744,27 @@ func TestProcessSkillZipRejectsTraversalEntries(t *testing.T) {
 	}
 }
 
+func TestProcessSkillZipRejectsSymlinkDestination(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	dest := filepath.Join(base, "skills-link")
+	if err := os.Symlink(outside, dest); err != nil {
+		t.Fatalf("symlink destination: %v", err)
+	}
+	zipPath := filepath.Join(base, "skill.zip")
+	createSkillZip(t, zipPath, "demo-skill", "---\nname: demo-skill\n---\nbody\n")
+
+	if _, err := processSkillZip(zipPath, dest); err == nil {
+		t.Fatal("expected symlinked skill destination to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "demo-skill", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected outside skill not to be written, got %v", err)
+	}
+}
+
 func TestProcessSkillZipAllowsNestedSkillFiles(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")

@@ -23,6 +23,7 @@ import (
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/extensions"
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/tools"
@@ -2810,6 +2811,10 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		return 0, err
 	}
 	defer r.Close()
+	globalDest, err = prepareSkillZipDestination(globalDest)
+	if err != nil {
+		return 0, err
+	}
 
 	var skillRoots []string
 	cleanNames := make(map[*zip.File]string, len(r.File))
@@ -2920,28 +2925,54 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			if err != nil {
 				return extractedCount, err
 			}
-
-			destFile, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-			if err != nil {
-				rc.Close()
-				return extractedCount, err
-			}
-			_, copyErr := io.Copy(destFile, rc)
-			closeDestErr := destFile.Close()
+			data, readErr := io.ReadAll(rc)
 			closeSrcErr := rc.Close()
-			if copyErr != nil {
-				return extractedCount, copyErr
-			}
-			if closeDestErr != nil {
-				return extractedCount, closeDestErr
+			if readErr != nil {
+				return extractedCount, readErr
 			}
 			if closeSrcErr != nil {
 				return extractedCount, closeSrcErr
+			}
+			mode := f.Mode().Perm()
+			if mode == 0 {
+				mode = 0o644
+			}
+			if err := fileutil.AtomicWriteFileNoSymlink(outPath, data, mode); err != nil {
+				return extractedCount, err
 			}
 		}
 		extractedCount++
 	}
 	return extractedCount, nil
+}
+
+func prepareSkillZipDestination(globalDest string) (string, error) {
+	cleaned := filepath.Clean(strings.TrimSpace(globalDest))
+	if cleaned == "" || cleaned == "." {
+		return "", errors.New("skill destination is required")
+	}
+	if info, err := os.Lstat(cleaned); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("skill destination must not be a symlink: %s", cleaned)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("skill destination is not a directory: %s", cleaned)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	resolved := canonicalManagedPath(cleaned)
+	if err := os.MkdirAll(resolved, 0o755); err != nil {
+		return "", err
+	}
+	if info, err := os.Lstat(resolved); err != nil {
+		return "", err
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("skill destination must not be a symlink: %s", resolved)
+	} else if !info.IsDir() {
+		return "", fmt.Errorf("skill destination is not a directory: %s", resolved)
+	}
+	return resolved, nil
 }
 
 func cleanZipEntryName(name string) (string, error) {
@@ -3024,7 +3055,10 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	os.MkdirAll(dest, 0755)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
 	if err != nil {
@@ -3032,8 +3066,15 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.Remove(tmpFile.Name())
-	io.Copy(tmpFile, file)
-	tmpFile.Close()
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		_ = tmpFile.Close()
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := tmpFile.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	count, err := processSkillZip(tmpFile.Name(), dest)
 	if err != nil {
