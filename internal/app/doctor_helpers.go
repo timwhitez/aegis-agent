@@ -13,6 +13,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/extensions"
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
 )
 
@@ -443,7 +444,7 @@ func doctorQueueJobRecords(sessionRoot string) ([]doctorQueueJobRecord, []map[st
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
-			data, err := os.ReadFile(path)
+			data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 			if err != nil {
 				unreadable = append(unreadable, map[string]any{"path": path, "error": err.Error()})
 				continue
