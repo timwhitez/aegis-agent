@@ -1103,6 +1103,9 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "probe failed: %s\n", err)
+		if advice := providerProbeFailureAdvice(err); advice != "" {
+			fmt.Fprintf(stderr, "advice: %s\n", advice)
+		}
 		return err
 	}
 	fmt.Fprintf(stdout, "provider: %s\nmodel: %s\nbase_url: %s\n", result.Provider, result.Model, result.BaseURL)
@@ -1137,6 +1140,10 @@ type probeProviderJSON struct {
 	Text          string         `json:"text,omitempty"`
 	Usage         provider.Usage `json:"usage,omitempty"`
 	Error         string         `json:"error,omitempty"`
+	ErrorClass    string         `json:"error_class,omitempty"`
+	StatusCode    int            `json:"status_code,omitempty"`
+	TimeoutKind   string         `json:"timeout_kind,omitempty"`
+	Advice        string         `json:"advice,omitempty"`
 }
 
 type steerJSON struct {
@@ -1234,8 +1241,54 @@ func probeProviderJSONPayload(cfg *config.Config, req runtime.ProbeRequest, resu
 	}
 	if err != nil {
 		payload.Error = err.Error()
+		details := probeProviderErrorDetails(err)
+		payload.ErrorClass, _ = details["error_class"].(string)
+		payload.StatusCode, _ = details["status_code"].(int)
+		payload.TimeoutKind, _ = details["timeout_kind"].(string)
+		payload.Advice, _ = details["advice"].(string)
 	}
 	return payload
+}
+
+func probeProviderErrorDetails(err error) map[string]any {
+	details := map[string]any{}
+	var httpErr *provider.HTTPError
+	if errors.As(err, &httpErr) {
+		if strings.TrimSpace(httpErr.Class) != "" {
+			details["error_class"] = httpErr.Class
+		}
+		if httpErr.StatusCode != 0 {
+			details["status_code"] = httpErr.StatusCode
+		}
+		if strings.TrimSpace(httpErr.TimeoutKind) != "" {
+			details["timeout_kind"] = httpErr.TimeoutKind
+		}
+	}
+	if advice := providerProbeFailureAdvice(err); advice != "" {
+		details["advice"] = advice
+	}
+	return details
+}
+
+func providerProbeFailureAdvice(err error) string {
+	var httpErr *provider.HTTPError
+	if !errors.As(err, &httpErr) {
+		return ""
+	}
+	switch httpErr.Class {
+	case "auth_error":
+		return "Check the API key environment variable and provider account access."
+	case "invalid_request":
+		return "Check the provider profile, base URL, wire API, model, and request options."
+	case "rate_limit":
+		return "The provider rate limited the probe; retry later or adjust provider quota."
+	case "upstream_timeout":
+		return "Check provider availability, request timeout settings, and network or proxy stability."
+	case "upstream_unavailable":
+		return "Check network connectivity, TLS/proxy settings, and provider endpoint availability before changing model options."
+	default:
+		return ""
+	}
 }
 
 type doctorCheck struct {
@@ -1408,12 +1461,14 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 				WireAPI:   providerCfg.WireAPI,
 				Prompt:    *prompt,
 			})
+			effectiveAPIProvider, _ := config.EffectiveAPIProvider(selectedProvider, providerCfg)
 			status := "ok"
 			details := map[string]any{
-				"provider":        result.Provider,
-				"model":           result.Model,
-				"base_url":        result.BaseURL,
-				"wire_api":        result.WireAPI,
+				"provider":        defaultString(result.Provider, selectedProvider),
+				"model":           defaultString(result.Model, providerCfg.Model),
+				"base_url":        defaultString(result.BaseURL, providerCfg.BaseURL),
+				"api_provider":    defaultString(result.APIProvider, effectiveAPIProvider),
+				"wire_api":        defaultString(result.WireAPI, providerCfg.WireAPI),
 				"stop_reason":     result.StopReason,
 				"tool_call_names": result.ToolCallNames,
 				"finish_message":  result.FinishMessage,
@@ -1421,6 +1476,9 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			if probeErr != nil {
 				status = "fail"
 				details["error"] = probeErr.Error()
+				for key, value := range probeProviderErrorDetails(probeErr) {
+					details[key] = value
+				}
 			}
 			report.Checks = append(report.Checks, doctorCheck{
 				Name:    "provider.probe",

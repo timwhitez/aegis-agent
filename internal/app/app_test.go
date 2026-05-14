@@ -713,6 +713,43 @@ func TestProbeProviderCommandRendersJSONErrorAndExitStatus(t *testing.T) {
 	}
 }
 
+func TestProbeProviderCommandJSONIncludesProviderErrorClassification(t *testing.T) {
+	fake := newFakeRunner()
+	fake.probeErr = runtime.WrapProviderError(&provider.HTTPError{
+		Provider: "openai",
+		Class:    "upstream_unavailable",
+		Message:  `Post "https://api.openai.com/v1/responses": EOF`,
+	})
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.DefaultProvider = "openai"
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"probe-provider", "--json"}, &stdout, &stderr)
+	var exitErr ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit code 1, got err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var payload probeProviderJSON
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v output=%s", err, stdout.String())
+	}
+	if payload.ErrorClass != "upstream_unavailable" {
+		t.Fatalf("expected upstream_unavailable classification, got %#v", payload)
+	}
+	if !strings.Contains(payload.Advice, "network connectivity") {
+		t.Fatalf("expected network advice, got %#v", payload)
+	}
+	if payload.Provider != "openai" || payload.Model == "" || payload.BaseURL == "" {
+		t.Fatalf("expected provider config fallback fields, got %#v", payload)
+	}
+}
+
 func TestProbeProviderCommandNonJSONErrorDoesNotPrintEmptySuccessFields(t *testing.T) {
 	fake := newFakeRunner()
 	fake.probeErr = errors.New("provider unavailable")
@@ -733,6 +770,90 @@ func TestProbeProviderCommandNonJSONErrorDoesNotPrintEmptySuccessFields(t *testi
 	}
 	if !strings.Contains(stderr.String(), "probe failed: provider unavailable") {
 		t.Fatalf("expected stderr probe failure, got %q", stderr.String())
+	}
+}
+
+func TestProbeProviderCommandNonJSONPrintsProviderErrorAdvice(t *testing.T) {
+	fake := newFakeRunner()
+	fake.probeErr = runtime.WrapProviderError(&provider.HTTPError{
+		Provider:    "openai",
+		Class:       "upstream_timeout",
+		Message:     "context deadline exceeded",
+		TimeoutKind: "request_timeout",
+	})
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"probe-provider"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected probe error")
+	}
+	if strings.Contains(stdout.String(), "provider:") || strings.Contains(stdout.String(), "stop_reason:") {
+		t.Fatalf("expected no success-looking stdout fields, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "advice: Check provider availability") {
+		t.Fatalf("expected provider advice, got %q", stderr.String())
+	}
+}
+
+func TestDoctorCommandProviderProbeIncludesProviderErrorClassification(t *testing.T) {
+	fake := newFakeRunner()
+	fake.probeErr = runtime.WrapProviderError(&provider.HTTPError{
+		Provider:   "openai",
+		Class:      "upstream_unavailable",
+		Message:    `Post "https://api.openai.com/v1/responses": EOF`,
+		StatusCode: 0,
+	})
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.DefaultProvider = "openai-compatible"
+		cfg.Providers["openai-compatible"] = config.Provider{
+			APIKeyEnv: "TEST_PRESENT_KEY",
+			BaseURL:   "http://example/v1",
+			Model:     "gpt-5.4",
+			WireAPI:   "responses",
+		}
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+	t.Setenv("TEST_PRESENT_KEY", "present")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"doctor", "--provider", "openai-compatible", "--json"}, &stdout, &stderr)
+	var exitErr ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit code 1, got err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal report: %v output=%s", err, stdout.String())
+	}
+	var probeCheck *doctorCheck
+	for i := range report.Checks {
+		if report.Checks[i].Name == "provider.probe" {
+			probeCheck = &report.Checks[i]
+			break
+		}
+	}
+	if probeCheck == nil {
+		t.Fatalf("provider.probe check missing: %#v", report.Checks)
+	}
+	if probeCheck.Status != "fail" || probeCheck.Details["error_class"] != "upstream_unavailable" {
+		t.Fatalf("expected classified provider probe failure, got %#v", probeCheck)
+	}
+	if probeCheck.Details["provider"] != "openai-compatible" || probeCheck.Details["model"] != "gpt-5.4" || probeCheck.Details["base_url"] != "http://example/v1" || probeCheck.Details["wire_api"] != "responses" {
+		t.Fatalf("expected provider probe fallback config fields, got %#v", probeCheck.Details)
+	}
+	advice, _ := probeCheck.Details["advice"].(string)
+	if !strings.Contains(advice, "network connectivity") {
+		t.Fatalf("expected network advice, got %#v", probeCheck.Details)
 	}
 }
 
