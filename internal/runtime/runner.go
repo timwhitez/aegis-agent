@@ -890,11 +890,20 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 	if err != nil {
 		return RunResult{}, err
 	}
-	releaseAutoWorker := r.startAutoQueueWorker()
-	defer releaseAutoWorker()
+	if strings.TrimSpace(meta.QueueJobID) == "" {
+		releaseAutoWorker := r.startAutoQueueWorker()
+		defer releaseAutoWorker()
+	}
 	watcherCtx, cancelWatcher := context.WithCancel(ctx)
-	defer cancelWatcher()
-	go r.watchSteer(watcherCtx, meta.ID)
+	watcherDone := make(chan struct{})
+	defer func() {
+		cancelWatcher()
+		<-watcherDone
+	}()
+	go func() {
+		defer close(watcherDone)
+		r.watchSteer(watcherCtx, meta.ID)
+	}()
 	r.setPlanInputHandler(meta.ID, planInputHandler)
 	defer r.clearPlanInputHandler(meta.ID)
 	r.emit(meta.ID, "session.started", "prepare", map[string]any{
