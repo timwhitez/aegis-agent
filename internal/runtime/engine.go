@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/hooks"
 	"go-cli-agent/internal/provider"
 	"go-cli-agent/internal/session"
@@ -583,17 +583,15 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						count := countToolCalls(messages, call.Name)
 						if count > toolDef.EphemeralWindow {
 							artifactPath := e.ephemeralArtifactPath(meta.ID, call.Name, turn)
-							if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err == nil {
-								if err := os.WriteFile(artifactPath, []byte(toolResult.LLMOutput), 0o600); err == nil {
-									toolResult.LLMOutput = fmt.Sprintf(
-										"[Output saved to %s; this internal artifact is not readable via read_file. If you need to inspect it later, rerun the command and redirect output to a normal workspace file such as reports/validation.txt.]",
-										artifactPath,
-									)
-									if toolResult.Metadata == nil {
-										toolResult.Metadata = make(map[string]any)
-									}
-									toolResult.Metadata["ephemeral_artifact"] = artifactPath
+							if err := fileutil.AtomicWriteFileNoSymlink(artifactPath, []byte(toolResult.LLMOutput), 0o600); err == nil {
+								toolResult.LLMOutput = fmt.Sprintf(
+									"[Output saved to %s; this internal artifact is not readable via read_file. If you need to inspect it later, rerun the command and redirect output to a normal workspace file such as reports/validation.txt.]",
+									artifactPath,
+								)
+								if toolResult.Metadata == nil {
+									toolResult.Metadata = make(map[string]any)
 								}
+								toolResult.Metadata["ephemeral_artifact"] = artifactPath
 							}
 						}
 					}

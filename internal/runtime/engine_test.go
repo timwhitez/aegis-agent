@@ -1011,6 +1011,51 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 	}
 }
 
+func TestEngineEphemeralArtifactRejectsSymlinkTarget(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	writeEvidenceFile(t, meta.Workdir, "visible.txt", "visible\n")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	for turn := 0; turn <= 5; turn++ {
+		artifactPath := engine.ephemeralArtifactPath(meta.ID, "glob", turn)
+		if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+			t.Fatalf("mkdir artifact dir: %v", err)
+		}
+		if err := os.Symlink(outside, artifactPath); err != nil {
+			t.Fatalf("symlink artifact path: %v", err)
+		}
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Repeat glob output.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}}, StopReason: "tool_use"}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{ToolCalls: []provider.ToolCall{{ID: "call_2", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}}, StopReason: "tool_use"}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{ToolCalls: []provider.ToolCall{{ID: "call_3", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}}, StopReason: "tool_use"}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{ToolCalls: []provider.ToolCall{{ID: "call_4", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}}, StopReason: "tool_use"}, nil
+		},
+	)
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside file: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("outside file was overwritten through ephemeral artifact symlink: %q", data)
+	}
+}
+
 func TestEngineAppendsSteerCompletionReminderAndEscalatesAfterBlockedDetour(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	writeEvidenceFile(t, meta.Workdir, "internal/runtime/prompt.go", "package runtime\n\nfunc deliveryNote() string { return \"delivery did not happen immediately after the interrupt steer\" }\n")
