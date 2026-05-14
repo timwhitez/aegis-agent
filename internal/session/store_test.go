@@ -1442,6 +1442,34 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
+func TestSyncQueueVisiblePathsRejectsRequestedSymlinkEscape(t *testing.T) {
+	requestedWorkdir := t.TempDir()
+	effectiveWorkdir := t.TempDir()
+	outside := t.TempDir()
+
+	outputPath := filepath.Join(effectiveWorkdir, "reports", "child-two.md")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
+		t.Fatalf("mkdir effective reports: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("CHILD_TWO_OK\n"), 0o600); err != nil {
+		t.Fatalf("write effective output: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(requestedWorkdir, "reports")); err != nil {
+		t.Fatalf("symlink requested reports: %v", err)
+	}
+
+	visible := syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir, []string{"reports/child-two.md"})
+	if len(visible) != 0 {
+		t.Fatalf("expected symlink escape copy to be skipped, got %#v", visible)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "child-two.md")); !os.IsNotExist(err) {
+		t.Fatalf("outside symlink target should not be written, stat err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(requestedWorkdir, "reports")); err != nil {
+		t.Fatalf("requested symlink should be left untouched: %v", err)
+	}
+}
+
 func TestLoadJobPreservesResumableChildAsBlocked(t *testing.T) {
 	store := NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

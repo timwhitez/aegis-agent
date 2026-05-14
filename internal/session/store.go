@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/fileutil"
 	"golang.org/x/sys/unix"
 )
 
@@ -1671,28 +1672,35 @@ func collectQueueVisiblePaths(effectiveWorkdir string, messages []Message) []str
 }
 
 func syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir string, visiblePaths []string) []string {
-	requestedRoot := strings.TrimSpace(requestedWorkdir)
-	effectiveRoot := strings.TrimSpace(effectiveWorkdir)
-	if requestedRoot == "" || effectiveRoot == "" || len(visiblePaths) == 0 {
+	if strings.TrimSpace(requestedWorkdir) == "" || strings.TrimSpace(effectiveWorkdir) == "" || len(visiblePaths) == 0 {
 		return visiblePaths
 	}
-	requestedRoot = filepath.Clean(requestedRoot)
-	effectiveRoot = filepath.Clean(effectiveRoot)
+	requestedRoot, ok := resolveQueueExistingDir(requestedWorkdir)
+	if !ok {
+		return nil
+	}
+	effectiveRoot, ok := resolveQueueExistingDir(effectiveWorkdir)
+	if !ok {
+		return nil
+	}
 	if requestedRoot == effectiveRoot {
 		return visiblePaths
 	}
 	var out []string
 	for _, rel := range visiblePaths {
-		src := filepath.Join(effectiveRoot, filepath.FromSlash(rel))
-		dst := filepath.Join(requestedRoot, filepath.FromSlash(rel))
+		src, ok := resolveQueueVisiblePath(effectiveRoot, rel)
+		if !ok {
+			continue
+		}
+		dst, ok := resolveQueueVisiblePath(requestedRoot, rel)
+		if !ok {
+			continue
+		}
 		data, err := os.ReadFile(src)
 		if err != nil {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			continue
-		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := fileutil.AtomicWriteFileNoSymlink(dst, data, 0o600); err != nil {
 			continue
 		}
 		out = append(out, rel)
@@ -1701,6 +1709,68 @@ func syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir string, visiblePat
 		return nil
 	}
 	return out
+}
+
+func resolveQueueExistingDir(path string) (string, bool) {
+	abs, err := filepath.Abs(filepath.Clean(strings.TrimSpace(path)))
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return resolved, true
+}
+
+func resolveQueueVisiblePath(root, rel string) (string, bool) {
+	relPath := filepath.Clean(filepath.FromSlash(rel))
+	if relPath == "." || relPath == ".." || filepath.IsAbs(relPath) || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	target := filepath.Join(root, relPath)
+	resolved, err := resolveQueuePathWithExistingParent(target)
+	if err != nil || !pathWithinRoot(root, resolved) {
+		return "", false
+	}
+	return resolved, true
+}
+
+func resolveQueuePathWithExistingParent(path string) (string, error) {
+	var suffix []string
+	current := filepath.Clean(path)
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", errors.New("unable to resolve path")
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathWithinRoot(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
 }
 
 func relativePathWithinRoot(root, target string) (string, bool) {
