@@ -1029,6 +1029,29 @@ func TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing(t *testing.T) {
 	}
 }
 
+func TestDoctorConfigFileCheckReportsUntrustedWorkspaceConfigSkipped(t *testing.T) {
+	cwd := t.TempDir()
+	configDir := filepath.Join(cwd, ".go-cli-agent")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("default_provider: local\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	check := doctorConfigFileCheck("", cwd, configPath)
+	if check.Status != "ok" {
+		t.Fatalf("unexpected status: %#v", check)
+	}
+	if check.Details["present"] != true || check.Details["loaded"] != false {
+		t.Fatalf("expected present but not loaded, got %#v", check.Details)
+	}
+	if check.Details["reason"] != "workspace_config_not_trusted" {
+		t.Fatalf("expected untrusted reason, got %#v", check.Details)
+	}
+}
+
 func TestDoctorCommandAPIKeyEnvOverrideControlsProbeSkip(t *testing.T) {
 	fake := newFakeRunner()
 	fake.probeResult = runtime.ProbeResult{

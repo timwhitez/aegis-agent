@@ -410,6 +410,10 @@ func PersistPath(explicitPath, cwd string) string {
 	return filepath.Join(cwd, ".go-cli-agent", "config.yaml")
 }
 
+func WorkspaceConfigTrusted(cwd string) bool {
+	return workspaceConfigTrusted(cwd)
+}
+
 func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = "openai"

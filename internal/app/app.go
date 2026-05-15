@@ -1332,25 +1332,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		DefaultProvider: cfg.DefaultProvider,
 	}
 
-	configStatus := "ok"
-	configDetails := map[string]any{"path": report.ConfigPath}
-	if info, err := os.Stat(report.ConfigPath); err != nil {
-		if os.IsNotExist(err) {
-			configStatus = "warn"
-			configDetails["present"] = false
-		} else {
-			configStatus = "fail"
-			configDetails["error"] = err.Error()
-		}
-	} else {
-		configDetails["present"] = true
-		configDetails["mode"] = info.Mode().Perm().String()
-	}
-	report.Checks = append(report.Checks, doctorCheck{
-		Name:    "config.file",
-		Status:  configStatus,
-		Details: configDetails,
-	})
+	report.Checks = append(report.Checks, doctorConfigFileCheck(*configPath, cwd, report.ConfigPath))
 
 	selectedProvider := defaultString(*providerName, cfg.DefaultProvider)
 	providerCfg, providerErr := cfg.ProviderConfig(selectedProvider)
@@ -1489,6 +1471,40 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 
 	return renderDoctorReport(stdout, report, *jsonMode, hasDoctorFailure(report.Checks))
+}
+
+func doctorConfigFileCheck(explicitPath, cwd, reportPath string) doctorCheck {
+	configStatus := "ok"
+	configDetails := map[string]any{
+		"path":   reportPath,
+		"loaded": true,
+	}
+	if strings.TrimSpace(explicitPath) == "" {
+		workspacePath := filepath.Join(cwd, ".go-cli-agent", "config.yaml")
+		if filepath.Clean(reportPath) == filepath.Clean(workspacePath) && !config.WorkspaceConfigTrusted(cwd) {
+			configDetails["loaded"] = false
+			configDetails["reason"] = "workspace_config_not_trusted"
+			configDetails["advice"] = "Pass --config explicitly or create .go-cli-agent/trusted if this workspace config should be used."
+		}
+	}
+	if info, err := os.Stat(reportPath); err != nil {
+		if os.IsNotExist(err) {
+			configStatus = "warn"
+			configDetails["present"] = false
+		} else {
+			configStatus = "fail"
+			configDetails["loaded"] = false
+			configDetails["error"] = err.Error()
+		}
+	} else {
+		configDetails["present"] = true
+		configDetails["mode"] = info.Mode().Perm().String()
+	}
+	return doctorCheck{
+		Name:    "config.file",
+		Status:  configStatus,
+		Details: configDetails,
+	}
 }
 
 func renderDoctorReport(stdout io.Writer, report doctorReport, jsonMode, failed bool) error {
