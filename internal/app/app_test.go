@@ -1041,7 +1041,7 @@ func TestDoctorConfigFileCheckReportsUntrustedWorkspaceConfigSkipped(t *testing.
 	}
 
 	check := doctorConfigFileCheck("", cwd, configPath)
-	if check.Status != "ok" {
+	if check.Status != "warn" {
 		t.Fatalf("unexpected status: %#v", check)
 	}
 	if check.Details["present"] != true || check.Details["loaded"] != false {

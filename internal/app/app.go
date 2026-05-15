@@ -1482,6 +1482,7 @@ func doctorConfigFileCheck(explicitPath, cwd, reportPath string) doctorCheck {
 	if strings.TrimSpace(explicitPath) == "" {
 		workspacePath := filepath.Join(cwd, ".go-cli-agent", "config.yaml")
 		if filepath.Clean(reportPath) == filepath.Clean(workspacePath) && !config.WorkspaceConfigTrusted(cwd) {
+			configStatus = "warn"
 			configDetails["loaded"] = false
 			configDetails["reason"] = "workspace_config_not_trusted"
 			configDetails["advice"] = "Pass --config explicitly or create .go-cli-agent/trusted if this workspace config should be used."
