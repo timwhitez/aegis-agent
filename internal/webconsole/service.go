@@ -32,7 +32,14 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return true
+		}
+		originURL, err := url.Parse(origin)
+		return err == nil && sameOriginHost(originURL, r.Host)
+	},
 }
 
 var webconsoleProcessOwner = newProcessOwner()
@@ -45,6 +52,10 @@ const (
 	settingsProbeTimeout            = 90 * time.Second
 	maxWorkerCount                  = 8
 	webMutationHeader               = "X-Go-Cli-Agent-Web"
+	maxSkillUploadBytes             = 50 << 20
+	maxSkillZipFiles                = 2048
+	maxSkillZipEntryBytes           = 10 << 20
+	maxSkillZipTotalBytes           = 100 << 20
 )
 
 type processOwner struct {
@@ -2073,6 +2084,10 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if webFileBrowserPathDenied(browseRoot, target) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
 	info, err := os.Stat(target)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -2108,6 +2123,10 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	fullPath, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
 	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if webFileBrowserPathDenied(browseRoot, fullPath) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
@@ -2815,6 +2834,22 @@ func processSkillZip(src string, globalDest string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if len(r.File) > maxSkillZipFiles {
+		return 0, fmt.Errorf("skill zip has too many entries: %d > %d", len(r.File), maxSkillZipFiles)
+	}
+	var totalUncompressed uint64
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if f.UncompressedSize64 > uint64(maxSkillZipEntryBytes) {
+			return 0, fmt.Errorf("skill zip entry too large: %s exceeds %d bytes", f.Name, maxSkillZipEntryBytes)
+		}
+		if totalUncompressed > uint64(maxSkillZipTotalBytes)-f.UncompressedSize64 {
+			return 0, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
+		}
+		totalUncompressed += f.UncompressedSize64
+	}
 
 	var skillRoots []string
 	cleanNames := make(map[*zip.File]string, len(r.File))
@@ -2835,6 +2870,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 	}
 
 	extractedCount := 0
+	extractedBytes := int64(0)
 
 	for _, root := range skillRoots {
 		var targetDirName string
@@ -2847,12 +2883,11 @@ func processSkillZip(src string, globalDest string) (int, error) {
 
 		for _, f := range r.File {
 			if cleanNames[f] == path.Clean(mdPath) {
-				rc, err := f.Open()
-				if err == nil {
-					data, _ := io.ReadAll(rc)
-					rc.Close()
-					targetDirName = extractSkillNameFromMd(data)
+				data, err := readZipFileLimited(f, maxSkillZipEntryBytes)
+				if err != nil {
+					return extractedCount, err
 				}
+				targetDirName = extractSkillNameFromMd(data)
 				break
 			}
 		}
@@ -2921,17 +2956,13 @@ func processSkillZip(src string, globalDest string) (int, error) {
 				return extractedCount, err
 			}
 
-			rc, err := f.Open()
+			data, err := readZipFileLimited(f, maxSkillZipEntryBytes)
 			if err != nil {
 				return extractedCount, err
 			}
-			data, readErr := io.ReadAll(rc)
-			closeSrcErr := rc.Close()
-			if readErr != nil {
-				return extractedCount, readErr
-			}
-			if closeSrcErr != nil {
-				return extractedCount, closeSrcErr
+			extractedBytes += int64(len(data))
+			if extractedBytes > maxSkillZipTotalBytes {
+				return extractedCount, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
 			}
 			mode := f.Mode().Perm()
 			if mode == 0 {
@@ -2944,6 +2975,30 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		extractedCount++
 	}
 	return extractedCount, nil
+}
+
+func readZipFileLimited(f *zip.File, limit int) ([]byte, error) {
+	if f.UncompressedSize64 > uint64(limit) {
+		return nil, fmt.Errorf("skill zip entry too large: %s exceeds %d bytes", f.Name, limit)
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return readAllWithLimit(rc, int64(limit), fmt.Sprintf("skill zip entry too large: %s exceeds %d bytes", f.Name, limit))
+}
+
+func readAllWithLimit(reader io.Reader, limit int64, message string) ([]byte, error) {
+	limited := io.LimitReader(reader, limit+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New(message)
+	}
+	return data, nil
 }
 
 func prepareSkillZipDestination(globalDest string) (string, error) {
@@ -3039,7 +3094,8 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
 		return
 	}
-	if err := r.ParseMultipartForm(50 << 20); err != nil { // limit 50MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxSkillUploadBytes)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -3066,9 +3122,15 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.Remove(tmpFile.Name())
-	if _, err := io.Copy(tmpFile, file); err != nil {
+	written, err := io.Copy(tmpFile, io.LimitReader(file, maxSkillUploadBytes+1))
+	if err != nil {
 		_ = tmpFile.Close()
 		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if written > maxSkillUploadBytes {
+		_ = tmpFile.Close()
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("skill upload exceeds %d bytes", maxSkillUploadBytes))
 		return
 	}
 	if err := tmpFile.Close(); err != nil {
@@ -3176,10 +3238,13 @@ func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error)
 		})
 	}
 	for _, entry := range entries {
-		if entry.Name() == "node_modules" || entry.Name() == ".git" || entry.Name() == ".go-cli-agent" {
+		if entry.Name() == "node_modules" || webFileBrowserNameDenied(entry.Name()) {
 			continue
 		}
 		fullPath := filepath.Join(current, entry.Name())
+		if webFileBrowserPathDenied(browseRoot, fullPath) {
+			continue
+		}
 		relPath, _ := filepath.Rel(root, fullPath)
 		if relPath == "." {
 			relPath = ""
@@ -3196,6 +3261,41 @@ func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error)
 		tree = append(tree, node)
 	}
 	return tree, nil
+}
+
+func webFileBrowserPathDenied(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return true
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." || rel == "" {
+		return false
+	}
+	for _, part := range strings.Split(rel, "/") {
+		if webFileBrowserNameDenied(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func webFileBrowserNameDenied(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	switch name {
+	case ".git", ".go-cli-agent", ".ssh", ".aws", ".gnupg", ".kube", ".docker",
+		"id_rsa", "id_ed25519", "credentials":
+		return true
+	case ".env":
+		return true
+	case ".env.example", ".env.sample", ".env.template":
+		return false
+	default:
+		return strings.HasPrefix(name, ".env.")
+	}
 }
 
 func (s *Service) hasActiveHandle(sessionID string) bool {

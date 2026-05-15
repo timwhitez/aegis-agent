@@ -561,6 +561,34 @@ func TestOpenAIAdapterClassifiesResponseParseError(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapterRejectsOversizedProviderResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_too_large","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"`))
+		_, _ = io.Copy(w, strings.NewReader(strings.Repeat("x", maxProviderResponseBytes)))
+		_, _ = w.Write([]byte(`"}]}]}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err == nil {
+		t.Fatal("expected oversized response error")
+	}
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected HTTPError, got %T", err)
+	}
+	if httpErr.Provider != "openai" || httpErr.Class != "response_parse_error" || !strings.Contains(httpErr.Message, "exceeds maximum size") {
+		t.Fatalf("unexpected provider error: %#v", httpErr)
+	}
+}
+
 func TestAdaptersClassifyNon2xxAndPropagateCancel(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -43,6 +43,33 @@ func TestReadRegularFileNoSymlinkRejectsSymlinkFile(t *testing.T) {
 	}
 }
 
+func TestReadRegularFileNoSymlinkRejectsOversizedFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "large.log")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := file.Truncate(MaxRegularFileReadBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("truncate file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
+	}
+
+	data, info, err := ReadRegularFileNoSymlink(path)
+	if err == nil {
+		t.Fatalf("expected oversized file rejection, got data len=%d info=%#v", len(data), info)
+	}
+	if info == nil || info.Size() != MaxRegularFileReadBytes+1 {
+		t.Fatalf("expected returned file info with oversized size, got %#v", info)
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum readable size") {
+		t.Fatalf("expected size cap error, got %v", err)
+	}
+}
+
 func TestMkdirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

@@ -11,6 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const MaxRegularFileReadBytes int64 = 16 << 20
+
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -98,9 +100,15 @@ func ReadRegularFileNoSymlink(path string) ([]byte, os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, info, fmt.Errorf("not a regular file: %s", path)
 	}
-	data, err := io.ReadAll(file)
+	if info.Size() > MaxRegularFileReadBytes {
+		return nil, info, fmt.Errorf("file exceeds maximum readable size: %s (%d > %d bytes)", path, info.Size(), MaxRegularFileReadBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, MaxRegularFileReadBytes+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(data)) > MaxRegularFileReadBytes {
+		return nil, info, fmt.Errorf("file exceeds maximum readable size while reading: %s (> %d bytes)", path, MaxRegularFileReadBytes)
 	}
 	return data, info, nil
 }

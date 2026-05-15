@@ -348,16 +348,17 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 - 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json`；multipart skill upload 保持表单入口但仍受 header 与 path/root 校验约束。
 - `POST /api/sessions/start`、`POST /api/sessions/{id}/continue`、`POST /api/sessions/{id}/steer`、`POST /api/sessions/{id}/interrupt`、`POST /api/sessions/{id}/stop` 是 session 控制的唯一入口。
 - goal 控制只通过 REST endpoint 写入 session store，不通过 WebSocket 控制消息。
-- `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session。
+- `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session；浏览器 WebSocket upgrade 必须拒绝 foreign `Origin`，无 `Origin` 的本地非浏览器 client 可继续用于测试/诊断。
 - `/ws` 收到历史 `{"type":"chat"}` 或 `{"type":"stop"}` 控制消息时必须返回 `WEBSOCKET_CONTROL_DEPRECATED`，且不得创建、继续或修改 session。
 - 后端请求 DTO 使用命名结构体维护；错误响应统一为 `{"error","code","detail","action"}`，其中 `code/detail/action` 可为空但对 `UNKNOWN_PROVIDER`、`ACTIVE_HANDLE_NOT_OWNED`、`SESSION_NOT_RESUMABLE`、`WEBSOCKET_CONTROL_DEPRECATED` 必须稳定。
 - 前端 REST payload 构造、统一错误解析和控制面 wrapper 集中在 `api.js`；`app.js` 不应继续手写 WebSocket session-control payload。
 - timeline/event descriptor、event refresh filter 和 live-activity event promotion helper 集中在 `events.js`；`app.js` 只调用这些 helper，不重复维护事件文案映射。
 - Settings view 的 render 与 save handler 集中在 `settings-view.js`；`app.js` 只负责视图切换时调用 `renderSettings()`。
 - Workspace read-only browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
+- Workspace read-only browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取 `.env`、`.env.*`（示例/模板除外）、SSH / cloud / kube / docker 凭据目录、private-key 文件名和 `credentials` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
 - 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取 workspace 文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
-- 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。
+- 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。skill upload 必须有请求体、zip entry 数量、单 entry 解压大小和总解压大小上限，避免本地控制台被 zip bomb 或超大 multipart 请求拖垮。
 - Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh` 和 summary `default | auto | concise | detailed | off`，Anthropic-compatible / Google 支持 `default | standard | max | off`；`max` 映射到 thinking budget profile，不能要求用户手写 token budget。
 - `POST /api/config/test` 使用当前 Settings 表单值执行一次 thinking-observation probe，用于确认 provider、model、base URL、API key、API Provider 与 reasoning / thinking 配置能被上游接受，并区分“请求成功”和“本次实际返回可读 thinking / summary”；该接口不得持久化 config 或 `.env`。
 

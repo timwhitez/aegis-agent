@@ -19,6 +19,10 @@ type JSONClient struct {
 	Retry    RetryConfig
 }
 
+const maxProviderResponseBytes = 16 << 20
+
+var errProviderResponseTooLarge = errors.New("provider response body exceeds maximum size")
+
 func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map[string]string, body any, out any, emit EmitFunc) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -109,6 +113,14 @@ func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out
 	defer resp.Body.Close()
 	data, err := readAllWithIdleTimeout(ctx, resp.Body, c.Retry.StreamIdleTimeout)
 	if err != nil {
+		if errors.Is(err, errProviderResponseTooLarge) {
+			return &HTTPError{
+				Provider:   providerName,
+				Class:      "response_parse_error",
+				Message:    fmt.Sprintf("%s (%d bytes)", errProviderResponseTooLarge.Error(), maxProviderResponseBytes),
+				StatusCode: resp.StatusCode,
+			}
+		}
 		if errors.Is(err, errStreamIdleTimeout) {
 			return &HTTPError{
 				Provider:    providerName,
@@ -150,7 +162,7 @@ var errStreamIdleTimeout = errors.New("stream idle timeout")
 
 func readAllWithIdleTimeout(ctx context.Context, body io.ReadCloser, idle time.Duration) ([]byte, error) {
 	if idle <= 0 {
-		return io.ReadAll(body)
+		return readAllLimited(body, maxProviderResponseBytes)
 	}
 	var out bytes.Buffer
 	buf := make([]byte, 32*1024)
@@ -174,6 +186,10 @@ func readAllWithIdleTimeout(ctx context.Context, body io.ReadCloser, idle time.D
 				}
 			}
 			if result.n > 0 {
+				if out.Len()+result.n > maxProviderResponseBytes {
+					_ = body.Close()
+					return nil, errProviderResponseTooLarge
+				}
 				out.Write(buf[:result.n])
 			}
 			if errors.Is(result.err, io.EOF) {
@@ -196,4 +212,16 @@ func readAllWithIdleTimeout(ctx context.Context, body io.ReadCloser, idle time.D
 			return nil, ctx.Err()
 		}
 	}
+}
+
+func readAllLimited(reader io.Reader, limit int) ([]byte, error) {
+	var out bytes.Buffer
+	limited := io.LimitReader(reader, int64(limit)+1)
+	if _, err := out.ReadFrom(limited); err != nil {
+		return nil, err
+	}
+	if out.Len() > limit {
+		return nil, errProviderResponseTooLarge
+	}
+	return out.Bytes(), nil
 }

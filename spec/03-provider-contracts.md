@@ -352,6 +352,7 @@ adapter 至少要把 provider 错误归类为：
 - 请求超时、等待响应头超时、stream idle 超时应归类为 `upstream_timeout`，并尽量填充 `timeout_kind`
 - provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，runtime 可按 `runtime.provider_auto_resume.max_attempts` 做有界自动续跑；超过预算后必须正常 failed
 - cancel 后必须尽快返回，不能伪装成普通失败
+- provider HTTP 响应体必须有硬上限；超限响应归类为 `response_parse_error`，避免兼容网关或异常上游通过超大 JSON / error body 造成内存型拒绝服务
 
 ## 11. Contract Tests
 

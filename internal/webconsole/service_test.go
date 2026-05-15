@@ -2076,6 +2076,36 @@ func TestServiceWebSocketRejectsChatControl(t *testing.T) {
 	}
 }
 
+func TestServiceWebSocketRejectsForeignOrigin(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	headers := http.Header{}
+	headers.Set("Origin", "https://evil.example")
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected websocket foreign origin to be rejected")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("expected forbidden websocket upgrade, got status=%d err=%v", status, err)
+	}
+}
+
 func TestServiceSessionDetailReconcilesLinkedQueueJob(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -3423,8 +3453,14 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "nested", "hello.txt"), []byte("hello workspace"), 0o644); err != nil {
 		t.Fatalf("write nested file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, ".env"), []byte("WORKSPACE_SECRET=1"), 0o600); err != nil {
+		t.Fatalf("write workspace env file: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("server cwd file"), 0o644); err != nil {
 		t.Fatalf("write root-only file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("ROOT_SECRET=1"), 0o600); err != nil {
+		t.Fatalf("write root env file: %v", err)
 	}
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
 	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
@@ -3450,6 +3486,9 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		if item["name"] == "root-only.txt" {
 			t.Fatalf("workspace listing leaked server cwd file: %#v", tree)
 		}
+		if item["name"] == ".env" {
+			t.Fatalf("workspace listing leaked env file: %#v", tree)
+		}
 	}
 	if firstType, _ := tree[0]["type"].(string); firstType != "directory" {
 		t.Fatalf("expected directories to sort first, got %#v", tree[0])
@@ -3472,7 +3511,35 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		t.Fatalf("expected browser parent read to stay within server cwd, got %#v", readResp)
 	}
 
-	resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../../outside.txt"))
+	resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(".env"))
+	if err != nil {
+		t.Fatalf("workspace env read request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected forbidden for workspace env read, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../.env"))
+	if err != nil {
+		t.Fatalf("root env read request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected forbidden for root env read, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	var rootTree []map[string]any
+	postGetJSON(t, ts.URL+"/api/files?path="+url.QueryEscape(".."), &rootTree)
+	for _, item := range rootTree {
+		if item["name"] == ".env" {
+			t.Fatalf("root listing leaked env file: %#v", rootTree)
+		}
+	}
+
+	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../../outside.txt"))
 	if err != nil {
 		t.Fatalf("escape read request: %v", err)
 	}
@@ -3812,6 +3879,23 @@ func TestProcessSkillZipRejectsSymlinkDestination(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "demo-skill", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected outside skill not to be written, got %v", err)
+	}
+}
+
+func TestProcessSkillZipRejectsOversizedEntry(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	zipPath := filepath.Join(base, "skill.zip")
+	createZipEntries(t, zipPath, map[string]string{
+		"demo-skill/SKILL.md": "---\nname: demo-skill\n---\nbody\n",
+		"demo-skill/huge.txt": strings.Repeat("x", maxSkillZipEntryBytes+1),
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected oversized skill zip entry to be rejected, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "demo-skill", "huge.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected oversized entry not to be extracted, got %v", err)
 	}
 }
 
