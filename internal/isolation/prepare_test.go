@@ -122,6 +122,42 @@ func TestPrepareCopyRejectsPreexistingOutputSymlink(t *testing.T) {
 	}
 }
 
+func TestPrepareCopyPreservesSourceSymlinkWithoutFollowing(t *testing.T) {
+	parent := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(parent, "linked.txt")); err != nil {
+		t.Fatalf("symlink source file: %v", err)
+	}
+
+	result, err := Prepare(Request{
+		SessionID:     "session-copy",
+		ParentWorkdir: parent,
+		RequestedMode: "copy",
+		RootDir:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	target := filepath.Join(result.Workdir, "linked.txt")
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("lstat copied link: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected copied entry to remain a symlink, got mode %v", info.Mode())
+	}
+	link, err := os.Readlink(target)
+	if err != nil {
+		t.Fatalf("read copied symlink: %v", err)
+	}
+	if link != outside {
+		t.Fatalf("unexpected copied symlink target %q, want %q", link, outside)
+	}
+}
+
 func TestPrepareAutoUsesGitWorktreeInsideRepository(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required for worktree test")

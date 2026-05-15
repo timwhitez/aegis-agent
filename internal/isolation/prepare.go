@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 type Request struct {
@@ -214,11 +216,19 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	if err := rejectSymlinkOrDirectory(dst); err != nil {
 		return err
 	}
-	in, err := os.Open(src)
+	fd, err := unix.Open(src, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
+	in := os.NewFile(uintptr(fd), src)
 	defer in.Close()
+	srcInfo, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if !srcInfo.Mode().IsRegular() {
+		return fmt.Errorf("source is not a regular file: %s", src)
+	}
 
 	tmp, err := os.CreateTemp(parent, "."+filepath.Base(dst)+".*.tmp")
 	if err != nil {
