@@ -1092,6 +1092,9 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 		if err := readJSONFile(filepath.Join(dir, entry.Name()), &job); err != nil {
 			continue
 		}
+		if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" {
+			continue
+		}
 		candidates = append(candidates, candidate{name: entry.Name(), job: job})
 	}
 	sort.Slice(candidates, func(i, j int) bool {

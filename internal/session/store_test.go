@@ -1279,6 +1279,38 @@ func TestClaimNextQueuedJobWritesLease(t *testing.T) {
 	}
 }
 
+func TestClaimNextQueuedJobSkipsMismatchedQueueFilename(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	if err := store.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	mismatched := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_actual",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.writeJSONFile(filepath.Join(store.queueStatusDir(QueueStatusQueued), "job_other.json"), mismatched); err != nil {
+		t.Fatalf("write mismatched job: %v", err)
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected mismatched queue file to be skipped, got %#v", claimed)
+	}
+	if _, err := os.Stat(filepath.Join(store.queueStatusDir(QueueStatusQueued), "job_other.json")); err != nil {
+		t.Fatalf("expected mismatched job to remain queued for diagnostics, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.queueStatusDir(QueueStatusRunning), "job_other.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected mismatched job not to move to running, got %v", err)
+	}
+}
+
 func TestReconcileStaleRunningJobWithoutSessionFailsJob(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
