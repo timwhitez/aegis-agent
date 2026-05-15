@@ -1404,7 +1404,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if dirModeErr != nil {
 		sessionDirMode = 0o700
 	}
-	if err := os.MkdirAll(cfg.Session.Dir, sessionDirMode); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(cfg.Session.Dir, sessionDirMode); err != nil {
 		sessionStatus = "fail"
 		sessionDetails["error"] = err.Error()
 	}
@@ -1837,10 +1837,10 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(cwd, ".env.example"), []byte("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\nGEMINI_API_KEY=\n"), 0o600); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(cwd, "workspace"), 0o700); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(filepath.Join(cwd, "workspace"), 0o700); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(cwd, effectiveSkillDir, "example"), 0o700); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(filepath.Join(cwd, effectiveSkillDir, "example"), 0o700); err != nil {
 		return err
 	}
 	skillBody := "---\nname: example\ndescription: Example local skill\n---\nWhen asked to inspect the repository, start with rg --files and targeted reads.\n"
@@ -1848,7 +1848,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	toolDir := filepath.Join(cwd, effectiveSkillDir, "example", "tools")
-	if err := os.MkdirAll(toolDir, 0o700); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(toolDir, 0o700); err != nil {
 		return err
 	}
 	exampleTool := "name: echo_args\ndescription: Echo JSON arguments for debugging\ncommand: [\"/bin/sh\", \"-lc\", \"cat\"]\ntimeout_sec: 15\ninput_schema:\n  type: object\n  properties:\n    message:\n      type: string\n"
@@ -1857,7 +1857,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	}
 	if *exampleHook {
 		hookDir := filepath.Join(cwd, ".go-cli-agent", "hooks")
-		if err := os.MkdirAll(hookDir, 0o700); err != nil {
+		if err := fileutil.MkdirAllNoSymlink(hookDir, 0o700); err != nil {
 			return err
 		}
 		hookScript := "#!/usr/bin/env sh\nset -eu\nmkdir -p .go-cli-agent/hooks/logs\ncat >> .go-cli-agent/hooks/logs/session-complete.jsonl\n"

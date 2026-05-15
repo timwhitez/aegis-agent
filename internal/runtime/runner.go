@@ -16,6 +16,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/hooks"
 	"go-cli-agent/internal/isolation"
 	"go-cli-agent/internal/provider"
@@ -460,7 +461,7 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 				return "", fmt.Errorf("default workspace path is not a directory: %s", resolved)
 			}
 		} else if os.IsNotExist(err) {
-			if err := os.MkdirAll(resolved, 0o700); err != nil {
+			if err := fileutil.MkdirAllNoSymlink(resolved, 0o700); err != nil {
 				return "", err
 			}
 		} else {

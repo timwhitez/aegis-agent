@@ -2133,7 +2133,7 @@ func currentServerWorkspaceRoot() (string, error) {
 			return "", fmt.Errorf("default workspace path is not a directory: %s", root)
 		}
 	} else if os.IsNotExist(err) {
-		if err := os.MkdirAll(root, 0o700); err != nil {
+		if err := fileutil.MkdirAllNoSymlink(root, 0o700); err != nil {
 			return "", err
 		}
 	} else {
@@ -3055,7 +3055,7 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(dest, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

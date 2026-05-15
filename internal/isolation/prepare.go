@@ -127,7 +127,7 @@ func resolveWithExistingParent(path string) (string, error) {
 }
 
 func prepareGitWorktree(result Result, gitRoot, target string) (Result, error) {
-	if err := os.MkdirAll(result.RootDir, 0o700); err != nil {
+	if err := mkdirAllNoSymlink(result.RootDir, 0o700); err != nil {
 		return Result{}, err
 	}
 	cmd := exec.Command("git", "-C", gitRoot, "worktree", "add", "--detach", target, "HEAD")
