@@ -164,6 +164,37 @@ func RemoveDirAllNoSymlink(path string) error {
 	return os.RemoveAll(path)
 }
 
+func RemoveFileNoSymlink(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("path is required")
+	}
+	path = filepath.Clean(path)
+	if filepath.Dir(path) == path {
+		return fmt.Errorf("refusing to remove filesystem root: %s", path)
+	}
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to remove symlinked path: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to remove non-regular file path: %s", path)
+	}
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return err
+	}
+	return os.Remove(path)
+}
+
 func rejectExistingSymlinkAncestors(path string) error {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {

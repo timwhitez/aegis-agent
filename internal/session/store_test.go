@@ -1613,6 +1613,25 @@ func TestClearHistoryRejectsSymlinkedSessionDir(t *testing.T) {
 	}
 }
 
+func TestClearHistoryRemovesRegularRootFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	if err := store.EnsureRoot(); err != nil {
+		t.Fatalf("ensure root: %v", err)
+	}
+	stale := filepath.Join(root, "stale.json")
+	if err := os.WriteFile(stale, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+
+	if err := store.ClearHistory(); err != nil {
+		t.Fatalf("clear history: %v", err)
+	}
+	if _, statErr := os.Stat(stale); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected stale file removed, got %v", statErr)
+	}
+}
+
 func TestListPageReconcilesLinkedQueueJobStatus(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

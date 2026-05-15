@@ -95,3 +95,41 @@ func TestRemoveDirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 		t.Fatalf("expected outside dir to remain, got %v", statErr)
 	}
 }
+
+func TestRemoveFileNoSymlinkRemovesRegularFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "stale.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if err := RemoveFileNoSymlink(path); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("expected file removed, got %v", statErr)
+	}
+}
+
+func TestRemoveFileNoSymlinkRejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	link := filepath.Join(root, "stale.json")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := RemoveFileNoSymlink(link)
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink target rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(link); statErr != nil {
+		t.Fatalf("expected symlink to remain, got %v", statErr)
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Fatalf("expected outside file to remain, got %v", statErr)
+	}
+}

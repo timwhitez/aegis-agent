@@ -1038,7 +1038,14 @@ func (s *Store) ClearHistory() error {
 		return err
 	}
 	for _, entry := range entries {
-		if err := fileutil.RemoveDirAllNoSymlink(filepath.Join(s.root, entry.Name())); err != nil {
+		path := filepath.Join(s.root, entry.Name())
+		if entry.Type().IsRegular() {
+			if err := fileutil.RemoveFileNoSymlink(path); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := fileutil.RemoveDirAllNoSymlink(path); err != nil {
 			return err
 		}
 	}
