@@ -59,6 +59,24 @@ Assess whether the current `go-cli-agent` codebase can be treated as fully trust
 - STEP 30 - Fresh full package validation passed after the final F-05 refinement with `go test -timeout=5m ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`.
 - STEP 31 - Final clean gates passed on owned files: `gofmt -l cmd internal pkg validation/cmd`, WebConsole `node --check` for `app.js`, `api.js`, `session-view.js`, and scoped `git diff --check`.
 - STEP 32 - Unscoped `git diff --check` was intentionally not used as closeout evidence because pre-existing unrelated whitespace remains in `skills/timwhite-security-review/SKILL.md`; owned-file scoped whitespace check is clean.
+- STEP 33 - Continued after commit `01f8bd6` because the thread goal remained active; the post-commit dirty worktree still only contained unrelated pre-existing deletions/skill edits/untracked files.
+- STEP 34 - Core tool/session boundary audit inspected workspace path resolution, shell timeout/env/output behavior, and session store readers; path/shell had existing targeted tests, while session JSON/JSONL readers still had uncapped read surfaces.
+- STEP 35 - Implemented F-06: session JSON files now reuse the shared capped no-symlink regular-file reader, and JSONL readers now enforce a 16 MiB per-record cap before unmarshalling.
+- STEP 36 - F-06 targeted validation passed for oversized session JSON, oversized JSONL records, and the existing symlink-read regressions; full `internal/session` package also passed.
+- STEP 37 - CLI adapter stdin audit found `run`/`exec` stdin prompts, `continue --message` fallback stdin, and `steer --message` fallback stdin used unbounded `io.ReadAll`.
+- STEP 38 - Implemented F-07: prompt stdin reads now use a 4 MiB hard cap with a clear error; `spec/02-cli-and-config.md` documents the limit.
+- STEP 39 - F-07 targeted validation passed for oversized stdin prompt rejection and adjacent Plan Mode/prompt parsing regressions; combined `go test ./internal/app ./internal/session` passed.
+- STEP 40 - Web/API control-surface audit found unsafe JSON mutation endpoints had Origin and Content-Type guards but no shared JSON request-body cap; multipart skill upload already had a separate cap from F-03.
+- STEP 41 - Implemented F-08: unsafe WebConsole JSON mutation endpoints now use `http.MaxBytesReader` with a 4 MiB cap, and `spec/17-web-console.md` documents the JSON body limit.
+- STEP 42 - F-08 targeted validation passed for oversized JSON mutation body rejection plus adjacent foreign-Origin/WebSocket/zip guard regressions.
+- STEP 43 - Full suite rerun exposed a regression from F-06: `feature_list_read` still blocked a symlinked snapshot but the error was rewrapped as `feature list not found` instead of preserving the session symlink diagnostic.
+- STEP 44 - Fixed the F-06 regression by keeping the session-store symlink-path precheck before the capped regular-file read.
+- STEP 45 - Regression validation passed: `TestFeatureListToolsRejectSymlinkedSnapshot` and the F-06 oversized/symlink session-store tests now both pass.
+- STEP 46 - Fresh full package validation passed after F-06/F-07/F-08 and the F-06 diagnostic regression fix with `go test -timeout=5m ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`.
+- STEP 47 - Final clean gates passed on owned files: `gofmt -l cmd internal pkg validation/cmd`, WebConsole `node --check` for `app.js`, `api.js`, `session-view.js`, and scoped `git diff --check`.
+- STEP 48 - Completion audit restated the objective as: keep a marked context ledger, stay under 50 steps, find/fix feasible loopholes, validate fixes with relevant tests plus broad gates, preserve unrelated dirt, and commit kept code/spec/test changes.
+- STEP 49 - Scoped staging set prepared for the second continuation commit: context ledger, app stdin cap, session-store read caps, WebConsole JSON body cap, tests, and matching specs only.
+- STEP 50 - Step cap reached for this loop. No further expansion is allowed in this loop; closeout proceeds with the discovered fixes and explicit non-absolute confidence statement.
 
 ## Candidate Findings
 
@@ -69,6 +87,9 @@ Assess whether the current `go-cli-agent` codebase can be treated as fully trust
 | F-03 | WebConsole skill upload | Fixed, targeted verified | `handleUploadSkill` lacked `http.MaxBytesReader`; `processSkillZip` used `io.ReadAll` per entry and no aggregate extracted-size/file-count cap. | Added upload/extraction caps and `TestProcessSkillZipRejectsOversizedEntry`. |
 | F-04 | WebConsole WebSocket | Fixed, targeted verified | `websocket.Upgrader.CheckOrigin` returned `true` for all origins. | Added same-origin/no-Origin check and `TestServiceWebSocketRejectsForeignOrigin`. |
 | F-05 | Shared regular-file reads | Fixed, targeted verified | `fileutil.ReadRegularFileNoSymlink` rejected symlinks but allowed any regular file size before `io.ReadAll`; this is used by `read_file`, `grep`, skill reads, config/env reads, and WebConsole file reads. | Added a 16 MiB stat/read cap and `TestReadRegularFileNoSymlinkRejectsOversizedFile`; synced `spec/04-tools-and-skills.md`. |
+| F-06 | Session store readers | Fixed, targeted verified | `readJSONFile` used an uncapped `io.ReadAll`; `readJSONL` used `ReadBytes('\n')`, allowing a damaged or malicious local session/control file to allocate a very large JSON file or single JSONL record during restore/list/Web reads. | Reused capped no-symlink regular-file reads for JSON files, added a 16 MiB JSONL record cap, and added oversized JSON/JSONL session-store regressions; synced `spec/05-session-interrupt-resume.md`. |
+| F-07 | CLI stdin prompt reads | Fixed, targeted verified | CLI prompt fallback paths for `run`/`exec`, `continue`, and `steer` read stdin with unbounded `io.ReadAll`. | Added a shared 4 MiB stdin prompt cap with explicit error and `TestReadPromptStdinRejectsOversizedInput`; synced `spec/02-cli-and-config.md`. |
+| F-08 | WebConsole JSON mutation bodies | Fixed, targeted verified | Unsafe WebConsole JSON mutation endpoints required local-console headers and JSON content-type, but decoded request bodies without a shared size cap. | Added a 4 MiB `http.MaxBytesReader` cap for JSON mutation endpoints and `TestServiceRejectsOversizedJSONMutationBody`; synced `spec/17-web-console.md`. |
 
 ## Verification Log
 
@@ -86,10 +107,21 @@ Assess whether the current `go-cli-agent` codebase can be treated as fully trust
 - Final `node --check internal/webconsole/assets/app.js`, `api.js`, and `session-view.js` passed.
 - Scoped `git diff --check -- context/confidence-loop-20260515.md internal/provider/http.go internal/provider/provider_test.go internal/webconsole/service.go internal/webconsole/service_test.go internal/fileutil/safe.go internal/fileutil/safe_test.go spec/03-provider-contracts.md spec/04-tools-and-skills.md spec/17-web-console.md` passed.
 - Unscoped `git diff --check` reports unrelated pre-existing trailing whitespace in `skills/timwhite-security-review/SKILL.md`, which was not edited or staged by this loop.
+- `go test ./internal/session -run 'TestStoreLoadStateRejectsOversizedJSON|TestStoreLoadMessagesRejectsOversizedJSONLRecord|TestStoreLoadStateRejectsSymlinkJSON|TestStoreLoadMessagesRejectsSymlinkJSONL'` passed.
+- `go test ./internal/session` passed.
+- `go test ./internal/app -run 'TestReadPromptStdinRejectsOversizedInput|TestRunCommandParsesPlanFlags|TestRunCommandDoesNotInferPlanModeFromPromptText'` passed.
+- `go test ./internal/app ./internal/session` passed.
+- `go test ./internal/webconsole -run 'TestServiceRejectsForeignOriginMutation|TestServiceRejectsOversizedJSONMutationBody|TestServiceWebSocketRejectsForeignOrigin|TestProcessSkillZipRejectsOversizedEntry'` passed.
+- First full rerun after F-06/F-07/F-08 failed at `TestFeatureListToolsRejectSymlinkedSnapshot`; this was treated as a real regression and fixed before closeout.
+- `go test ./internal/tools -run 'TestFeatureListToolsRejectSymlinkedSnapshot'` passed after preserving session symlink diagnostics.
+- Final `go test -timeout=5m ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` passed after F-06/F-07/F-08.
+- Final `gofmt -l cmd internal pkg validation/cmd` produced no output.
+- Final `node --check internal/webconsole/assets/app.js`, `api.js`, and `session-view.js` passed.
+- Scoped `git diff --check -- context/confidence-loop-20260515.md internal/app/app.go internal/app/app_test.go internal/session/store.go internal/session/store_test.go internal/webconsole/service.go internal/webconsole/service_test.go spec/02-cli-and-config.md spec/05-session-interrupt-resume.md spec/17-web-console.md` passed.
 
 ## Closeout Notes
 
-- This loop reached STEP 32, under the 50-step cap.
-- Five concrete loopholes were found and fixed: provider response memory cap, WebConsole credential-file browser denial, skill upload/zip extraction caps, WebSocket foreign-origin rejection, and capped shared regular-file reads.
-- Confidence level: materially improved for the reviewed provider, file-browser, skill-upload, WebSocket, and shared file-read surfaces, backed by targeted regressions and full package validation. This is not an absolute claim that every project surface is loophole-free.
-- Known residuals: unrelated dirty worktree changes remain outside this loop; unscoped whitespace checking is contaminated by those unrelated edits; no live browser/UI smoke was run because the changes were server-side guardrails and package tests cover the affected handlers.
+- This loop reached STEP 50, the requested cap.
+- Eight concrete loopholes were found and fixed: provider response memory cap, WebConsole credential-file browser denial, skill upload/zip extraction caps, WebSocket foreign-origin rejection, capped shared regular-file reads, capped session JSON/JSONL reads, capped CLI stdin prompt reads, and capped WebConsole JSON mutation bodies.
+- Confidence level: materially improved for the reviewed provider, file-browser, skill-upload, WebSocket, shared file-read, session-store read, CLI stdin, and WebConsole JSON mutation surfaces, backed by targeted regressions and full package validation. This is not an absolute claim that every project surface is loophole-free.
+- Known residuals: unrelated dirty worktree changes remain outside this loop; unscoped whitespace checking is contaminated by those unrelated edits; no live browser/UI smoke was run because the changes were server-side guardrails and package tests cover the affected handlers; the 50-step cap prevents further expansion in this loop.

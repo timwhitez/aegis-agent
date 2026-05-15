@@ -54,6 +54,7 @@ core v1 的默认命令面固定为：
 - `run` / `exec` / `continue` / `steer` / `goal` / `tasks` / `experimental delegate` / `experimental children` / `experimental queue submit` / `experimental queue show`
   支持在 `<session-id>` 或 `[prompt]` 前后继续写受支持 flags
 - 若 prompt 自身以 `-` 开头，使用 `--` 结束 flag 解析
+- 从 stdin 读取 prompt 的入口必须有硬上限；当前上限为 4 MiB，超限时返回明确错误，避免把异常大的管道输入一次性读入内存
 
 ## 5. Core 命令定义
 

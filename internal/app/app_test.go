@@ -295,6 +295,13 @@ func TestRunCommandParsesPlanFlags(t *testing.T) {
 	}
 }
 
+func TestReadPromptStdinRejectsOversizedInput(t *testing.T) {
+	_, err := readPromptStdin(strings.NewReader(strings.Repeat("x", int(maxPromptStdinBytes)+1)))
+	if err == nil || !strings.Contains(err.Error(), "stdin prompt exceeds maximum size") {
+		t.Fatalf("expected oversized stdin prompt rejection, got %v", err)
+	}
+}
+
 func TestRunCommandDoesNotInferPlanModeFromPromptText(t *testing.T) {
 	fake := newFakeRunner()
 	fake.startResult = runtime.RunResult{

@@ -36,6 +36,7 @@ session 系统保证下面四件事同时成立：
 
 - session 根目录默认 `0700`
 - `session.json`、`state.json`、`messages.jsonl`、`events.jsonl` 默认 `0600`
+- 读取 `session.json`、`state.json` 等 JSON 文件必须复用 no-symlink regular-file reader，并拒绝超大单文件；读取 `messages.jsonl`、`events.jsonl`、`control/*.jsonl` 等 JSONL 日志时必须限制单条记录大小，避免损坏或恶意扩大的 session 文件在恢复、列表或 Web 查询时造成内存型拒绝服务
 
 ## 3. 文件职责
 

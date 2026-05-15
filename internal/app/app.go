@@ -195,6 +195,8 @@ var stdinIsTerminal = func() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
+const maxPromptStdinBytes int64 = 4 << 20
+
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
 	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
@@ -483,8 +485,13 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 	}()
 	if strings.TrimSpace(*message) == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
-		data, _ := io.ReadAll(os.Stdin)
-		*message = string(data)
+		data, err := readPromptStdin(os.Stdin)
+		if err != nil {
+			cancelRender()
+			<-done
+			return err
+		}
+		*message = data
 	}
 	result, err := runner.Continue(ctx, runtime.ContinueRequest{
 		SessionID:            fs.Arg(0),
@@ -529,8 +536,11 @@ func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return err
 	}
 	if strings.TrimSpace(*message) == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
-		data, _ := io.ReadAll(os.Stdin)
-		*message = string(data)
+		data, err := readPromptStdin(os.Stdin)
+		if err != nil {
+			return err
+		}
+		*message = data
 	}
 	result, err := runner.Steer(ctx, runtime.SteerRequest{
 		SessionID: fs.Arg(0),
@@ -1915,11 +1925,22 @@ func resolvePrompt(args []string, stdin io.Reader) (string, error) {
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		return "", fmt.Errorf("prompt is required")
 	}
-	data, err := io.ReadAll(stdin)
+	data, err := readPromptStdin(stdin)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	return strings.TrimSpace(data), nil
+}
+
+func readPromptStdin(stdin io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(stdin, maxPromptStdinBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > maxPromptStdinBytes {
+		return "", fmt.Errorf("stdin prompt exceeds maximum size: %d bytes", maxPromptStdinBytes)
+	}
+	return string(data), nil
 }
 
 func printResult(w io.Writer, jsonMode bool, result runtime.RunResult, exitCode int) error {

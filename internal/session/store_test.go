@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go-cli-agent/internal/fileutil"
 )
 
 func TestStoreEnsureRootReappliesOwnerOnlyMode(t *testing.T) {
@@ -330,6 +332,33 @@ func TestStoreLoadStateRejectsSymlinkSessionDir(t *testing.T) {
 	}
 }
 
+func TestStoreLoadStateRejectsOversizedJSON(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	statePath := filepath.Join(store.SessionDir(meta.ID), "state.json")
+	if err := os.Truncate(statePath, fileutil.MaxRegularFileReadBytes+1); err != nil {
+		t.Fatalf("truncate state: %v", err)
+	}
+	if _, err := store.LoadState(meta.ID); err == nil || !strings.Contains(err.Error(), "exceeds maximum readable size") {
+		t.Fatalf("expected oversized state.json read to fail, got %v", err)
+	}
+}
+
 func TestStoreLoadMessagesRejectsSymlinkJSONL(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
@@ -366,6 +395,33 @@ func TestStoreLoadMessagesRejectsSymlinkJSONL(t *testing.T) {
 
 	if _, err := store.LoadMessages(meta.ID); err == nil {
 		t.Fatal("expected symlinked messages.jsonl read to fail")
+	}
+}
+
+func TestStoreLoadMessagesRejectsOversizedJSONLRecord(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	messagePath := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	if err := os.Truncate(messagePath, fileutil.MaxRegularFileReadBytes+1); err != nil {
+		t.Fatalf("truncate messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "session JSONL record exceeds maximum readable size") {
+		t.Fatalf("expected oversized JSONL record read to fail, got %v", err)
 	}
 }
 

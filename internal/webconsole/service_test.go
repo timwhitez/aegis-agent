@@ -2456,6 +2456,28 @@ func TestServiceRejectsForeignOriginMutation(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsOversizedJSONMutationBody(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	body := `{"prompt":"` + strings.Repeat("x", int(maxWebJSONBodyBytes)+1) + `"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/start", strings.NewReader(body))
+	request.Header.Set(webMutationHeader, "1")
+	request.Header.Set("Content-Type", "application/json")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for oversized JSON mutation body, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "request body too large") {
+		t.Fatalf("expected request body too large error, got body=%s", recorder.Body.String())
+	}
+}
+
 func TestServiceInterruptUsesManualPauseReason(t *testing.T) {
 	server := newSleepToolServer()
 	defer server.Close()

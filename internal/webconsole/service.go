@@ -56,6 +56,7 @@ const (
 	maxSkillZipFiles                = 2048
 	maxSkillZipEntryBytes           = 10 << 20
 	maxSkillZipTotalBytes           = 100 << 20
+	maxWebJSONBodyBytes             = 4 << 20
 )
 
 type processOwner struct {
@@ -295,6 +296,9 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 	if err := guardUnsafeAPIRequest(r); err != nil {
 		writeError(w, http.StatusForbidden, err)
 		return
+	}
+	if isUnsafeMethod(r.Method) && expectsJSONBody(r.URL.Path) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxWebJSONBodyBytes)
 	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/meta":
@@ -4386,8 +4390,7 @@ func decodeJSON(r *http.Request, target any) error {
 }
 
 func guardUnsafeAPIRequest(r *http.Request) error {
-	switch r.Method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
+	if !isUnsafeMethod(r.Method) {
 		return nil
 	}
 	if expectsJSONBody(r.URL.Path) {
@@ -4405,6 +4408,15 @@ func guardUnsafeAPIRequest(r *http.Request) error {
 		return errors.New("API mutation requires same-origin Origin or X-Go-Cli-Agent-Web header")
 	}
 	return nil
+}
+
+func isUnsafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
+	}
 }
 
 func sameOriginHost(origin *url.URL, host string) bool {

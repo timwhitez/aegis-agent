@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -1301,12 +1300,7 @@ func readJSONFile(path string, target any) error {
 	if err := rejectSymlinkPathAncestors(path); err != nil {
 		return err
 	}
-	file, err := openNoSymlink(path, unix.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(file)
+	data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 	if err != nil {
 		return err
 	}
@@ -1842,23 +1836,26 @@ func readJSONL[T any](path string, out *[]T) error {
 		return err
 	}
 	defer file.Close()
-	reader := bufio.NewReader(file)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if len(strings.TrimSpace(string(line))) > 0 {
-			var item T
-			if unmarshalErr := json.Unmarshal(line, &item); unmarshalErr != nil {
-				return unmarshalErr
-			}
-			*out = append(*out, item)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), int(fileutil.MaxRegularFileReadBytes))
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
 		}
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
+		var item T
+		if err := json.Unmarshal(line, &item); err != nil {
 			return err
 		}
+		*out = append(*out, item)
 	}
+	if err := scanner.Err(); err != nil {
+		if strings.Contains(err.Error(), "token too long") {
+			return fmt.Errorf("session JSONL record exceeds maximum readable size: %s (> %d bytes)", path, fileutil.MaxRegularFileReadBytes)
+		}
+		return err
+	}
+	return nil
 }
 
 func validateTodo(todo []TodoItem) error {
