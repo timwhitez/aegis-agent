@@ -2873,7 +2873,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			return extractedCount, err
 		}
 
-		if err := os.RemoveAll(targetPath); err != nil {
+		if err := fileutil.RemoveDirAllNoSymlink(targetPath); err != nil {
 			return extractedCount, err
 		}
 		if err := fileutil.MkdirAllNoSymlink(targetPath, 0o755); err != nil {
@@ -3136,7 +3136,7 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.RemoveAll(targetDir); err != nil {
+	if err := fileutil.RemoveDirAllNoSymlink(targetDir); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

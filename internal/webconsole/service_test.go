@@ -3716,6 +3716,56 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	}
 }
 
+func TestServiceSkillUninstallRejectsSymlinkedSkillDir(t *testing.T) {
+	cfg := testConfig(t, "")
+	base := t.TempDir()
+	skillsDir := filepath.Join(base, "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+	outside := filepath.Join(base, "outside-skill")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "SKILL.md"), []byte("---\nname: demo-skill\n---\n"), 0o600); err != nil {
+		t.Fatalf("write outside skill: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(skillsDir, "demo-skill")); err != nil {
+		t.Fatalf("symlink skill dir: %v", err)
+	}
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/demo-skill/uninstall", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("new uninstall request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("uninstall request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected symlinked uninstall to be rejected, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if _, err := os.Lstat(filepath.Join(skillsDir, "demo-skill")); err != nil {
+		t.Fatalf("expected symlink to remain, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "SKILL.md")); err != nil {
+		t.Fatalf("expected outside skill to remain, got %v", err)
+	}
+}
+
 func TestProcessSkillZipRejectsTraversalEntries(t *testing.T) {
 	for _, entryName := range []string{"../../zip-slip.txt", "..\\escape.txt", "/absolute.txt", "C:/absolute.txt"} {
 		t.Run(entryName, func(t *testing.T) {

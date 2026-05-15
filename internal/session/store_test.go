@@ -1590,6 +1590,29 @@ func TestDeleteSessionTreeDoesNotDeadlockWithReconcilableJob(t *testing.T) {
 	}
 }
 
+func TestClearHistoryRejectsSymlinkedSessionDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	if err := store.EnsureRoot(); err != nil {
+		t.Fatalf("ensure root: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "session-link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := store.ClearHistory()
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "session-link")); statErr != nil {
+		t.Fatalf("expected symlink to remain, got %v", statErr)
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Fatalf("expected outside dir to remain, got %v", statErr)
+	}
+}
+
 func TestListPageReconcilesLinkedQueueJobStatus(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

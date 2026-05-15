@@ -997,7 +997,7 @@ func (s *Store) DeleteSessionTree(sessionID string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.RemoveAll(path); err != nil {
+		if err := fileutil.RemoveDirAllNoSymlink(path); err != nil {
 			return err
 		}
 	}
@@ -1038,7 +1038,7 @@ func (s *Store) ClearHistory() error {
 		return err
 	}
 	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(s.root, entry.Name())); err != nil {
+		if err := fileutil.RemoveDirAllNoSymlink(filepath.Join(s.root, entry.Name())); err != nil {
 			return err
 		}
 	}

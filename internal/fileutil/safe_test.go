@@ -58,3 +58,40 @@ func TestMkdirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 		t.Fatalf("outside target should not be created, stat err=%v", statErr)
 	}
 }
+
+func TestRemoveDirAllNoSymlinkRejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "session-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := RemoveDirAllNoSymlink(link)
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink target rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(link); statErr != nil {
+		t.Fatalf("expected symlink to remain, got %v", statErr)
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Fatalf("expected outside dir to remain, got %v", statErr)
+	}
+}
+
+func TestRemoveDirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "sessions")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := RemoveDirAllNoSymlink(filepath.Join(link, "child"))
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink ancestor rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Fatalf("expected outside dir to remain, got %v", statErr)
+	}
+}
