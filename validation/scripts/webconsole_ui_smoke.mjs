@@ -49,7 +49,11 @@ function sleep(ms) {
 }
 
 async function fetchJSON(url, options = {}) {
-  const response = await fetch(url, options);
+  const headers = {
+    'X-Go-Cli-Agent-Web': '1',
+    ...(options.headers || {})
+  };
+  const response = await fetch(url, { ...options, headers });
   const text = await response.text();
   let body = null;
   try {
@@ -285,6 +289,7 @@ async function main() {
   chrome.stderr.on('data', (chunk) => chromeLogs.push(chunk.toString()));
 
   let browserClient;
+  let results = null;
   try {
     await waitFor(async () => {
       try {
@@ -316,7 +321,7 @@ async function main() {
       'webconsole shell'
     );
 
-    const results = {
+    results = {
       base_url: baseURL,
       shell_title: await browserClient.evaluate('document.title'),
       assets: {
@@ -382,7 +387,7 @@ async function main() {
 
     await click('[data-view="history"]', 'history nav');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.getElementById('history-view')) && document.getElementById('history-view').textContent.includes('Clear history') && document.getElementById('history-view').textContent.includes('Sessions')`),
+      () => browserClient.evaluate(`Boolean(document.getElementById('history-view')) && document.getElementById('history-view').textContent.includes('Clear sessions') && document.getElementById('history-view').textContent.includes('Sessions')`),
       15000,
       'history view'
     );
@@ -448,7 +453,14 @@ async function main() {
       'durable session id'
     );
 
-    const sessionId = await browserClient.evaluate(`(document.getElementById('session-id-display')?.textContent || '').replace(/^ID:\\s*/, '')`);
+    const sessionId = await browserClient.evaluate(`(() => {
+      if (typeof state !== 'undefined' && state.sessionId && !/^0x/i.test(String(state.sessionId))) {
+        return String(state.sessionId);
+      }
+      const text = String(document.getElementById('session-id-display')?.textContent || '');
+      const match = text.match(/\\b\\d{8}-\\d{6}-[0-9a-f]{6}\\b/i);
+      return match ? match[0] : text.replace(/^ID:\\s*/, '');
+    })()`);
     results.session_id = sessionId;
 
     let liveSessionDetail = null;
@@ -523,12 +535,13 @@ async function main() {
     await waitFor(
       () => browserClient.evaluate(`(() => {
         const root = document.getElementById('chat-messages');
-        return Boolean(root) && root.querySelectorAll('.tool-card').length >= 1;
+        return Boolean(root) && root.querySelectorAll('.tool-lane, .tl-row-call, .tl-row-result, .tool-card').length >= 1;
       })()`),
       30000,
-      'tool cards visible'
+      'tool activity visible'
     );
     results.interactions.tool_cards_visible = true;
+    results.interactions.tool_activity_visible = true;
 
     await waitFor(
       () => browserClient.evaluate(`(() => {
@@ -598,7 +611,7 @@ async function main() {
 
     await click('[data-view="history"]', 'history nav after session');
     await waitFor(
-      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear history') && document.getElementById('history-view')?.textContent?.includes('Page')`),
+      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear sessions') && document.getElementById('history-view')?.textContent?.includes('Page')`),
       15000,
       'history view visible after activity'
     );
@@ -684,7 +697,7 @@ async function main() {
 
     await click('[data-view="history"]', 'history nav before clear');
     await waitFor(
-      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear history')`),
+      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear sessions')`),
       15000,
       'history view before clear'
     );
@@ -720,6 +733,37 @@ async function main() {
     const domHTML = await browserClient.evaluate('document.documentElement.outerHTML');
     await writeFile(outputPath, JSON.stringify(results, null, 2));
     await writeFile(domPath, domHTML);
+  } catch (err) {
+    if (browserClient) {
+      try {
+        const diagnostics = await browserClient.evaluate(`(() => {
+          const root = document.getElementById('chat-messages');
+          const view = document.querySelector('.nav-item.active[data-view]')?.getAttribute('data-view') || '';
+          return {
+            current_view: view,
+            session_chip: document.getElementById('session-id-display')?.textContent || '',
+            chat_text_excerpt: (root?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 1000),
+            tool_activity_count: root ? root.querySelectorAll('.tool-lane, .tl-row-call, .tl-row-result, .tool-card').length : 0,
+            timeline_count: root ? root.querySelectorAll('.timeline-card').length : 0,
+            history_text_excerpt: (document.getElementById('history-view')?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 500)
+          };
+        })()`);
+        const failedResults = results || {
+          base_url: baseURL,
+          interactions: {},
+          runtime_exceptions: browserClient.exceptions,
+          console_errors: browserClient.consoleErrors,
+        };
+        failedResults.failure = err?.message || String(err);
+        failedResults.failure_diagnostics = diagnostics;
+        await writeFile(outputPath, JSON.stringify(failedResults, null, 2));
+        const domHTML = await browserClient.evaluate('document.documentElement.outerHTML');
+        await writeFile(domPath, domHTML);
+      } catch (writeErr) {
+        console.error(`failed to write ui smoke diagnostics: ${writeErr?.message || String(writeErr)}`);
+      }
+    }
+    throw err;
   } finally {
     if (browserClient) {
       await browserClient.close().catch(() => {});

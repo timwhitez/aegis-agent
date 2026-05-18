@@ -184,6 +184,29 @@ func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
 	}
 }
 
+func TestOpenAIInputReplaysEmptyReasoningSummaryArray(t *testing.T) {
+	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "openai", ProviderProfile: "openai", APIProvider: "openai-compatible", Type: "reasoning", ID: "rs_empty", Data: "enc_empty", Sequence: 1, Model: "gpt-5.5"},
+	}
+	input, err := openAIInput([]session.Message{assistant}, "gpt-5.5", "openai", "openai-compatible")
+	if err != nil {
+		t.Fatalf("input: %v", err)
+	}
+	reasoning, _ := input[0].(map[string]any)
+	summary, ok := reasoning["summary"].([]map[string]any)
+	if !ok || len(summary) != 0 {
+		t.Fatalf("expected explicit empty reasoning summary array, got %#v", reasoning["summary"])
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	if !strings.Contains(string(raw), `"summary":[]`) {
+		t.Fatalf("expected replay JSON to include empty summary array, got %s", raw)
+	}
+}
+
 func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

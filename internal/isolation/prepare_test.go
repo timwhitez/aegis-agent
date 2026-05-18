@@ -187,6 +187,52 @@ func TestPrepareAutoUsesGitWorktreeInsideRepository(t *testing.T) {
 	}
 }
 
+func TestPrepareAutoCopiesIgnoredWorkspaceInsideRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for worktree detection")
+	}
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("validation/runs/\n"), 0o600); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("tracked root"), 0o600); err != nil {
+		t.Fatalf("write root readme: %v", err)
+	}
+	runGit(t, repo, "add", ".gitignore", "README.md")
+	runGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "init")
+
+	workspace := filepath.Join(repo, "validation", "runs", "current", "workspaces", "platform_py")
+	if err := os.MkdirAll(filepath.Join(workspace, "tests"), 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("staged workspace"), 0o600); err != nil {
+		t.Fatalf("write workspace readme: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "tests", "test_report.py"), []byte("def test_report(): pass\n"), 0o600); err != nil {
+		t.Fatalf("write workspace test: %v", err)
+	}
+
+	result, err := Prepare(Request{
+		SessionID:     "session-ignored-workspace",
+		ParentWorkdir: workspace,
+		RequestedMode: "auto",
+		RootDir:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if result.Mode != "copy" {
+		t.Fatalf("expected ignored workspace to use copy mode, got %#v", result)
+	}
+	if data, err := os.ReadFile(filepath.Join(result.Workdir, "README.md")); err != nil || string(data) != "staged workspace" {
+		t.Fatalf("expected copied workspace README, data=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(result.Workdir, "tests", "test_report.py")); err != nil {
+		t.Fatalf("expected copied workspace test file: %v", err)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)

@@ -88,6 +88,8 @@ type Service struct {
 
 	mu      sync.RWMutex
 	handles map[string]*launchHandle
+
+	launchWG sync.WaitGroup
 }
 
 type launchHandle struct {
@@ -282,6 +284,7 @@ func (s *Service) Close() {
 		handle.cancel()
 		_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "service_close"})
 	}
+	s.launchWG.Wait()
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1518,11 +1521,13 @@ func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error)
 	handle := newLaunchHandle(sessionID, runner, cancel)
 	s.addHandle(handle)
 	if early != nil {
-		go s.finishHandle(handle, *early)
+		s.trackLaunch(func() {
+			s.finishHandle(handle, *early)
+		})
 	} else {
-		go func() {
+		s.trackLaunch(func() {
 			s.finishHandle(handle, <-outcomeCh)
-		}()
+		})
 	}
 	return LaunchResponse{SessionID: sessionID, Status: "accepted"}, nil
 }
@@ -1570,7 +1575,7 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
 	s.addHandle(handle)
-	go func() {
+	s.trackLaunch(func() {
 		result, err := runner.Continue(runCtx, runtime.ContinueRequest{
 			SessionID:      sessionID,
 			Message:        req.Message,
@@ -1581,8 +1586,16 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 			Source:         session.PlanModeSourceWeb,
 		})
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
-	}()
+	})
 	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+}
+
+func (s *Service) trackLaunch(fn func()) {
+	s.launchWG.Add(1)
+	go func() {
+		defer s.launchWG.Done()
+		fn()
+	}()
 }
 
 func (s *Service) handlePlanModeGet(w http.ResponseWriter, sessionID string) {

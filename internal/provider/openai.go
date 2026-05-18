@@ -351,6 +351,7 @@ func openAIReasoningReplayItems(msg session.Message, model, providerProfile, api
 			"type":              "reasoning",
 			"id":                block.ID,
 			"encrypted_content": block.Data,
+			"summary":           []map[string]any{},
 		}
 		if len(block.Summary) > 0 {
 			summary := make([]map[string]any, 0, len(block.Summary))

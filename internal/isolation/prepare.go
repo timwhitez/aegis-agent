@@ -78,7 +78,7 @@ func Prepare(req Request) (Result, error) {
 	result.RootDir = resolvedRoot
 	switch mode {
 	case "auto":
-		if gitRoot, ok := detectGitRepo(parentWorkdir); ok {
+		if gitRoot, ok := detectGitRepo(parentWorkdir); ok && gitWorktreeCanRepresent(parentWorkdir, gitRoot) {
 			return prepareGitWorktree(result, gitRoot, resolvedTarget)
 		}
 		return prepareCopy(result, resolvedTarget)
@@ -137,8 +137,15 @@ func prepareGitWorktree(result Result, gitRoot, target string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("git worktree add failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
+	workdir := target
+	if rel, err := filepath.Rel(gitRoot, result.ParentWorkdir); err == nil && rel != "." {
+		workdir = filepath.Join(target, rel)
+	}
+	if _, err := os.Stat(workdir); err != nil {
+		return Result{}, fmt.Errorf("git worktree does not contain requested workdir %s: %w", result.ParentWorkdir, err)
+	}
 	result.Mode = "git"
-	result.Workdir = target
+	result.Workdir = workdir
 	result.GitRepoRoot = gitRoot
 	return result, nil
 }
@@ -159,6 +166,18 @@ func detectGitRepo(workdir string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(string(output)), true
+}
+
+func gitWorktreeCanRepresent(workdir, gitRoot string) bool {
+	rel, err := filepath.Rel(gitRoot, workdir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	output, err := exec.Command("git", "-C", gitRoot, "ls-files", "--", rel).Output()
+	return err == nil && strings.TrimSpace(string(output)) != ""
 }
 
 func isWithin(parent, child string) bool {

@@ -29,5 +29,6 @@ PKG_PATTERNS=(
 # Keep the repo-level test surface on the owned module packages. The
 # validation tree contains copied historical workspaces and prior run artifacts
 # that are useful as evidence, but they are not part of the default module
-# acceptance surface.
-go test "${PKG_PATTERNS[@]}"
+# acceptance surface. Force a real run so a stale or stuck Go test cache cannot
+# make the repo-level gate hang after package tests have already completed.
+go test -count=1 -timeout=2m "${PKG_PATTERNS[@]}"

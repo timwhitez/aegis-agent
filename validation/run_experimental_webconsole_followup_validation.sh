@@ -454,6 +454,7 @@ post_json() {
 	local out="$3"
 	curl -sS -o "$out" -w '%{http_code}' \
 		-H 'Content-Type: application/json' \
+		-H 'X-Go-Cli-Agent-Web: 1' \
 		-X POST \
 		--data "$payload" \
 		"$url"

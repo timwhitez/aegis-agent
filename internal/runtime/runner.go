@@ -397,13 +397,13 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		}
 		r.emit(meta.ID, "planmode.created", "prepare", planModeEventData(planMode))
 	}
-	_ = writeSessionSummary(r.store, meta.ID)
 	r.emit(meta.ID, "session.created", "prepare", map[string]any{
 		"provider": meta.Provider,
 		"model":    meta.Model,
 		"mode":     meta.Mode,
 		"workdir":  meta.Workdir,
 	})
+	_ = writeSessionSummary(r.store, meta.ID)
 	if stringsTrim(req.Prompt) != "" {
 		if err := r.appendUserMessage(ctx, meta, "prepare", req.Prompt, nil); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
