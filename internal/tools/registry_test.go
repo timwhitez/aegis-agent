@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/session"
@@ -2337,6 +2338,46 @@ func TestReadFileRepeatObservation(t *testing.T) {
 	}
 	if second.Metadata["repeat_count"] != 2 || !strings.Contains(second.LLMOutput, "repeat_count=2") {
 		t.Fatalf("expected repeat observation, got metadata=%#v output=%q", second.Metadata, second.LLMOutput)
+	}
+}
+
+func TestTruncateOutputPreservesHeadAndTail(t *testing.T) {
+	input := strings.Repeat("HEAD-", 20) + "middle-only-content" + strings.Repeat("-TAIL", 20)
+	output, rawLength, truncated := truncateOutput(input, 80)
+	if !truncated {
+		t.Fatal("expected output to be truncated")
+	}
+	if rawLength != len(input) {
+		t.Fatalf("expected raw length %d, got %d", len(input), rawLength)
+	}
+	if !strings.HasPrefix(output, "HEAD-") {
+		t.Fatalf("expected truncated output to preserve head, got %q", output)
+	}
+	if !strings.HasSuffix(output, "-TAIL") {
+		t.Fatalf("expected truncated output to preserve tail, got %q", output)
+	}
+	if !strings.Contains(output, "bytes omitted") {
+		t.Fatalf("expected omitted-byte marker, got %q", output)
+	}
+	if strings.Contains(output, "middle-only-content") {
+		t.Fatalf("expected interior content to be omitted, got %q", output)
+	}
+	if len(output) > 80 {
+		t.Fatalf("expected output to stay within limit, got len=%d output=%q", len(output), output)
+	}
+}
+
+func TestTruncateOutputKeepsUTF8Boundaries(t *testing.T) {
+	input := strings.Repeat("前缀", 20) + "middle" + strings.Repeat("后缀", 20)
+	output, _, truncated := truncateOutput(input, 90)
+	if !truncated {
+		t.Fatal("expected output to be truncated")
+	}
+	if !utf8.ValidString(output) {
+		t.Fatalf("expected valid UTF-8 output, got %q", output)
+	}
+	if !strings.Contains(output, "bytes omitted") {
+		t.Fatalf("expected omitted-byte marker, got %q", output)
 	}
 }
 

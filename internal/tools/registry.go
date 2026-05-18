@@ -2867,7 +2867,57 @@ func truncateOutput(text string, limit int) (string, int, bool) {
 	if len(text) <= limit {
 		return text, rawLength, false
 	}
-	return text[:limit] + "\n...[truncated]", rawLength, true
+	if limit <= 0 {
+		return "", rawLength, true
+	}
+	marker := "\n...[truncated]...\n"
+	headBytes := limit / 2
+	tailBytes := limit - headBytes
+	head := prefixAtRuneBoundary(text, headBytes)
+	tail := suffixAtRuneBoundary(text, tailBytes)
+	for i := 0; i < 3; i++ {
+		omitted := rawLength - len(head) - len(tail)
+		if omitted < 0 {
+			omitted = 0
+		}
+		marker = fmt.Sprintf("\n...[truncated: %d bytes omitted]...\n", omitted)
+		remaining := limit - len(marker)
+		if remaining < 2 {
+			return prefixAtRuneBoundary(text, limit), rawLength, true
+		}
+		headBytes = remaining / 2
+		tailBytes = remaining - headBytes
+		head = prefixAtRuneBoundary(text, headBytes)
+		tail = suffixAtRuneBoundary(text, tailBytes)
+	}
+	return head + marker + tail, rawLength, true
+}
+
+func prefixAtRuneBoundary(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if limit >= len(text) {
+		return text
+	}
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit]
+}
+
+func suffixAtRuneBoundary(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if limit >= len(text) {
+		return text
+	}
+	start := len(text) - limit
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[start:]
 }
 
 func relativeOrAbsolute(base, path string) string {
