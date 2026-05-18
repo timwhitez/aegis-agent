@@ -858,6 +858,11 @@ async function sendMessage() {
           renderCurrentSession();
           return;
         }
+        setGenerating(true, {
+          title: 'Continuing session',
+          copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
+          tone: 'live'
+        });
         await requestContinueSession(state.sessionId, text, {
           silentToast: true,
           planMode: planDraft || undefined
@@ -876,6 +881,7 @@ async function sendMessage() {
       queueOverviewRefresh(220);
     } catch (err) {
       removeOptimisticMessage(optimisticID);
+      state.isGenerating = false;
       showToast(err.message || 'Failed to continue session.', 'error');
       updateUI();
       renderCurrentSession();
@@ -901,6 +907,12 @@ async function sendMessage() {
       return;
     }
     try {
+      setGenerating(true, {
+        title: 'Launching session',
+        copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
+        tone: 'live'
+      });
+      queueOverviewRefresh(220);
       const resp = await startSession({
         prompt: text,
         workdir: selectedWorkspaceWorkdir(),
@@ -919,6 +931,7 @@ async function sendMessage() {
       queueOverviewRefresh(220);
     } catch (err) {
       removeOptimisticMessage(optimisticID);
+      state.isGenerating = false;
       showToast(err.message || 'Failed to start session.', 'error');
       updateUI();
       renderCurrentSession();

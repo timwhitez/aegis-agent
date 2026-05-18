@@ -57,6 +57,7 @@ const (
 	maxSkillZipEntryBytes           = 10 << 20
 	maxSkillZipTotalBytes           = 100 << 20
 	maxWebJSONBodyBytes             = 4 << 20
+	sessionStartObservationTimeout  = 15 * time.Second
 )
 
 type processOwner struct {
@@ -3546,7 +3547,11 @@ type launchOutcome struct {
 }
 
 func waitForSessionID(sub <-chan events.Event, outcomeCh <-chan launchOutcome) (string, *launchOutcome, error) {
-	timeout := time.NewTimer(2 * time.Second)
+	return waitForSessionIDWithTimeout(sub, outcomeCh, sessionStartObservationTimeout)
+}
+
+func waitForSessionIDWithTimeout(sub <-chan events.Event, outcomeCh <-chan launchOutcome, timeoutDuration time.Duration) (string, *launchOutcome, error) {
+	timeout := time.NewTimer(timeoutDuration)
 	defer timeout.Stop()
 	for {
 		select {

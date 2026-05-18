@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAtomicWriteFileNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
@@ -20,6 +21,29 @@ func TestAtomicWriteFileNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(outside, "example", "SKILL.md")); !os.IsNotExist(statErr) {
 		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
+
+func TestChmodAfterAtomicRenameRetriesTransientMissingPath(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "session.json")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(15 * time.Millisecond)
+		_ = os.WriteFile(path, []byte("{}"), 0o600)
+	}()
+
+	if err := chmodAfterAtomicRename(path, 0o600); err != nil {
+		t.Fatalf("expected retry to observe file creation, got %v", err)
+	}
+	<-done
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat path: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected mode 0600, got %v", info.Mode().Perm())
 	}
 }
 

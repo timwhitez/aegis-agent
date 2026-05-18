@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -76,7 +77,39 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	return os.Chmod(path, mode)
+	return chmodAfterAtomicRename(path, mode)
+}
+
+func chmodAfterAtomicRename(path string, mode os.FileMode) error {
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		var info os.FileInfo
+		info, err = os.Lstat(path)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to chmod symlinked path: %s", path)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("refusing to chmod non-regular file path: %s", path)
+			}
+		}
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+			continue
+		}
+		err = os.Chmod(path, mode)
+		if err == nil {
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return err
 }
 
 func ReadRegularFileNoSymlink(path string) ([]byte, os.FileInfo, error) {

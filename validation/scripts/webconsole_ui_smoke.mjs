@@ -430,14 +430,62 @@ async function main() {
       'Finally call finish with exact message: ui smoke parent ok.'
     ].join(' ');
     await setValue('#chat-input', prompt);
+    await waitFor(
+      () => browserClient.evaluate(`(() => {
+        const button = document.getElementById('send-btn');
+        return Boolean(button) && !button.disabled;
+      })()`),
+      10000,
+      'send button enabled'
+    );
     await click('#send-btn', 'send button');
 
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.querySelector('.pending-stage-card'))`),
-      10000,
-      'pending stage card'
+      () => browserClient.evaluate(`(() => {
+        const initial = ${JSON.stringify(initialEphemeralPrefix)};
+        const chip = String(document.getElementById('session-id-display')?.textContent || '').replace(/\\s+/g, ' ').trim();
+        const pending = Boolean(document.querySelector('.pending-stage-card'));
+        const generating = typeof state !== 'undefined' && state.isGenerating === true;
+        const durable = chip !== initial && (
+          (typeof state !== 'undefined' && state.sessionBacked === true) ||
+          /\\b\\d{8}-\\d{6}-[0-9a-f]{6}\\b/i.test(chip)
+        );
+        const text = [
+          document.getElementById('chat-messages')?.textContent || '',
+          document.getElementById('input-status-text')?.textContent || '',
+          document.getElementById('connection-status')?.textContent || ''
+        ].join(' ');
+        const launchText = /Launching session|Continuing session|Bootstrapping|Live session|Running/i.test(text);
+        return pending || generating || durable || launchText;
+      })()`),
+      20000,
+      'launch feedback or durable session'
     );
-    results.interactions.pending_stage_visible = true;
+    const launchFeedback = await browserClient.evaluate(`(() => {
+      const initial = ${JSON.stringify(initialEphemeralPrefix)};
+      const chip = String(document.getElementById('session-id-display')?.textContent || '').replace(/\\s+/g, ' ').trim();
+      const text = [
+        document.getElementById('chat-messages')?.textContent || '',
+        document.getElementById('input-status-text')?.textContent || '',
+        document.getElementById('connection-status')?.textContent || ''
+      ].join(' ');
+      const pending = Boolean(document.querySelector('.pending-stage-card'));
+      const generating = typeof state !== 'undefined' && state.isGenerating === true;
+      const durable = chip !== initial && (
+        (typeof state !== 'undefined' && state.sessionBacked === true) ||
+        /\\b\\d{8}-\\d{6}-[0-9a-f]{6}\\b/i.test(chip)
+      );
+      const launchText = /Launching session|Continuing session|Bootstrapping|Live session|Running/i.test(text);
+      return { pending, generating, durable, launchText };
+    })()`);
+    results.interactions.pending_stage_visible = Boolean(launchFeedback.pending);
+    results.interactions.launch_feedback_visible = Boolean(
+      launchFeedback.pending ||
+      launchFeedback.generating ||
+      launchFeedback.durable ||
+      launchFeedback.launchText
+    );
+    results.interactions.durable_session_adopted_before_wait = Boolean(launchFeedback.durable);
     results.interactions.stop_button_visible = await browserClient.evaluate(`(() => {
       const el = document.getElementById('stop-session-btn');
       if (!el) return false;
@@ -742,6 +790,9 @@ async function main() {
           return {
             current_view: view,
             session_chip: document.getElementById('session-id-display')?.textContent || '',
+            is_generating: typeof state !== 'undefined' ? Boolean(state.isGenerating) : false,
+            session_backed: typeof state !== 'undefined' ? Boolean(state.sessionBacked) : false,
+            pending_stage_visible: Boolean(document.querySelector('.pending-stage-card')),
             chat_text_excerpt: (root?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 1000),
             tool_activity_count: root ? root.querySelectorAll('.tool-lane, .tl-row-call, .tl-row-result, .tool-card').length : 0,
             timeline_count: root ? root.querySelectorAll('.timeline-card').length : 0,

@@ -1171,6 +1171,27 @@ func TestServiceStartSessionReturnsSessionID(t *testing.T) {
 	}
 }
 
+func TestWaitForSessionIDAllowsSlowSessionCreation(t *testing.T) {
+	sub := make(chan events.Event, 1)
+	outcomeCh := make(chan launchOutcome, 1)
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		sub <- events.New("session_slow_start", "session.created", "prepare", nil)
+	}()
+
+	sessionID, early, err := waitForSessionIDWithTimeout(sub, outcomeCh, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected delayed session creation to be accepted, got %v", err)
+	}
+	if sessionID != "session_slow_start" {
+		t.Fatalf("expected delayed session id, got %q", sessionID)
+	}
+	if early != nil {
+		t.Fatalf("expected no early launch outcome, got %#v", early)
+	}
+}
+
 func TestServiceMissionRolePlanAppliesExactRoleProviderOverrides(t *testing.T) {
 	cfg := testConfig(t, "")
 	cfg.Providers["planner-profile"] = cfg.Providers["openai"]
