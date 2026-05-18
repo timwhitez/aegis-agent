@@ -1447,6 +1447,26 @@ func TestRequestedArtifactPathsFromTextIgnoresNegatedArtifactPath(t *testing.T) 
 	}
 }
 
+func TestRequestedArtifactPathsFromTextIgnoresReviewInputFiles(t *testing.T) {
+	workdir := t.TempDir()
+	text := "Use the review_pipeline skill for this task. Read reports/spec.md and reports/plan.md first as the delegated reviewer handoff. Review README.md, docs/contracts.md, internal/api/handler.go, internal/config/config.go, internal/quota/policy.go, internal/api/handler_test.go, internal/config/config_test.go, and internal/quota/policy_test.go. Write reports/delegate-review.md with sections: findings, unresolved questions, next fixes. Refresh reports/validation.md with sections: delegated reviewer contract, confirmed findings, remaining risks. Then call finish."
+	paths := requestedArtifactPathsFromText(workdir, text)
+	want := filepath.Join(workdir, "reports", "delegate-review.md")
+	if len(paths) != 1 || paths[0] != want {
+		t.Fatalf("expected only delegated review artifact %q, got %#v", want, paths)
+	}
+}
+
+func TestRequestedArtifactPathsFromTextKeepsInlineCreatedArtifact(t *testing.T) {
+	workdir := t.TempDir()
+	text := "Review README.md, then write reports/final-review.md with findings and finish."
+	paths := requestedArtifactPathsFromText(workdir, text)
+	want := filepath.Join(workdir, "reports", "final-review.md")
+	if len(paths) != 1 || paths[0] != want {
+		t.Fatalf("expected only final review artifact %q, got %#v", want, paths)
+	}
+}
+
 func TestToolGuardBlocksWriteToNegatedArtifactPath(t *testing.T) {
 	workdir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {

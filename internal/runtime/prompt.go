@@ -1867,20 +1867,18 @@ func requestedArtifactPathsFromText(workdir, text string) []string {
 	lines := strings.Split(text, "\n")
 	paths := make([]string, 0, 2)
 	for _, line := range lines {
-		segment := artifactInstructionSegment(line)
-		if segment == "" {
-			continue
-		}
-		for _, match := range artifactPathPattern.FindAllString(segment, -1) {
-			candidate := strings.Trim(match, " `\"'.,;:()[]{}")
-			if candidate == "" {
-				continue
+		for _, segment := range artifactInstructionSegments(line) {
+			for _, match := range artifactPathPattern.FindAllString(segment, -1) {
+				candidate := strings.Trim(match, " `\"'.,;:()[]{}")
+				if candidate == "" {
+					continue
+				}
+				resolved, ok := cleanRequestedPath(workdir, candidate)
+				if !ok || !looksFinalArtifactPath(resolved) {
+					continue
+				}
+				paths = append(paths, resolved)
 			}
-			resolved, ok := cleanRequestedPath(workdir, candidate)
-			if !ok || !looksFinalArtifactPath(resolved) {
-				continue
-			}
-			paths = append(paths, resolved)
 		}
 	}
 	return uniqueCleanPaths(paths)
@@ -2091,19 +2089,84 @@ func extractLiteralArtifactPaths(text string) []string {
 	lines := strings.Split(text, "\n")
 	paths := make([]string, 0, 2)
 	for _, line := range lines {
-		segment := artifactInstructionSegment(line)
-		if segment == "" {
-			continue
-		}
-		for _, match := range artifactPathPattern.FindAllString(segment, -1) {
-			candidate := strings.Trim(match, " `\"'.,;:()[]{}")
-			if candidate == "" {
-				continue
+		for _, segment := range artifactInstructionSegments(line) {
+			for _, match := range artifactPathPattern.FindAllString(segment, -1) {
+				candidate := strings.Trim(match, " `\"'.,;:()[]{}")
+				if candidate == "" {
+					continue
+				}
+				paths = append(paths, candidate)
 			}
-			paths = append(paths, candidate)
 		}
 	}
 	return uniqueCleanPaths(paths)
+}
+
+func artifactInstructionSegments(line string) []string {
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
+	if trimmed == "" {
+		return nil
+	}
+	var out []string
+	for _, fragment := range splitArtifactInstructionLine(trimmed) {
+		segment := artifactInstructionSegment(fragment)
+		if segment != "" {
+			out = append(out, segment)
+		}
+	}
+	return out
+}
+
+func splitArtifactInstructionLine(line string) []string {
+	var out []string
+	start := 0
+	for i, r := range line {
+		if !isArtifactSentenceBoundary(r) {
+			continue
+		}
+		next := nextNonSpaceRune(line[i+len(string(r)):])
+		if next != 0 && r == '.' && !isLikelySentenceStart(next) {
+			continue
+		}
+		fragment := strings.TrimSpace(line[start:i])
+		if fragment != "" {
+			out = append(out, fragment)
+		}
+		start = i + len(string(r))
+	}
+	if tail := strings.TrimSpace(line[start:]); tail != "" {
+		out = append(out, tail)
+	}
+	return out
+}
+
+func isArtifactSentenceBoundary(r rune) bool {
+	switch r {
+	case '.', ';', '!', '?', '。', '；', '！', '？':
+		return true
+	default:
+		return false
+	}
+}
+
+func nextNonSpaceRune(text string) rune {
+	for _, r := range text {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		return r
+	}
+	return 0
+}
+
+func isLikelySentenceStart(r rune) bool {
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	if r >= 0x4e00 && r <= 0x9fff {
+		return true
+	}
+	return false
 }
 
 func artifactInstructionSegment(line string) string {
@@ -2112,7 +2175,7 @@ func artifactInstructionSegment(line string) string {
 		return ""
 	}
 	lowered := strings.ToLower(trimmed)
-	if !containsArtifactCreationVerb(lowered) {
+	if artifactCreationVerbIndex(lowered) < 0 {
 		return ""
 	}
 	if negation := artifactNegationIndex(lowered); negation == 0 {
@@ -2120,20 +2183,29 @@ func artifactInstructionSegment(line string) string {
 	} else if negation > 0 {
 		trimmed = strings.TrimSpace(trimmed[:negation])
 		lowered = strings.ToLower(trimmed)
-		if !containsArtifactCreationVerb(lowered) {
+		if artifactCreationVerbIndex(lowered) < 0 {
 			return ""
 		}
+	}
+	if verbIndex := artifactCreationVerbIndex(lowered); verbIndex > 0 {
+		trimmed = strings.TrimSpace(trimmed[verbIndex:])
 	}
 	return trimmed
 }
 
 func containsArtifactCreationVerb(lowered string) bool {
+	return artifactCreationVerbIndex(lowered) >= 0
+}
+
+func artifactCreationVerbIndex(lowered string) int {
+	best := -1
 	for _, token := range []string{"write ", "draft ", "create "} {
-		if strings.Contains(lowered, token) {
-			return true
+		idx := strings.Index(lowered, token)
+		if idx >= 0 && (best < 0 || idx < best) {
+			best = idx
 		}
 	}
-	return false
+	return best
 }
 
 func artifactNegationIndex(lowered string) int {
