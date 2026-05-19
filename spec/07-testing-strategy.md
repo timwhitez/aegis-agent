@@ -172,7 +172,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - OpenAI / Anthropic / Google adapter 各自的非 2xx 错误映射
 - OpenAI / Anthropic / Google adapter 各自的 context cancel 传播
 
-### 4.7 Experimental Web Console
+### 4.7 Web Console
 
 - embedded shell 首页与 `app.js` / `styles.css` 资产可直接从本地 service 获取
 - Web 发起的 session `start` 能进入 `awaiting_input`

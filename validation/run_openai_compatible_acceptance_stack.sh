@@ -314,7 +314,7 @@ else
 		record_skipped_phase "focused_followup" "matrix failed and GO_CLI_AGENT_ACCEPTANCE_CONTINUE_AFTER_MATRIX_FAILURE=false" "$FOLLOWUP_RUN_DIR" "${FOLLOWUP_RUN_DIR}/SUMMARY.md" "$FOLLOWUP_LOG"
 	else
 		printf '== focused webconsole follow-up ==\n'
-		FOLLOWUP_EXIT="$(run_phase "focused_followup" "./validation/run_experimental_webconsole_followup_validation.sh" "$FOLLOWUP_RUN_ID" "$FOLLOWUP_LOG")"
+		FOLLOWUP_EXIT="$(run_phase "focused_followup" "./validation/run_webconsole_followup_validation.sh" "$FOLLOWUP_RUN_ID" "$FOLLOWUP_LOG")"
 		FOLLOWUP_STATUS="$(status_from_exit "$FOLLOWUP_EXIT")"
 	fi
 fi
@@ -365,7 +365,7 @@ fi
 	echo
 	echo "- This acceptance stack now starts with a bundle-level \`probe-provider\` gate before it spends time on the full live matrix."
 	echo "- If the repeated preflight probe still fails, the bundle writes \`ABORTED.md\`, skips both live phases, and preserves the probe evidence under \`raw/\` and \`notes/\`."
-	echo "- It intentionally runs the full matrix first and the focused \`experimental web\` follow-up second, so broad runtime regressions and the narrower retry/webconsole evidence can be reviewed together."
+	echo "- It intentionally runs the full matrix first and the focused Web-first console follow-up second, so broad runtime regressions and the narrower retry/webconsole evidence can be reviewed together."
 	echo "- The focused follow-up still uses evidence-first retry proof semantics: durable retry metadata plus a real \`provider.retry\` event are the primary pass criteria even if the bounded finish nudges leave the retry session in \`awaiting_input\`."
 } >"$SUMMARY_PATH"
 

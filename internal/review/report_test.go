@@ -73,7 +73,7 @@ func TestValidateMarkdownArtifactAllowsNoValidatedBreaksSummary(t *testing.T) {
 	content := `# audit
 
 ## findings
-No validated core-v1 surface-discipline breaks found in the inspected owning code.
+No validated Web-first surface-discipline breaks found in the inspected owning code.
 
 ## remaining risks
 - None`

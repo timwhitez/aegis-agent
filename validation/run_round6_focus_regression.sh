@@ -82,7 +82,7 @@ record_scenario "RT03" "Reference Corpus Synthesis" "$RT03_RAW" "${ARTIFACT_DIR}
 
 RT11_PROMPT="${PROMPT_DIR}/rt11-explicit-skill-loading.prompt.txt"
 write_prompt "$RT11_PROMPT" "Use the repo_audit skill for this task.
-Audit whether the default core tool surface and docs stay aligned with core v1 boundaries.
+Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries.
 Call load_skill before deeper inspection.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
 Write ${ABS_ARTIFACT_DIR}/rt11-repo-audit-skill.md with sections: validated findings, remaining risks, smallest next fixes.

@@ -5,7 +5,7 @@
 This audit compares the required specs against `README.md`, the current Go implementation, and focused tests. The review emphasizes:
 
 - tool surface vs registry alignment
-- whether `experimental web` still presents as experimental
+- whether the Web console presents as the default `go-cli-agent web` surface while keeping `experimental web` as a compatibility alias
 - whether multi-agent is enabled by default but delegation remains master-directed
 - whether recent frontend behaviors (`history`, `refresh`, `clear`) have backend contracts
 
@@ -33,20 +33,20 @@ Assessment:
 - No implementation drift found in the tool registry itself.
 - The task system and durable task graph concepts from `spec/12-task-system.md` are reflected in exposed tooling.
 
-### 2. `experimental web` remains experimental
+### 2. Web console is now default, with `experimental web` as compatibility alias
 
 Status: aligned.
 
 Evidence:
 
-- CLI routing exposes web console under `experimental web`, not as a top-level stable command.
-- `internal/app/app_test.go` verifies default usage does not advertise experimental commands, while explicit `experimental` invocation shows `delegate|children|queue|tui|web`.
-- README documents web console under the experimental surface rather than the stable core command list.
-- `internal/webconsole/service.go` implements the feature as a separate experimental service rather than merging it into the stable CLI path.
+- CLI routing exposes web console as top-level `web`; `experimental web` remains a compatibility alias.
+- `internal/app/app_test.go` verifies default usage advertises the Web-first surface, while explicit `experimental` invocation still shows `delegate|children|queue|tui|web`.
+- README documents web console as the default local entrypoint and keeps CLI commands as fallback.
+- `internal/webconsole/service.go` implements the feature as a separate web service facade while preserving runtime/session file facts as the authority.
 
 Assessment:
 
-- Experimental positioning is preserved across docs, code, and tests.
+- Web-first positioning is preserved across docs, code, and tests without making the browser state authoritative.
 
 ### 3. Multi-agent default enabled, but delegation remains master-directed
 
@@ -104,4 +104,4 @@ Why this is safe:
 
 ## Conclusion
 
-The audited areas are in good shape. The implementation and tests match the current spec direction on tool registry shape, experimental web positioning, default-on multi-agent capability with master-directed delegation, and web UI behavior contracts. One minor README drift was corrected.
+The audited areas are in good shape. The implementation and tests match the current spec direction on tool registry shape, Web-first console positioning, default-on multi-agent capability with master-directed delegation, and web UI behavior contracts. One minor README drift was corrected.

@@ -47,6 +47,33 @@ func TestChmodAfterAtomicRenameRetriesTransientMissingPath(t *testing.T) {
 	}
 }
 
+func TestChmodAfterAtomicRenameRejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	link := filepath.Join(root, "session.json")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := chmodAfterAtomicRename(link, 0o600)
+	if err == nil {
+		t.Fatal("expected symlink chmod rejection")
+	}
+	if !strings.Contains(err.Error(), "symlinked") && !strings.Contains(err.Error(), "too many levels") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	info, statErr := os.Stat(outside)
+	if statErr != nil {
+		t.Fatalf("stat outside: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("outside target mode changed: got %v", info.Mode().Perm())
+	}
+}
+
 func TestReadRegularFileNoSymlinkRejectsSymlinkFile(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.md")

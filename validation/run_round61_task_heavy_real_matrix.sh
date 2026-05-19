@@ -1034,7 +1034,7 @@ fi
 PREFLIGHT_REAL_PROMPT="${RUN_DIR}/preflight-real-turn.prompt.txt"
 write_prompt "$PREFLIGHT_REAL_PROMPT" "Inspect only README.md and AGENTS.md in the current go-cli-agent repository.
 Use targeted retrieval only.
-Call finish with a short message that states the current core-v1 default command surface and whether experimental commands sit behind an explicit entrypoint."
+Call finish with a short message that states the current Web-first default surface and which CLI commands remain fallback entrypoints."
 run_exec_exact "$PREFLIGHT_REAL_PROMPT" "${RUN_DIR}/preflight-real-turn.jsonl" "$ROOT_DIR" 20 20
 PRE_REAL_EXIT=$?
 record_preflight "real-turn" "$PRE_REAL_EXIT" "${RUN_DIR}/preflight-real-turn.jsonl"
@@ -1908,7 +1908,7 @@ fi
 
 TT18_SUBRUN_ID="${ROUND_ID}-focused-webconsole-followup"
 TT18_SUBRUN_DIR="validation/runs/${TT18_SUBRUN_ID}"
-./validation/run_experimental_webconsole_followup_validation.sh "$TT18_SUBRUN_ID" >"${RUN_DIR}/focused-followup-driver.log" 2>&1
+./validation/run_webconsole_followup_validation.sh "$TT18_SUBRUN_ID" >"${RUN_DIR}/focused-followup-driver.log" 2>&1
 TT18_SUBRUN_EXIT=$?
 
 TT18_DIR="${CASES_DIR}/TT18"

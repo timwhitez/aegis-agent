@@ -39,9 +39,9 @@
 
 除 26 场景主矩阵外，当前还保留一条长期稳定的 focused live 入口：
 
-- 脚本：`validation/run_experimental_webconsole_followup_validation.sh`
+- 脚本：`validation/run_webconsole_followup_validation.sh`（当前验证 `go-cli-agent web`；旧 `run_experimental_webconsole_followup_validation.sh` 仅作兼容 wrapper）
 - run 目录：默认写入 `validation/runs/<run-id>/`，该目录通常被 `.gitignore` 忽略；当前 checkout 不把某个历史 focused run 目录当作 tracked stable proof
-- 目的：在不重跑整轮 26 场景矩阵时，单独复核 `experimental web` 相关的高价值回归，包括 durable retry restore、embedded shell/assets、真实浏览器交互，以及 queue background notification dedup
+- 目的：在不重跑整轮 26 场景矩阵时，单独复核 Web-first console 相关的高价值回归，包括 durable retry restore、embedded shell/assets、真实浏览器交互，以及 queue background notification dedup
 
 该 focused profile 的判定口径：
 
@@ -56,7 +56,7 @@
 
 - mode: `exec`
 - workdir: `go-cli-agent/`
-- focus: core v1 默认 help surface、core/experimental/store facade 边界，以及 SDK facade 是否仍保持 core-first 收口
+- focus: Web-first 默认 help surface、core/web/experimental/store facade 边界，以及 SDK facade 是否仍保持 runtime-first 收口
 - expected capabilities: 受限检索、findings-first review、core-vs-extension surface 判断
 - expected artifact: `artifacts/rt01-core-surface-audit.md`
 

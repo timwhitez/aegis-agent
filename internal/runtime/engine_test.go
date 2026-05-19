@@ -1140,7 +1140,7 @@ func TestEngineAppendsSteerCompletionReminderAndEscalatesAfterBlockedDetour(t *t
 func TestEngineInterruptSteerAllowsCurrentEvidenceArtifactDelivery(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	writeEvidenceFile(t, meta.Workdir, "internal/tools/registry.go", "package tools\n\nvar reservedNames = map[string]struct{}{ \"agent_spawn\": {} }\n\nfunc builtinDefinitions(cfg any) []string {\n\tif cfg != nil {\n\t\treturn []string{\"cfg.Runtime.MultiAgent.Enabled\"}\n\t}\n\treturn nil\n}\n")
-	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries and write reports/steer-audit.md.")); err != nil {
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries and write reports/steer-audit.md.")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{

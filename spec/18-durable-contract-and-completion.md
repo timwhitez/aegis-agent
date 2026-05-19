@@ -2,7 +2,7 @@
 
 ## 1. Scope
 
-This spec defines the core hardening layer added after core v1 convergence:
+This spec defines the durable hardening layer for Web-first v1 convergence:
 
 - session-scoped contract snapshots
 - session-scoped goal snapshots

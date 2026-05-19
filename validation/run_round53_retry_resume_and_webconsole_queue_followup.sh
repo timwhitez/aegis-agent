@@ -7,4 +7,4 @@ if [[ -z "${GO_CLI_AGENT_MATRIX_LABEL:-}" ]]; then
 	export GO_CLI_AGENT_MATRIX_LABEL="round53-focused-retry-resume-webconsole-queue-followup"
 fi
 
-exec "${SCRIPT_DIR}/run_experimental_webconsole_followup_validation.sh" "$@"
+exec "${SCRIPT_DIR}/run_webconsole_followup_validation.sh" "$@"

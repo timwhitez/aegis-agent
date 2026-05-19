@@ -148,7 +148,7 @@ TOP_LEVEL_MARKDOWN_LIST="${TOP_LEVEL_MARKDOWN_LIST%, }"
 
 RT01_PROMPT="${PROMPT_DIR}/rt01-architecture-audit.prompt.txt"
 write_prompt "$RT01_PROMPT" "Use the review_pipeline skill for this task.
-Audit the current go-cli-agent repository for core v1 readiness.
+Audit the current go-cli-agent repository for Web-first v1 readiness.
 Only inspect README.md, AGENTS.md, spec/*.md, cmd/go-cli-agent, internal/app, internal/runtime, internal/provider, internal/tools, and internal/session.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
 Start with a short todo plan. Prefer targeted retrieval. Findings must be ordered by severity and include confidence plus exact evidence paths when available.
@@ -258,7 +258,7 @@ record_scenario "RT10" "Nested AGENTS API Review" "$RT10_RAW" "${ARTIFACT_DIR}/r
 
 RT11_PROMPT="${PROMPT_DIR}/rt11-explicit-skill-loading.prompt.txt"
 write_prompt "$RT11_PROMPT" "Use the repo_audit and review_pipeline skills for this task.
-Audit whether the default core tool surface and docs stay aligned with core v1 boundaries.
+Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries.
 Call load_skill before deeper inspection.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
 Keep validated findings behavior-proved. If a point depends on default exposure, registration, or gating, read the owning code path before validating it.

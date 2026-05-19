@@ -83,16 +83,8 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 func chmodAfterAtomicRename(path string, mode os.FileMode) error {
 	var err error
 	for attempt := 0; attempt < 6; attempt++ {
-		var info os.FileInfo
-		info, err = os.Lstat(path)
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("refusing to chmod symlinked path: %s", path)
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("refusing to chmod non-regular file path: %s", path)
-			}
-		}
+		var file *os.File
+		file, err = os.OpenFile(path, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 		if err != nil {
 			if !os.IsNotExist(err) {
 				return err
@@ -100,7 +92,20 @@ func chmodAfterAtomicRename(path string, mode os.FileMode) error {
 			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
 			continue
 		}
-		err = os.Chmod(path, mode)
+		info, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return statErr
+		}
+		if !info.Mode().IsRegular() {
+			_ = file.Close()
+			return fmt.Errorf("refusing to chmod non-regular file path: %s", path)
+		}
+		err = file.Chmod(mode)
+		closeErr := file.Close()
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
 		if err == nil {
 			return nil
 		}

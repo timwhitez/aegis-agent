@@ -107,7 +107,7 @@ copy_workspace patch
 	--json >"${RAW_DIR}/preflight-probe.json" 2>&1
 
 RT01_PROMPT="${RAW_DIR}/rt01-architecture-audit.prompt.txt"
-write_prompt "$RT01_PROMPT" "Audit the current repository for core v1 readiness.
+write_prompt "$RT01_PROMPT" "Audit the current repository for Web-first v1 readiness.
 Only inspect README.md, AGENTS.md, spec/*.md, cmd/go-cli-agent, internal/runtime, internal/provider, internal/tools, and internal/session.
 Ignore validation/runs, validation/sessions, bin, tmp, and generated artifacts.
 Start with a short todo plan. Prefer glob or grep_files to discover candidates, use grep only for exact line evidence, and keep read_file slices small.
@@ -152,7 +152,7 @@ copy_if_present "${PATCH_DIR}/reports/change-summary.md" "${ARTIFACT_DIR}/rt05-c
 
 RT06_PROMPT="${RAW_DIR}/rt06-explicit-skill-loading.prompt.txt"
 write_prompt "$RT06_PROMPT" "Use the repo_audit skill for this task.
-Audit whether the default core tool surface and docs stay aligned with core v1 boundaries.
+Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries.
 Call load_skill before deeper inspection.
 Write ${ARTIFACT_DIR}/rt06-repo-audit-skill.md with sections: validated findings, remaining risks, smallest next fixes.
 Then call finish with a one-line summary."

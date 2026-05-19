@@ -4,13 +4,13 @@
 
 ### 1.1 一句话结论
 
-`go-cli-agent` 当前更适合作为 **session-first、provider-rich、交互可恢复** 的通用 CLI agent harness。
+`go-cli-agent` 当前更适合作为 **Web-first、session-first、provider-rich、交互可恢复** 的本地 agent harness。
 
 `compare` 当前更适合作为 **run-first、contract-driven、长任务交付纪律强** 的 CLI agent framework。
 
 这不是“谁完全胜出”的关系。两者解决的是同一大类问题里的不同重心：
 
-- `go-cli-agent` 的优势在于把 provider 差异、session 持久化、`steer`、`continue`、task graph、review guard、queue / child session / web observability 都放进同一套本地 session 事实源。
+- `go-cli-agent` 的优势在于把 provider 差异、session 持久化、Web console、`steer`、`continue`、task graph、review guard、queue / child session observability 都放进同一套本地 session 事实源。
 - `compare` 的优势在于把 command contract、required artifact、todo progress、parent/sub-agent checkpoint、callback resume、operator trace 做成一次 run 的硬约束。
 
 当前项目最应该吸收的是 `compare` 的 **contract layer、completion controller、long-run checkpoint、workspace extension trust gate、operator summary**，而不是照搬它的 command-first 产品叙事。
@@ -54,13 +54,13 @@
 
 这些 spec 给当前项目划定了几个硬边界：
 
-- 默认主路径是 `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`。
-- `delegate` / `children` / `queue` / `tui` / `web` 是显式扩展或 experimental surface。
-- core runtime、sdk facade、cli adapter 必须分离。
+- 默认主路径是 `web` + CLI fallback：`init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`。
+- `web` 是默认本地 operator surface；`delegate` / `children` / `queue` 是 large-project profile 的轻量入口/观测面，`tui` 仍是扩展观测面。
+- core runtime、sdk facade、web app/service adapter、cli adapter 必须分离。
 - provider 差异必须留在 adapter 层。
 - session / state / messages / events 必须是事实源。
 - compaction 只能改变 provider context view，不能覆盖原始日志。
-- 当前默认产品叙事仍是 CLI-only harness，不是 Web-first 或 TUI-first。
+- 当前默认产品叙事是 Web-first 本地 harness，CLI 是脚本化、CI、故障恢复和高级调试 fallback。
 
 ### 2.2 核对的主项目代码
 
@@ -288,9 +288,9 @@
 
 **设计判断**
 
-这是当前项目非常重要的产品纪律：core v1 不被大型项目 profile、queue、web、tui 反向污染。
+这是当前项目非常重要的产品纪律：Web-first v1 不被大型项目 profile、queue、delegate、worker internals 或 TUI 反向复杂化。
 
-这也符合 spec 中“CLI-only harness，Phase 11+ 显式扩展”的边界。
+这也符合 spec 中“Web-first local harness，advanced profile 显式收敛”的边界。
 
 ### 5.2 `compare` 的 surface 更 operator-first
 
@@ -333,7 +333,7 @@
 
 - 在当前 `run/exec` 之上增加可选 durable contract。
 - 将 batch command 作为 profile 或 explicit mode。
-- 不改变 core v1 默认入口。
+- 不改变 Web-first v1 默认入口。
 
 ---
 
@@ -742,7 +742,7 @@ task graph 支持：
 
 **设计判断**
 
-这是一个轻量 skill catalog，适合当前 core v1。但它没有 `compare` 那种 `.agent/commands`、`.agent/agents`、`.agent/plugins` 的结构化 contract。
+这是一个轻量 skill catalog，适合当前 Web-first v1。但它没有 `compare` 那种 `.agent/commands`、`.agent/agents`、`.agent/plugins` 的结构化 contract。
 
 ### 11.2 `compare` 的 workspace extension contract 更完整
 
@@ -1119,7 +1119,7 @@ target/report consistency guard 会阻断：
 
 ### 17.1 `go-cli-agent` 不应照搬 command-first 产品叙事
 
-当前项目的核心是 session-first harness。`compare` 的 `command` 很强，但它应进入 current architecture as contract/profile，而不是替换默认主路径。
+当前项目的核心是 Web-first + session-first harness。`compare` 的 `command` 很强，但它应进入 current architecture as contract/profile，而不是替换默认主路径。
 
 ### 17.2 `go-cli-agent` 不应把 review guard 泛化成所有任务的重约束
 
@@ -1261,9 +1261,10 @@ child session 是当前项目 session store 的自然延伸。应该补 parent c
 融合后理想形态应该是：
 
 ```text
-core v1:
-  session-first CLI harness
-  run / exec / continue / steer
+web-first v1:
+  local web console
+  session-first runtime
+  CLI fallback: run / exec / continue / steer
   provider adapters
   tools / skills / hooks
   todo + task graph

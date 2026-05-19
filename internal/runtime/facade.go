@@ -8,7 +8,7 @@ import (
 	"go-cli-agent/internal/session"
 )
 
-// CoreRunner exposes the stable core-v1 runtime surface to the CLI and SDK.
+// CoreRunner exposes the stable runtime surface used by the web, CLI, and SDK adapters.
 type CoreRunner struct {
 	runner *Runner
 }

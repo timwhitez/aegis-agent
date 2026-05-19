@@ -4,9 +4,9 @@
 
 ## 1. 目标与边界
 
-本轮目标是参考 Terminal-Bench 近期高分 agent、公开 blog 和 GitHub 代码，对当前 `go-cli-agent` 做最小化、可验证的优化。优化必须保持当前仓库的 core v1 边界：
+本轮目标是参考 Terminal-Bench 近期高分 agent、公开 blog 和 GitHub 代码，对当前 `go-cli-agent` 做最小化、可验证的优化。优化必须保持当前仓库的 Web-first v1 边界：
 
-- 默认仍是 CLI-first harness，不把 Web/TUI/queue/delegate 改成默认主路径。
+- 默认是 Web-first 本地 harness，CLI 作为 fallback；不把 TUI、worker internals、queue/delegate 调参改成默认页面主路径。
 - 不引入固定 DAG、硬编码 workflow engine 或 benchmark-specific 策略。
 - 任何代码改动必须同步必要 spec、测试和记录，并在验证后进入真实 git commit。
 - ForgeCode 只作为低权重反面/谨慎参考：Terminal-Bench integrity update 已公开记录 ForgeCode agent 存在 curl 网络公开解法并写入 `AGENTS.md` 的 reward hacking 案例，因此不得借鉴“联网找公开答案”“benchmark 任务特化启动文件”等模式。
@@ -17,24 +17,24 @@
 | --- | --- | --- | --- |
 | Terminal-Bench 2.1 leaderboard | 当前 2.1 榜单显示 Codex CLI GPT-5.5 为 83.4%，Terminus 2 GPT-5.5 为 78.2%，并说明结果由 Terminal-Bench 团队运行和验证。 | 高 | 优先看 Codex/Terminus 的通用 harness 形状，而不是复制 benchmark 适配。 |
 | Terminal-Bench Terminus 2 | `terminus_2.py` 对 terminal 输出做头尾保留截断；还包含 context length unwinding、handoff summary、parser warning/fix、task completion 二次确认。 | 高 | 适合转化为通用 shell output 可观测性改进；不复制 tmux/episode loop。 |
-| OpenAI Codex | 公开仓库定位为本地运行的 lightweight terminal coding agent；当前 2.1 榜单最高。 | 高 | 本项目已大量对齐 Codex 的 local CLI、session/steer/approval 方向；继续保持 CLI/root harness 克制。 |
+| OpenAI Codex | 公开仓库定位为本地运行的 lightweight terminal coding agent；当前 2.1 榜单最高。 | 高 | 本项目已大量对齐 Codex 的 local CLI、session/steer/approval 方向；继续保持 Web-first local harness 和 CLI fallback 克制。 |
 | Vix releases | README 主张 “Sleek, Fast and Token Efficient AI Coding Agent”，并展示 7 个真实任务中 Vix plan mode 总成本/时间低于对照；其长文件任务仍是弱项。 | 中高 | 参考 token/turn efficiency 和 plan artifact 思路；不直接复制产品形态。 |
 | WozCode session limit article | 指出 vanilla Claude Code 的 read/grep/edit primitives 会让 turn 和 context 成本累积；其优化包括 combined search+read、batched edits、AST-aware truncation、fuzzy edit matching。 | 中高 | 优先从低风险工具输出和检索形状入手；batched edit/AST truncate 需单独设计。 |
 | AHE | README 称 AHE 通过 observability layers 演化 system prompts、tool descriptions、tool implementations、skills、sub-agents 和 memory，并强调 git-tracked/auditable edits。 | 中 | 参考“证据驱动、逐步可回滚优化”的方法论；不在本仓库引入自动进化系统。 |
 | Meta-Harness | README 定义为围绕固定 base model 自动搜索 task-specific harness，并有 Terminal-Bench 2 scaffold evolution 示例。 | 中 | 参考“harness 本身是优化对象”；本轮只做人工、最小化 slice。 |
-| Capy articles | Capy 文章强调 parallel task execution、planning agent、isolated VM、review/PR workflow。 | 低到中 | 与本项目 Phase 11+ 扩展有关系，但当前 AGENTS 要求不让这些能力主导 core CLI。 |
+| Capy articles | Capy 文章强调 parallel task execution、planning agent、isolated VM、review/PR workflow。 | 低到中 | 与本项目 Phase 11+ 扩展有关系，但当前 AGENTS 要求不让这些能力主导默认 Web 页面。 |
 | jjagent | 已归档；其核心是用 hooks 把 agent edits 关联到 jj change，并用 session id trailer 支持 resume。 | 低到中 | 参考“编辑归属与恢复线索”方向；本轮不引入 jj 依赖。 |
-| Polaris | Go distributed function-calling framework，强调 lightweight sidecars、parallel execution、concise JSON schema。 | 低 | 与本项目 provider/tool schema 有相似点，但 distributed agent architecture 超出 core v1。 |
+| Polaris | Go distributed function-calling framework，强调 lightweight sidecars、parallel execution、concise JSON schema。 | 低 | 与本项目 provider/tool schema 有相似点，但 distributed agent architecture 超出 Web-first v1。 |
 
 ## 3. 当前仓库事实
 
 已核验文件：
 
-- `AGENTS.md`：要求先看 spec、core v1 收敛、CLI-only harness、代码修复后真实 commit。
-- `spec/00-product.md`：core v1 默认围绕 `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`，Web/queue/delegate 仍是显式扩展。
-- `spec/01-runtime-architecture.md`：core runtime / sdk facade / cli adapter 三层分离，session store 是事实源。
+- `AGENTS.md`：要求先看 spec、Web-first v1 收敛、默认 `go-cli-agent web`、代码修复后真实 commit。
+- `spec/00-product.md`：Web-first v1 默认围绕 `go-cli-agent web` 本地控制台，CLI fallback 保留 `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`，queue/delegate 是 large-project profile 的轻量入口和观测面。
+- `spec/01-runtime-architecture.md`：core runtime / sdk facade / web app-service adapter / cli adapter 分层，session store 是事实源。
 - `spec/03-provider-contracts.md`：provider replay 差异留在 adapter 层。
-- `spec/09-phase-plan.md`：Phase 0-10 是默认完成口径，Phase 11+ 不主导产品叙事。
+- `spec/09-phase-plan.md`：Phase 0-10 的 runtime / provider / CLI 基座与 Phase 15 Web 控制台共同构成 Web-first v1，Phase 11-14 / 16+ 不主导默认页面。
 - `spec/11-spec-audit-and-traceability.md`：记录模型是 agent、harness 负责 action space 和事实源；Plan Mode / Goal / Role hint 都不能退化为固定 workflow engine。
 - `spec/12-task-system.md`：task/todo 是 durable rhythm 和恢复索引，不承担 artifact 完成判定。
 - `spec/13-live-input-and-steering.md`：steer 是 queue-first + best-effort interrupt，guard 应拉回交付但不能吞掉外部 user message。
@@ -133,7 +133,7 @@ Review 结论：
 - Terminus 2 的可借鉴点仅限“超长 terminal output 保留头尾”；其 tmux loop、parser 协议、双确认、unwind/summarize 不在本轮复制范围。
 - WozCode 的 combined search+read、batched edits、AST-aware truncation、fuzzy edit matching 是后续候选，不应未经设计直接塞进本仓库默认工具面。
 - ForgeCode 因 Terminal-Bench integrity update 被降权；本计划没有引入任何联网查题、公开答案检索、benchmark fixture 适配或自动写 `AGENTS.md` 的行为。
-- 当前计划符合 AGENTS：先读 spec、最小化修改、保持 CLI-only core、文档和测试随代码一起提交。
+- 当前计划符合 AGENTS：先读 spec、最小化修改、保持 Web-first v1 和 CLI fallback 边界、文档和测试随代码一起提交。
 
 ## 7. 执行记录
 

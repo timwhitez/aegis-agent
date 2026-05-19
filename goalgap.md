@@ -12,7 +12,7 @@
 - 已修复 P0-3：新增 mission validation coverage checker，覆盖 `MissionPlan.ValidationContract`、feature `claimed_assertions` 与 milestone `validation_ids`；CLI/Web/session detail 可查看覆盖情况，mission plan approval 默认阻断 uncovered / invalid contract，CLI/API 可显式 override。
 - 已修复 P0-4：`stop_on_budget` 现在有实际语义；budget 触顶会写入 budget-limited 与 wrap-up request，runtime 最多允许一轮 wrap-up，`finish` 在未记录 `record_goal_progress(kind="budget_wrapup")` 前会被 gate 阻断。
 - 已修复 P1-1/P1-2：新增模型工具 `record_goal_progress`，可 append-friendly 更新 feature/milestone/validation/handoff/artifact/command/blocker，并支持 evaluator child / queue evidence 关联。
-- 已修复 P1-3/P1-4：新增 CLI-first `goal plan show/check/approve` 与 `goal validation show`；Web session Goal tab/detail 返回 coverage、latest goal history、progress/handoff、evaluator evidence 与 unresolved child/queue facts。
+- 已修复 P1-3/P1-4：新增 Web-first Goal inspector，并保留 CLI fallback `goal plan show/check/approve` 与 `goal validation show`；Web session Goal tab/detail 返回 coverage、latest goal history、progress/handoff、evaluator evidence 与 unresolved child/queue facts。
 - 当前 `goalgap.md` 未保留未完成项。
 
 ## 1. 设计边界
@@ -23,15 +23,15 @@
 - coding 前先定义 validation contract，避免实现后自证正确。
 - worker / validator 分离可以提高长任务质量，但应该是 model-led / user-directed，而不是 runtime 固定 DAG。
 - structured handoff 必须落到 durable artifact / state，而不是只留在模型上下文。
-- Mission Control 的核心价值是异步监督和事实展示，不是默认 Web-first 产品叙事。
+- Mission Control 的核心价值是 Web-first 默认入口中的异步监督和事实展示；它仍不能成为 session / goal / plan / queue 的第二套权威状态源。
 
 当前项目必须保留的边界：
 
-- 默认仍是 CLI-first core harness。
+- 默认是 Web-first 本地 harness，CLI 是脚本化、CI、故障恢复和高级调试 fallback。
 - Mission 不应成为单独的重型 workflow engine；当前正确方向是“Mission 收敛为 Goal 的内部结构化计划字段”。
 - 不引入固定 orchestrator / worker / validator 三段 runner。
 - 不强制 child agent / queue；是否委派继续由模型或用户决定。
-- WebConsole 只能作为 `experimental web`，不能反向主导 README、root help 或默认 smoke。
+- WebConsole 是默认本地 operator surface；`experimental web` 只作为旧入口兼容别名，README、root help 和默认 smoke 应以 `go-cli-agent web` 为主。
 - provider 差异仍停留在 adapter 层，Goal / Mission 不应承载 provider-specific replay 逻辑。
 
 ## 2. 当前实现事实
@@ -328,8 +328,8 @@
 
 影响：
 
-- 当前项目主路径是 CLI-first，但高级 Goal/Mission 控制面反而偏 Web/API。
-- 如果不补专用 CLI，Mission approval / validation contract 的可靠使用会依赖 experimental WebConsole 或直接读 JSON。
+- 当前项目主路径是 Web-first，但高级 Goal/Mission 控制面仍需要稳定 CLI fallback，方便脚本化、CI 和故障恢复。
+- 如果不补专用 CLI，Mission approval / validation contract 的可靠使用会过度依赖浏览器或直接读 JSON。
 
 优化方案：
 
@@ -444,9 +444,9 @@
 - 不替模型决定什么时候委派。
 - 不把 feature list 变成 runtime DAG。
 
-### Slice E：CLI-first mission controls 与 Web polish
+### Slice E：Web-first mission controls 与 CLI fallback
 
-目标：让纯 CLI 用户也能查看、检查、批准 mission plan；Web 只做 session-first facts 展示增强。
+目标：让 Web session Goal inspector 成为默认控制面，同时让纯 CLI 用户也能查看、检查、批准 mission plan；两条入口读取和更新同一份 session store 权威事实。
 
 范围：
 
@@ -488,9 +488,9 @@ git diff --check
 - 不把 `orchestrator / worker / validator` 写成 runtime 固定状态机。
 - 不让 `require_plan_approval` 自动生成复杂 feature DAG。
 - 不把 WebConsole 改成大型 Mission Control dashboard。
-- 不在默认 root help 中强调 queue / children / web 超过 core CLI 主路径。
+- 不在默认 Web 页面中强调 queue / children / worker internals 超过 session / goal / plan 主路径；root help 应展示 `web` 和 CLI fallback。
 - 不因为参考 Factory Missions 就引入强制并行 worker；当前项目应保持串行为主、局部并行、model-led delegation。
 
 ## 7. 当前收敛结论
 
-P0-1、P0-2、P0-3、P0-4 与 P1-1 至 P1-4 均已完成本轮代码级收敛。当前 Goal / Mission 主干仍保持 CLI-first、Goal 内部结构化计划、model-led delegation 和 Web experimental 事实展示边界，没有引入独立 MissionState、固定 DAG 或强制 worker / validator workflow。
+P0-1、P0-2、P0-3、P0-4 与 P1-1 至 P1-4 均已完成本轮代码级收敛。当前 Goal / Mission 主干保持 Web-first、CLI fallback、Goal 内部结构化计划、model-led delegation 和文件事实源边界，没有引入独立 MissionState、固定 DAG 或强制 worker / validator workflow。

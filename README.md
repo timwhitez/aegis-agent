@@ -219,7 +219,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 - `internal/hooks`: 轻量 hooks
 - `internal/skills`: 本地 skill catalog
 - `internal/webconsole`: local Web console service、API、embedded frontend
-- `pkg/agent`: 当前 core-only SDK facade
+- `pkg/agent`: 当前 runtime-first SDK facade
 
 ## Spec 导航
 

@@ -2132,7 +2132,7 @@ func TestToolGuardAllowsWriteFileWhenInterruptSteerDemandsCurrentEvidenceDeliver
 		"kind":   "steer_completion",
 	}
 	messages := []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
+		session.NewMessage("user", "Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries."),
 		session.NewToolMessage([]session.ToolResult{
 			{
 				Name: "read_file",
@@ -2161,7 +2161,7 @@ func TestToolGuardAllowsFinishWhenInterruptSteerDemandsCurrentEvidenceDelivery(t
 		"interrupt": true,
 	}
 	messages := []session.Message{
-		session.NewMessage("user", "Audit whether the default core tool surface stays aligned with core v1 boundaries."),
+		session.NewMessage("user", "Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries."),
 		session.NewToolMessage([]session.ToolResult{
 			{
 				Name: "read_file",

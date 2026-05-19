@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-虽然 v1 只交付 CLI，但从一开始就要保证未来可以：
+虽然 v1 默认交付本地 Web 控制台并保留 CLI fallback，但从一开始就要保证未来可以：
 
 - 提供 Go SDK
 - 提供 OpenAPI / HTTP 服务
@@ -23,7 +23,7 @@
 
 ## 3. 建议的公共 Go API
 
-未来对外暴露为公共包时，默认公共 `Runner` 应保持 core-only，优先保留以下接口：
+未来对外暴露为公共包时，默认公共 `Runner` 应保持 runtime-first，优先保留以下接口：
 
 ```text
 type Runner interface {

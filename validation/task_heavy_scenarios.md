@@ -191,7 +191,7 @@ validation/runs/<run-id>/cases/<case-id>/
 这组矩阵专门加厚三类旧边界：
 
 - `interrupt -> resume -> completion` 的端到端 durable 留证
-- `experimental web` 的真实浏览器 / operator 路径，而不只是内嵌资产 smoke；当前尤其强调 recent-job/feed/failed-job/worker-last-job 四类 queue drilldown 入口
+- Web-first console 的真实浏览器 / operator 路径，而不只是内嵌资产 smoke；当前尤其强调 recent-job/feed/failed-job/worker-last-job 四类 queue drilldown 入口
 - role-aware `delegate` / `queue` / `children` 可见性与 copy-isolation 证据
 - 真实修复任务下的多包、多模块、多阶段 taskboard / steer / continue 行为
 - delegated / background / focused subrun 的父级 artifact 会尽量内联决定性 snippet，避免 readiness 结论过度依赖下游路径跳转

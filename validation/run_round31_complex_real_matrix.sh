@@ -1031,7 +1031,7 @@ fi
 PREFLIGHT_REAL_PROMPT="${PROMPT_DIR}/preflight-real-turn.prompt.txt"
 write_prompt "$PREFLIGHT_REAL_PROMPT" "Inspect only the repo-root files ./README.md and ./AGENTS.md in the current go-cli-agent repository.
 Use targeted retrieval only. Do not use glob, grep_files, shell find, or any directory search; read ./README.md and ./AGENTS.md directly.
-Call finish with a short message that states the current core-v1 default command surface and whether experimental commands sit behind an explicit entrypoint."
+Call finish with a short message that states the current Web-first default surface and which CLI commands remain fallback entrypoints."
 run_exec_exact "$PREFLIGHT_REAL_PROMPT" "${RAW_DIR}/preflight-real-turn.jsonl" "$ROOT_DIR" 20 20
 PRE_REAL_EXIT=$?
 record_preflight "real-turn" "$PRE_REAL_EXIT" "${RAW_DIR}/preflight-real-turn.jsonl"
@@ -1044,11 +1044,11 @@ fi
 
 RT01_PROMPT="${PROMPT_DIR}/rt01-core-surface-audit.prompt.txt"
 write_prompt "$RT01_PROMPT" "Use the review_pipeline skill for this task.
-Audit the current go-cli-agent repository for core-v1 surface discipline after the latest runtime gap-close pass.
+Audit the current go-cli-agent repository for Web-first v1 surface discipline after the latest runtime gap-close pass.
 Only inspect repo-root README.md, repo-root AGENTS.md, spec/00-product.md, spec/09-phase-plan.md, pkg/agent/agent.go, internal/app/app.go, and internal/runtime/facade.go.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
 Prefer targeted retrieval. Do not create a todo list or task board for this scenario. Do not use glob, grep_files, shell find, or any directory search. Use read_file/grep only on the explicit allowlisted paths. Use the current evidence once the four checks below are proven.
-Validate only these four things: whether the default help surface is core-only, whether experimental routing stays outside the default operator path, whether core/experimental/store facades stay split, and whether the public SDK facade keeps extension-only surfaces out of the default core runner.
+Validate only these four things: whether the default help surface is Web-first, whether advanced experimental routing stays outside the default Web-first path, whether core/web/experimental/store facades stay split, and whether the public SDK facade keeps advanced surfaces out of the default runtime runner.
 Write ${ABS_ARTIFACT_DIR}/rt01-core-surface-audit.md with sections: core surface map, findings, unresolved questions, smallest next fixes.
 If there is no validated finding, write the exact sentence No validated findings. inside findings.
 Then call finish with a one-line summary."

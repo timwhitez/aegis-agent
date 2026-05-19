@@ -519,7 +519,7 @@ fi
 PREFLIGHT_REAL_PROMPT="${PROMPT_DIR}/preflight-real-turn.prompt.txt"
 write_prompt "$PREFLIGHT_REAL_PROMPT" "Inspect only README.md and AGENTS.md in the current go-cli-agent repository.
 Use targeted retrieval only.
-Call finish with a short message that states the current core-v1 default command surface and whether experimental commands sit behind an explicit entrypoint."
+Call finish with a short message that states the current Web-first default surface and which CLI commands remain fallback entrypoints."
 run_exec_exact "$PREFLIGHT_REAL_PROMPT" "${RAW_DIR}/preflight-real-turn.jsonl" "$ROOT_DIR" 20 20
 PRE_REAL_EXIT=$?
 record_preflight "real-turn" "$PRE_REAL_EXIT" "${RAW_DIR}/preflight-real-turn.jsonl"
@@ -532,10 +532,10 @@ fi
 
 RT01_PROMPT="${PROMPT_DIR}/rt01-architecture-audit.prompt.txt"
 write_prompt "$RT01_PROMPT" "Use the review_pipeline skill for this task.
-Audit the current go-cli-agent repository for core v1 surface discipline after the latest gap-close pass.
+Audit the current go-cli-agent repository for Web-first v1 surface discipline after the latest gap-close pass.
 Only inspect README.md, AGENTS.md, spec/00-product.md, spec/01-runtime-architecture.md, spec/02-cli-and-config.md, spec/08-sdk-and-api-evolution.md, spec/09-phase-plan.md, pkg/agent/agent.go, internal/app/app.go, internal/app/orchestration.go, internal/app/tui_cmd.go, internal/runtime, internal/provider, internal/tools, and internal/session.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
-Start with a short todo plan. Prefer targeted retrieval. Validate whether the default help surface is core-only, whether experimental routing stays outside the default operator path, whether core/experimental/store app-facing facades are truly split, and whether the public SDK facade keeps extension-only surfaces out of the default core runner.
+Start with a short todo plan. Prefer targeted retrieval. Validate whether the default help surface is Web-first, whether advanced experimental routing stays outside the default Web-first path, whether core/web/experimental/store facades are truly split, and whether the public SDK facade keeps advanced surfaces out of the default runtime runner.
 Write ${ABS_ARTIFACT_DIR}/rt01-architecture-audit.md with sections: core surface map, findings, unresolved questions, smallest next fixes.
 Then call finish with a one-line summary."
 RT01_RAW="${RAW_DIR}/rt01-architecture-audit.jsonl"
@@ -658,7 +658,7 @@ finalize_scenario "RT10" "Nested AGENTS API Review" "$RT10_EXIT" "$RT10_RAW" "${
 
 RT11_PROMPT="${PROMPT_DIR}/rt11-explicit-skill-loading.prompt.txt"
 write_prompt "$RT11_PROMPT" "Use the repo_audit and review_pipeline skills for this task.
-Audit whether the default core tool surface and docs stay aligned with core v1 boundaries.
+Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries.
 Call load_skill before deeper inspection.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
 Keep validated findings behavior-proved. If a point depends on default exposure, registration, or gating, read the owning code path before validating it.

@@ -24,7 +24,7 @@
 
 ### 2.1 产品边界
 
-`spec/00-product.md` 定义项目是极简 Go CLI agent harness，不是重型 TUI、固定 workflow、plan engine 或 orchestration 框架。Core v1 目标包含 durable session goals，但明确不做固定 DAG / plan graph / verification graph。
+`spec/00-product.md` 当前定义项目是 Web-first 本地 agent harness，不是重型 TUI、hosted SaaS、固定 workflow、plan engine 或 orchestration 框架。Web-first v1 目标包含 durable session goals，但明确不做固定 DAG / plan graph / verification graph。
 
 `spec/01-runtime-architecture.md` 约束三层分离：
 
@@ -36,7 +36,7 @@
 
 `spec/03-provider-contracts.md` 要求 provider replay、tool 格式、generation 选项、错误分类都停留在 adapter 层，CLI / Web / tool 层不得硬编码 provider-native replay 逻辑。
 
-`spec/17-web-console.md` 明确 WebConsole 是 `experimental` 扩展面，但当前产品希望把 session 创建、steer、continue、Goal、Tasks、Background、Timeline 收敛到现有 session 工作区，而不是做一个新的 Web-first 入口。
+`spec/17-web-console.md` 当前明确 WebConsole 是默认 Web-first 入口；session 创建、steer、continue、Goal、Tasks、Background、Timeline 收敛到现有 session 工作区，并继续复用 session 文件事实源。
 
 ### 2.2 现有 Goal / Mission 与 Plan Mode 实现
 
@@ -95,7 +95,7 @@
 
 不直接照搬的部分：
 
-- 本项目当前是 Go CLI harness + experimental WebConsole，不是 Codex TUI/app-server；不需要复制 Codex 的完整 collaboration mode preset / app-server protocol。
+- 本项目当前是 Web-first 本地 harness + CLI fallback，不是 Codex TUI/app-server；不需要复制 Codex 的完整 collaboration mode preset / app-server protocol。
 - v1 不强制实现 `<proposed_plan>` 流式 parser。更稳妥的第一版是增加 `submit_plan` 工具作为计划事实源，同时允许后续增量支持 `<proposed_plan>` UI 流式显示。
 
 ### 3.2 ForgeCode Muse
@@ -157,7 +157,7 @@ Plan Mode 是一个 session-scoped planning gate：模型先用只读能力把�
 - 不自动 spawn child agent。
 - 不自动提交 queue job。
 - 不新增 WebConsole 总览页或大型配置表单。
-- 不把默认 CLI / README 叙事改成 Web-first。
+- 默认 CLI / README 叙事已经改成 Web-first；Plan Mode 需要同时服务 Web 默认入口和 CLI fallback。
 - 不在 CLI/Web/tool 层实现 provider-specific replay。
 
 ## 5. 与 Goal / Mission / Task 的关系
@@ -763,7 +763,7 @@ PlanMode *session.PlanModeState `json:"plan_mode,omitempty"`
 
 ## 9. CLI 设计
 
-CLI 不是本轮用户最关心的入口，但为了 CLI-first 产品边界，Plan Mode 不能只存在 WebConsole。
+CLI 不是本轮用户最关心的入口，但为了脚本化、CI 和故障恢复，Plan Mode 不能只存在 WebConsole。
 
 ### 9.1 `run` / `exec`
 
@@ -894,13 +894,13 @@ Plan Mode v1 的安全原则是“审批前宁可少跑，不要误跑”：
 
 ### Phase PM-0: spec 与文档收敛
 
-- [x] 更新 `spec/00-product.md`：把 Plan Mode 定义为 core convergence feature，但保持 CLI-first。
+- [x] 更新 `spec/00-product.md`：把 Plan Mode 定义为 Web-first v1 convergence feature，并保留 CLI fallback。
 - [x] 更新 `spec/01-runtime-architecture.md`：增加 `SessionPlanModeManager` 或把 planmode 纳入 `SessionStore` 职责。
 - [x] 更新 `spec/09-phase-plan.md`：把 Plan Mode 作为 core convergence 文档项，而非 Web-only 功能。
 - [x] 更新 `spec/11-spec-audit-and-traceability.md`：记录 Plan Mode 参考 Codex / ForgeCode 的取舍。
 - [x] 更新 `spec/17-web-console.md`：补充 Plan button、Plan panel、approval flow。
 - [x] 更新 `spec/18-durable-contract-and-completion.md`：补充 `planmode.json` 与 completion / tool gate 关系。
-- [x] README 只加短入口，不把默认叙事改成 Web-first。
+- [x] README 使用 Web-first 默认叙事，并保留 CLI fallback 短入口。
 
 ### Phase PM-1: session store 与状态
 
@@ -1020,7 +1020,7 @@ Plan Mode v1 的安全原则是“审批前宁可少跑，不要误跑”：
    Codex 允许某些非变更命令，但本项目第一版没有命令 side-effect classifier。为了避免“计划模式误执行”，先禁 shell，后续再加 allowlist 或 approval-required policy。
 
 4. **Plan button 放在现有 session 输入区。**
-   用户不需要进入独立设置页；这符合当前 WebConsole session-first 设计，也避免 Web-first 叙事扩张。
+   用户不需要进入独立设置页；这符合当前 WebConsole session-first 设计，也避免把 Web-first 叙事扩张成复杂 dashboard。
 
 5. **批准后由用户动作恢复执行。**
    `Approve & Run` 是唯一从 planning gate 进入 execution 的默认路径。模型提交计划不会自动开工。

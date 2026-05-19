@@ -4,7 +4,7 @@
 
 This plan addresses the duplicated display observed in session `20260519-073510-326f48`.
 
-The fix is limited to the experimental WebConsole message rendering layer. It must not change the session facts written by the runtime, provider replay data, `messages.jsonl`, `events.jsonl`, or tool result persistence.
+The fix is limited to the Web-first console message rendering layer. It must not change the session facts written by the runtime, provider replay data, `messages.jsonl`, `events.jsonl`, or tool result persistence.
 
 ## Current Evidence
 

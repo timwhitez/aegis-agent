@@ -129,7 +129,7 @@ NESTED_API_DIR="${WORKSPACE_DIR}/nested_review/services/api"
 	--json >"${RAW_DIR}/preflight-probe.json" 2>&1
 
 RT01_PROMPT="${PROMPT_DIR}/rt01-architecture-audit.prompt.txt"
-write_prompt "$RT01_PROMPT" "Audit the current go-cli-agent repository for core v1 readiness.
+write_prompt "$RT01_PROMPT" "Audit the current go-cli-agent repository for Web-first v1 readiness.
 Only inspect README.md, AGENTS.md, spec/*.md, cmd/go-cli-agent, internal/runtime, internal/provider, internal/tools, and internal/session.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
 Start with a short todo plan. Prefer glob or grep_files to discover candidates, use grep only for exact line evidence, and keep read_file slices small.
@@ -234,7 +234,7 @@ record_scenario "RT10" "Nested AGENTS API Review" "$RT10_RAW" "${ARTIFACT_DIR}/r
 
 RT11_PROMPT="${PROMPT_DIR}/rt11-explicit-skill-loading.prompt.txt"
 write_prompt "$RT11_PROMPT" "Use the repo_audit skill for this task.
-Audit whether the default core tool surface and docs stay aligned with core v1 boundaries.
+Audit whether the default Web-first surface, CLI fallback, and docs stay aligned with Web-first v1 boundaries.
 Call load_skill before deeper inspection.
 Ignore validation/runs, validation/sessions, reports, bin, tmp, and generated artifacts.
 Write ${ABS_ARTIFACT_DIR}/rt11-repo-audit-skill.md with sections: validated findings, remaining risks, smallest next fixes.

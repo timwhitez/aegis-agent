@@ -9,7 +9,7 @@ Assess whether the current `go-cli-agent` codebase can be treated as fully trust
 - Maximum loop markers: 50. At step 50, stop expanding scope and close out already discovered issues.
 - Record every meaningful step with an explicit marker.
 - Preserve existing unrelated dirty worktree changes.
-- Core boundary follows current specs: CLI-first `init/run/exec/steer/continue/sessions/tasks/probe-provider/doctor`, with Web/queue/delegate as explicit experimental surfaces.
+- Current boundary follows the updated specs: Web-first `go-cli-agent web` is the default local operator surface; `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor` remain CLI fallback, with queue/delegate as advanced profile surfaces and TUI as an extension surface.
 - Confidence must be evidence-backed. Passing tests alone is not enough unless the tests cover the requirement being claimed.
 
 ## Prompt-To-Artifact Checklist
@@ -29,7 +29,7 @@ Assess whether the current `go-cli-agent` codebase can be treated as fully trust
 
 - STEP 01 - Goal and repo scope confirmed: active thread goal is an unbounded confidence/audit loop for `/mnt/c/Users/Admin/Desktop/build/simple_loop_with_tools/go-cli-agent`.
 - STEP 02 - Memory quick pass completed: prior notes show this checkout recently changed Plan Mode, Goal/Mission approval, and completion-audit behavior; current work must re-check current files rather than trust memory.
-- STEP 03 - Actual `AGENTS.md` read and applied: mandatory specs first, CLI-only core boundary, no fixed workflow engine, and code fixes must be committed after validation.
+- STEP 03 - Actual `AGENTS.md` read and applied at the time: mandatory specs first, then-current CLI-only core boundary, no fixed workflow engine, and code fixes must be committed after validation. This historical step has since been superseded by the Web-first AGENTS/spec direction.
 - STEP 04 - Mandatory specs read: product, runtime architecture, provider contracts, phase plan, traceability, task system, and live input/steering.
 - STEP 05 - Dirty worktree baseline captured: `issues.md` and `skillgap.md` deleted; `skills/timwhite-security-review/*` modified; untracked `CLAUDE.md`, `dev.md`, screenshots, `skills/pentest-toolset/`, and `workspace/`. These are treated as pre-existing unless proven related.
 - STEP 06 - Repository shape inventoried: main surfaces include `cmd/`, `internal/app`, `internal/runtime`, `internal/session`, `internal/tools`, `internal/provider`, `internal/webconsole`, `pkg/agent`, and `validation/cmd`.
