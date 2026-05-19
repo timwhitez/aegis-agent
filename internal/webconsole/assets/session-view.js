@@ -273,8 +273,9 @@ function renderMessageStream() {
   const detailMessages = maybeArray(state.sessionDetail?.messages);
   const optimisticMessages = state.optimisticMessages.slice();
   const stream = detailMessages.length ? detailMessages.concat(optimisticMessages) : optimisticMessages;
+  const displayStream = buildDisplayMessageStream(stream);
 
-  if (!stream.length) {
+  if (!displayStream.length) {
     return {
       activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
       flow: renderFlowLane(),
@@ -291,7 +292,7 @@ function renderMessageStream() {
     </div>
   ` : '';
 
-  const bodyHTML = loadEarlierHTML + stream.map((message) => renderMessage(message)).join('');
+  const bodyHTML = loadEarlierHTML + displayStream.map((message) => renderMessage(message)).join('');
 
   return {
     activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
@@ -299,6 +300,71 @@ function renderMessageStream() {
     body: bodyHTML,
     pending: state.isGenerating ? renderPendingStageCard() : ''
   };
+}
+
+function buildDisplayMessageStream(messages) {
+  const display = [];
+  maybeArray(messages).forEach((message) => {
+    const current = cloneDisplayMessage(message);
+    const previous = display[display.length - 1];
+    if (previous && isMergeableToolResultMessage(current)) {
+      const partition = partitionMatchingToolResults(previous, current);
+      if (partition.matched.length) {
+        mergeToolResultsIntoDisplayMessage(previous, current, partition.matched);
+        if (!partition.unmatched.length) {
+          return;
+        }
+        current.tool_results = partition.unmatched;
+      }
+    }
+    display.push(current);
+  });
+  return display;
+}
+
+function cloneDisplayMessage(message) {
+  const copy = { ...(message || {}) };
+  if (Array.isArray(message?.tool_calls)) {
+    copy.tool_calls = message.tool_calls.slice();
+  }
+  if (Array.isArray(message?.tool_results)) {
+    copy.tool_results = message.tool_results.slice();
+  }
+  return copy;
+}
+
+function isMergeableToolResultMessage(message) {
+  return message?.role === 'tool' &&
+    !String(message.text || '').trim() &&
+    !String(message.thinking || '').trim() &&
+    maybeArray(message.tool_calls).length === 0 &&
+    maybeArray(message.tool_results).length > 0;
+}
+
+function partitionMatchingToolResults(previous, toolMessage) {
+  const callIDs = new Set(maybeArray(previous.tool_calls).flatMap(toolCallIDs));
+  if (!callIDs.size) {
+    return { matched: [], unmatched: maybeArray(toolMessage.tool_results) };
+  }
+  const matched = [];
+  const unmatched = [];
+  maybeArray(toolMessage.tool_results).forEach((result) => {
+    if (result?.tool_call_id && callIDs.has(result.tool_call_id)) {
+      matched.push(result);
+    } else {
+      unmatched.push(result);
+    }
+  });
+  return { matched, unmatched };
+}
+
+function mergeToolResultsIntoDisplayMessage(previous, toolMessage, results) {
+  previous.tool_results = maybeArray(previous.tool_results).concat(results);
+  const mergedIDs = maybeArray(previous._merged_tool_result_message_ids).slice();
+  if (toolMessage?.id && !mergedIDs.includes(toolMessage.id)) {
+    mergedIDs.push(toolMessage.id);
+  }
+  previous._merged_tool_result_message_ids = mergedIDs;
 }
 
 function renderEmptySessionState() {
@@ -387,7 +453,9 @@ function renderMessage(message) {
   const icon = backgroundResults ? 'git-branch' : iconForRole(role);
   const thinkingHTML = message.thinking ? renderThinkingBlock(message.thinking) : '';
   const textHTML = message.text ? renderMessageText(message) : '';
-  const toolLaneHTML = renderToolLane(message);
+  const finalToolResult = primaryFinalFinishResult(message);
+  const finalToolResultHTML = !message.text && finalToolResult ? renderFinalToolResultBubble(finalToolResult) : '';
+  const toolLaneHTML = renderToolLane(message, { finalTextRendered: Boolean(finalToolResultHTML) });
 
   return `
     <article class="message ${visualRole} ${message.pending ? 'optimistic' : ''}">
@@ -403,6 +471,7 @@ function renderMessage(message) {
       <div class="message-body">
         ${thinkingHTML}
         ${textHTML}
+        ${finalToolResultHTML}
         ${toolLaneHTML}
       </div>
     </article>
@@ -417,6 +486,20 @@ function renderMessageText(message) {
     return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
   }
   return `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`;
+}
+
+function primaryFinalFinishResult(message) {
+  return maybeArray(message?.tool_results).find((result) =>
+    result?.name === 'finish' &&
+    result?.final &&
+    !result?.is_error &&
+    String(result?.display_output || result?.llm_output || '').trim()
+  ) || null;
+}
+
+function renderFinalToolResultBubble(result) {
+  const text = result.display_output || result.llm_output || '';
+  return `<div class="message-bubble prose final-response-bubble">${safeMarkdown(text)}</div>`;
 }
 
 function renderThinkingBlock(thinking) {
@@ -554,7 +637,7 @@ function summarizeBackgroundResultsPayload(payload) {
   return truncateText([prefix, statusSummary, firstCopy].filter(Boolean).join(': '), 180);
 }
 
-function renderToolLane(message) {
+function renderToolLane(message, options = {}) {
   const calls = maybeArray(message.tool_calls);
   const results = maybeArray(message.tool_results);
 
@@ -574,11 +657,12 @@ function renderToolLane(message) {
   let treeHTML = '';
 
   for (const call of calls) {
-    const callResults = resultsByCallId.get(call.id) || [];
+    const callResults = toolCallIDs(call).flatMap((id) => resultsByCallId.get(id) || []);
     for (const r of callResults) pairedResults.add(r);
 
     const delegate = isMultiAgentTool(call.name);
-    const hasExpanded = callResults.some(function(r) { return r.is_error || r.final; }) || delegate;
+    const compactFinal = options.finalTextRendered && call.name === 'finish' && callResults.some(isFinalFinishResult);
+    const hasExpanded = delegate || callResults.some(function(r) { return r.is_error || (r.final && !compactFinal); });
 
     treeHTML +=
       '<details class="tl-row tl-row-call"' + (hasExpanded ? ' open' : '') + '>' +
@@ -586,16 +670,16 @@ function renderToolLane(message) {
           '<span class="tl-type-chip call">Call</span>' +
           '<strong class="tl-name">' + escapeHTML(call.name) + '</strong>' +
           (call.id ? '<span class="tl-id-chip">' + escapeHTML(shortId(call.id)) + '</span>' : '') +
-          '<span class="tl-preview">' + escapeHTML(summarizeToolCall(call)) + '</span>' +
+          '<span class="tl-preview">' + escapeHTML(summarizeToolCall(call, { finalTextRendered: options.finalTextRendered, pairedResults: callResults })) + '</span>' +
         '</summary>' +
-        '<pre class="tl-body">' + escapeHTML(prettyJSON(call.arguments)) + '</pre>' +
-        callResults.map(function(r) { return renderToolLaneResultRow(r, true); }).join('') +
+        renderToolCallBody(call, { finalTextRendered: options.finalTextRendered, pairedResults: callResults }) +
+        callResults.map(function(r) { return renderToolLaneResultRow(r, true, options); }).join('') +
       '</details>';
   }
 
   for (var i = 0; i < results.length; i++) {
     if (pairedResults.has(results[i])) continue;
-    treeHTML += renderToolLaneResultRow(results[i], false);
+    treeHTML += renderToolLaneResultRow(results[i], false, options);
   }
 
   return (
@@ -616,12 +700,14 @@ function renderToolLane(message) {
   );
 }
 
-function renderToolLaneResultRow(result, indent) {
+function renderToolLaneResultRow(result, indent, options = {}) {
   var payloadText = result.display_output || result.llm_output || '(no output)';
   var parsed = parseMaybeJSON(payloadText);
   var delegate = isMultiAgentTool(result.name);
-  var open = result.is_error || result.final || delegate;
+  var compactFinal = options.finalTextRendered && isFinalFinishResult(result);
+  var open = result.is_error || delegate || (result.final && !compactFinal);
   var special = renderSpecialToolResult(result, parsed);
+  var body = special || '<pre class="tl-body">' + escapeHTML(truncateText(payloadText, 3200)) + '</pre>';
 
   return (
     '<details class="tl-row tl-row-result' + (indent ? ' tl-indent' : '') + (result.is_error ? ' tl-error' : '') + '"' + (open ? ' open' : '') + '>' +
@@ -630,9 +716,9 @@ function renderToolLaneResultRow(result, indent) {
         '<strong class="tl-name">' + escapeHTML(result.name) + '</strong>' +
         (result.final ? '<span class="tl-badge final">Final</span>' : '') +
         (delegate ? '<span class="tl-badge delegate">Delegate</span>' : '') +
-        '<span class="tl-preview">' + escapeHTML(summarizeToolResult(result, parsed, payloadText)) + '</span>' +
+        '<span class="tl-preview">' + escapeHTML(compactFinal ? 'Final response captured' : summarizeToolResult(result, parsed, payloadText)) + '</span>' +
       '</summary>' +
-      (special || '<pre class="tl-body">' + escapeHTML(truncateText(payloadText, 3200)) + '</pre>') +
+      body +
       renderMetadataChips(result.metadata) +
     '</details>'
   );
@@ -672,7 +758,29 @@ function renderUniqueCodeChips(...values) {
     .join('');
 }
 
-function summarizeToolCall(call) {
+function renderToolCallBody(call, options = {}) {
+  return '<pre class="tl-body">' + escapeHTML(prettyJSON(call.arguments)) + '</pre>';
+}
+
+function isFinalFinishResult(result) {
+  return result?.name === 'finish' && result?.final && !result?.is_error;
+}
+
+function toolCallIDs(call) {
+  const ids = [];
+  if (call?.id) {
+    ids.push(call.id);
+  }
+  if (call?.provider_call_id && call.provider_call_id !== call.id) {
+    ids.push(call.provider_call_id);
+  }
+  return ids;
+}
+
+function summarizeToolCall(call, options = {}) {
+  if (options.finalTextRendered && call?.name === 'finish' && maybeArray(options.pairedResults).some(isFinalFinishResult)) {
+    return 'Final response captured';
+  }
   const parsed = parseMaybeJSON(call.arguments);
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     if (typeof parsed.path === 'string' && parsed.path) {

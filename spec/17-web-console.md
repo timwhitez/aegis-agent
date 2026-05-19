@@ -150,6 +150,7 @@ Session 工作区是新用户的默认落点，展示：
 当前实现额外支持 timeline search + kind filter（all/message/event），便于在长会话里快速锁定 message 或 runtime event。
 当 session detail 只返回消息尾部窗口时，Session 工作区必须通过 `GET /api/sessions/{id}/messages?before_id=...&limit=...` 支持加载更早消息；前端加载过的历史消息不能被后续 polling 刷新丢弃，且 message stream 与 timeline 视图应按 message id 去重合并。
 assistant thinking summary 作为消息内折叠块展示；provider-native replay facts（例如 signature / thoughtSignature）只随 session message 数据保存，不在 UI 中解释或手工编辑。
+assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.jsonl` 中保持独立消息以满足 provider replay，但 WebConsole message stream 应在展示层按 `tool_call_id` 合并为同一个 tool lane；`finish` 的 final message 只能作为用户可见回复展示一次，raw call/result 细节保留在可展开详情中，避免重复输出同时不丢失审计信息。
 后台 worker 回流到 parent session 的 `background_results` 仍以 durable message 进入 `messages.jsonl`，保持 provider replay 与文件事实源不变；WebConsole 在展示层必须把这类消息识别为后台 agent 结果卡片，展示 agent、role、status、final text / error、child session 与 queue job 链接，而不是渲染成普通用户 prompt 气泡。
 
 #### Tasks
