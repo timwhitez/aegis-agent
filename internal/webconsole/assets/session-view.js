@@ -1091,6 +1091,7 @@ function renderAgentsPanel(detail) {
       <div class="section-title-row">
         <h4>Sub agents</h4>
       </div>
+      ${renderSelectedQueueJobPanel()}
       ${agents.length ? `<div class="card-stack">${agents.map((item) => renderSubAgentCard(item)).join('')}</div>` : '<div class="empty-panel">No sub agents yet.</div>'}
     </section>
 
@@ -1100,6 +1101,42 @@ function renderAgentsPanel(detail) {
       </div>
       ${notifications.length ? `<div class="card-stack">${notifications.map((note) => renderNotificationCard(note)).join('')}</div>` : '<div class="empty-panel">No background notifications yet.</div>'}
     </section>
+  `;
+}
+
+function renderSelectedQueueJobPanel() {
+  const jobID = String(state.selectedQueueJobId || '');
+  if (!jobID) {
+    return '';
+  }
+  const job = state.selectedQueueJobDetail || queueJobByID(jobID) || { id: jobID };
+  const status = job.session_status || job.status || 'unknown';
+  const detailCopy = job.last_error || job.final_text || job.prompt || 'Job detail is loading.';
+  const created = job.created_at ? formatTimestamp(job.created_at) : '';
+  const updated = job.updated_at ? formatTimestamp(job.updated_at) : '';
+  const isUnavailable = status === 'unavailable';
+  return `
+    <div class="selected-queue-job-panel" data-selected-queue-job="${escapeAttr(jobID)}">
+      <div class="job-card-top">
+        <div>
+          <div class="job-card-title">${escapeHTML(agentLabel(job.agent_name, job.agent_role) || shortId(jobID))}</div>
+          <div class="job-card-meta">job ${escapeHTML(shortId(jobID))}${job.mode ? ` · ${escapeHTML(job.mode)}` : ''}${created ? ` · ${escapeHTML(created)}` : ''}</div>
+        </div>
+        <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
+      </div>
+      <div class="${job.last_error ? 'notification-copy danger' : 'job-card-copy'}">${escapeHTML(truncateText(detailCopy, 260))}</div>
+      <div class="path-pill-row">
+        ${job.session_id ? `<span class="surface-chip">child ${escapeHTML(shortId(job.session_id))}</span>` : ''}
+        ${job.parent_session_id ? `<span class="surface-chip">parent ${escapeHTML(shortId(job.parent_session_id))}</span>` : ''}
+        ${updated ? `<span class="surface-chip">updated ${escapeHTML(updated)}</span>` : ''}
+      </div>
+      <div class="card-actions">
+        ${job.session_id ? renderSessionStopButton(job.session_id, status) : ''}
+        ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
+        ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
+        ${isUnavailable ? '<span class="job-card-meta">Job facts are no longer available in the local queue store.</span>' : ''}
+      </div>
+    </div>
   `;
 }
 

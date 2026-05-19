@@ -65,7 +65,7 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 作用：
 
 - 启动本地 Web 控制台
-- 提供默认 Session 工作区、Settings、Workspace 只读浏览、Sessions、Skills、Background Jobs 等页面
+- 提供默认 Session 工作区、Settings、Workspace 只读浏览、Sessions、Skills 等页面，并在 Session inspector 中展示 background jobs / children 事实
 - 通过 REST API 发起真实 `start` / `continue` / `steer` / queue job / Goal / Plan Mode 控制
 
 高频参数：

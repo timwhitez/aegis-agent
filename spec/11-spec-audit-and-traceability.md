@@ -255,7 +255,7 @@
 - Web 控制台只复用本地 session / state / messages / events / queue 文件事实
 - Web 控制台的后台并发执行必须建立在真实 worker / child session 之上，而不是前端假进度条
 - Web 控制台当前采用 polling-first，不承诺 SSE / WebSocket 作为 v1 前提
-- 高频用户交互默认应简洁：start、steer、continue、Plan approve、普通 queue submit 不需要层层确认；validation coverage override、删除/清理、API key/config 写入、外部暴露服务等风险动作才需要显式确认
+- 高频用户交互默认应简洁：start、steer、continue、Plan approve 不需要层层确认；queue submit 保留在 CLI/API advanced 面；validation coverage override、删除/清理、API key/config 写入、外部暴露服务等风险动作才需要显式确认
 
 ### 4.2.2 Multi-agent 工具面的当前产品决策
 

@@ -262,7 +262,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - 本地 HTTP API
 - 内嵌静态单页前端
 - session / queue / children / task board / timeline 可视化
-- Web 发起的 `start` / `continue` / `steer` / `experimental queue submit`
+- Web 发起的 `start` / `continue` / `steer`；queue submit 保留在 CLI/API advanced 面，默认前端不提供独立提交表单
 - Web 发起的 `start` 可通过一个 optional Goal 开关附带 prompt-derived goal；session inspector 可显示 goal 状态、criteria、validation、agent 拆分出的 features/milestones，并提供用户控制的 pause/resume/clear/complete/approve plan 操作
 - 可配置并发 worker pool
 

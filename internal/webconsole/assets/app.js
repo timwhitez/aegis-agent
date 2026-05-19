@@ -28,12 +28,10 @@ const state = {
   historyData: null,
   historyPage: 1,
   historyPageSize: 8,
-  queueData: null,
   selectedQueueJobId: '',
   selectedQueueJobDetail: null,
   inspectorTab: 'tasks',
   refreshingHistory: false,
-  refreshingQueue: false,
   toastCounter: 0,
   skills: [],
   fileTree: [],
@@ -116,7 +114,6 @@ const nodes = {
   editorContent: document.getElementById('editor-content'),
   views: {
     chat: document.getElementById('chat-view'),
-    queue: document.getElementById('queue-view'),
     skills: document.getElementById('skills-view'),
     workspace: document.getElementById('workspace-view'),
     history: document.getElementById('history-view'),
@@ -549,13 +546,9 @@ function setupEventListeners() {
     if (queueJobButton) {
       state.selectedQueueJobId = queueJobButton.getAttribute('data-open-job') || '';
       state.selectedQueueJobDetail = null;
-      switchView('queue');
-      return;
-    }
-
-    const queueRefresh = event.target.closest('[data-queue-refresh]');
-    if (queueRefresh) {
-      await fetchQueue();
+      state.inspectorTab = 'agents';
+      await refreshSelectedQueueJobDetail();
+      renderCurrentSession();
       return;
     }
 
@@ -739,7 +732,6 @@ function updateDynamicLayoutMetrics() {
 
 const VIEW_TITLES = {
   chat: 'Session — Agent Console',
-  queue: 'Background Jobs — Agent Console',
   history: 'Sessions — Agent Console',
   skills: 'Skills — Agent Console',
   workspace: 'Workspace — Agent Console',
@@ -787,9 +779,6 @@ function switchView(viewName, options = {}) {
   }
   if (viewName === 'history') {
     fetchHistory();
-  }
-  if (viewName === 'queue') {
-    fetchQueue();
   }
   if (viewName === 'skills') {
     fetchSkills();
@@ -1020,9 +1009,6 @@ async function requestStopSession(sessionID, options = {}) {
     if (state.currentView === 'history') {
       await fetchHistory(state.historyPage, { showLoading: false, silentError: true });
     }
-    if (state.currentView === 'queue') {
-      await fetchQueue();
-    }
   } catch (err) {
     showToast(err.message || 'Failed to stop the session.', 'error');
   } finally {
@@ -1067,9 +1053,6 @@ async function requestContinueSession(sessionID, message = '', options = {}) {
     }
     queueSessionRefresh(120);
     queueOverviewRefresh(180);
-    if (state.currentView === 'queue') {
-      await fetchQueue();
-    }
   } catch (err) {
     if (!options.silentToast) {
       showToast(err.message || 'Failed to continue session.', 'error');
@@ -1106,6 +1089,10 @@ function adoptSession(sessionID, backed) {
   if (!sessionID) {
     return;
   }
+  if (sessionID !== state.sessionId) {
+    state.selectedQueueJobId = '';
+    state.selectedQueueJobDetail = null;
+  }
   state.sessionId = sessionID;
   state.sessionBacked = backed;
   updateSessionId();
@@ -1119,6 +1106,8 @@ function resetChatSession() {
   state.optimisticMessages = [];
   state.liveEvents = [];
   state.nextSendInterrupt = false;
+  state.selectedQueueJobId = '';
+  state.selectedQueueJobDetail = null;
   state.goalEnabled = false;
   state.planModeEnabled = false;
   resetProviderOverride();
@@ -1665,11 +1654,11 @@ function isStoppableSessionStatus(status) {
   return String(status || '').toLowerCase() === 'running';
 }
 
-function queueJobItems(data = state.queueData) {
+function queueJobItems(data = state.sessionDetail?.children?.jobs) {
   return maybeArray(data?.items || data);
 }
 
-function queueJobByID(jobID, data = state.queueData) {
+function queueJobByID(jobID, data = state.sessionDetail?.children?.jobs) {
   const id = String(jobID || '');
   if (!id) {
     return null;
@@ -1787,6 +1776,7 @@ async function refreshCurrentSession() {
     mergeLoadedMessagesIntoDetail(detail);
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
+    await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs));
     updateSessionId();
     reconcileOptimisticMessages(detail);
     state.hasMoreMessages = state.loadedAllEarlierMessages ? false : detail?.has_more_messages === true;
@@ -1918,6 +1908,8 @@ async function openSession(sessionID, options = {}) {
   adoptSession(sessionID, true);
   state.sessionDetail = null;
   state.optimisticMessages = [];
+  state.selectedQueueJobId = '';
+  state.selectedQueueJobDetail = null;
   state.hasMoreMessages = false;
   state.oldestMessageId = '';
   state.loadingEarlier = false;
@@ -2103,179 +2095,6 @@ function showToast(message, tone = 'info') {
   window.setTimeout(() => {
     document.getElementById(id)?.remove();
   }, 3200);
-}
-
-async function fetchQueue() {
-  const container = nodes.views.queue;
-  if (!container || state.refreshingQueue) return;
-  state.refreshingQueue = true;
-  // Save form state before potential innerHTML replacement
-  const savedPrompt = document.getElementById('queue-prompt-input')?.value || '';
-  const savedParent = document.getElementById('queue-parent-input')?.value || '';
-  const savedAgent = document.getElementById('queue-agent-input')?.value || '';
-  const savedModel = document.getElementById('queue-model-input')?.value || '';
-  if (!state.queueData) {
-    container.innerHTML = '<div class="view-loading">Loading queue...</div>';
-  }
-  try {
-    state.queueData = await requestJSON('/api/queue/jobs?limit=80');
-    await refreshSelectedQueueJobDetail(queueJobItems(state.queueData));
-    renderQueueView({ savedPrompt, savedParent, savedAgent, savedModel });
-  } catch (err) {
-    container.innerHTML = `<div class="empty-panel">Failed to load queue. ${escapeHTML(err.message || '')}</div>`;
-    showToast(err.message || 'Failed to load queue.', 'error');
-  } finally {
-    state.refreshingQueue = false;
-  }
-}
-
-function renderSelectedQueueJobPanel() {
-  const jobID = String(state.selectedQueueJobId || '');
-  if (!jobID) {
-    return '';
-  }
-  const job = state.selectedQueueJobDetail || queueJobByID(jobID) || { id: jobID };
-  const status = job.session_status || job.status || 'unknown';
-  const detailCopy = job.last_error || job.final_text || job.prompt || 'Job detail is loading.';
-  const created = job.created_at ? formatTimestamp(job.created_at) : '';
-  const updated = job.updated_at ? formatTimestamp(job.updated_at) : '';
-  return `
-    <section class="panel-card selected-queue-job-panel" data-selected-queue-job="${escapeAttr(jobID)}">
-      <div class="panel-card-header history-panel-header">
-        <div>
-          <h3 class="view-title compact-title">${escapeHTML(agentLabel(job.agent_name, job.agent_role) || shortId(jobID))}</h3>
-          <div class="job-card-meta">job ${escapeHTML(shortId(jobID))}${job.mode ? ` · ${escapeHTML(job.mode)}` : ''}${created ? ` · ${escapeHTML(created)}` : ''}</div>
-        </div>
-        <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
-      </div>
-      <div class="panel-card-body">
-        <div class="${job.last_error ? 'notification-copy danger' : 'job-card-copy'}">${escapeHTML(truncateText(detailCopy, 260))}</div>
-        <div class="path-pill-row">
-          ${job.session_id ? `<span class="surface-chip">child ${escapeHTML(shortId(job.session_id))}</span>` : ''}
-          ${job.parent_session_id ? `<span class="surface-chip">parent ${escapeHTML(shortId(job.parent_session_id))}</span>` : ''}
-          ${updated ? `<span class="surface-chip">updated ${escapeHTML(updated)}</span>` : ''}
-        </div>
-        <div class="card-actions">
-          ${job.session_id ? renderSessionStopButton(job.session_id, status) : ''}
-          ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
-          ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function renderQueueView(opts = {}) {
-  const container = nodes.views.queue;
-  if (!container) return;
-  const jobs = queueJobItems();
-  const fetchedCounters = jobs.reduce((acc, job) => {
-    const status = job.status || 'queued';
-    acc[status] = (acc[status] || 0) + 1;
-    return acc;
-  }, {});
-  const queueCounters = state.queueData ? fetchedCounters : (state.overview?.queue_counters || {});
-  const savedPrompt = opts.savedPrompt || '';
-  const savedParent = opts.savedParent || '';
-  const savedAgent = opts.savedAgent || '';
-  const savedModel = opts.savedModel || '';
-
-  const recentSessions = maybeArray(state.overview?.recent_sessions).slice(0, 8);
-  const parentOptions = recentSessions.map((s) =>
-    `<option value="${escapeAttr(s.id)}" ${s.id === savedParent ? 'selected' : ''}>${escapeHTML(shortId(s.id))} · ${escapeHTML(agentLabel(s.agent_name, s.agent_role) || 'master')} (${escapeHTML(s.status || '?')})</option>`
-  ).join('');
-
-  container.innerHTML = `
-    <div class="view-header history-header">
-      <div>
-        <h2 class="view-title">Background Jobs</h2>
-        <p class="view-subtitle">Submit agent tasks that run asynchronously and report results when complete.</p>
-      </div>
-      <button class="ghost-action-btn" type="button" data-queue-refresh>Refresh</button>
-    </div>
-    <section class="queue-primer">
-      <span class="surface-chip">Queued ${escapeHTML(String(queueCounters.queued || 0))}</span>
-      <span class="surface-chip">Running ${escapeHTML(String(queueCounters.running || 0))}</span>
-      <span class="surface-chip">Failed ${escapeHTML(String(queueCounters.failed || 0))}</span>
-      <span class="surface-chip">Completed ${escapeHTML(String(queueCounters.completed || 0))}</span>
-    </section>
-    ${renderSelectedQueueJobPanel()}
-    <section class="panel-card queue-submit-panel">
-      <div class="panel-card-header"><h3 class="view-title compact-title">Submit Job</h3></div>
-      <div class="panel-card-body">
-        <div class="settings-form">
-          <div class="field">
-            <label class="field-label">Prompt</label>
-            <textarea id="queue-prompt-input" class="settings-input" placeholder="Describe the task for the background agent..." rows="3">${escapeHTML(savedPrompt)}</textarea>
-          </div>
-          <div class="field">
-            <label class="field-label">Model override (optional)</label>
-            <input id="queue-model-input" class="settings-input" type="text" placeholder="e.g. gpt-5.4 or claude-sonnet-4-6" value="${escapeAttr(savedModel)}">
-          </div>
-          <div class="field">
-            <label class="field-label">Parent Session (optional)</label>
-            <select id="queue-parent-input" class="settings-input">
-              <option value="" ${!savedParent ? 'selected' : ''}>None (standalone job)</option>
-              ${parentOptions}
-              ${savedParent && !recentSessions.some((s) => s.id === savedParent) ? `<option value="${escapeAttr(savedParent)}" selected>${escapeHTML(shortId(savedParent))} (manual)</option>` : ''}
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label">Agent Role (optional)</label>
-            <select id="queue-agent-input" class="settings-input">
-              <option value="" ${!savedAgent ? 'selected' : ''}>Auto / none</option>
-              <option value="planner" ${savedAgent === 'planner' ? 'selected' : ''}>planner</option>
-              <option value="generator" ${savedAgent === 'generator' ? 'selected' : ''}>generator</option>
-              <option value="evaluator" ${savedAgent === 'evaluator' ? 'selected' : ''}>evaluator</option>
-            </select>
-          </div>
-          <button id="queue-submit-btn" class="skill-btn install queue-submit-btn">Submit Job</button>
-        </div>
-      </div>
-    </section>
-  `;
-  if (window.lucide && lucide.createIcons) {
-    lucide.createIcons({ root: container });
-  }
-
-  const submitBtn = document.getElementById('queue-submit-btn');
-  if (submitBtn) {
-    submitBtn.addEventListener('click', async () => {
-      const promptInput = document.getElementById('queue-prompt-input');
-      const parentInput = document.getElementById('queue-parent-input');
-      const modelInput = document.getElementById('queue-model-input');
-      const agentInput = document.getElementById('queue-agent-input');
-      const prompt = promptInput.value.trim();
-
-      if (!prompt) {
-        showToast('Prompt is required to submit a job.', 'error');
-        return;
-      }
-
-      submitBtn.disabled = true;
-      submitBtn.innerText = 'Submitting...';
-
-      try {
-        await submitQueueJob({
-          prompt,
-          parentSessionID: parentInput.value.trim(),
-          model: modelInput.value.trim(),
-          agentRole: agentInput.value.trim(),
-          workdir: selectedWorkspaceWorkdir()
-        });
-        showToast('Background job submitted.', 'success');
-        promptInput.value = '';
-        await fetchQueue();
-      } catch (err) {
-        showToast(err.message || 'Failed to submit job.', 'error');
-      } finally {
-        if (document.body.contains(submitBtn)) {
-          submitBtn.disabled = false;
-          submitBtn.innerText = 'Submit Job';
-        }
-      }
-    });
-  }
 }
 
 async function fetchHistory(page = state.historyPage, options = {}) {

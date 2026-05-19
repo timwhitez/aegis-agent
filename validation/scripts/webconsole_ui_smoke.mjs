@@ -684,20 +684,23 @@ async function main() {
         await browserClient.evaluate(`(() => {
           state.selectedQueueJobId = ${JSON.stringify(results.queue_job_id)};
           state.selectedQueueJobDetail = null;
-          switchView('queue');
+          state.inspectorTab = 'agents';
+          refreshSelectedQueueJobDetail().then(() => renderCurrentSession());
         })()`);
       }
       await waitFor(
         () => browserClient.evaluate(`(() => {
           const jobID = ${JSON.stringify(results.queue_job_id)};
           const panel = document.querySelector('[data-selected-queue-job]');
-          const text = document.getElementById('queue-view')?.textContent || '';
+          const active = document.querySelector('.inspector-tab.active')?.textContent || '';
+          const text = document.getElementById('inspector-panel')?.textContent || '';
           return Boolean(panel) &&
             panel.getAttribute('data-selected-queue-job') === jobID &&
+            active.includes('Background') &&
             (text.includes('ui smoke queue ok') || text.includes(jobID.slice(0, 6)));
         })()`),
         15000,
-        'selected queue job facts'
+        'selected queue job facts in session background inspector'
       );
       results.interactions.queue_open_job_clicked = clickedOpenJob;
       results.interactions.queue_selected_job_panel_visible = true;

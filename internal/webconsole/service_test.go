@@ -1901,8 +1901,8 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "provider-override-panel") || !strings.Contains(indexBody, "session-provider-override") || !strings.Contains(indexBody, "session-model-override") || !strings.Contains(indexBody, "Advanced provider") {
 		t.Fatalf("expected shell to expose lightweight provider/model override controls, got shell body: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, "Background Jobs") || !strings.Contains(indexBody, "<span>Sessions</span>") || strings.Contains(indexBody, "<span>Queue</span>") || strings.Contains(indexBody, "<span>History</span>") {
-		t.Fatalf("expected shell navigation to use simplified Background Jobs and Sessions labels, got shell body: %s", indexBody)
+	if strings.Contains(indexBody, "Background Jobs") || strings.Contains(indexBody, `data-view="queue"`) || strings.Contains(indexBody, "queue-view") || !strings.Contains(indexBody, "<span>Sessions</span>") || strings.Contains(indexBody, "<span>Queue</span>") || strings.Contains(indexBody, "<span>History</span>") {
+		t.Fatalf("expected shell navigation to remove standalone Background Jobs and keep Sessions label, got shell body: %s", indexBody)
 	}
 	if !strings.Contains(indexBody, "Enter to send, Shift+Enter / Ctrl+Enter for new line") {
 		t.Fatalf("expected updated input shortcut hint, got shell body: %s", indexBody)
@@ -1973,8 +1973,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	jsBody := checkBody(server.URL + "/app.js")
-	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "renderQueueView") {
+	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "refreshSelectedQueueJobDetail") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
+	}
+	if strings.Contains(jsBody, "renderQueueView") || strings.Contains(jsBody, "fetchQueue") || strings.Contains(jsBody, "queueData") || strings.Contains(jsBody, "refreshingQueue") {
+		t.Fatalf("expected app.js to remove standalone Background Jobs view state and renderer, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "togglePlanMode") || !strings.Contains(jsBody, "collectPlanModeDraft") || !strings.Contains(jsBody, "handlePlanModeAction") || !strings.Contains(jsBody, "handlePlanInputAction") {
 		t.Fatalf("expected app.js to wire Plan Mode toggle and controls, got app.js body: %s", jsBody)
@@ -2038,8 +2041,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	cssBody := checkBody(server.URL + "/styles.css")
-	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") || !strings.Contains(cssBody, ".session-rail") || !strings.Contains(cssBody, ".queue-primer") || !strings.Contains(cssBody, ".queue-submit-panel") {
+	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") || !strings.Contains(cssBody, ".session-rail") || !strings.Contains(cssBody, ".selected-queue-job-panel") {
 		t.Fatalf("unexpected styles.css body: %s", cssBody)
+	}
+	if strings.Contains(cssBody, ".queue-primer") || strings.Contains(cssBody, ".queue-submit-panel") || strings.Contains(cssBody, "#queue-view") {
+		t.Fatalf("expected standalone Background Jobs styles to be removed, got styles.css body: %s", cssBody)
 	}
 	if strings.Contains(cssBody, "[data-theme=\"dark\"]") || strings.Contains(cssBody, ".theme-toggle") {
 		t.Fatalf("expected dark mode styles to be removed, got styles.css body: %s", cssBody)

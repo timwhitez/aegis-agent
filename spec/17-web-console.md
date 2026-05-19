@@ -17,8 +17,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 可以在创建或继续 session 时通过 Plan 开关进入 Plan Mode，并在 inspector 中审批、修订、取消或回答规划问题
 - 可以对运行中的 session 追加 steer
 - 可以对暂停或等待输入的 session 执行 continue
-- 可以提交 queue job
-- 可以查看 queue / children / task board / timeline / errors
+- 可以查看 background queue / children / task board / timeline / errors
 - 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
 - 默认交互要简洁：高频路径少确认，agent 在明确安全边界内拥有较大执行权限；只有覆盖 validation coverage、删除/清理、写配置/API key、暴露非 loopback 服务等风险动作需要显式确认
 
@@ -88,14 +87,13 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 固定区域：
 
 - Session
-- Background Jobs
 - Sessions
 - Skills
 - Workspace
 - Settings
 
 当前实现的左栏不再提供独立总览入口；进入页面即是 Session 执行工作区。
-session 工作区采用三栏：左侧 session rail、中间 chat/timeline、右侧 inspector panel。Tasks / Background / Timeline / Summary 这类 tracker 固定在当前 session 上下文中，而不是拆成独立总览页。
+session 工作区采用三栏：左侧 session rail、中间 chat/timeline、右侧 inspector panel。Tasks / Background / Timeline / Summary 这类 tracker 固定在当前 session 上下文中，而不是拆成独立总览页或独立 Background Jobs tab。
 小屏幕下三栏必须按 session rail -> chat -> inspector 顺序纵向堆叠，不能因横向挤压导致输入区或 tracker 不可用。
 
 Sessions 列表项必须展示：
@@ -117,7 +115,7 @@ Session 工作区是新用户的默认落点，展示：
 - 最近 session rail：只显示可直接打开的 session 摘要
 - 中央执行流：消息、工具调用、运行态和错误都在同一条 session timeline 中出现
 - 右侧 tracker：Summary / Goal / Tasks / Background / Timeline 按当前 session 聚焦展示
-- Queue 只作为可选后台任务页存在，不再是首页 KPI 的一部分
+- Queue / child / background 只作为当前 session 的 Background tracker 与 API/CLI 高级面存在，不再是独立主导航页或首页 KPI 的一部分
 
 ### 4.4 Session 工作区
 
@@ -183,12 +181,12 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 - steer 请求与 notification 卡片里的关键 metadata
 - 能从 background notification 直接打开对应 child session
 
-#### Background Jobs 主视图补充
+#### Background Job Facts
 
-- Background Jobs 视图默认是后台任务提交入口与状态计数面，不再展示 worker pool 调参、raw durable payload 或完整 jobs 列表
-- 从 session detail / background notification 点击 `Open job` 时，Background Jobs 可以展示一个轻量 selected job facts panel，限于 status、prompt / final text / last error、child session、parent session 等追溯事实；它不恢复完整 queue monitor
+- 默认前端不再提供独立 Background Jobs tab；session 新建后可以在后台运行，后台 child / queue 结果必须回到当前 session 的 Background inspector
+- 从 session detail / background notification 点击 `Open job` 时，当前 session 的 Background inspector 展示一个轻量 selected job facts panel，限于 status、prompt / final text / last error、child session、parent session 等追溯事实；它不恢复完整 queue monitor
 - queue job 的 provider、workdir、lease owner、heartbeat、raw payload 等内部事实仍可由 API 与文件事实追溯
-- queue submit 保留为“高级后台任务”入口，并用文案提示普通任务应回到 Session 执行
+- 独立 queue submit 保留在 REST API 和 CLI advanced/experimental 面；默认 Web UI 不再提供单独 submit form，普通任务应回到 Session 执行
 
 #### Goal
 
@@ -240,16 +238,9 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 - 若 `status = awaiting_input | paused | failed`
   - 显示 continue 输入框
   - 支持 provider / model 覆盖
-- 始终可显示 `queue child job` 表单
+- 显示 Background inspector，可查看 child sessions、queue jobs、background notifications 和 selected job facts
 
-当选择 Background Jobs 时：
-
-- 显示 queue 状态计数
-- 显示“Submit Job”后台任务入口
-- 不显示 worker pool 并发调节控件
-- 不默认显示完整 queue jobs 列表；只有从 session/background 链接进入时显示轻量 selected job facts
-
-当前实现不再提供单独总览页面，也不再把 worker 并发调参当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、Sessions 和可选 Background Jobs。
+当前实现不再提供单独总览页面、独立 Background Jobs tab，也不再把 worker 并发调参当作默认前端概念。需要配置并发时，使用启动参数或后端 API；普通用户只需要理解 Session、Sessions 与当前 session 的 Background tracker。
 
 ## 5. 视觉系统
 
@@ -669,10 +660,10 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 用户路径：
 
-1. 打开 Background Jobs 面板
-2. 提交一个或多个 jobs
-3. 通过状态计数、当前 session inspector 的 background 卡片、background notification 链接、API 或文件事实观察 queued -> running -> completed/failed
-4. 若 job 属于 parent session，则在该 parent timeline 里看到 background notification
+1. 从 Session 执行工作区启动或继续任务
+2. session 运行中可由模型或高级 CLI/API 提交 child / queue work
+3. 通过当前 session inspector 的 Background 卡片、background notification 链接、API 或文件事实观察 queued -> running -> completed/failed
+4. 若 job 属于 parent session，则在该 parent timeline 里看到 background notification，并可用 `Open job` 在 Background inspector 中展开 selected job facts
 5. 若需要调整并发，重启 Web 服务时修改 `--workers` 或调用后端 worker API，不从默认页面直接配置
 
 ## 9. 刷新与实时策略
@@ -728,7 +719,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 - WebSocket malformed payload 不得造成全局 runtime exception
 - focused retry-resume live rerun 需要同时验证 durable retry metadata 未漂移，以及真实 `provider.retry` 事件出现
 - 若 retry proof 已经拿到上述 durable evidence，而 bounded finish nudges 后 session 仍为 `awaiting_input`，应将其记为 non-blocking completion quirk，而不是把整轮 webconsole follow-up 判成失败
-- headless browser UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start 后的 session chrome、tool card、timeline 可见性，settled session polling 收敛，history clear 留在 Sessions 视图，以及 API 提交 queue job 后的 selected job facts 可见性；worker API 缩放、queue notification dedup 和 retry proof 由 follow-up shell 脚本及服务层断言覆盖
+- headless browser UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start 后的 session chrome、tool card、timeline 可见性，settled session polling 收敛，history clear 留在 Sessions 视图，以及 API 提交 queue job 后在当前 session Background inspector 中展示 selected job facts；worker API 缩放、queue notification dedup 和 retry proof 由 follow-up shell 脚本及服务层断言覆盖
 - 浏览器侧 `runtime exception` 与 `console error` 为空
 
 手工验证至少覆盖：

@@ -164,23 +164,6 @@ function patchMissionValidation(sessionID, payload = {}) {
   return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/mission/validation`, jsonRequest(payload, { method: 'PATCH' }));
 }
 
-function submitQueueJob(payload) {
-  return requestJSON('/api/queue/jobs', jsonRequest({
-    prompt: payload.prompt,
-    parent_session_id: payload.parentSessionID,
-    agent_name: payload.agentName,
-    agent_role: payload.agentRole,
-    provider: payload.provider,
-    model: payload.model,
-    workdir: payload.workdir,
-    system: payload.system,
-    mode: payload.mode,
-    wait_mode: payload.waitMode,
-    isolation_mode: payload.isolationMode,
-    isolation_root: payload.isolationRoot
-  }));
-}
-
 function saveConfig(payload) {
   return requestJSON('/api/config', jsonRequest({
     guardrails_mode: payload.guardrailsMode,

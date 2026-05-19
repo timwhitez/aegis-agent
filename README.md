@@ -156,7 +156,7 @@ providers:
 
 ## Web Console
 
-本地 Web 控制台是默认入口，用来观察 session、goal、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。启动区的 Goal 是一个简单开关；选中后用户仍只写 prompt，agent 在运行中自行拆分目标、计划和验证。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
+本地 Web 控制台是默认入口，用来观察 session、goal、任务、后台结果、children、timeline，并通过 REST 发起 start / continue / steer 等 session 操作。启动区的 Goal 是一个简单开关；选中后用户仍只写 prompt，agent 在运行中自行拆分目标、计划和验证。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
 
 Web 的 Plan 开关对应同一个 Plan Mode 事实源：`planmode.json`、`artifacts/planmode-history.jsonl` 和 `artifacts/planmode-plan.md`。Plan inspector 可审批、要求修改、取消计划，并回答 `request_user_input` 的规划问题；pending Plan Mode 会拒绝以该 session 为 parent 的 child / queue 提交。
 
@@ -177,7 +177,7 @@ Web 的 Plan 开关对应同一个 Plan Mode 事实源：`planmode.json`、`arti
 
 `run.sh` 为 WSL / Windows 浏览器访问默认监听 `0.0.0.0:3940`。这个本地控制台可以写配置和 `.env` API key、删除 session、管理 skill、读取 workspace 文件；只在可信本机网络使用，暴露到非 loopback 地址前先确认风险。
 
-WebConsole 的页面结构、Background Jobs 简化口径、API 契约和浏览器验证要求写在 [`spec/17-web-console.md`](./spec/17-web-console.md)。
+WebConsole 的页面结构、Session Background 观测口径、API 契约和浏览器验证要求写在 [`spec/17-web-console.md`](./spec/17-web-console.md)。
 Settings 页面提供 Provider Profile、API Provider、provider reasoning / thinking 下拉、OpenAI reasoning summary 下拉和测试按钮：OpenAI / `openai-compatible` 可以选择 `xhigh` + `Auto` summary，Anthropic-compatible / Google 这类 thinking provider 可以选择 `max`。测试按钮会用当前表单值做一次 thinking-observation probe，并回显 adapter 采用的 `thinking_strategy`；结果会区分“请求成功”和“本次实际返回可读 thinking / summary”，成功测试不会自动保存配置。
 
 ## Troubleshooting
