@@ -1246,7 +1246,7 @@ function toggleGoalMode() {
   if (!canShowGoalComposer()) {
     return;
   }
-  state.goalEnabled = !state.goalEnabled;
+  setComposerMode(state.goalEnabled ? null : 'goal');
   renderGoalComposer();
   updateDynamicLayoutMetrics();
 }
@@ -1255,9 +1255,26 @@ function togglePlanMode() {
   if (!canShowPlanComposer()) {
     return;
   }
-  state.planModeEnabled = !state.planModeEnabled;
+  setComposerMode(state.planModeEnabled ? null : 'plan');
   renderGoalComposer();
   updateDynamicLayoutMetrics();
+}
+
+function setComposerMode(mode) {
+  state.goalEnabled = mode === 'goal';
+  state.planModeEnabled = mode === 'plan';
+}
+
+function normalizeComposerMode(goalVisible, planVisible) {
+  if (state.goalEnabled && state.planModeEnabled) {
+    setComposerMode(goalVisible ? 'goal' : 'plan');
+  }
+  if (state.goalEnabled && !goalVisible) {
+    state.goalEnabled = false;
+  }
+  if (state.planModeEnabled && !planVisible) {
+    state.planModeEnabled = false;
+  }
 }
 
 function renderGoalComposer() {
@@ -1266,10 +1283,10 @@ function renderGoalComposer() {
   }
   const goalVisible = canShowGoalComposer();
   const planVisible = canShowPlanComposer();
+  normalizeComposerMode(goalVisible, planVisible);
   nodes.goalToggleBtn.hidden = !goalVisible;
   nodes.goalToggleBtn.classList.toggle('is-active', state.goalEnabled && goalVisible);
   nodes.goalToggleBtn.setAttribute('aria-pressed', state.goalEnabled && goalVisible ? 'true' : 'false');
-  nodes.goalToggleBtn.setAttribute('aria-expanded', 'false');
   nodes.planToggleBtn.hidden = !planVisible;
   nodes.planToggleBtn.classList.toggle('is-active', state.planModeEnabled && planVisible);
   nodes.planToggleBtn.setAttribute('aria-pressed', state.planModeEnabled && planVisible ? 'true' : 'false');
