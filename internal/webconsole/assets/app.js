@@ -101,6 +101,9 @@ const nodes = {
   goalToggleBtn: document.getElementById('goal-toggle-btn'),
   planToggleBtn: document.getElementById('plan-toggle-btn'),
   goalComposerPanel: document.getElementById('goal-composer-panel'),
+  sessionProviderOverride: document.getElementById('session-provider-override'),
+  sessionModelOverride: document.getElementById('session-model-override'),
+  providerOverridePanel: document.getElementById('provider-override-panel'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
   skillUploadBtn: document.getElementById('skill-upload-btn'),
@@ -167,6 +170,7 @@ async function init() {
     state.lastInputWasEmpty = !nodes.chatInput.value.trim();
     nodes.chatInput.focus();
   }
+  renderProviderOverrideControls();
 }
 
 function nextEphemeralSessionId() {
@@ -913,14 +917,18 @@ async function sendMessage() {
         tone: 'live'
       });
       queueOverviewRefresh(220);
+      const providerOverride = collectProviderOverride();
       const resp = await startSession({
         prompt: text,
         workdir: selectedWorkspaceWorkdir(),
+        provider: providerOverride.provider || undefined,
+        model: providerOverride.model || undefined,
         goal: goalDraft || undefined,
         planMode: planDraft || undefined
       });
       state.goalEnabled = false;
       state.planModeEnabled = false;
+      resetProviderOverride();
       adoptSession(resp.session_id, true);
       setGenerating(true, {
         title: 'Launching session',
@@ -1047,7 +1055,13 @@ async function requestStopViaBestAvailablePath(sessionID) {
 
 async function requestContinueSession(sessionID, message = '', options = {}) {
   try {
-    await continueSession(sessionID, { message, planMode: options.planMode });
+    const providerOverride = collectProviderOverride();
+    await continueSession(sessionID, {
+      message,
+      planMode: options.planMode,
+      provider: providerOverride.provider || undefined,
+      model: providerOverride.model || undefined
+    });
     if (!options.silentToast) {
       showToast('Session continued.', 'success');
     }
@@ -1107,6 +1121,7 @@ function resetChatSession() {
   state.nextSendInterrupt = false;
   state.goalEnabled = false;
   state.planModeEnabled = false;
+  resetProviderOverride();
   state.liveActivity = {
     title: 'Ready for a new session',
     copy: 'Send a prompt to create a durable session. Answers, tool calls, and running flow will appear here.',
@@ -1176,12 +1191,61 @@ function updateUI() {
 
   nodes.inputStatusText.textContent = inputActionLabel();
   renderGoalComposer();
+  renderProviderOverrideControls();
 
   if (!state.isConnected) {
     nodes.connectionDot.className = 'dot';
     return;
   }
   nodes.connectionDot.className = state.isGenerating ? 'dot busy' : 'dot online';
+}
+
+function renderProviderOverrideControls() {
+  const select = nodes.sessionProviderOverride;
+  if (!select) {
+    return;
+  }
+  const currentProvider = select.value || '';
+  const providers = maybeArray(state.meta?.providers);
+  const defaultVendor = state.meta?.default_provider || state.meta?.default_vendor || '';
+  const options = ['<option value="">Default</option>'].concat(
+    providers.map((provider) => {
+      const name = provider.name || provider.Name || '';
+      if (!name) {
+        return '';
+      }
+      const model = provider.model || provider.Model || '';
+      const label = `${name}${name === defaultVendor ? ' (default)' : ''}${model ? ` / ${model}` : ''}`;
+      return `<option value="${escapeAttr(name)}">${escapeHTML(label)}</option>`;
+    })
+  ).join('');
+  if (select.innerHTML !== options) {
+    select.innerHTML = options;
+  }
+  if (currentProvider && providers.some((provider) => (provider.name || provider.Name) === currentProvider)) {
+    select.value = currentProvider;
+  } else {
+    select.value = '';
+  }
+}
+
+function collectProviderOverride() {
+  return {
+    provider: nodes.sessionProviderOverride?.value?.trim() || '',
+    model: nodes.sessionModelOverride?.value?.trim() || ''
+  };
+}
+
+function resetProviderOverride() {
+  if (nodes.sessionProviderOverride) {
+    nodes.sessionProviderOverride.value = '';
+  }
+  if (nodes.sessionModelOverride) {
+    nodes.sessionModelOverride.value = '';
+  }
+  if (nodes.providerOverridePanel) {
+    nodes.providerOverridePanel.open = false;
+  }
 }
 
 function chatInputPlaceholder() {
@@ -1333,6 +1397,24 @@ function isPendingPlanMode(status) {
   return ['planning', 'awaiting_user_input', 'awaiting_approval'].includes(status || '');
 }
 
+function isCoverageApprovalBlock(err) {
+  const haystack = [
+    err?.message,
+    err?.detail,
+    err?.action,
+    err?.code
+  ].filter(Boolean).join(' ').toLowerCase();
+  return err?.status === 409 && haystack.includes('coverage') && (
+    haystack.includes('blocks approval') ||
+    haystack.includes('approval block') ||
+    haystack.includes('validation coverage')
+  );
+}
+
+async function confirmCoverageOverride() {
+  return window.confirm('Validation coverage blocks approval. Continue only if you accept the uncovered validation risk for this local session.');
+}
+
 async function handlePlanModeAction(button) {
   if (!hasDurableSession()) {
     showToast('No durable session is loaded.', 'info');
@@ -1342,7 +1424,18 @@ async function handlePlanModeAction(button) {
   button.disabled = true;
   try {
     if (action === 'approve') {
-      await approvePlanMode(state.sessionId);
+      try {
+        await approvePlanMode(state.sessionId);
+      } catch (err) {
+        if (!isCoverageApprovalBlock(err)) {
+          throw err;
+        }
+        if (!await confirmCoverageOverride()) {
+          showToast('Plan approval was not overridden.', 'info');
+          return;
+        }
+        await approvePlanMode(state.sessionId, { override_coverage: true });
+      }
       setGenerating(true, {
         title: 'Executing approved plan',
         copy: 'The approved Plan Mode plan is now running as the next durable turn.',
@@ -1461,7 +1554,18 @@ async function handleGoalAction(button) {
       await deleteGoal(state.sessionId);
       showToast('Goal cleared.', 'success');
     } else if (action === 'approve-plan') {
-      await approveMissionPlan(state.sessionId);
+      try {
+        await approveMissionPlan(state.sessionId);
+      } catch (err) {
+        if (!isCoverageApprovalBlock(err)) {
+          throw err;
+        }
+        if (!await confirmCoverageOverride()) {
+          showToast('Goal plan approval was not overridden.', 'info');
+          return;
+        }
+        await approveMissionPlan(state.sessionId, { override_coverage: true });
+      }
       showToast('Goal plan approved.', 'success');
     }
     await refreshCurrentSession();
@@ -2535,6 +2639,7 @@ async function handleSkillAction(id, isInstalled, button) {
 async function refreshMeta() {
   state.meta = await requestJSON('/api/meta');
   updateWorkspaceMeta();
+  renderProviderOverrideControls();
 }
 
 document.addEventListener('DOMContentLoaded', init);

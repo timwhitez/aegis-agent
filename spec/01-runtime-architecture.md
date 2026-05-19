@@ -2,26 +2,28 @@
 
 ## 1. 总体分层
 
-运行时固定分三层：
+运行时核心继续保持分层，Web-first 只改变默认 app surface，不改变 runtime 权威边界：
 
 1. `core runtime`
    - 负责 loop、provider、tools、skills、hooks、compaction、session、events
 2. `sdk facade`
    - 对外暴露稳定 Go 接口，未来可扩为公共包
-3. `cli adapter`
-   - 负责参数解析、stdin/stdout、键盘中断、阶段输出
+3. app adapters
+   - `web app/service adapter` 是默认产品入口，负责本地 HTTP API、内嵌前端、异步 start/continue handle、浏览器控制与观测
+   - `cli adapter` 是稳定脚本化入口，负责参数解析、stdin/stdout、键盘中断、阶段输出
 
 当前 app-facing 构造约束：
 
-- 默认 core CLI / SDK 路径使用独立的 `core` facade
+- 默认 Web / SDK 路径使用独立的 `core` facade 与 `web` service facade
+- CLI 路径继续使用独立的 `core` facade，不直接依赖 Web service
 - 扩展 delegation / queue 路径使用独立的 `experimental` facade
-- 扩展 Web console 路径使用独立的 `web` app/service facade
+- Web console 路径使用独立的 `web` app/service facade，并作为默认 operator surface
 - 纯 store / snapshot 读取路径使用独立的 `store` facade
 - 这些 facade 可以共享更低层的 runtime primitive，但不能在 app 层重新坍缩成同一个 concrete runner type
 
 约束：
 
-- CLI 不直接持有 provider 逻辑。
+- Web / CLI 都不直接持有 provider 逻辑。
 - provider 不直接写终端。
 - hooks 不直接改写 session 文件。
 - session store 是唯一持久化入口。
@@ -236,7 +238,7 @@
 
 职责：
 
-- 提供本地 HTTP API 与静态前端资源
+- 作为默认 Web-first app surface，提供本地 HTTP API 与静态前端资源
 - 复用 `SessionStore` / `Runner` / `QueueStore`，不创建第二套状态源
 - 为 Web 发起的 `start` / `continue` 建立异步执行句柄
 - 维护 queue worker pool，并通过独立 worker `Runner` 支持后台并行消费
@@ -247,7 +249,7 @@
 
 约束：
 
-- Web service 只能作为显式 experimental app-surface 存在
+- Web service 是默认 operator surface，但只能作为本地控制台运行，不能成为 session / goal / plan / queue 的权威状态源
 - active session 的中断控制必须是 session-scoped，不允许多个并发 session 共享同一个 in-memory interrupt slot
 - Web UI 的刷新默认使用 polling；是否升级到 SSE / WebSocket 不作为当前实现前提
 

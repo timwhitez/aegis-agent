@@ -7,6 +7,7 @@
 - 运行时闭环正确
 - provider 契约正确
 - session / hooks / interrupt / awaiting_input 组合行为正确
+- Web-first 控制台的关键用户路径正确
 - spec 与实现没有明显偏移
 
 测试不只验证编译通过，还要验证核心交互语义。
@@ -86,9 +87,9 @@
 
 保证 CLI 输出格式变更可审查。
 
-### 2.7 Experimental Web Console Tests
+### 2.7 Web Console Tests
 
-当 Phase 15 / large-project console profile 继续保留时，还需要一层单独验证：
+Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只在触及实验扩展时补测：
 
 - embedded shell 与静态前端 assets 能由同进程 service 稳定提供
 - Web 发起的 `start` / goal create/pause/resume/clear/complete / mission plan approve / `continue` / `steer` / `experimental queue submit` / worker pool 更新都走真实 runtime 与文件事实
@@ -265,6 +266,12 @@ fixture 内容：
 
 除自动测试外，每轮实现完成后至少做以下手工验证：
 
+- Web 控制台能启动并加载静态资源
+- Web Session 工作区能新建 session
+- Web 运行中 steer 能入队并在 timeline 可见
+- Web awaiting_input / paused / failed session 能 continue
+- Web Goal / Plan Mode 控制能按文件事实展示和执行
+- Web provider/model override 能进入 start / continue 请求
 - `init` 是否生成正确配置
 - `run` 是否能进入 loop 并自然停在 `awaiting_input`
 - `steer` 是否能在运行中被接纳
@@ -272,7 +279,7 @@ fixture 内容：
 - `continue` 是否能恢复
 - `tasks` 是否能正确显示 ready / blocked
 - `exec` 是否能在无 TTY 场景工作
-- 若本轮触及 `experimental web` / queue / continue 恢复链路，还要补一条 focused webconsole live 验证，确认 embedded assets、真实浏览器交互和 background notification 证据都落盘
+- 若本轮触及 queue / continue 恢复链路，还要补一条 focused webconsole live 验证，确认 embedded assets、真实浏览器交互和 background notification 证据都落盘
 
 ## 9. 通过标准
 
@@ -280,5 +287,6 @@ fixture 内容：
 
 - 单元测试通过
 - phase 对应集成测试通过
-- 至少一条真实 CLI 手工路径通过
+- 至少一条真实 Web 手工路径通过
+- 至少一条 CLI fallback 手工路径通过
 - spec 与实现对照检查无关键偏差

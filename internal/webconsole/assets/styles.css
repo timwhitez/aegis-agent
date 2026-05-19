@@ -640,6 +640,53 @@ textarea {
   height: 15px;
 }
 
+.provider-override-panel {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.provider-override-panel summary {
+  width: max-content;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.provider-override-panel[open] summary,
+.provider-override-panel summary:hover {
+  color: var(--accent-strong);
+}
+
+.provider-override-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(180px, 1.4fr);
+  gap: 10px;
+  padding: 8px 0 2px;
+}
+
+.provider-override-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-weight: 700;
+}
+
+.provider-override-input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--text-main);
+  padding: 0 10px;
+  font: inherit;
+}
+
 .input-status-text {
   margin-right: auto;
   font-size: 12px;
@@ -2627,6 +2674,10 @@ textarea {
   .chat-inner,
   .input-container {
     max-width: 100%;
+  }
+
+  .provider-override-grid {
+    grid-template-columns: 1fr;
   }
 
   .message.background-results .message-body,

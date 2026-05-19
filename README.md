@@ -1,12 +1,12 @@
 # Go CLI Agent
 
-`go-cli-agent` 是一个用 Go 编写的极简通用 CLI agent harness。
+`go-cli-agent` 是一个用 Go 编写的 Web-first 本地 agent harness。
 
-它的主目标不是做复杂 UI，而是把最小但完整的 agent loop、provider adapter、tools、skills、hooks、session 持久化、任务系统、运行中补充输入与恢复语义组织成一个干净的 CLI 基座。它可以做 coding、审计、文档、运维、整理型 agent；真正决定任务行为的是 `skills/`、工作目录里的 `AGENTS.md`、system/user prompt 和 provider 能力。
+它的默认入口是本地 Web 控制台，底层仍是最小但完整的 agent loop、provider adapter、tools、skills、hooks、session 持久化、任务系统、运行中补充输入与恢复语义。CLI 保留为稳定 fallback、脚本化和故障恢复入口。它可以做 coding、审计、文档、运维、整理型 agent；真正决定任务行为的是 `skills/`、工作目录里的 `AGENTS.md`、system/user prompt 和 provider 能力。
 
 ## 当前定位
 
-- Core v1 默认围绕 `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`
+- Web-first v1 默认围绕 `web` 本地控制台；CLI fallback 围绕 `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`
 - `run` 支持交互式执行和 `Esc` 暂停
 - `exec` 适合脚本或 CI，默认要求模型显式 `finish`
 - `run/exec --plan` 或 Web 的 Plan 开关会进入 session-scoped Plan Mode：审批前只允许读/搜索、`request_user_input` 和 `submit_plan`，批准后才执行
@@ -15,7 +15,7 @@
 - session / state / messages / events / goal / todo / tasks 是本地文件事实源
 - provider 原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - `openai-compatible` 作为 OpenAI Responses 形状的兼容部署模式提供
-- `experimental delegate|children|queue|tui|web` 和 `--isolation auto|copy` 仍是显式扩展面，不是默认 core 叙事
+- `experimental web` 是 `web` 的兼容别名；`experimental delegate|children|queue|tui` 和 `--isolation auto|copy` 仍是高级/扩展面，不主导默认 Web 页面
 - 默认不做报告、prompt、session、compaction 或 provider view 脱敏；如需脱敏，由用户在当轮 prompt 明确要求
 
 ## 快速开始
@@ -25,6 +25,7 @@
 ./test.sh
 
 ./bin/go-cli-agent init --force
+./bin/go-cli-agent web
 ./bin/go-cli-agent doctor --skip-probe
 ./bin/go-cli-agent sessions
 ```
@@ -153,15 +154,17 @@ providers:
 
 如果需要面向部署或运维的单页说明，优先看 [`docs/openai-compatible-operator-guide.md`](./docs/openai-compatible-operator-guide.md)。
 
-## Experimental Web
+## Web Console
 
-本地 Web 控制台只作为显式实验入口存在，用来观察 session、goal、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。启动区的 Goal 是一个简单开关；选中后用户仍只写 prompt，agent 在运行中自行拆分目标、计划和验证。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
+本地 Web 控制台是默认入口，用来观察 session、goal、任务、后台队列、children、timeline，并通过 REST 发起 start / continue / steer / queue submit。启动区的 Goal 是一个简单开关；选中后用户仍只写 prompt，agent 在运行中自行拆分目标、计划和验证。它复用本地文件事实源和 runtime 控制面，不是第二套权威状态源。
 
 Web 的 Plan 开关对应同一个 Plan Mode 事实源：`planmode.json`、`artifacts/planmode-history.jsonl` 和 `artifacts/planmode-plan.md`。Plan inspector 可审批、要求修改、取消计划，并回答 `request_user_input` 的规划问题；pending Plan Mode 会拒绝以该 session 为 parent 的 child / queue 提交。
 
 ```sh
-./bin/go-cli-agent experimental web --listen 127.0.0.1:3940 --workers 2
+./bin/go-cli-agent web --listen 127.0.0.1:3940 --workers 2
 ```
+
+`experimental web` 仍可作为兼容别名使用；新脚本和文档应优先使用 `web`。
 
 也可以用 `run.sh` 管理同一个内嵌 frontend+backend 进程：
 
@@ -187,19 +190,19 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 ## 设计原则
 
 - 模型是 agent，harness 只提供 loop、工具、上下文、权限边界、事实记录和恢复能力
-- CLI 是主适配层，不把关键状态藏在终端或浏览器内存里
-- core runtime、sdk facade、cli adapter 分层保持清晰
+- Web service、CLI 和 SDK 都只是适配层，不把关键状态藏在浏览器或终端内存里
+- core runtime、sdk facade、web service、cli adapter 分层保持清晰
 - provider 差异留在 adapter 层，CLI / tool / Web 层不承载 provider-specific replay 逻辑
 - compaction 只改变发给模型的上下文视图，不覆盖原始日志
 - compaction 只做上下文规模控制，不按密钥模式默认改写内容；用户显式要求脱敏时，模型应在当轮交付文档中处理
 - session goal、session contract、required artifact tracker、provider attempts、session summary 与 long-run checkpoint 都是围绕本地文件事实源生成的辅助面，不引入固定 workflow engine
-- 默认主路径优先于扩展能力，先把 Phase 0-10 做实，再评估 Phase 11+
+- 默认 Web-first 主路径优先于高级扩展能力，Phase 0-10 的 runtime/CLI 基座与 Phase 15 Web 控制台一起构成 v1 默认交付口径
 
 ## 脚本
 
 - `build.sh`: 构建 `bin/go-cli-agent`
 - `test.sh`: 检查 `gofmt` 漂移、WebConsole JS 语法，并执行 `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
-- `run.sh`: 启动、停止或查看本地 `experimental web` 进程
+- `run.sh`: 启动、停止或查看本地 Web 控制台进程
 - `live_smoke.sh`: 真实 provider 的在线探活脚本
 - `validation/run_openai_compatible_acceptance_stack.sh`: provider 连通性确认后的长期 acceptance 入口
 

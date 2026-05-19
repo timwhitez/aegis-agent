@@ -50,7 +50,7 @@ Defaults:
   logs        Tail the background log file.
 
 Environment overrides:
-  GO_CLI_AGENT_WEB_CONFIG   Explicit config file passed to `experimental web`.
+  GO_CLI_AGENT_WEB_CONFIG   Explicit config file passed to `go-cli-agent web`.
   GO_CLI_AGENT_LISTEN       Listen address, default `0.0.0.0:3940`.
                            Non-loopback listen exposes config writes, .env API keys,
                            session deletion, skill management, and workspace reads
@@ -122,7 +122,7 @@ print_lan_warning() {
 			return 0
 			;;
 	esac
-	echo "WARNING: experimental web is reachable from non-loopback clients."
+	echo "WARNING: web console is reachable from non-loopback clients."
 	echo "It can write config and .env API keys, delete sessions, manage skills, and read workspace files. Use only on trusted local networks."
 }
 
@@ -146,7 +146,7 @@ start_background() {
 	load_env_file
 	ensure_binary
 
-	local cmd=("$BINARY_PATH" experimental web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
+	local cmd=("$BINARY_PATH" web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
 	if [[ -n "$CONFIG_PATH" ]]; then
 		cmd+=(-config "$CONFIG_PATH")
 	fi
@@ -199,7 +199,7 @@ start_background() {
 start_foreground() {
 	load_env_file
 	ensure_binary
-	local cmd=("$BINARY_PATH" experimental web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
+	local cmd=("$BINARY_PATH" web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
 	if [[ -n "$CONFIG_PATH" ]]; then
 		cmd+=(-config "$CONFIG_PATH")
 	fi

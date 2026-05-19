@@ -1898,6 +1898,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "plan-toggle-btn") || !strings.Contains(indexBody, "<span>Plan</span>") {
 		t.Fatalf("expected shell to expose Plan Mode toggle beside Goal, got shell body: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, "provider-override-panel") || !strings.Contains(indexBody, "session-provider-override") || !strings.Contains(indexBody, "session-model-override") || !strings.Contains(indexBody, "Advanced provider") {
+		t.Fatalf("expected shell to expose lightweight provider/model override controls, got shell body: %s", indexBody)
+	}
 	if !strings.Contains(indexBody, "Background Jobs") || !strings.Contains(indexBody, "<span>Sessions</span>") || strings.Contains(indexBody, "<span>Queue</span>") || strings.Contains(indexBody, "<span>History</span>") {
 		t.Fatalf("expected shell navigation to use simplified Background Jobs and Sessions labels, got shell body: %s", indexBody)
 	}
@@ -1976,6 +1979,12 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "togglePlanMode") || !strings.Contains(jsBody, "collectPlanModeDraft") || !strings.Contains(jsBody, "handlePlanModeAction") || !strings.Contains(jsBody, "handlePlanInputAction") {
 		t.Fatalf("expected app.js to wire Plan Mode toggle and controls, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "collectProviderOverride") || !strings.Contains(jsBody, "renderProviderOverrideControls") || !strings.Contains(jsBody, "provider: providerOverride.provider || undefined") || !strings.Contains(jsBody, "model: providerOverride.model || undefined") {
+		t.Fatalf("expected app.js to pass provider/model override from session composer, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "isCoverageApprovalBlock") || !strings.Contains(jsBody, "confirmCoverageOverride") || !strings.Contains(jsBody, "override_coverage: true") {
+		t.Fatalf("expected app.js to require explicit coverage override confirmation, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "setComposerMode") || !strings.Contains(jsBody, "normalizeComposerMode") || !strings.Contains(jsBody, "mode === 'goal'") || !strings.Contains(jsBody, "mode === 'plan'") {
 		t.Fatalf("expected Goal and Plan composer controls to be mutually exclusive, got app.js body: %s", jsBody)
 	}
@@ -2014,6 +2023,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(sessionBody, "collectShellRedirectPaths(parsed?.command)") {
 		t.Fatalf("expected files panel to include shell-created workspace files, got session-view.js body: %s", sessionBody)
+	}
+	if !strings.Contains(sessionBody, "Approval override requires explicit confirmation") {
+		t.Fatalf("expected goal facts to explain explicit coverage override, got session-view.js body: %s", sessionBody)
 	}
 	if strings.Contains(jsBody, "Ctrl+Enter', 'Submit message") || strings.Contains(jsBody, "'ctrl+enter': 'submit'") {
 		t.Fatalf("expected Ctrl+Enter submit shortcut to be removed, got app.js body: %s", jsBody)

@@ -60,6 +60,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "init":
 		err = runInit(args[1:], stdout, stderr)
+	case "web":
+		err = webCommand(ctx, args[1:], stdout, stderr)
 	case "run":
 		err = runCommand(ctx, "run", args[1:], stdout, stderr)
 	case "exec":
@@ -91,7 +93,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func usage(w io.Writer) error {
-	_, _ = fmt.Fprintln(w, "usage: go-cli-agent <init|run|exec|continue|steer|sessions|goal|tasks|probe-provider|doctor> [...]")
+	_, _ = fmt.Fprintln(w, "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|probe-provider|doctor> [...]")
 	return flag.ErrHelp
 }
 
@@ -122,7 +124,7 @@ func experimentalCommand(ctx context.Context, args []string, stdout, stderr io.W
 
 func isExperimentalSubcommand(name string) bool {
 	switch name {
-	case "delegate", "children", "queue", "tui", "web":
+	case "delegate", "children", "queue", "tui":
 		return true
 	default:
 		return false

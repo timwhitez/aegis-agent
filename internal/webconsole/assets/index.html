@@ -99,6 +99,21 @@
               </button>
               <div class="goal-composer-panel" id="goal-composer-panel" hidden></div>
             </div>
+            <details class="provider-override-panel" id="provider-override-panel">
+              <summary>Advanced provider</summary>
+              <div class="provider-override-grid">
+                <label class="provider-override-field">
+                  <span>Provider Profile</span>
+                  <select id="session-provider-override" class="provider-override-input">
+                    <option value="">Default</option>
+                  </select>
+                </label>
+                <label class="provider-override-field">
+                  <span>Model override</span>
+                  <input id="session-model-override" class="provider-override-input" type="text" placeholder="Inherit provider model">
+                </label>
+              </div>
+            </details>
             <div class="input-actions">
               <button class="interrupt-toggle-btn" id="interrupt-toggle-btn" type="button" aria-pressed="false">
                 <i data-lucide="siren"></i>

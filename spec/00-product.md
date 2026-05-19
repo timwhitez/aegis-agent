@@ -2,12 +2,13 @@
 
 ## 1. 产品定义
 
-`go-cli-agent` 是一个用 Go 编写的极简通用 CLI agent harness。
+`go-cli-agent` 是一个用 Go 编写的 Web-first 本地 agent harness。
 
-它不是另一个重型 TUI 编程助手，也不是把固定 workflow、plan engine、verification engine 硬塞进 runtime 的 orchestration 框架。它的目标是把一个可持续演进的 agent 基座做扎实：
+它不是 hosted SaaS，也不是另一个重型 TUI 编程助手，更不是把固定 workflow、plan engine、verification engine 硬塞进 runtime 的 orchestration 框架。它的目标是把一个可持续演进的 agent 基座做扎实，并把默认操作体验放在本地 Web 控制台中：
 
 - 最小但完整的 agent loop
-- 清晰的 CLI 命令面
+- 清晰的本地 Web 操作面
+- 可脚本化的 CLI / API 控制面
 - 本地文件事实驱动的 session / state / events
 - tools / skills / hooks / tasks
 - durable session goals
@@ -48,38 +49,41 @@
 
 ## 3. 产品目标
 
-### 3.1 Core v1 必须达成
+### 3.1 Web-first v1 必须达成
 
-- 提供稳定的 CLI agent 运行时，可在工作目录内完成多轮任务
+- 提供稳定的本地 Web-first agent 运行时，可在工作目录内完成多轮任务
+- 提供完整的本地 Web 控制台，作为默认用户入口承载 session 启动、追加输入、继续执行、Goal、Plan Mode、provider/model override、任务/队列/children 观测与基础控制
+- 保留稳定 CLI 命令面，作为脚本化、CI、故障恢复和高级操作入口
 - 支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - 支持 `openai-compatible` 的 Responses 形状兼容入口
 - 支持 built-in tools、skills、hooks、session 持久化、todo + task graph
 - 支持一个 session 绑定一个 durable goal，用于长目标的目标契约、完成审计和恢复提示；默认用户入口只是一个 Goal 开关，prompt 本身就是目标，结构化计划和验证由 agent 在运行中拆分；高级 mission 若要求 plan approval，必须复用 Plan Mode 的真实执行门禁
 - 支持 mission validation coverage 与 structured progress/handoff：validation contract approval 前可检查覆盖关系，模型可用窄工具记录 progress、evaluator 证据、child/queue 链接、commands、artifacts、blockers 和 budget wrap-up，但 runtime 不据此强制 DAG 或固定 worker/validator 流程
 - 支持显式 Plan Mode：用户通过 CLI flag、Web toggle 或 API 字段进入 planning gate；审批前只允许只读探索、`request_user_input` 和 `submit_plan`，审批后再恢复普通执行
-- 支持 `run` / `exec` / `steer` / `continue`
+- 支持 Web 与 CLI 两条入口上的 `start` / `run` / `exec` / `steer` / `continue`
 - 支持 `Esc` 暂停、自然停顿进入 `awaiting_input`、`continue` 恢复
 - 支持 provider generation / reasoning 选项通过 runtime 和 session metadata 传递
 - 架构上可演进为 Go SDK 或 OpenAPI 服务
 
-### 3.2 当前不作为 core v1 完成标准
+### 3.2 当前不作为 Web-first v1 完成标准
 
-以下能力不作为 minimal core 的默认完成标准：
+以下能力不作为 Web-first v1 的默认完成标准：
 
 - terminal TUI
-- local Web console
+- hosted multi-user Web SaaS
+- 浏览器端 IDE、远程终端或文件树编辑器
+- 真正 SSE / WebSocket 多路流式 UI；当前可以继续采用 polling-first
 
-### 3.3 大型项目 profile
+### 3.3 大型项目与高级执行 profile
 
-在保持 minimal core 默认帮助面简洁的前提下，当前仓库还需要支持一条更偏大型项目执行的 profile：
+在保持 Web-first 默认页面简洁的前提下，当前仓库还需要支持一条更偏大型项目执行的 profile：
 
 - `experimental delegate`
 - `experimental children`
 - `experimental queue`
-- `experimental web`
 - `--isolation auto|copy`
 
-这条 profile 不要求把扩展能力塞回默认 root help，但要求它们具备真实 runtime、session、queue、notification、isolation 证据，而不只是保留兼容壳。
+这条 profile 不要求把 worker pool、raw queue payload、isolation tuning 或 child orchestration 做成默认可见 UI，但要求它们具备真实 runtime、session、queue、notification、isolation 证据，而不只是保留兼容壳。Web 控制台可以提供轻量入口与观测链接，细粒度调参仍可留给 CLI / API。
 
 ### 3.4 明确不做
 
@@ -93,7 +97,7 @@
 
 ### 4.1 第一类
 
-- 长时间工作在终端里的工程师
+- 需要一个本地 Web 控制台来管理 agent session 的工程师
 - 希望 agent 可暂停、可恢复、可追踪
 - 不希望复杂 TUI 成为主交互前提
 
@@ -113,14 +117,21 @@
 
 ## 5. 核心使用模式
 
-### 5.1 `run`
+### 5.1 Web Console
 
-- 启动一次带键盘中断能力的执行
+- 默认入口是本地 Web 控制台
+- 用户从 Session 工作区启动任务、选择 provider/model、打开 Goal 或 Plan Mode、追加 steer、continue、查看 timeline / tasks / queue / children
+- Web 控制台只通过 runtime / session store / queue store 做真实控制，不维护第二套状态
+- 默认交互要简洁：高频路径不要求多轮用户确认；只有 validation coverage override、删除/清理、配置/API key 写入、外部暴露服务和其他不可逆或安全敏感动作需要显式确认
+
+### 5.2 `run`
+
+- CLI 前台执行入口，适合终端用户和故障恢复
 - 运行期间监听 `Esc`
 - 若模型自然停顿且未 `finish`，session 进入 `awaiting_input`
-- 运行中的 session 可通过外部 `steer` 热插入新 prompt
+- 运行中的 session 可通过外部 `steer` 或 Web steer 热插入新 prompt
 
-### 5.2 `exec`
+### 5.3 `exec`
 
 - 纯命令执行模式
 - 不监听 `Esc`
@@ -128,13 +139,13 @@
 - 默认要求显式 `finish`
 - 若模型停止但未显式完成，不把任务误判为成功
 
-### 5.3 `steer`
+### 5.4 `steer`
 
 - 面向 `running` session 追加新输入
 - 默认 queue-first，在最近安全边界并入执行
 - `--interrupt` 表示 best-effort 抢占
 
-### 5.4 `continue`
+### 5.5 `continue`
 
 - 恢复 `paused`、`awaiting_input`、`failed` session
 - 可追加新的 user message
@@ -147,22 +158,32 @@
 
 runtime 只提供循环、工具、知识入口、权限边界和状态持久化，不替模型做固定流程决策。
 
-### 6.2 CLI 优先
+### 6.2 Web 优先，CLI 可脚本化
 
-主交互通过以下方式完成：
+主交互通过本地 Web 控制台完成：
+
+- Session-first 工作区
+- Timeline / tool lane / event activity
+- Goal 与 Plan Mode inspector
+- Provider / model override
+- Queue / children / tasks 的对象级观测与轻量控制
+
+CLI 仍然是稳定的底层控制面，用于：
 
 - 普通命令行参数
 - 标准输入输出
 - 轻量阶段化文本输出
 - 可选 JSON Lines 输出
+- CI、脚本化、无浏览器环境、故障恢复和高级调试
 
 TUI 只能是扩展观测面，不能成为主路径依赖。
 
-本项目允许在显式 `experimental` 入口下提供 local Web console，但该控制台必须：
+Web 控制台必须：
 
 - 复用本地文件事实源与 runtime 控制面
 - 不引入第二套数据库或服务端权威状态
-- 不反向要求 README、默认 help、默认 smoke 都围绕 Web 设计
+- 不绕过 session store、provider adapter、tool guard、Plan Mode gate 或 Goal completion audit
+- README、默认启动说明和主 smoke 路径应以 Web-first 为主，同时保留 CLI fallback
 
 ### 6.3 Provider 只做薄抽象
 
@@ -184,11 +205,11 @@ Plan Mode 同样是 session 文件事实：`planmode.json` 是权威状态，`ar
 - compaction 不覆盖原始日志
 - compaction 只做上下文规模控制，不默认执行报告、prompt、session 或 provider view 脱敏；如需脱敏，由用户在当轮 prompt 中明确要求
 
-### 6.6 扩展面服从主路径
+### 6.6 Web 应用面服从 runtime 边界
 
-Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。README、脚本、帮助文本、测试默认都以 core v1 为准。
+Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queue、delegate、children、isolation、Plan Mode 和 Goal 都必须继续通过明确的 runtime / session / store 契约工作，而不是由浏览器端状态、固定 DAG 或硬编码 workflow 接管。
 
-## 7. Core v1 能力边界
+## 7. Web-first v1 能力边界
 
 ### 7.1 v1 要有
 
@@ -199,6 +220,7 @@ Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。R
 - skills 和 `AGENTS.md` 指令链
 - hooks v1
 - compaction
+- local Web console：session start/continue/steer、Goal、Plan Mode、provider/model override、timeline、tasks、children、queue、settings、workspace read-only browser
 - `run` / `exec` / `steer` / `continue` / `sessions` / `goal` / `tasks` / `init`
 - provider probe / doctor
 - OpenAI / Anthropic / Google adapter
@@ -211,8 +233,8 @@ Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。R
 - provider-native thinking / reasoning replay facts 仅由对应 adapter 保存和解释，不作为跨 provider 公共消息语义，也不由 CLI / Web 层解析
 - 不做跨 provider context handoff
 - 不做 provider fallback routing
-- 不把 child agent / queue / TUI 作为当前主路径
-- Web console 只作为显式 experimental surface 存在
+- 不把 child agent / queue / TUI 变成固定 workflow；Web 可以展示和触发这些能力，但 child / queue 是否使用仍由模型或用户明确决定
+- Web console 是默认本地 operator surface；它仍然只能复用 runtime 与文件事实，不能成为权威状态源
 - Session Goal 是 core 收敛加固：它记录用户可见目标和完成审计，不把 runtime 改造成固定 DAG、plan graph 或 verification engine。原 Mission 能力收敛为 Goal 的内部结构化计划字段：agent 可在运行中沉淀 features、milestones、validation contract 和 role hints，但默认用户不需要选择 Goal/Mission 模式、不需要填写预算或拆分表单；child / queue 是否使用仍由模型或用户决定。
 - Mission 的 `require_plan_approval` 不是展示状态：它会创建 linked Plan Mode，并由 Plan Mode schema 裁剪与 `CompletionController` gate 在批准前阻断 shell/write/edit/todo/task/agent/queue/finish 等执行动作。批准后 runtime 同步 mission plan approved 状态，但不会把 plan 转成固定 workflow。
 - Mission plan approval 会先检查 validation contract coverage；未覆盖或 invalid assertion 默认阻断，CLI/API 明确 override 才能继续。`stop_on_budget` 触发时 runtime 只允许预算 wrap-up，不把 budget-limited 渲染成 completed。
@@ -232,6 +254,7 @@ Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。R
 
 - 能完成纯文本任务
 - 能完成带工具调用任务
+- Web 控制台能完成 session start、steer、continue、Goal / Plan Mode 基础控制、provider/model override 与 queue job 提交
 - `run` 可自然停在 `awaiting_input`
 - `exec` 在未 `finish` 时不会误判成功
 - `steer` 可在运行中被接纳
@@ -241,7 +264,7 @@ Phase 11+ 的能力只能在不破坏 Phase 0-10 清晰度的前提下存在。R
 
 ### 9.2 工程标准
 
-- CLI 只是适配层，核心 runtime 可直接测试和复用
+- Web service、CLI 和 SDK 都只是适配层，核心 runtime 可直接测试和复用
 - provider / hooks / session / compaction / interrupt 都有自动测试
 - spec、README、脚本和当前实现对齐
-- 扩展 phase 不再挤占 core v1 的默认完成口径
+- Web-first 默认体验与 runtime / provider / session 文件事实保持一致

@@ -141,7 +141,7 @@
 来源：
 
 - `dev.md` 对 Codex Goals 与 Factory Missions 的本地设计收敛
-- 当前项目既有 session 文件事实源、completion controller、task graph、WebConsole experimental 边界
+- 当前项目既有 session 文件事实源、completion controller、task graph、Web-first 本地控制台边界
 
 结论：
 
@@ -162,7 +162,7 @@
 
 - Codex Plan Mode 的 collaboration-mode gate、`request_user_input` 限制与 approval-driven implementation entry
 - ForgeCode Muse 的 planning-only agent 与 Markdown checkbox / verification plan artifact 形式
-- 当前项目既有 session 文件事实源、CompletionController、Goal/Todo/Task 分层和 experimental WebConsole 边界
+- 当前项目既有 session 文件事实源、CompletionController、Goal/Todo/Task 分层和 Web-first 本地控制台边界
 
 结论：
 
@@ -232,26 +232,30 @@
 
 ## 4. 当前锁定的产品决策
 
-### 4.1 Core v1 默认停在 Phase 10
+### 4.1 Web-first v1 默认入口
 
-当前锁定的默认产品叙事仍是“极简 CLI 核心优先”，因此：
+当前锁定的默认产品叙事是“本地 Web 控制台优先，CLI 保持稳定 fallback”，因此：
 
-- Core v1 的默认完成口径锁定在 Phase 0-10
-- `delegate` / `queue` / `tui` / `web` 只作为显式扩展入口存在
+- Web-first v1 的默认完成口径覆盖 Phase 0-10 的 runtime / provider / CLI 基座，以及 Phase 15 的本地 Web 控制台
+- `web` 是默认 operator surface；`run` / `exec` / `steer` / `continue` / `sessions` / `goal` / `tasks` 作为 CLI fallback 和脚本化入口继续稳定
+- `delegate` / `queue` / `children` / `isolation` 可以由 Web 提供轻量入口和观测，但不能演变成固定 workflow 或强制编排
+- `tui` 仍只作为实验观测面存在
 
-### 4.2 扩展能力不再主导文档
+### 4.2 高级能力不主导默认 Web 页面
 
 即使仓库里已有 Phase 11+ 代码：
 
-- README 不再把它们写成主路径
-- help / smoke / 验收默认不围绕它们设计
+- README / help / smoke / 验收应围绕 Web-first 本地控制台和 CLI fallback 设计
+- worker pool 调参、raw queue payload、mission patch editor、isolation tuning、child orchestration 细节不进入默认页面
+- 高级能力可以通过 REST API、CLI 或折叠/显式入口保留，不能要求普通用户多次确认或理解内部状态机后才能完成 start / steer / continue
 
 ### 4.2.1 Web 控制台的当前产品决策
 
-- 允许提供 local Web console 以降低上手门槛、增强 session/queue 可视观测性
+- 本地 Web console 是默认产品入口，用于降低上手门槛、增强 session/queue 可视观测性并承载基础控制操作
 - Web 控制台只复用本地 session / state / messages / events / queue 文件事实
 - Web 控制台的后台并发执行必须建立在真实 worker / child session 之上，而不是前端假进度条
 - Web 控制台当前采用 polling-first，不承诺 SSE / WebSocket 作为 v1 前提
+- 高频用户交互默认应简洁：start、steer、continue、Plan approve、普通 queue submit 不需要层层确认；validation coverage override、删除/清理、API key/config 写入、外部暴露服务等风险动作才需要显式确认
 
 ### 4.2.2 Multi-agent 工具面的当前产品决策
 
@@ -300,7 +304,7 @@
 当以下条件都成立时，当前 spec 才算收敛：
 
 - `run` / `exec` / `steer` / `continue` 语义一致
-- Core v1 与 extension phases 的边界明确
+- Web-first v1 与 advanced / experimental phases 的边界明确
 - provider contract 与已验证协议事实一致
 - README / AGENTS / scripts 与 spec 一致
 - generation 选项的全链路传递已明确写清

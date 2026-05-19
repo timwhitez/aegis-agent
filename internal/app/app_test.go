@@ -1696,14 +1696,17 @@ func TestQueueWorkerCommandOncePrintsFailedJobWithoutError(t *testing.T) {
 	}
 }
 
-func TestUsageShowsCoreSurfaceOnlyByDefault(t *testing.T) {
+func TestUsageShowsWebFirstSurfaceByDefault(t *testing.T) {
 	var stderr bytes.Buffer
 	err := Run(context.Background(), []string{"unknown"}, &bytes.Buffer{}, &stderr)
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
+	if !strings.Contains(stderr.String(), "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|probe-provider|doctor> [...]") {
+		t.Fatalf("expected default usage to show web-first surface, got %q", stderr.String())
+	}
 	if strings.Contains(stderr.String(), "experimental") {
-		t.Fatalf("expected default usage to stay core-only, got %q", stderr.String())
+		t.Fatalf("expected default usage to keep experimental commands out, got %q", stderr.String())
 	}
 }
 
@@ -1722,5 +1725,16 @@ func TestLegacyExperimentalAliasReturnsMigrationError(t *testing.T) {
 	err := Run(context.Background(), []string{"delegate"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "go-cli-agent experimental delegate") {
 		t.Fatalf("expected migration error, got %v", err)
+	}
+}
+
+func TestTopLevelWebCommandDispatches(t *testing.T) {
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"web", "-bad-flag"}, &bytes.Buffer{}, &stderr)
+	if err == nil {
+		t.Fatal("expected web flag parse error")
+	}
+	if strings.Contains(err.Error(), "go-cli-agent experimental web") {
+		t.Fatalf("top-level web should not be treated as experimental migration, got %v", err)
 	}
 }

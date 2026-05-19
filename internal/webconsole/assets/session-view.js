@@ -1723,6 +1723,7 @@ function renderGoalFacts(facts) {
       <div class="goal-section-title">Mission facts</div>
       ${lines.length ? `<div class="goal-meta-line">${escapeHTML(lines.join(' · '))}</div>` : '<div class="goal-meta-line">No coverage or linked evaluator facts recorded.</div>'}
       ${maybeArray(coverage.uncovered_assertions).length ? `<div class="goal-meta-line">Uncovered ${escapeHTML(maybeArray(coverage.uncovered_assertions).join(', '))}</div>` : ''}
+      ${coverage.approval_blocked ? '<div class="goal-meta-line">Approval override requires explicit confirmation for this local session.</div>' : ''}
       ${latest ? `<div class="goal-meta-line">Latest ${escapeHTML(latest.type || 'goal event')} · ${escapeHTML(formatTimestamp(latest.created_at))}</div>` : ''}
       ${progress.length ? `
         <div class="goal-item-list">

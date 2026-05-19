@@ -1,15 +1,15 @@
 # Go CLI Agent Multi-Agent And Isolation Spec
 
-> 当前定位：large-project profile 规格。该文档描述的能力仍不属于 minimal core 的默认帮助面，但需要有真实运行和隔离证据，不能只停留在兼容壳。
+> 当前定位：large-project profile 规格。该文档描述的能力不是默认 Web 页面里的必选工作流，但需要有真实运行和隔离证据，不能只停留在兼容壳。Web 控制台可以提供轻量入口与观测链接，细粒度 orchestration / isolation 调参仍可由 CLI 或 API 承担。
 
 ## 1. 目标
 
-在保持 `core runtime` / `sdk facade` / `cli adapter` 分层不变的前提下，后续扩展 phase 可支持：
+在保持 `core runtime` / `sdk facade` / `web service` / `cli adapter` 分层不变的前提下，后续扩展 phase 可支持：
 
 - parent session 派生 child agent
 - child agent 的独立 session 持久化
 - 可选 worktree / workspace copy 隔离
-- CLI 和 tool 两个入口复用同一套 delegation 契约
+- Web、CLI 和 tool 入口复用同一套 delegation 契约
 
 本阶段仍然坚持“模型是 agent，harness 提供环境”的边界：
 

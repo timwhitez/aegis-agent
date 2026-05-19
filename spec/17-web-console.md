@@ -1,6 +1,6 @@
-# Go CLI Agent Web Console Spec
+# Go CLI Agent Web-First Console Spec
 
-> 当前定位：显式 experimental 扩展面。目标是给 `go-cli-agent` 增加一个完整但本地优先的 Web 控制台，用更低的学习成本承载 session 观测、任务进度、后台队列和并行执行控制，同时不破坏 CLI-first 的 core 叙事。
+> 当前定位：Web-first 默认入口。目标是给 `go-cli-agent` 提供一个完整但本地优先的 Web 控制台，用更低的学习成本承载 session 观测、任务进度、后台队列和并行执行控制，同时不破坏 runtime / session / provider 的文件事实源边界。CLI 保留为稳定 fallback、脚本化和故障恢复入口。
 
 ## 1. 目标
 
@@ -10,7 +10,7 @@ Web console 解决三类问题：
 - 复杂任务运行时，session / todo / task graph / child / queue / error 分散在多个命令和文件里，不易整体判断进度
 - 当确实需要后台任务时，纯 CLI 查看成本高，缺少统一的 queue / child session 可视观测面
 
-这次实现要提供一个完整的本地控制台，而不是只有只读页面：
+Web-first v1 要提供一个完整的本地控制台，而不是只有只读页面：
 
 - 可以创建新 session
 - 可以在创建 session 时通过一个 optional Goal 开关附带 prompt-derived goal
@@ -20,10 +20,11 @@ Web console 解决三类问题：
 - 可以提交 queue job
 - 可以查看 queue / children / task board / timeline / errors
 - 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
+- 默认交互要简洁：高频路径少确认，agent 在明确安全边界内拥有较大执行权限；只有覆盖 validation coverage、删除/清理、写配置/API key、暴露非 loopback 服务等风险动作需要显式确认
 
 ## 2. 产品边界
 
-根 `README.md` 只保留 `experimental web` 的短入口和 LAN 安全提示；页面结构、UX 细节、API 契约与浏览器验收口径以本文档为准，避免 WebConsole 叙事反向主导 core CLI 入口。
+根 `README.md` 应把 `go-cli-agent web` 作为默认启动入口，并保留 CLI fallback 与 LAN 安全提示；页面结构、UX 细节、API 契约与浏览器验收口径以本文档为准。`go-cli-agent experimental web` 只作为旧入口兼容别名保留。
 
 ### 2.1 明确要做
 
@@ -42,7 +43,8 @@ Web console 解决三类问题：
 - 不要求 provider 流式 API、SSE 或 WebSocket 才能工作
 - 不在 v1 里引入浏览器端代码编辑器、文件树 IDE 或远程终端
 - 当前 workspace 面板只作为“服务进程当前 cwd”的只读浏览器存在，不承诺独立的 workspace-root 切换能力
-- 不把 worker pool 并发配置作为默认可见前端功能；需要时通过 `experimental web --workers` 或后端 API 调整
+- 不把 worker pool 并发配置作为默认可见前端功能；需要时通过 `go-cli-agent web --workers`、兼容的 `experimental web --workers` 或后端 API 调整
+- 不把普通 start / steer / continue / Plan approve 设计成多步确认向导；用户明确提交后应直接执行，风险动作才确认
 
 ## 3. 设计参考与交互取舍
 
@@ -62,6 +64,7 @@ Web console 解决三类问题：
 - 事实优先于动画
 - 控制入口必须贴近当前对象，避免用户搞不清命令作用域
 - 当前实现额外吸收了“窄左栏应用壳 + 中央主工作区 + 独立右侧控制轨”的控制台布局语言，用更低的认知成本把 session 浏览、详情阅读和动作提交拆开
+- 交互默认遵循“授权一次，执行到底”：用户在 Session 工作区给出 prompt / steer / continue 后，runtime 按工具 guard、Plan Mode gate、Goal completion audit 和 workspace safety 执行，不要求用户为每个普通 agent 决策反复确认
 
 ## 4. 信息架构
 
@@ -674,7 +677,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 ## 9. 刷新与实时策略
 
-当前实现采用 polling-first：
+当前 Web-first 实现采用 polling-first：
 
 - session rail summary / queue：2 秒
 - session detail：1.5 秒
@@ -682,7 +685,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 原因：
 
-- 兼容当前 CLI-first / file-fact 架构
+- 兼容当前 Web-first / file-fact 架构
 - 便于测试
 - 不强依赖 SSE / WebSocket
 
@@ -738,7 +741,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 ## 12. 验收标准
 
-- `experimental web` 能稳定启动本地控制台
+- `go-cli-agent web` 能稳定启动本地控制台；`experimental web` 作为兼容别名保持可用
 - embedded shell 与前端 assets 能由同一进程本地服务直接提供
 - 页面可在无外部网络资源时加载；缺失 CDN 不得导致 `lucide is not defined` 或 `marked is not defined`
 - 用户无需记忆 CLI 全命令，也能完成 session 启动、追加输入、继续执行和后台排队

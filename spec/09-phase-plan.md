@@ -11,14 +11,15 @@
 
 当前项目明确分为两层：
 
-- Core phases: Phase 0-10
-- Extension phases: Phase 11-16
+- Web-first core phases: Phase 0-10 + Phase 15 的默认本地 Web 控制台
+- Advanced / extension phases: Phase 11-14 和 Phase 16+
 
 默认规则：
 
 - 先把 Phase 0-10 做实
-- README、脚本、帮助文本、默认 smoke 路径都围绕 Phase 0-10
-- Phase 11+ 可以继续存在，但不允许主导当前产品叙事
+- Web-first v1 还必须把 Phase 15 的本地 Web 控制台做成默认 operator surface
+- README、脚本、帮助文本、默认 smoke 路径以 Web-first 为主，同时保留 CLI fallback
+- Phase 11-14 / 16+ 可以继续存在，但高级调参与内部 payload 不允许主导默认页面
 
 ## 2. Phase 0 - Spec Bundle
 
@@ -170,26 +171,28 @@
 - 稳定 `pkg` 入口
 - no-TTY / WSL 基础退化路径
 
-## 13. Core v1 当前停止规则
+## 13. Web-first v1 当前停止规则
 
-minimal core 的默认完成标准停在 Phase 10。
+Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 的 runtime / provider / CLI 基座稳定，并把 Phase 15 的本地 Web 控制台纳入默认验收。
 
-只有以下条件都满足，才认为 minimal core v1 可交付：
+只有以下条件都满足，才认为 Web-first v1 可交付：
 
 - spec / README / AGENTS 对齐
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
 - `gofmt -l` 无漂移
+- `node --check internal/webconsole/assets/*.js` 通过
+- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、provider/model override 和 queue job 提交主路径通过
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
 
-## 14. Core v1 收敛加固
+## 14. Web-first v1 收敛加固
 
-Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件：
+Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须满足两个条件：
 
 - 不把 runtime 改造成固定 DAG 或重型 workflow engine
-- 不让 experimental Web / queue / delegate 入口反向主导默认 CLI 叙事
+- 不让 queue / delegate / isolation / TUI 高级入口反向主导默认 Web 页面
 
-当前已纳入 core v1 收敛口径的加固项：
+当前已纳入 Web-first v1 收敛口径的加固项：
 
 - session contract snapshot：`contract.json` 与 `artifacts/contract-history.jsonl`
 - session goal snapshot：`goal.json` 与 `artifacts/goal-history.jsonl`，包含 objective、status、usage accounting、success criteria、validation plan、completion audit 与内部结构化计划摘要；默认用户入口不暴露 Goal/Mission 分叉或预算表单
@@ -211,16 +214,17 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 覆盖新增持久化、gate 与 repo-owned validation helper
 - `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
-- goal 的验收覆盖 store round-trip、model tools、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate、Web start payload 与 goal REST endpoints；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
-- CLI-first mission controls 至少覆盖 `goal plan show/check/approve` 与 `goal validation show`；它们读取 / 更新 session store 权威事实，不维护第二套状态，也不引入 TUI
+- goal 的验收覆盖 store round-trip、model tools、Web start payload、goal REST endpoints、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
+- Web-first mission controls 至少覆盖 Goal inspector 的 plan show/check/approve 与 validation coverage 展示；CLI `goal plan show/check/approve` 与 `goal validation show` 作为 fallback 读取 / 更新同一份 session store 权威事实，不维护第二套状态，也不引入 TUI
 - Plan Mode 的验收覆盖 store round-trip、tool schema 裁剪、CompletionController gate、`submit_plan` 同批 tool result 补偿、`request_user_input` active/recovery 路径、CLI `--plan/--plan-only/--approve-plan`、Web Plan inspector 与 parent-linked queue/delegate rejection
 
 ## 15. Extension Phases
 
 以下 phase 继续保留，但需要区分两类：
 
-- Phase 11-13 可作为 large-project profile 的已验证扩展面
-- Phase 14 及之后仍属于实验扩展面
+- Phase 15 已上升为 Web-first v1 的默认 app surface
+- Phase 11-13 可作为 large-project profile 的高级能力面，由 Web 提供轻量入口/观测，细粒度调参继续走 CLI / API
+- Phase 14 和 Phase 16+ 仍属于实验扩展面
 
 ### 15.1 Phase 11 - Worktree Isolation
 
@@ -253,7 +257,8 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 
 ### 15.5 Phase 15 - Web Console
 
-- `experimental web`
+- `go-cli-agent web`
+- `experimental web` 作为旧入口兼容别名
 - 本地 HTTP API
 - 内嵌静态单页前端
 - session / queue / children / task board / timeline 可视化
@@ -263,6 +268,6 @@ Phase 0-10 之后允许做 core 收敛加固，但加固必须满足两个条件
 
 ### 15.6 Phase 16+ 的规则
 
-- 即使仓库里已有对应实现，也只能作为实验扩展
-- 不得反过来要求 core 文档、帮助文本、smoke 脚本都围绕它们设计
+- 即使仓库里已有对应实现，也只能作为高级或实验扩展
+- 不得反过来要求默认 Web 页面、帮助文本、smoke 脚本都围绕内部高级能力设计
 - 若用户明确要求推进扩展 phase，必须先确认 core 主路径未被破坏

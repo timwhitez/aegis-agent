@@ -1,10 +1,10 @@
 # Go CLI Agent Terminal TUI Spec
 
-> 当前定位：扩展 phase 规格。terminal TUI 只作为观测面预留，不属于 core v1 默认验收标准。
+> 当前定位：扩展 phase 规格。terminal TUI 只作为观测面预留，不属于 Web-first v1 默认验收标准。
 
 ## 1. 目标
 
-在保留 CLI-first 的前提下，新增一个终端面板式 TUI，用于观察：
+在保留 Web-first 默认入口和 CLI fallback 的前提下，新增一个终端面板式 TUI，用于观察：
 
 - session 列表
 - selected session 的状态与最近输出

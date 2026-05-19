@@ -60,7 +60,7 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}()
 
 	if webListenExposesNetwork(*listenAddr) {
-		_, _ = fmt.Fprintln(stdout, "WARNING: experimental web is reachable from non-loopback clients. It can write config and .env API keys, delete sessions, manage skills, and read workspace files. Use only on trusted local networks.")
+		_, _ = fmt.Fprintln(stdout, "WARNING: web console is reachable from non-loopback clients. It can write config and .env API keys, delete sessions, manage skills, and read workspace files. Use only on trusted local networks.")
 	}
 	_, _ = fmt.Fprintf(stdout, "web console listening on http://%s\n", *listenAddr)
 	err = server.ListenAndServe()

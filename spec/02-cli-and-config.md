@@ -2,19 +2,20 @@
 
 ## 1. 命令面原则
 
-CLI 需要同时满足三件事：
+在 Web-first 方向下，CLI 仍需要同时满足三件事：
 
-- 主路径简单
+- 脚本化路径简单
 - 阶段输出清楚
-- 未来可扩展但不污染当前默认体验
+- 与 Web 控制台使用同一套 runtime / session / provider / config 事实
 
-因此当前命令面分为两层：
+因此当前命令面分为两层：稳定 CLI 控制面与高级/兼容命令面。默认产品入口是 Web 控制台，但 CLI 不能退化成内部调试命令。
 
 ## 2. Core 命令
 
-core v1 的默认命令面固定为：
+Web-first v1 仍保留以下稳定 CLI 命令：
 
 - `go-cli-agent init`
+- `go-cli-agent web`
 - `go-cli-agent run [prompt]`
 - `go-cli-agent exec [prompt]`
 - `go-cli-agent steer <session-id>`
@@ -27,9 +28,10 @@ core v1 的默认命令面固定为：
 
 说明：
 
-- 这组命令定义当前默认工作流
-- README、帮助文本、live smoke、测试说明默认围绕这一组命令展开
-- `delegate` / `children` / `queue` / `tui` / `web` 仍可保留，但只能通过显式 experimental 入口出现
+- 默认用户工作流从 `go-cli-agent web` 进入
+- `run` / `exec` / `steer` / `continue` / `sessions` / `goal` / `tasks` 作为 CLI fallback、脚本化和恢复路径继续稳定支持
+- README、帮助文本、live smoke、测试说明以 Web-first 路径为主，同时给出等价 CLI fallback
+- `delegate` / `children` / `queue` / `tui` 仍可保留高级入口；Web 可为 queue / children 提供轻量操作和观测，但不把 worker pool/raw payload/isolation tuning 做成默认页面
 
 ## 3. 扩展命令
 
@@ -39,13 +41,13 @@ core v1 的默认命令面固定为：
 - `go-cli-agent experimental children <session-id>`
 - `go-cli-agent experimental queue <submit|list|show|worker>`
 - `go-cli-agent experimental tui`
-- `go-cli-agent experimental web`
+- `go-cli-agent experimental web` 作为旧入口兼容别名，语义等同 `go-cli-agent web`
 
 要求：
 
-- 默认帮助文本只展示 core 命令；`experimental` 入口只在显式调用 `go-cli-agent experimental` 时展示
-- 扩展命令本身不应继续作为默认顶层 operator surface
-- 主路径示例和默认验收口径仍然只围绕 core 命令
+- 默认帮助文本展示 `web` 和核心 CLI fallback 命令
+- `experimental` 入口只在显式调用 `go-cli-agent experimental` 时展示
+- 扩展命令本身不应继续作为默认顶层 operator surface；Web 页面只暴露面向用户的简洁子集
 
 ## 4. 参数解析
 
@@ -57,6 +59,27 @@ core v1 的默认命令面固定为：
 - 从 stdin 读取 prompt 的入口必须有硬上限；当前上限为 4 MiB，超限时返回明确错误，避免把异常大的管道输入一次性读入内存
 
 ## 5. Core 命令定义
+
+### 5.0 `web`
+
+作用：
+
+- 启动本地 Web 控制台
+- 提供默认 Session 工作区、Settings、Workspace 只读浏览、Sessions、Skills、Background Jobs 等页面
+- 通过 REST API 发起真实 `start` / `continue` / `steer` / queue job / Goal / Plan Mode 控制
+
+高频参数：
+
+- `--config`
+- `--listen`
+- `--workers`
+
+默认规则：
+
+- Web 控制台是默认 operator surface，但仍只复用本地文件事实与 runtime 控制面
+- listen 地址不是 loopback 时必须输出 LAN 安全提示
+- unsafe mutation 必须走本地控制台 guard：Origin / 自定义 header / Content-Type / 请求体大小上限
+- `experimental web` 旧入口应保持兼容，避免已有脚本失效
 
 ### 5.1 `init`
 
@@ -307,7 +330,7 @@ next: go-cli-agent continue 20260319-101530-ab12cd --message "..."
 - 若设置 `GO_CLI_AGENT_ENV_FILE`，则读取该文件
 - 进程启动时会先加载 env 文件，再解析 provider `api_key_env`
 - 自动导入仅允许 provider secret 形态的键（`*_API_KEY`、`*_ACCESS_TOKEN`）；`GO_CLI_AGENT_*`、`PATH`、`HOME`、shell loader / dynamic loader 等控制变量必须忽略
-- `experimental web` Settings 页面保存的 API key 会持久化到这个 env 文件中
+- `go-cli-agent web` Settings 页面保存的 API key 会持久化到这个 env 文件中；`experimental web` 兼容入口使用同一行为
 
 配置结构：
 
@@ -381,7 +404,7 @@ hooks:
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
-- `experimental web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里
+- `go-cli-agent web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里；`experimental web` 兼容入口使用同一行为
 - Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置
 
 ## 8. Provider 配置字段
@@ -463,7 +486,8 @@ providers:
 
 ## 9. 验收标准
 
-- 核心命令面清晰且稳定
+- Web-first 默认入口清晰且稳定
+- CLI fallback 命令面清晰且稳定
 - `run` / `exec` / `steer` / `continue` 语义无冲突
 - 配置文件默认简洁，可选 generation 字段不污染最小配置
-- 扩展命令仍可用，但不主导 core v1 的默认体验
+- 扩展命令仍可用，但不主导默认 Web 页面或主验收口径

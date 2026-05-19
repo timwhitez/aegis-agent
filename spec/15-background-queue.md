@@ -1,6 +1,6 @@
 # Go CLI Agent Background Queue Spec
 
-> 当前定位：large-project profile 规格。后台队列仍不属于 minimal core 的默认根帮助面，但它需要具备真实 worker、job/session 关联和 parent notification 证据。
+> 当前定位：large-project profile 规格。后台队列不是默认 Web 页面里的必选工作流，但 Web-first v1 需要提供轻量提交与观测入口；底层必须具备真实 worker、job/session 关联和 parent notification 证据。
 
 ## 1. 目标
 
@@ -11,7 +11,7 @@
 - child agent 的异步执行
 - 无人值守批量任务
 - 外部系统通过文件事实驱动的作业投递
-- 活跃 `master agent` 在当前 CLI 进程内自动拉起 child agent，而不是要求用户手动再开 worker
+- 活跃 `master agent` 在当前 Web/CLI 运行上下文内自动拉起 child agent，而不是要求用户手动再开 worker
 
 ## 2. 存储布局
 
@@ -143,9 +143,9 @@
 - `master agent` 通过 `agent_spawn(background=true)` 派发的 child job 不需要用户再手动执行 `queue worker`
 - 显式 `queue worker` 仍保留，适合分离进程或长期值守
 
-Web console 扩展面还允许一个显式 worker pool：
+Web-first 控制台还允许一个显式 worker pool：
 
-- 由 `experimental web` 进程托管
+- 由 `go-cli-agent web` 进程托管；`experimental web` 作为旧入口兼容别名
 - 默认按配置或命令行参数启动 `N` 个 worker
 - 每个 worker 都必须通过真实 `ProcessNextJob(...)` 消费队列，不能伪造 running/completed 状态
 - 多 worker 共享同一 queue 根目录，依赖 claim rename 保证不重复消费
