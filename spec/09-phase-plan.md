@@ -181,7 +181,7 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
 - `gofmt -l` 无漂移
 - `node --check internal/webconsole/assets/*.js` 通过
-- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、provider/model override 和 queue job 提交主路径通过
+- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model 配置和 queue job 提交主路径通过
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
 

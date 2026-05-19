@@ -52,7 +52,7 @@
 ### 3.1 Web-first v1 必须达成
 
 - 提供稳定的本地 Web-first agent 运行时，可在工作目录内完成多轮任务
-- 提供完整的本地 Web 控制台，作为默认用户入口承载 session 启动、追加输入、继续执行、Goal、Plan Mode、provider/model override、任务/队列/children 观测与基础控制
+- 提供完整的本地 Web 控制台，作为默认用户入口承载 session 启动、追加输入、继续执行、Goal、Plan Mode、Settings provider/model 配置、任务/队列/children 观测与基础控制
 - 保留稳定 CLI 命令面，作为脚本化、CI、故障恢复和高级操作入口
 - 支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - 支持 `openai-compatible` 的 Responses 形状兼容入口
@@ -120,7 +120,7 @@
 ### 5.1 Web Console
 
 - 默认入口是本地 Web 控制台
-- 用户从 Session 工作区启动任务、选择 provider/model、打开 Goal 或 Plan Mode、追加 steer、continue、查看 timeline / tasks / queue / children
+- 用户从 Session 工作区启动任务、打开 Goal 或 Plan Mode、追加 steer、continue、查看 timeline / tasks / queue / children；provider/model 通过 Settings 配置，避免每个 session 输入框重复暴露高级 provider 面板
 - Web 控制台只通过 runtime / session store / queue store 做真实控制，不维护第二套状态
 - 默认交互要简洁：高频路径不要求多轮用户确认；只有 validation coverage override、删除/清理、配置/API key 写入、外部暴露服务和其他不可逆或安全敏感动作需要显式确认
 
@@ -165,7 +165,7 @@ runtime 只提供循环、工具、知识入口、权限边界和状态持久化
 - Session-first 工作区
 - Timeline / tool lane / event activity
 - Goal 与 Plan Mode inspector
-- Provider / model override
+- Settings provider / model 配置
 - Queue / children / tasks 的对象级观测与轻量控制
 
 CLI 仍然是稳定的底层控制面，用于：
@@ -220,7 +220,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 - skills 和 `AGENTS.md` 指令链
 - hooks v1
 - compaction
-- local Web console：session start/continue/steer、Goal、Plan Mode、provider/model override、timeline、tasks、children、queue、settings、workspace read-only browser
+- local Web console：session start/continue/steer、Goal、Plan Mode、Settings provider/model 配置、timeline、tasks、children、queue、settings、workspace read-only browser
 - `run` / `exec` / `steer` / `continue` / `sessions` / `goal` / `tasks` / `init`
 - provider probe / doctor
 - OpenAI / Anthropic / Google adapter
@@ -254,7 +254,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 
 - 能完成纯文本任务
 - 能完成带工具调用任务
-- Web 控制台能完成 session start、steer、continue、Goal / Plan Mode 基础控制、provider/model override 与 queue job 提交
+- Web 控制台能完成 session start、steer、continue、Goal / Plan Mode 基础控制、Settings provider/model 配置与 queue job 提交
 - `run` 可自然停在 `awaiting_input`
 - `exec` 在未 `finish` 时不会误判成功
 - `steer` 可在运行中被接纳

@@ -99,9 +99,6 @@ const nodes = {
   goalToggleBtn: document.getElementById('goal-toggle-btn'),
   planToggleBtn: document.getElementById('plan-toggle-btn'),
   goalComposerPanel: document.getElementById('goal-composer-panel'),
-  sessionProviderOverride: document.getElementById('session-provider-override'),
-  sessionModelOverride: document.getElementById('session-model-override'),
-  providerOverridePanel: document.getElementById('provider-override-panel'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
   skillUploadBtn: document.getElementById('skill-upload-btn'),
@@ -167,7 +164,6 @@ async function init() {
     state.lastInputWasEmpty = !nodes.chatInput.value.trim();
     nodes.chatInput.focus();
   }
-  renderProviderOverrideControls();
 }
 
 function nextEphemeralSessionId() {
@@ -906,18 +902,14 @@ async function sendMessage() {
         tone: 'live'
       });
       queueOverviewRefresh(220);
-      const providerOverride = collectProviderOverride();
       const resp = await startSession({
         prompt: text,
         workdir: selectedWorkspaceWorkdir(),
-        provider: providerOverride.provider || undefined,
-        model: providerOverride.model || undefined,
         goal: goalDraft || undefined,
         planMode: planDraft || undefined
       });
       state.goalEnabled = false;
       state.planModeEnabled = false;
-      resetProviderOverride();
       adoptSession(resp.session_id, true);
       setGenerating(true, {
         title: 'Launching session',
@@ -1041,12 +1033,9 @@ async function requestStopViaBestAvailablePath(sessionID) {
 
 async function requestContinueSession(sessionID, message = '', options = {}) {
   try {
-    const providerOverride = collectProviderOverride();
     await continueSession(sessionID, {
       message,
-      planMode: options.planMode,
-      provider: providerOverride.provider || undefined,
-      model: providerOverride.model || undefined
+      planMode: options.planMode
     });
     if (!options.silentToast) {
       showToast('Session continued.', 'success');
@@ -1110,7 +1099,6 @@ function resetChatSession() {
   state.selectedQueueJobDetail = null;
   state.goalEnabled = false;
   state.planModeEnabled = false;
-  resetProviderOverride();
   state.liveActivity = {
     title: 'Ready for a new session',
     copy: 'Send a prompt to create a durable session. Answers, tool calls, and running flow will appear here.',
@@ -1180,61 +1168,12 @@ function updateUI() {
 
   nodes.inputStatusText.textContent = inputActionLabel();
   renderGoalComposer();
-  renderProviderOverrideControls();
 
   if (!state.isConnected) {
     nodes.connectionDot.className = 'dot';
     return;
   }
   nodes.connectionDot.className = state.isGenerating ? 'dot busy' : 'dot online';
-}
-
-function renderProviderOverrideControls() {
-  const select = nodes.sessionProviderOverride;
-  if (!select) {
-    return;
-  }
-  const currentProvider = select.value || '';
-  const providers = maybeArray(state.meta?.providers);
-  const defaultVendor = state.meta?.default_provider || state.meta?.default_vendor || '';
-  const options = ['<option value="">Default</option>'].concat(
-    providers.map((provider) => {
-      const name = provider.name || provider.Name || '';
-      if (!name) {
-        return '';
-      }
-      const model = provider.model || provider.Model || '';
-      const label = `${name}${name === defaultVendor ? ' (default)' : ''}${model ? ` / ${model}` : ''}`;
-      return `<option value="${escapeAttr(name)}">${escapeHTML(label)}</option>`;
-    })
-  ).join('');
-  if (select.innerHTML !== options) {
-    select.innerHTML = options;
-  }
-  if (currentProvider && providers.some((provider) => (provider.name || provider.Name) === currentProvider)) {
-    select.value = currentProvider;
-  } else {
-    select.value = '';
-  }
-}
-
-function collectProviderOverride() {
-  return {
-    provider: nodes.sessionProviderOverride?.value?.trim() || '',
-    model: nodes.sessionModelOverride?.value?.trim() || ''
-  };
-}
-
-function resetProviderOverride() {
-  if (nodes.sessionProviderOverride) {
-    nodes.sessionProviderOverride.value = '';
-  }
-  if (nodes.sessionModelOverride) {
-    nodes.sessionModelOverride.value = '';
-  }
-  if (nodes.providerOverridePanel) {
-    nodes.providerOverridePanel.open = false;
-  }
 }
 
 function chatInputPlaceholder() {
@@ -2458,7 +2397,6 @@ async function handleSkillAction(id, isInstalled, button) {
 async function refreshMeta() {
   state.meta = await requestJSON('/api/meta');
   updateWorkspaceMeta();
-  renderProviderOverrideControls();
 }
 
 document.addEventListener('DOMContentLoaded', init);

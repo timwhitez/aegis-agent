@@ -271,7 +271,7 @@ fixture 内容：
 - Web 运行中 steer 能入队并在 timeline 可见
 - Web awaiting_input / paused / failed session 能 continue
 - Web Goal / Plan Mode 控制能按文件事实展示和执行
-- Web provider/model override 能进入 start / continue 请求
+- Settings provider/model 配置能保存并驱动后续 Web session start / continue；Session composer 不再暴露 per-session Advanced provider 面板
 - `init` 是否生成正确配置
 - `run` 是否能进入 loop 并自然停在 `awaiting_input`
 - `steer` 是否能在运行中被接纳
