@@ -685,7 +685,10 @@ async function main() {
           state.selectedQueueJobId = ${JSON.stringify(results.queue_job_id)};
           state.selectedQueueJobDetail = null;
           state.inspectorTab = 'agents';
-          refreshSelectedQueueJobDetail().then(() => renderCurrentSession());
+          return refreshSelectedQueueJobDetail().then(() => {
+            renderCurrentSession();
+            return true;
+          });
         })()`);
       }
       await waitFor(
