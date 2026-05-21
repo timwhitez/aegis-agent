@@ -232,6 +232,13 @@ func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	if err := store.Create(meta, state); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	stableSummary := map[string]any{
+		"current_status": []string{"stable cached summary"},
+		"transcript":     "stable transcript",
+	}
+	if _, err := store.WriteArtifact(meta.ID, filepath.Join("compactions", "summary-20260521-010000.json"), stableSummary); err != nil {
+		t.Fatalf("write prior summary: %v", err)
+	}
 	messages := []session.Message{
 		session.NewMessage("user", "Continue the large audit."),
 		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
@@ -250,17 +257,26 @@ func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	if len(view) == 0 || !strings.Contains(view[0].Text, "[Conversation compacted]") {
 		t.Fatalf("expected compacted provider view, got %#v", view)
 	}
+	if !strings.Contains(view[0].Text, "stable cached summary") {
+		t.Fatalf("expected hysteresis reuse to load previous summary artifact, got %q", view[0].Text)
+	}
+	if strings.Contains(view[0].Text, "Continue the large audit") {
+		t.Fatalf("expected reused summary prefix to stay stable, got %q", view[0].Text)
+	}
 	if len(emitted) != 1 || emitted[0].Type != "compact.reused" {
 		t.Fatalf("expected compact.reused event only, got %#v", emitted)
 	}
 	if emitted[0].Data["last_compaction_input_chars"] != 520 {
 		t.Fatalf("expected watermark in compact.reused event, got %#v", emitted[0].Data)
 	}
+	if emitted[0].Data["summary_source"] != filepath.Join("compactions", "summary-20260521-010000.json") {
+		t.Fatalf("expected summary source in compact.reused event, got %#v", emitted[0].Data)
+	}
 	files, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("read compactions dir: %v", err)
 	}
-	if len(files) != 0 {
+	if len(files) != 1 {
 		t.Fatalf("expected no new compaction artifacts, got %#v", files)
 	}
 }

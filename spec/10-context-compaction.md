@@ -141,7 +141,7 @@ compaction 只影响：
   - 可选，按 `provider/model`、`model` 或 `provider` 覆盖上述阈值。
   - 未配置命中时继续使用默认字符阈值，不引入 provider 原生 token 计数或 replay 依赖。
 
-v1 先用字符数做近似估算，不做 provider 精确 token 计数。provider/model profile 只决定本地 compactor 使用哪组阈值，并写入 summary / compact event 作为诊断事实。超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 可以复用 compacted provider view 并只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact。
+v1 先用字符数做近似估算，不做 provider 精确 token 计数。provider/model profile 只决定本地 compactor 使用哪组阈值，并写入 summary / compact event 作为诊断事实。超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，附加当前最近消息尾部，并只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact 或破坏 provider prompt cache prefix。
 
 ## 6.1 Provider View 裁剪与指令边界
 

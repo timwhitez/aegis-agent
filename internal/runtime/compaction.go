@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -43,55 +44,12 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		return cloned, size, false, nil
 	}
 	if lastCompactionInputChars > 0 && profile.HysteresisDeltaChars > 0 && size < lastCompactionInputChars+profile.HysteresisDeltaChars {
-		projectMemory := loadProjectMemoryStack(workdir)
-		readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
-		blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
-		_, _, completedTaskCount := taskCounts(tasks)
-		proofBudget := proofReadBudget()
-		goal, _ := loadGoalOptional(c.store, sessionID)
-		if emit != nil {
-			emit(events.New(sessionID, "compact.reused", "compact", map[string]any{
-				"input_chars":                 size,
-				"last_compaction_input_chars": lastCompactionInputChars,
-				"hysteresis_delta_chars":      profile.HysteresisDeltaChars,
-				"reason":                      "within_compaction_hysteresis",
-				"context_profile":             profile,
-				"project_memory_present":      projectMemory.PresentPaths(),
-				"project_memory_missing":      projectMemory.MissingPaths(),
-				"todo_count":                  len(todo),
-				"ready_task_count":            len(readyTasks),
-				"blocked_task_count":          len(blockedTasks),
-				"completed_task_count":        completedTaskCount,
-				"proof_read_budget":           proofBudget,
-				"goal_present":                goal != nil,
-			}))
-		}
-		summary := map[string]any{
-			"completed_items":          collectCompletedItems(todo, tasks),
-			"artifact_memory":          collectArtifactMemory(sourceMessages, workdir, 12),
-			"context_profile":          profile,
-			"current_status":           summarizeLatestMessages(sourceMessages),
-			"current_in_progress_todo": currentInProgressTodo(todo),
-			"current_in_progress_task": currentInProgressTask(tasks),
-			"high_value_proofs":        collectHighValueProofs(sourceMessages, workdir, 10),
-			"key_paths":                collectKeyPaths(sourceMessages, workdir),
-			"loaded_skills":            state.LoadedSkills,
-			"next_step_guidance":       nextStepGuidance(),
-			"proof_read_budget":        proofBudget,
-			"project_memory_stack":     projectMemory.Summary(),
-			"tool_repetition":          summarizeToolRepetition(sourceMessages),
-			"todo":                     todo,
-			"ready_tasks":              readyTasks,
-			"blocked_tasks":            blockedTasks,
-			"unresolved_issues":        collectUnresolvedIssues(sourceMessages, state),
-			"recent_failure_or_pause":  recentFailureOrPause(state),
-			"transcript":               "[previous compaction transcript reused; no new artifact written within hysteresis window]",
-		}
-		if goal != nil {
-			summary["goal_snapshot"] = compactGoalSnapshot(*goal)
-		}
+		summary, summarySource := c.reusableCompactionSummary(sessionID, workdir, state, sourceMessages, todo, tasks, profile)
 		compactText, _ := json.MarshalIndent(summary, "", "  ")
 		recent := recentMessagesForCompaction(cloned, 6)
+		if emit != nil {
+			emit(events.New(sessionID, "compact.reused", "compact", c.compactReusedEventData(sessionID, workdir, size, lastCompactionInputChars, profile, todo, tasks, summarySource)))
+		}
 		compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
 		compacted.Meta = map[string]any{
 			"source": "compaction_summary",
@@ -190,6 +148,99 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	out := []session.Message{compacted}
 	out = append(out, recent...)
 	return out, size, true, nil
+}
+
+func (c *compactor) reusableCompactionSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, string) {
+	if relativePath := latestCompactionArtifactRelativePath(c.store, sessionID); relativePath != "" {
+		var summary map[string]any
+		if err := c.store.ReadArtifact(sessionID, relativePath, &summary); err == nil && len(summary) > 0 {
+			return summary, relativePath
+		}
+	}
+	return c.fallbackCompactionReuseSummary(sessionID, workdir, state, messages, todo, tasks, profile), "derived"
+}
+
+func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) map[string]any {
+	projectMemory := loadProjectMemoryStack(workdir)
+	readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
+	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
+	_, _, completedTaskCount := taskCounts(tasks)
+	proofBudget := proofReadBudget()
+	goal, _ := loadGoalOptional(c.store, sessionID)
+	summary := map[string]any{
+		"completed_items":          collectCompletedItems(todo, tasks),
+		"artifact_memory":          collectArtifactMemory(messages, workdir, 12),
+		"context_profile":          profile,
+		"current_status":           summarizeLatestMessages(messages),
+		"current_in_progress_todo": currentInProgressTodo(todo),
+		"current_in_progress_task": currentInProgressTask(tasks),
+		"high_value_proofs":        collectHighValueProofs(messages, workdir, 10),
+		"key_paths":                collectKeyPaths(messages, workdir),
+		"loaded_skills":            state.LoadedSkills,
+		"next_step_guidance":       nextStepGuidance(),
+		"proof_read_budget":        proofBudget,
+		"project_memory_stack":     projectMemory.Summary(),
+		"project_memory_present":   projectMemory.PresentPaths(),
+		"project_memory_missing":   projectMemory.MissingPaths(),
+		"tool_repetition":          summarizeToolRepetition(messages),
+		"todo":                     todo,
+		"ready_tasks":              readyTasks,
+		"blocked_tasks":            blockedTasks,
+		"completed_task_count":     completedTaskCount,
+		"unresolved_issues":        collectUnresolvedIssues(messages, state),
+		"recent_failure_or_pause":  recentFailureOrPause(state),
+		"transcript":               "[previous compaction transcript reused; no prior summary artifact was available]",
+	}
+	if goal != nil {
+		summary["goal_snapshot"] = compactGoalSnapshot(*goal)
+	}
+	return summary
+}
+
+func (c *compactor) compactReusedEventData(sessionID, workdir string, size, lastCompactionInputChars int, profile compactionContextProfile, todo []session.TodoItem, tasks []session.Task, summarySource string) map[string]any {
+	projectMemory := loadProjectMemoryStack(workdir)
+	readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
+	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
+	_, _, completedTaskCount := taskCounts(tasks)
+	proofBudget := proofReadBudget()
+	goal, _ := loadGoalOptional(c.store, sessionID)
+	return map[string]any{
+		"input_chars":                 size,
+		"last_compaction_input_chars": lastCompactionInputChars,
+		"hysteresis_delta_chars":      profile.HysteresisDeltaChars,
+		"reason":                      "within_compaction_hysteresis",
+		"context_profile":             profile,
+		"summary_source":              summarySource,
+		"project_memory_present":      projectMemory.PresentPaths(),
+		"project_memory_missing":      projectMemory.MissingPaths(),
+		"todo_count":                  len(todo),
+		"ready_task_count":            len(readyTasks),
+		"blocked_task_count":          len(blockedTasks),
+		"completed_task_count":        completedTaskCount,
+		"proof_read_budget":           proofBudget,
+		"goal_present":                goal != nil,
+	}
+}
+
+func latestCompactionArtifactRelativePath(store *session.Store, sessionID string) string {
+	dir := filepath.Join(store.SessionDir(sessionID), "artifacts", "compactions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var latest string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "summary-") || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		if latest == "" || entry.Name() > latest {
+			latest = entry.Name()
+		}
+	}
+	if latest == "" {
+		return ""
+	}
+	return filepath.Join("compactions", latest)
 }
 
 func recentMessagesForCompaction(messages []session.Message, minCount int) []session.Message {

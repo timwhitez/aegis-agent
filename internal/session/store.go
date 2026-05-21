@@ -1167,6 +1167,18 @@ func (s *Store) WriteArtifact(sessionID, relativePath string, payload any) (stri
 	return path, nil
 }
 
+func (s *Store) ReadArtifact(sessionID, relativePath string, target any) error {
+	artifactPath, err := validateStoreRelativePath("artifact", relativePath)
+	if err != nil {
+		return err
+	}
+	path, err := s.sessionPath(sessionID, "artifacts", artifactPath)
+	if err != nil {
+		return err
+	}
+	return readJSONFile(path, target)
+}
+
 func (s *Store) WriteTranscript(sessionID, name string, messages []Message) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

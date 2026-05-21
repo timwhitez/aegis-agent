@@ -116,12 +116,33 @@ Verification:
 
 ### Slice 2: Cache-Aware Compaction Review
 
-Status: planned.
+Status: implemented and validated.
 
 Goal:
 
 - Confirm current compaction recent-message retention gives stable provider view after marker injection.
 - If needed, adjust compaction only to keep provider tool-call/tool-result dependencies and latest cacheable tail more predictable.
+
+Finding:
+
+- The compaction hysteresis path emitted `compact.reused`, but rebuilt a fresh summary message from current session state on every provider call.
+- That was functionally safe, but it made the compacted provider-view prefix less stable than the event name implied and reduced the value of provider prompt caching after compaction.
+
+Changes:
+
+- Added a session-store artifact reader for existing summary artifacts.
+- During hysteresis reuse, load the latest `artifacts/compactions/summary-*.json` as the compacted summary prefix when available.
+- Keep the current recent-message tail in the provider view so new tool-call/tool-result dependencies and the latest user steering remain visible.
+- Fall back to the previous derived summary behavior only when no prior summary artifact exists.
+
+Verification:
+
+- `go test -count=1 ./internal/runtime -run TestCompactorReusesSummaryWithinHysteresisWindow`
+- `go test ./internal/runtime ./internal/session`
+- `go test ./cmd/... ./internal/... ./pkg/...`
+- `go test ./validation/cmd/...`
+- `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go internal/session/store.go` returned no files.
+- `git diff --check`
 
 Non-goals:
 
@@ -197,3 +218,4 @@ Validation evidence:
 - 2026-05-21: Created plan and started Slice 1 after reading required specs and OpenClacky docs/source.
 - 2026-05-21: Completed Slice 1 implementation and validation; ready to commit after staged diff checks.
 - 2026-05-21: Implemented Slice 3 cache observability in provider attempts and `session.md`; focused and broad validation passed.
+- 2026-05-21: Implemented Slice 2 hysteresis summary reuse; focused and broad validation passed.
