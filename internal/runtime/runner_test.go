@@ -195,6 +195,34 @@ func TestProviderOptionsFromConfigDefaultsStoreFalseForCustomOpenAICompatible(t 
 	}
 }
 
+func TestProviderOptionsFromConfigDefaultsPromptCacheForAnthropicCompatible(t *testing.T) {
+	opts := providerOptionsFromConfig("anthropic", config.Provider{
+		APIProvider: "anthropic-compatible",
+		Model:       "claude-sonnet-4-6",
+	})
+	if opts.PromptCache == nil || !*opts.PromptCache {
+		t.Fatalf("expected anthropic-compatible prompt_cache default true, got %#v", opts.PromptCache)
+	}
+
+	disabled := false
+	opts = providerOptionsFromConfig("anthropic", config.Provider{
+		APIProvider: "anthropic-compatible",
+		Model:       "claude-sonnet-4-6",
+		PromptCache: &disabled,
+	})
+	if opts.PromptCache == nil || *opts.PromptCache {
+		t.Fatalf("expected explicit prompt_cache=false to be preserved, got %#v", opts.PromptCache)
+	}
+
+	openai := providerOptionsFromConfig("openai-compatible", config.Provider{
+		APIProvider: "openai-compatible",
+		Model:       "gpt-5.4",
+	})
+	if openai.PromptCache != nil {
+		t.Fatalf("expected openai-compatible prompt_cache to rely on provider default, got %#v", openai.PromptCache)
+	}
+}
+
 func TestProbeDefaultsStoreFalseForCustomOpenAICompatible(t *testing.T) {
 	var seenBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

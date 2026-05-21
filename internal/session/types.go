@@ -65,6 +65,7 @@ type ProviderOptions struct {
 	TextVerbosity    string                 `json:"text_verbosity,omitempty"`
 	ThinkingBudget   int                    `json:"thinking_budget,omitempty"`
 	IncludeThoughts  *bool                  `json:"include_thoughts,omitempty"`
+	PromptCache      *bool                  `json:"prompt_cache,omitempty"`
 	Store            *bool                  `json:"store,omitempty"`
 	SendMetadata     *bool                  `json:"send_metadata,omitempty"`
 	RawSidecar       *bool                  `json:"raw_sidecar,omitempty"`

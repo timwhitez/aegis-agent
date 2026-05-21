@@ -30,7 +30,7 @@ func TestOpenAIAdapterSerializesAndParses(t *testing.T) {
 				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},
 				{"type":"function_call","call_id":"call_1","name":"finish","arguments":"{\"message\":\"done\"}"}
 			],
-			"usage":{"input_tokens":10,"output_tokens":5}
+			"usage":{"input_tokens":10,"output_tokens":5,"input_tokens_details":{"cached_tokens":7,"cache_write_tokens":3}}
 		}`))
 	}))
 	defer server.Close()
@@ -84,6 +84,9 @@ func TestOpenAIAdapterSerializesAndParses(t *testing.T) {
 	}
 	if result.RawProvider["provider_stop_reason"] != "completed" {
 		t.Fatalf("expected normalized openai provider stop reason, got %#v", result.RawProvider)
+	}
+	if result.Usage.CacheReadInputTokens != 7 || result.Usage.CacheCreationInputTokens != 3 {
+		t.Fatalf("expected openai cache usage telemetry, got %#v", result.Usage)
 	}
 }
 
@@ -265,6 +268,99 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	if result.RawProvider["provider_stop_reason"] != "tool_use" {
 		t.Fatalf("expected normalized provider stop reason, got %#v", result.RawProvider)
 	}
+}
+
+func TestAnthropicAdapterAppliesPromptCacheMarkersAndTelemetry(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_cache",
+			"stop_reason":"end_turn",
+			"content":[{"type":"text","text":"cached"}],
+			"usage":{
+				"input_tokens":8,
+				"cache_creation_input_tokens":21,
+				"cache_read_input_tokens":34,
+				"output_tokens":4
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	cache := true
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "stable system",
+		PromptCache:  &cache,
+		Messages: []session.Message{
+			session.NewMessage("user", "first"),
+			session.NewAssistantMessage("second", "", nil),
+			session.NewMessage("user", "third"),
+		},
+		Tools: []ToolSchema{
+			{Name: "read_file", Description: "read", InputSchema: map[string]any{"type": "object"}},
+			{Name: "finish", Description: "finish", InputSchema: map[string]any{"type": "object"}},
+		},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	systemBlocks, ok := body["system"].([]any)
+	if !ok || len(systemBlocks) != 1 || !hasCacheControl(systemBlocks[0]) {
+		t.Fatalf("expected system cache_control marker, got %#v", body["system"])
+	}
+	tools, ok := body["tools"].([]any)
+	if !ok || len(tools) != 2 || hasCacheControl(tools[0]) || !hasCacheControl(tools[1]) {
+		t.Fatalf("expected only final tool schema to be cache-marked, got %#v", body["tools"])
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("expected three messages, got %#v", body["messages"])
+	}
+	if hasMessageCacheControl(messages[0]) || !hasMessageCacheControl(messages[1]) || !hasMessageCacheControl(messages[2]) {
+		t.Fatalf("expected last two messages to be cache-marked, got %#v", body["messages"])
+	}
+	if result.Usage.CacheCreationInputTokens != 21 || result.Usage.CacheReadInputTokens != 34 {
+		t.Fatalf("expected cache usage telemetry, got %#v", result.Usage)
+	}
+	if result.RawProvider["prompt_cache_enabled"] != true || result.RawProvider["cache_read_input_tokens"] != 34 {
+		t.Fatalf("expected cache telemetry in raw provider envelope, got %#v", result.RawProvider)
+	}
+}
+
+func hasMessageCacheControl(message any) bool {
+	obj, ok := message.(map[string]any)
+	if !ok {
+		return false
+	}
+	content, ok := obj["content"].([]any)
+	if !ok {
+		return false
+	}
+	for _, block := range content {
+		if hasCacheControl(block) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCacheControl(value any) bool {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	cache, ok := obj["cache_control"].(map[string]any)
+	return ok && cache["type"] == "ephemeral"
 }
 
 func TestAnthropicReplayDropsReasoningOnlyAssistantBlocks(t *testing.T) {
@@ -496,7 +592,7 @@ func TestProviderReplaySerializesCompactedProviderBlockToolCalls(t *testing.T) {
 	anthropicReplay := anthropicMessages([]session.Message{
 		anthropicAssistant,
 		session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_old", Name: "shell", LLMOutput: "ok"}}),
-	}, "claude-sonnet-4-6", "", "")
+	}, "claude-sonnet-4-6", "", "", false)
 	anthropicData, _ := json.Marshal(anthropicReplay)
 	anthropicBody := string(anthropicData)
 	for _, want := range []string{

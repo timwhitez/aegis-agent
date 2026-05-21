@@ -252,6 +252,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			TextVerbosity:    meta.ProviderOptions.TextVerbosity,
 			ThinkingBudget:   meta.ProviderOptions.ThinkingBudget,
 			IncludeThoughts:  meta.ProviderOptions.IncludeThoughts,
+			PromptCache:      meta.ProviderOptions.PromptCache,
 			Store:            meta.ProviderOptions.Store,
 		}, func(eventType string, data map[string]any) {
 			e.emit(meta.ID, eventType, "provider_call", data)
@@ -1175,6 +1176,9 @@ func providerRequestPreparedEventData(meta session.SessionMetadata, requestMetad
 	if meta.ProviderOptions.IncludeThoughts != nil {
 		data["include_thoughts"] = *meta.ProviderOptions.IncludeThoughts
 	}
+	if meta.ProviderOptions.PromptCache != nil {
+		data["prompt_cache"] = *meta.ProviderOptions.PromptCache
+	}
 	if meta.ProviderOptions.Store != nil {
 		data["store"] = *meta.ProviderOptions.Store
 	}
@@ -1249,12 +1253,19 @@ func stampProviderContentBlocks(meta session.SessionMetadata, blocks []session.P
 }
 
 func providerTurnEventData(result provider.TurnResult) map[string]any {
+	usage := map[string]any{
+		"input_tokens":  result.Usage.InputTokens,
+		"output_tokens": result.Usage.OutputTokens,
+	}
+	if result.Usage.CacheCreationInputTokens > 0 {
+		usage["cache_creation_input_tokens"] = result.Usage.CacheCreationInputTokens
+	}
+	if result.Usage.CacheReadInputTokens > 0 {
+		usage["cache_read_input_tokens"] = result.Usage.CacheReadInputTokens
+	}
 	data := map[string]any{
 		"stop_reason": result.StopReason,
-		"usage": map[string]any{
-			"input_tokens":  result.Usage.InputTokens,
-			"output_tokens": result.Usage.OutputTokens,
-		},
+		"usage":       usage,
 	}
 	if strings.TrimSpace(result.ProviderResponseID) != "" {
 		data["provider_response_id"] = result.ProviderResponseID

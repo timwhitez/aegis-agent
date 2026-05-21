@@ -1470,6 +1470,7 @@ func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptio
 		cfg.ThinkingBudget = opts.ThinkingBudget
 	}
 	cfg.IncludeThoughts = opts.IncludeThoughts
+	cfg.PromptCache = opts.PromptCache
 	cfg.Store = opts.Store
 	cfg.SendMetadata = opts.SendMetadata
 	cfg.RawSidecar = opts.RawSidecar
@@ -1507,6 +1508,7 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 		TextVerbosity:    strings.TrimSpace(cfg.TextVerbosity),
 		ThinkingBudget:   cfg.ThinkingBudget,
 		IncludeThoughts:  cfg.IncludeThoughts,
+		PromptCache:      defaultPromptCacheForAPIProvider(apiProvider, cfg.PromptCache),
 		Store:            defaultStoreForAPIProvider(apiProvider, cfg.Store),
 		SendMetadata:     cfg.SendMetadata,
 		RawSidecar:       cfg.RawSidecar,
@@ -1528,6 +1530,17 @@ func defaultStoreForAPIProvider(apiProvider string, configured *bool) *bool {
 	}
 	if strings.TrimSpace(apiProvider) == "openai-compatible" {
 		value := false
+		return &value
+	}
+	return nil
+}
+
+func defaultPromptCacheForAPIProvider(apiProvider string, configured *bool) *bool {
+	if configured != nil {
+		return configured
+	}
+	if strings.TrimSpace(apiProvider) == "anthropic-compatible" {
+		value := true
 		return &value
 	}
 	return nil

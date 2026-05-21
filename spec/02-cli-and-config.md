@@ -444,6 +444,7 @@ hooks:
 - `max_output_tokens`
 - `thinking_budget`
 - `include_thoughts`
+- `prompt_cache`：默认开启；设置为 `false` 时 Anthropic-compatible adapter 不发送 `cache_control` marker
 - Settings mode `default | standard | max | off`；`max` 持久化为 `include_thoughts: true`、`thinking_budget: 32000`，并把 `max_output_tokens` 提高到至少 `32768`
 - 任意自定义 Provider Profile 只要显式配置 `api_provider: anthropic-compatible`，就使用同一 Messages adapter；未知自定义 profile 若没有 `api_provider` 必须报错，不按名称猜协议
 

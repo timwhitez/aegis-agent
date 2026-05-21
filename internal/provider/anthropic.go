@@ -30,16 +30,15 @@ func NewAnthropicWithRetry(baseURL, apiKey, version string, httpClient *http.Cli
 func (a *AnthropicAdapter) Name() string { return "anthropic" }
 
 func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+	systemBlocks := anthropicSystemBlocks(req.SystemPrompt, promptCacheEnabled(req.PromptCache))
 	body := map[string]any{
 		"model":      req.Model,
-		"messages":   anthropicMessages(req.Messages, req.Model, req.ProviderProfile, req.APIProvider),
-		"tools":      anthropicTools(req.Tools),
+		"messages":   anthropicMessages(req.Messages, req.Model, req.ProviderProfile, req.APIProvider, promptCacheEnabled(req.PromptCache)),
+		"tools":      anthropicTools(req.Tools, promptCacheEnabled(req.PromptCache)),
 		"max_tokens": anthropicMaxTokens(req.MaxOutputTokens),
 	}
-	if strings.TrimSpace(req.SystemPrompt) != "" {
-		body["system"] = []map[string]any{
-			{"type": "text", "text": req.SystemPrompt},
-		}
+	if len(systemBlocks) > 0 {
+		body["system"] = systemBlocks
 	}
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
@@ -65,8 +64,10 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
 	err := a.client.DoJSON(ctx, http.MethodPost, "/v1/messages", map[string]string{
@@ -157,17 +158,37 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		StopReason:            stopReason,
 		ProviderResponseID:    resp.ID,
 		Usage: Usage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
 		},
 		RawProvider: rawProviderEnvelope("stop_reason", resp.StopReason, map[string]any{
-			"thinking_block_count":      thinkingBlockCount,
-			"redacted_thinking_count":   redactedThinkingCount,
-			"thinking_visible_observed": len(thinkingParts) > 0,
-			"thinking_replay_observed":  thinkingReplayObserved,
-			"thinking_strategy":         thinkingStrategy,
+			"thinking_block_count":        thinkingBlockCount,
+			"redacted_thinking_count":     redactedThinkingCount,
+			"thinking_visible_observed":   len(thinkingParts) > 0,
+			"thinking_replay_observed":    thinkingReplayObserved,
+			"thinking_strategy":           thinkingStrategy,
+			"prompt_cache_enabled":        promptCacheEnabled(req.PromptCache),
+			"cache_creation_input_tokens": resp.Usage.CacheCreationInputTokens,
+			"cache_read_input_tokens":     resp.Usage.CacheReadInputTokens,
 		}),
 	}, nil
+}
+
+func promptCacheEnabled(value *bool) bool {
+	return value != nil && *value
+}
+
+func anthropicSystemBlocks(systemPrompt string, enableCache bool) []map[string]any {
+	if strings.TrimSpace(systemPrompt) == "" {
+		return nil
+	}
+	block := map[string]any{"type": "text", "text": systemPrompt}
+	if enableCache {
+		block["cache_control"] = map[string]any{"type": "ephemeral"}
+	}
+	return []map[string]any{block}
 }
 
 func anthropicMaxTokens(value int) int {
@@ -200,19 +221,23 @@ func anthropicThinkingStrategy(budget int, includeThoughts *bool) string {
 	return "provider_default"
 }
 
-func anthropicTools(tools []ToolSchema) []map[string]any {
+func anthropicTools(tools []ToolSchema, enableCache bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
-	for _, tool := range tools {
-		out = append(out, map[string]any{
+	for i, tool := range tools {
+		item := map[string]any{
 			"name":         tool.Name,
 			"description":  tool.Description,
 			"input_schema": tool.InputSchema,
-		})
+		}
+		if enableCache && i == len(tools)-1 {
+			item["cache_control"] = map[string]any{"type": "ephemeral"}
+		}
+		out = append(out, item)
 	}
 	return out
 }
 
-func anthropicMessages(messages []session.Message, model, providerProfile, apiProvider string) []map[string]any {
+func anthropicMessages(messages []session.Message, model, providerProfile, apiProvider string, enableCache bool) []map[string]any {
 	var out []map[string]any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -271,7 +296,42 @@ func anthropicMessages(messages []session.Message, model, providerProfile, apiPr
 			})
 		}
 	}
+	if enableCache {
+		applyAnthropicMessageCache(out)
+	}
 	return out
+}
+
+func applyAnthropicMessageCache(messages []map[string]any) {
+	remaining := 2
+	for i := len(messages) - 1; i >= 0 && remaining > 0; i-- {
+		if anthropicCacheBlockCandidate(messages[i]) {
+			remaining--
+		}
+	}
+}
+
+func anthropicCacheBlockCandidate(msg map[string]any) bool {
+	content, ok := msg["content"].([]map[string]any)
+	if !ok || len(content) == 0 {
+		return false
+	}
+	for i := len(content) - 1; i >= 0; i-- {
+		if anthropicBlockCacheable(content[i]) {
+			content[i]["cache_control"] = map[string]any{"type": "ephemeral"}
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicBlockCacheable(block map[string]any) bool {
+	switch block["type"] {
+	case "text", "tool_use", "tool_result":
+		return true
+	default:
+		return false
+	}
 }
 
 func anthropicProviderContent(blocks []session.ProviderContentBlock, model, providerProfile, apiProvider string) []map[string]any {

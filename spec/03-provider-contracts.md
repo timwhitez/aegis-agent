@@ -172,6 +172,7 @@ adapter 负责转换为：
 - 原因是 session / messages / events 的唯一事实源必须是本地文件，而不是服务端存储
 - provider HTTP 层允许按配置做有限 retry，默认面向 `5xx` 和 transport timeout；认证错误与请求错误直接失败
 - 当 `reasoning` 对象非空时，请求包含 `include: ["reasoning.encrypted_content"]`，用于无状态 Responses replay；`reasoning_summary=none` 表示显式不请求可读 summary。
+- OpenAI / `openai-compatible` 不发送 provider-specific cache marker；若上游返回 `input_tokens_details.cached_tokens` 或兼容的 cache write 计数，adapter 只把它们记录进 usage / raw provider telemetry。
 
 ### 6.3 响应映射
 
@@ -183,7 +184,7 @@ adapter 负责转换为：
 - `output` 中的 `reasoning.encrypted_content`，进入 OpenAI 专用 `provider_content_blocks`，并和同一 reasoning id 的 summary parts、provider output sequence 绑定，供后续 Responses replay 使用
 - `status`
 - `incomplete_details`
-- `usage`
+- `usage`，包括 `input_tokens_details.cached_tokens` / cache write 字段（若上游提供）
 
 ### 6.4 stop_reason 映射
 
@@ -217,6 +218,7 @@ adapter 负责转换为：
 - `top_p` -> `top_p`
 - `max_output_tokens` -> `max_tokens`
 - `thinking_budget` + `include_thoughts=true` -> `thinking`
+- `prompt_cache=true` -> provider request cache markers
 
 当前实现里，`thinking` 采用：
 
@@ -227,6 +229,14 @@ adapter 负责转换为：
 }
 ```
 
+当前 cache 实现决策：
+
+- `anthropic-compatible` profile 的 `prompt_cache` 默认开启；自定义兼容网关可显式设置 `prompt_cache: false`。
+- cache marker 只在 Anthropic adapter 内构造，Web / CLI / tool 层不处理 provider-specific `cache_control`。
+- adapter 最多标记四个 cache breakpoint：稳定 system block、最后一个 tool schema、最近两个可缓存 message content block。
+- message marker 只加到本轮 provider request view，不回写 `messages.jsonl`，避免把 provider marker 变成 session 事实源。
+- compaction summary 仍作为普通 user message 进入 provider view；cache marker 不修改 system prompt，保持“压缩只改变上下文视图，不覆盖原始日志”的项目边界。
+
 ### 7.3 响应映射
 
 解析 content blocks：
@@ -235,7 +245,7 @@ adapter 负责转换为：
 - `thinking`
 - `redacted_thinking`
 - `tool_use`
-- `usage`
+- `usage`，包括 `cache_creation_input_tokens` 与 `cache_read_input_tokens`（若上游提供）
 - `stop_reason`
 
 ### 7.4 replay 约束

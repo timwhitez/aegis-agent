@@ -68,6 +68,9 @@ func TestExampleConfigUsesCurrentProviderTimeoutAndRetryDefaults(t *testing.T) {
 			t.Fatalf("unexpected %s retry policy: %#v", name, provider.Retry)
 		}
 	}
+	if cfg.Providers["anthropic"].PromptCache == nil || !*cfg.Providers["anthropic"].PromptCache {
+		t.Fatalf("expected anthropic example config to enable prompt_cache, got %#v", cfg.Providers["anthropic"].PromptCache)
+	}
 	if !cfg.Runtime.ProviderAutoResume.Enabled || cfg.Runtime.ProviderAutoResume.MaxAttempts != 2 {
 		t.Fatalf("unexpected provider_auto_resume example config: %#v", cfg.Runtime.ProviderAutoResume)
 	}

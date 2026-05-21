@@ -54,6 +54,7 @@ type Provider struct {
 	TextVerbosity       string   `yaml:"text_verbosity,omitempty"`
 	ThinkingBudget      int      `yaml:"thinking_budget,omitempty"`
 	IncludeThoughts     *bool    `yaml:"include_thoughts,omitempty"`
+	PromptCache         *bool    `yaml:"prompt_cache,omitempty"`
 	Store               *bool    `yaml:"store,omitempty"`
 	SendMetadata        *bool    `yaml:"send_metadata,omitempty"`
 	RawSidecar          *bool    `yaml:"raw_sidecar,omitempty"`

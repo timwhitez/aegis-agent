@@ -37,6 +37,7 @@ type TurnRequest struct {
 	TextVerbosity    string
 	ThinkingBudget   int
 	IncludeThoughts  *bool
+	PromptCache      *bool
 	Store            *bool
 }
 
@@ -48,8 +49,10 @@ type ToolCall struct {
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
+	InputTokens              int `json:"input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 type TurnResult struct {

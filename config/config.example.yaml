@@ -37,6 +37,7 @@ providers:
       retry_5xx: true
       retry_transport: true
     anthropic_version: 2023-06-01
+    prompt_cache: true
     # WebConsole Settings can also select max, which persists:
     # thinking_budget: 32000
     # include_thoughts: true

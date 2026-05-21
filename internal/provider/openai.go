@@ -87,8 +87,12 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			Summary          []openAIReasoningText `json:"summary"`
 		} `json:"output"`
 		Usage struct {
-			InputTokens         int `json:"input_tokens"`
-			OutputTokens        int `json:"output_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens     int `json:"cached_tokens"`
+				CacheWriteTokens int `json:"cache_write_tokens"`
+			} `json:"input_tokens_details"`
 			OutputTokensDetails struct {
 				ReasoningTokens int `json:"reasoning_tokens"`
 			} `json:"output_tokens_details"`
@@ -172,17 +176,21 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		StopReason:            stopReason,
 		ProviderResponseID:    resp.ID,
 		Usage: Usage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheCreationInputTokens: resp.Usage.InputTokensDetails.CacheWriteTokens,
+			CacheReadInputTokens:     resp.Usage.InputTokensDetails.CachedTokens,
 		},
 		RawProvider: rawProviderEnvelope("status", resp.Status, map[string]any{
-			"reasoning_summary_count":   reasoningSummaryCount,
-			"reasoning_text_count":      reasoningTextCount,
-			"reasoning_encrypted_count": reasoningEncryptedCount,
-			"reasoning_tokens":          resp.Usage.OutputTokensDetails.ReasoningTokens,
-			"thinking_visible_observed": len(thinkingParts) > 0,
-			"thinking_replay_observed":  reasoningEncryptedCount > 0,
-			"thinking_strategy":         thinkingStrategy,
+			"reasoning_summary_count":     reasoningSummaryCount,
+			"reasoning_text_count":        reasoningTextCount,
+			"reasoning_encrypted_count":   reasoningEncryptedCount,
+			"reasoning_tokens":            resp.Usage.OutputTokensDetails.ReasoningTokens,
+			"cache_creation_input_tokens": resp.Usage.InputTokensDetails.CacheWriteTokens,
+			"cache_read_input_tokens":     resp.Usage.InputTokensDetails.CachedTokens,
+			"thinking_visible_observed":   len(thinkingParts) > 0,
+			"thinking_replay_observed":    reasoningEncryptedCount > 0,
+			"thinking_strategy":           thinkingStrategy,
 		}),
 	}, nil
 }
