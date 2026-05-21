@@ -165,9 +165,21 @@ func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 		Outcome:   "retry",
 		Provider:  "openai",
 		Model:     "gpt-5.4",
-		Attempt:   2,
+		Attempt:   1,
 		Error:     "temporary timeout",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("append provider attempt: %v", err)
+	}
+	if err := store.AppendProviderAttempt(meta.ID, session.ProviderAttempt{
+		Outcome:                  "success",
+		Provider:                 "openai",
+		Model:                    "gpt-5.4",
+		Attempt:                  2,
+		ProviderResponseID:       "resp_cache_test",
+		CacheCreationInputTokens: 11,
+		CacheReadInputTokens:     23,
+		CreatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatalf("append provider attempt: %v", err)
 	}
@@ -182,8 +194,18 @@ func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load attempts: %v", err)
 	}
-	if len(attempts) != 1 || attempts[0].Outcome != "retry" || attempts[0].Error != "temporary timeout" {
+	if len(attempts) != 2 || attempts[0].Outcome != "retry" || attempts[0].Error != "temporary timeout" || attempts[1].Outcome != "success" {
 		t.Fatalf("unexpected provider attempts: %#v", attempts)
+	}
+	if attempts[1].CacheCreationInputTokens != 11 || attempts[1].CacheReadInputTokens != 23 {
+		t.Fatalf("expected cache counters in provider attempts: %#v", attempts)
+	}
+	summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if !strings.Contains(string(summary), "cache usage: read=`23` creation=`11` hit_attempts=`1`") {
+		t.Fatalf("expected cache usage summary, got:\n%s", string(summary))
 	}
 	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
 	if err != nil {

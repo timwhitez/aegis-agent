@@ -220,6 +220,10 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	if len(attempts) == 0 {
 		b.WriteString("not recorded\n")
 	} else {
+		cache := summarizeProviderAttemptCache(attempts)
+		if cache.CreationTokens > 0 || cache.ReadTokens > 0 {
+			b.WriteString(fmt.Sprintf("- cache usage: read=`%d` creation=`%d` hit_attempts=`%d`\n", cache.ReadTokens, cache.CreationTokens, cache.HitAttempts))
+		}
 		start := len(attempts) - 8
 		if start < 0 {
 			start = 0
@@ -278,6 +282,24 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	b.WriteString(fmt.Sprintf("- events: `%s`\n", filepath.Join(store.SessionDir(sessionID), "events.jsonl")))
 	b.WriteString(fmt.Sprintf("- updated_at: `%s`\n", time.Now().UTC().Format(time.RFC3339Nano)))
 	return store.WriteSessionMarkdown(sessionID, b.String())
+}
+
+type providerAttemptCacheSummary struct {
+	CreationTokens int
+	ReadTokens     int
+	HitAttempts    int
+}
+
+func summarizeProviderAttemptCache(attempts []session.ProviderAttempt) providerAttemptCacheSummary {
+	var out providerAttemptCacheSummary
+	for _, attempt := range attempts {
+		out.CreationTokens += attempt.CacheCreationInputTokens
+		out.ReadTokens += attempt.CacheReadInputTokens
+		if attempt.CacheReadInputTokens > 0 {
+			out.HitAttempts++
+		}
+	}
+	return out
 }
 
 func writeLongRunCheckpoint(store *session.Store, sessionID string) error {

@@ -183,7 +183,7 @@
 职责：
 
 - 把 provider retry、auto-resume、final failure、success 写入 `provider-attempts.jsonl`
-- 保留 provider/model、turn、attempt、timeout/retry 线索、error class、timeout kind、status code、response id
+- 保留 provider/model、turn、attempt、timeout/retry 线索、error class、timeout kind、status code、response id、provider 返回的 cache read/write token 计数
 - 只作为恢复与诊断事实，不反向驱动 adapter retry policy
 
 ### 2.15 SessionSummaryWriter

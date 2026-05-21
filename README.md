@@ -182,7 +182,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 
 ## Troubleshooting
 
-- `provider.retry` / `provider.auto_resume` 说明 adapter 或 runtime 在处理上游超时/重试；查看 `.go-cli-agent/sessions/<id>/provider-attempts.jsonl` 和 `session.md`。
+- `provider.retry` / `provider.auto_resume` 说明 adapter 或 runtime 在处理上游超时/重试；查看 `.go-cli-agent/sessions/<id>/provider-attempts.jsonl` 和 `session.md`，其中也会汇总 provider 返回的 cache read/write token 计数。
 - session 长时间运行但 provider attempts 持续成功、同时反复 `load_skill`、同一路径 `read_file` 或 `todo_write` no-op，通常是工具循环退化；`session.md` 的 `Tool Repetition` 小节会列出重复工具、重复读取路径和 no-op todo 次数。
 - 重复 `load_skill` 默认返回 `already_loaded`，需要重新读取 skill 文件时显式使用 `force_reload=true`。
 - todo 是当前 session 的执行节奏板；durable tasks 在 `tasks/` 目录中。空 `tasks/` 不代表 todo 刷新就是持久任务进展。

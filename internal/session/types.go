@@ -143,22 +143,24 @@ type SessionContract struct {
 }
 
 type ProviderAttempt struct {
-	Turn                int    `json:"turn,omitempty"`
-	Attempt             int    `json:"attempt,omitempty"`
-	Provider            string `json:"provider"`
-	Model               string `json:"model"`
-	RequestTimeoutSec   int    `json:"request_timeout_sec,omitempty"`
-	StreamIdleTimeoutMS int    `json:"stream_idle_timeout_ms,omitempty"`
-	Outcome             string `json:"outcome"`
-	Retryable           bool   `json:"retryable,omitempty"`
-	StatusCode          int    `json:"status_code,omitempty"`
-	ErrorClass          string `json:"error_class,omitempty"`
-	TimeoutKind         string `json:"timeout_kind,omitempty"`
-	ResponseCommitted   bool   `json:"response_committed,omitempty"`
-	BackoffMS           int64  `json:"backoff_ms,omitempty"`
-	ProviderResponseID  string `json:"provider_response_id,omitempty"`
-	Error               string `json:"error,omitempty"`
-	CreatedAt           string `json:"created_at"`
+	Turn                     int    `json:"turn,omitempty"`
+	Attempt                  int    `json:"attempt,omitempty"`
+	Provider                 string `json:"provider"`
+	Model                    string `json:"model"`
+	RequestTimeoutSec        int    `json:"request_timeout_sec,omitempty"`
+	StreamIdleTimeoutMS      int    `json:"stream_idle_timeout_ms,omitempty"`
+	Outcome                  string `json:"outcome"`
+	Retryable                bool   `json:"retryable,omitempty"`
+	StatusCode               int    `json:"status_code,omitempty"`
+	ErrorClass               string `json:"error_class,omitempty"`
+	TimeoutKind              string `json:"timeout_kind,omitempty"`
+	ResponseCommitted        bool   `json:"response_committed,omitempty"`
+	BackoffMS                int64  `json:"backoff_ms,omitempty"`
+	ProviderResponseID       string `json:"provider_response_id,omitempty"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
+	Error                    string `json:"error,omitempty"`
+	CreatedAt                string `json:"created_at"`
 }
 
 type ProviderRawSidecar struct {

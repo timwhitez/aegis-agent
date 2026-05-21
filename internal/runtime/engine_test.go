@@ -50,7 +50,12 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 				"provider_stop_reason": "completed",
 				"status":               "completed",
 			},
-			Usage: provider.Usage{InputTokens: 12, OutputTokens: 4},
+			Usage: provider.Usage{
+				InputTokens:              12,
+				OutputTokens:             4,
+				CacheCreationInputTokens: 5,
+				CacheReadInputTokens:     9,
+			},
 		}, nil
 	})
 	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
@@ -72,6 +77,31 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 	if !hasEventType(events, "turn.stopped") {
 		t.Fatalf("expected turn.stopped event, got %#v", events)
+	}
+	stopped, ok := findEventByType(events, "turn.stopped")
+	if !ok {
+		t.Fatalf("expected turn.stopped event, got %#v", events)
+	}
+	usage, ok := stopped.Data["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected usage data on turn.stopped, got %#v", stopped.Data)
+	}
+	if usage["cache_creation_input_tokens"] != float64(5) || usage["cache_read_input_tokens"] != float64(9) {
+		t.Fatalf("expected cache usage counters in turn.stopped, got %#v", usage)
+	}
+	attempts, err := engine.store.LoadProviderAttempts(meta.ID)
+	if err != nil {
+		t.Fatalf("provider attempts: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].CacheCreationInputTokens != 5 || attempts[0].CacheReadInputTokens != 9 {
+		t.Fatalf("expected cache counters in provider attempts, got %#v", attempts)
+	}
+	summary, err := os.ReadFile(filepath.Join(engine.store.SessionDir(meta.ID), "session.md"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if !strings.Contains(string(summary), "cache usage: read=`9` creation=`5` hit_attempts=`1`") {
+		t.Fatalf("expected cache usage summary, got:\n%s", string(summary))
 	}
 }
 

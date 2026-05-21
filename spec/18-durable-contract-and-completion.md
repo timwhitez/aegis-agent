@@ -166,6 +166,7 @@ The ledger records retry, auto-resume, final failure, and success facts:
 - retryability
 - status code, error class, timeout kind
 - response id when available
+- cache read/write token counters when available
 - created time
 
 The ledger is diagnostic only. Provider retry policy remains adapter-owned and is not driven by this file.

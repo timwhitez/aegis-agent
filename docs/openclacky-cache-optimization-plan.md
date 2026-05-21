@@ -130,16 +130,32 @@ Non-goals:
 
 ### Slice 3: Provider Cache Observability
 
-Status: planned.
+Status: implemented and validated.
 
 Goal:
 
-- Add a session-level derived cache summary to `session.md` or provider attempts after real provider validation proves fields are stable.
+- Persist provider-returned cache read/write counters on successful `provider-attempts.jsonl` entries.
+- Add a session-level derived cache summary to `session.md` so operators can see read/write token totals and hit attempts without parsing event payloads.
+
+Changes:
+
+- Added `cache_creation_input_tokens` and `cache_read_input_tokens` to successful provider attempts.
+- Added `cache usage: read=... creation=... hit_attempts=...` to the `Provider Attempts` section in `session.md` when cache counters are non-zero.
+- Kept `turn.stopped` usage telemetry as the event-level source for per-turn usage.
 
 Non-goals:
 
 - No cost calculator rewrite before current provider usage semantics are audited.
 - No Web UI redesign; at most a small fact display if session facts already contain the counters.
+
+Verification:
+
+- `go test -count=1 ./internal/runtime -run 'TestEnginePersistsProviderTurnMetadata|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable'`
+- `go test ./internal/runtime ./internal/session`
+- `go test ./cmd/... ./internal/... ./pkg/...`
+- `go test ./validation/cmd/...`
+- `gofmt -l internal/session/types.go internal/runtime/provider_attempts.go internal/runtime/session_summary.go internal/runtime/engine_test.go internal/runtime/contract_controller_test.go` returned no files.
+- `git diff --check`
 
 ## Review Passes
 
@@ -180,3 +196,4 @@ Validation evidence:
 
 - 2026-05-21: Created plan and started Slice 1 after reading required specs and OpenClacky docs/source.
 - 2026-05-21: Completed Slice 1 implementation and validation; ready to commit after staged diff checks.
+- 2026-05-21: Implemented Slice 3 cache observability in provider attempts and `session.md`; focused and broad validation passed.

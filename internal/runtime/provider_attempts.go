@@ -48,6 +48,8 @@ func recordProviderSuccess(store *session.Store, meta session.SessionMetadata, t
 	attempt.Attempt = terminalProviderAttempt(store, meta.ID, turn)
 	attempt.ResponseCommitted = true
 	attempt.ProviderResponseID = result.ProviderResponseID
+	attempt.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
+	attempt.CacheReadInputTokens = result.Usage.CacheReadInputTokens
 	_ = store.AppendProviderAttempt(meta.ID, attempt)
 }
 
