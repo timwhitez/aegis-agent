@@ -40,6 +40,7 @@ async function loadWorkspaceDirectory(path = '') {
   const tree = await requestJSON(`/api/files?path=${encodeURIComponent(queryPath)}`);
   state.workspacePath = normalized;
   state.fileTree = tree;
+  state.selectedTreePath = '';
   renderFileTree(tree);
   updateWorkspaceMeta();
   nodes.editorFilename.innerText = workspaceDisplayName();
@@ -70,6 +71,7 @@ function selectedWorkspaceWorkdir() {
 function renderFileTree(tree, container = nodes.fileTree, level = 0) {
   if (level === 0) {
     container.innerHTML = '';
+    ensureFileTreeDelegation(container);
   }
   if (!Array.isArray(tree)) {
     return;
@@ -86,6 +88,12 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     const button = document.createElement('button');
     button.className = 'tree-node';
     button.style.paddingLeft = `${16 + level * 16}px`;
+    button.dataset.path = node.path || '';
+    button.dataset.type = node.type || '';
+    button.dataset.navigation = node.navigation || '';
+    if (state.selectedTreePath && node.type === 'file' && node.path === state.selectedTreePath) {
+      button.classList.add('active');
+    }
     const icon = node.navigation === 'parent' ? 'corner-up-left' : node.type === 'directory' ? 'folder' : 'file-code';
     button.innerHTML = `<i data-lucide="${icon}" class="icon-small"></i><span>${escapeHTML(node.name)}</span>`;
     const childrenContainer = document.createElement('div');
@@ -93,43 +101,6 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     if (node.type === 'directory') {
       childrenContainer.classList.add('is-collapsed');
     }
-
-    button.addEventListener('click', async () => {
-      if (node.navigation === 'parent') {
-        button.disabled = true;
-        button.classList.add('is-loading');
-        try {
-          await loadWorkspaceDirectory(node.path || '');
-        } catch (err) {
-          showToast('Failed to load parent directory.', 'error');
-        } finally {
-          button.disabled = false;
-          button.classList.remove('is-loading');
-        }
-        return;
-      }
-      if (node.type === 'file') {
-        await loadFile(node.path);
-        document.querySelectorAll('.tree-node').forEach((treeNode) => treeNode.classList.remove('active'));
-        button.classList.add('active');
-        return;
-      }
-      if (node.type === 'directory') {
-        button.disabled = true;
-        button.classList.add('is-loading');
-        try {
-          await loadWorkspaceDirectory(node.path);
-        } catch (err) {
-          nodes.editorFilename.innerText = node.path;
-          nodes.editorContent.innerText = 'Error loading directory.';
-          showToast(`Failed to load directory: ${node.path}`, 'error');
-        } finally {
-          button.disabled = false;
-          button.classList.remove('is-loading');
-        }
-      }
-    });
-
     itemWrapper.appendChild(button);
     itemWrapper.appendChild(childrenContainer);
     container.appendChild(itemWrapper);
@@ -141,6 +112,78 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
   if (level === 0 && window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: nodes.fileTree });
   }
+}
+
+function ensureFileTreeDelegation(container) {
+  if (!container || container.dataset.delegationBound === '1') {
+    return;
+  }
+  container.dataset.delegationBound = '1';
+  container.addEventListener('click', handleFileTreeClick);
+}
+
+async function handleFileTreeClick(event) {
+  const button = event.target.closest('.tree-node');
+  if (!button || !nodes.fileTree.contains(button) || button.disabled) {
+    return;
+  }
+  const path = button.dataset.path || '';
+  const type = button.dataset.type || '';
+  const navigation = button.dataset.navigation || '';
+
+  if (navigation === 'parent') {
+    button.disabled = true;
+    button.classList.add('is-loading');
+    try {
+      await loadWorkspaceDirectory(path || '');
+    } catch (err) {
+      showToast('Failed to load parent directory.', 'error');
+    } finally {
+      button.disabled = false;
+      button.classList.remove('is-loading');
+    }
+    return;
+  }
+
+  if (type === 'file') {
+    await loadFile(path);
+    setActiveTreeNode(button, path);
+    return;
+  }
+
+  if (type === 'directory') {
+    button.disabled = true;
+    button.classList.add('is-loading');
+    try {
+      await loadWorkspaceDirectory(path);
+    } catch (err) {
+      nodes.editorFilename.innerText = path;
+      nodes.editorContent.innerText = 'Error loading directory.';
+      showToast(`Failed to load directory: ${path}`, 'error');
+    } finally {
+      button.disabled = false;
+      button.classList.remove('is-loading');
+    }
+  }
+}
+
+function setActiveTreeNode(button, path) {
+  const previous = state.selectedTreePath;
+  if (previous && previous !== path) {
+    const old = nodes.fileTree.querySelector(`.tree-node.active[data-path="${cssEscape(previous)}"]`);
+    if (old) {
+      old.classList.remove('active');
+    }
+  }
+  state.selectedTreePath = path;
+  button.classList.add('active');
+}
+
+function cssEscape(value) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return String(value || '').replace(/(["\\\]\[\(\)\.\s])/g, '\\$1');
 }
 
 async function loadFile(path) {

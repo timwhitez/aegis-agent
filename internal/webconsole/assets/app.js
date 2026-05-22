@@ -39,6 +39,7 @@ const state = {
   skills: [],
   fileTree: [],
   workspacePath: '',
+  selectedTreePath: '',
   optimisticMessages: [],
   liveEvents: [],
   liveActivity: {
