@@ -216,6 +216,15 @@ header {
   opacity: 0.16;
 }
 
+.dot.online::after {
+  animation: dotBreath 2.4s ease-in-out infinite;
+}
+
+@keyframes dotBreath {
+  0%, 100% { opacity: 0.16; transform: scale(1); }
+  50% { opacity: 0.42; transform: scale(1.18); }
+}
+
 .session-chip {
   display: inline-flex;
   align-items: center;
@@ -517,6 +526,15 @@ header {
   overflow-x: auto;
   margin: 16px 0;
   border: 1px solid var(--border);
+}
+.prose pre::-webkit-scrollbar { height: 8px; }
+.prose pre::-webkit-scrollbar-track { background: transparent; }
+.prose pre::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.32);
+  border-radius: var(--radius-full);
+}
+.prose pre::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 0.52);
 }
 .prose pre code {
   background-color: transparent;
@@ -931,7 +949,20 @@ textarea {
   color: var(--text-muted);
   width: 100%;
   text-align: left;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  position: relative;
+  transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.tree-node::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  transition: background-color 0.18s ease;
 }
 
 .tree-node .icon-small { width: 16px; height: 16px; flex-shrink: 0; }
@@ -947,7 +978,9 @@ textarea {
 }
 
 .tree-node:hover { background-color: var(--surface-hover); color: var(--text-main); }
+.tree-node:hover::before { background: var(--border); }
 .tree-node.active { background-color: var(--accent-soft); color: var(--accent-strong); font-weight: 500; }
+.tree-node.active::before { background: var(--accent); }
 .tree-node.is-loading { opacity: 0.6; pointer-events: none; }
 
 .editor-container {
