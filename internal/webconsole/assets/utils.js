@@ -9,10 +9,24 @@ function normalizeText(value) {
 }
 
 function safeMarkdown(text) {
+  try {
+    return safeMarkdownInner(text);
+  } catch (err) {
+    // Never let a malformed markdown fragment blank the message bubble.
+    console.warn('safeMarkdown failed; falling back to escaped text', err);
+    return `<pre class="markdown-fallback">${escapeHTML(String(text || ''))}</pre>`;
+  }
+}
+
+function safeMarkdownInner(text) {
   const source = String(text || '').replace(/\r\n/g, '\n');
+  if (!source.trim()) {
+    return '<p></p>';
+  }
   const lines = source.split('\n');
   const blocks = [];
-  let inCode = false;
+  let codeFence = '';
+  let codeLang = '';
   let codeLines = [];
   let listLines = [];
   const flushList = () => {
@@ -21,20 +35,33 @@ function safeMarkdown(text) {
     listLines = [];
   };
   const flushCode = () => {
-    blocks.push(`<pre><code>${escapeHTML(codeLines.join('\n'))}</code></pre>`);
+    const langClass = codeLang ? ` class="language-${escapeAttr(codeLang)}"` : '';
+    blocks.push(`<pre><code${langClass}>${escapeHTML(codeLines.join('\n'))}</code></pre>`);
     codeLines = [];
+    codeLang = '';
   };
   lines.forEach((line) => {
-    if (line.trim().startsWith('```')) {
-      if (inCode) {
-        flushCode();
-      } else {
-        flushList();
+    // Detect a fence: 3+ backticks (or tildes) optionally preceded by up to 3 spaces, with an optional language tag.
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})\s*([^\s`~]*)\s*$/.exec(line);
+    if (fenceMatch) {
+      const fence = fenceMatch[1];
+      if (codeFence) {
+        // Closing fence: must be the same character family and at least as long.
+        if (fence[0] === codeFence[0] && fence.length >= codeFence.length) {
+          flushCode();
+          codeFence = '';
+          return;
+        }
+        // Otherwise treat as part of the code body.
+        codeLines.push(line);
+        return;
       }
-      inCode = !inCode;
+      flushList();
+      codeFence = fence;
+      codeLang = fenceMatch[2] || '';
       return;
     }
-    if (inCode) {
+    if (codeFence) {
       codeLines.push(line);
       return;
     }
@@ -55,11 +82,13 @@ function safeMarkdown(text) {
     }
     blocks.push(`<p>${inlineMarkdown(trimmed)}</p>`);
   });
-  if (inCode) {
+  if (codeFence) {
+    // Unclosed fence: render the captured code without losing content.
     flushCode();
+    codeFence = '';
   }
   flushList();
-  return blocks.join('') || '<p></p>';
+  return blocks.join('') || `<p>${inlineMarkdown(source.trim())}</p>`;
 }
 
 function inlineMarkdown(value) {
@@ -389,7 +418,16 @@ function renderMarkdownCached(key, text) {
     markdownCache.set(cacheKey, cached);
     return cached;
   }
-  const html = safeMarkdown(source);
+  let html;
+  try {
+    html = safeMarkdown(source);
+  } catch (err) {
+    console.warn('renderMarkdownCached failed; falling back to escaped text', err);
+    html = `<pre class="markdown-fallback">${escapeHTML(source)}</pre>`;
+  }
+  if (!html) {
+    html = `<pre class="markdown-fallback">${escapeHTML(source)}</pre>`;
+  }
   markdownCache.set(cacheKey, html);
   if (markdownCache.size > MARKDOWN_CACHE_LIMIT) {
     const oldestKey = markdownCache.keys().next().value;
