@@ -485,7 +485,11 @@ function renderMessageText(message) {
   if (message.role === 'user') {
     return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
   }
-  const cacheKey = message.id ? `msg:${message.id}` : `optim:${message.optimisticKey || ''}`;
+  const cacheKey = message.id
+    ? `msg:${message.id}`
+    : message.optimisticKey
+      ? `optim:${message.optimisticKey}`
+      : 'msg:anon';
   return `<div class="message-bubble prose">${renderMarkdownCached(cacheKey, message.text)}</div>`;
 }
 

@@ -793,7 +793,7 @@ function setupEventListeners() {
           }
         }
         break;
-      case 'new_session':
+      case 'new_session': {
         const wasGenerating = state.isGenerating;
         resetChatSession();
         showToast(
@@ -803,6 +803,7 @@ function setupEventListeners() {
           'info'
         );
         break;
+      }
       case 'settings':
         switchView('settings');
         break;

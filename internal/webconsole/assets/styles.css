@@ -58,6 +58,12 @@ button {
   transition: all 0.2s ease;
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
 input, textarea, select {
   font-family: inherit;
   font-size: inherit;
@@ -523,7 +529,8 @@ header {
   background-color: var(--surface-hover);
   padding: 16px;
   border-radius: var(--radius-lg);
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 480px;
   margin: 16px 0;
   border: 1px solid var(--border);
 }
@@ -1014,6 +1021,8 @@ textarea {
   font-family: var(--font-mono);
   font-size: 13px;
   white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.7;
   tab-size: 4;
   min-height: 0;
