@@ -4396,3 +4396,65 @@ func mustEmbeddedAsset(t *testing.T, name string) []byte {
 	}
 	return data
 }
+
+func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
+	assets, err := assetFS()
+	if err != nil {
+		t.Fatalf("asset fs: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	serveEmbeddedFileRequest(rec, req, assets, "styles.css")
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" || !strings.HasPrefix(etag, "\"") || !strings.HasSuffix(etag, "\"") {
+		t.Fatalf("missing or malformed ETag: %q", etag)
+	}
+	if got := resp.Header.Get("Vary"); !strings.Contains(strings.ToLower(got), "accept-encoding") {
+		t.Fatalf("Vary header = %q, want Accept-Encoding", got)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/css") {
+		t.Fatalf("Content-Type = %q, want text/css", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) == 0 {
+		t.Fatal("gzip response body is empty")
+	}
+
+	// If-None-Match returns 304 with the same ETag.
+	rec304 := httptest.NewRecorder()
+	req304 := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+	req304.Header.Set("If-None-Match", etag)
+	req304.Header.Set("Accept-Encoding", "gzip")
+	serveEmbeddedFileRequest(rec304, req304, assets, "styles.css")
+	if rec304.Code != http.StatusNotModified {
+		t.Fatalf("If-None-Match status = %d, want 304", rec304.Code)
+	}
+	if got := rec304.Header().Get("ETag"); got != etag {
+		t.Fatalf("304 ETag = %q, want %q", got, etag)
+	}
+
+	// Without gzip support the original bytes are returned.
+	recPlain := httptest.NewRecorder()
+	reqPlain := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+	serveEmbeddedFileRequest(recPlain, reqPlain, assets, "styles.css")
+	if recPlain.Code != http.StatusOK {
+		t.Fatalf("plain status = %d, want 200", recPlain.Code)
+	}
+	if got := recPlain.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("plain Content-Encoding = %q, want empty", got)
+	}
+	plain, _ := io.ReadAll(recPlain.Result().Body)
+	original := mustEmbeddedAsset(t, "styles.css")
+	if !bytes.Equal(plain, original) {
+		t.Fatalf("plain body length = %d, want %d", len(plain), len(original))
+	}
+}

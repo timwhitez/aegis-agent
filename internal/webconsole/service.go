@@ -2,7 +2,11 @@ package webconsole
 
 import (
 	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,15 +370,15 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-		serveEmbeddedFile(w, s.staticFS, "index.html")
+		serveEmbeddedFileRequest(w, r, s.staticFS, "index.html")
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	if _, err := fs.Stat(s.staticFS, name); err == nil {
-		serveEmbeddedFile(w, s.staticFS, name)
+		serveEmbeddedFileRequest(w, r, s.staticFS, name)
 		return
 	}
-	serveEmbeddedFile(w, s.staticFS, "index.html")
+	serveEmbeddedFileRequest(w, r, s.staticFS, "index.html")
 }
 
 func (s *Service) configSnapshot() (*config.Config, error) {
@@ -4271,20 +4275,131 @@ func tailProviderAttempts(items []session.ProviderAttempt, limit int) []session.
 	return items[len(items)-limit:]
 }
 
-func serveEmbeddedFile(w http.ResponseWriter, files fs.FS, name string) {
+var (
+	embeddedAssetCache   sync.Map // name -> *assetCacheEntry
+)
+
+type assetCacheEntry struct {
+	body        []byte
+	gzipBody    []byte
+	etag        string
+	contentType string
+}
+
+func loadEmbeddedAsset(files fs.FS, name string) (*assetCacheEntry, error) {
+	if v, ok := embeddedAssetCache.Load(name); ok {
+		return v.(*assetCacheEntry), nil
+	}
 	data, err := fs.ReadFile(files, filepath.Clean(name))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err)
-		return
+		return nil, err
 	}
 	contentType := mime.TypeByExtension(filepath.Ext(name))
 	if contentType == "" {
 		contentType = "text/html; charset=utf-8"
 	}
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-cache")
+	sum := sha256.Sum256(data)
+	entry := &assetCacheEntry{
+		body:        data,
+		etag:        `"` + hex.EncodeToString(sum[:16]) + `"`,
+		contentType: contentType,
+	}
+	if shouldPrecompressContentType(contentType) && len(data) >= 1024 {
+		var buf bytes.Buffer
+		gw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		if err == nil {
+			if _, werr := gw.Write(data); werr == nil {
+				if cerr := gw.Close(); cerr == nil && buf.Len() < len(data) {
+					entry.gzipBody = buf.Bytes()
+				}
+			}
+		}
+	}
+	if actual, loaded := embeddedAssetCache.LoadOrStore(name, entry); loaded {
+		return actual.(*assetCacheEntry), nil
+	}
+	return entry, nil
+}
 
-	_, _ = w.Write(data)
+func shouldPrecompressContentType(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	switch {
+	case strings.HasPrefix(ct, "text/"):
+		return true
+	case strings.Contains(ct, "javascript"):
+		return true
+	case strings.Contains(ct, "json"):
+		return true
+	case strings.Contains(ct, "svg"):
+		return true
+	case strings.Contains(ct, "wasm"):
+		return false
+	}
+	return false
+}
+
+func clientAcceptsGzip(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		if eq := strings.Index(token, ";"); eq >= 0 {
+			token = strings.TrimSpace(token[:eq])
+		}
+		if strings.EqualFold(token, "gzip") {
+			return true
+		}
+	}
+	return false
+}
+
+func serveEmbeddedFileRequest(w http.ResponseWriter, r *http.Request, files fs.FS, name string) {
+	entry, err := loadEmbeddedAsset(files, name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	header := w.Header()
+	header.Set("Content-Type", entry.contentType)
+	header.Set("ETag", entry.etag)
+	header.Set("Vary", "Accept-Encoding")
+	// HTML is templated/published frequently; assets are content-stable but unhashed,
+	// so we still validate via ETag rather than long-cache them.
+	header.Set("Cache-Control", "no-cache")
+
+	if r != nil {
+		if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, entry.etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
+	if r != nil && entry.gzipBody != nil && clientAcceptsGzip(r) {
+		header.Set("Content-Encoding", "gzip")
+		header.Set("Content-Length", strconv.Itoa(len(entry.gzipBody)))
+		_, _ = w.Write(entry.gzipBody)
+		return
+	}
+	header.Set("Content-Length", strconv.Itoa(len(entry.body)))
+	_, _ = w.Write(entry.body)
+}
+
+func etagMatches(headerValue, etag string) bool {
+	for _, part := range strings.Split(headerValue, ",") {
+		candidate := strings.TrimSpace(part)
+		if candidate == "" {
+			continue
+		}
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == "*" || candidate == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeJSON(r *http.Request, target any) error {
