@@ -2,7 +2,10 @@
  * Go CLI Agent Webconsole
  */
 
-const POLL_INTERVAL_MS = 1600;
+const POLL_INTERVAL_MS = 5000;
+const POLL_INTERVAL_ACTIVE_MS = 1600;
+const WS_RECONNECT_BASE_MS = 1000;
+const WS_RECONNECT_MAX_MS = 30000;
 const MAX_LIVE_EVENTS = 80;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
 const STOP_FALLBACK_STEER_MESSAGE = 'Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue.';
@@ -54,6 +57,10 @@ const state = {
   },
   nextSendInterrupt: false,
   pollHandle: null,
+  pollIntervalMs: POLL_INTERVAL_MS,
+  wsReconnectAttempts: 0,
+  wsReconnectTimer: null,
+  visibilityHidden: false,
   refreshingOverview: false,
   refreshingSession: false,
   needsSessionRefresh: false,
@@ -127,6 +134,7 @@ async function init() {
   setupWebSocket();
   setupEventListeners();
   setupLayoutObservers();
+  setupVisibilityHandler();
   if (hasDurableSession()) {
     state.sessionDetail = null;
     state.optimisticMessages = [];
@@ -209,6 +217,10 @@ function insertChatInputNewline(textarea) {
 }
 
 function setupWebSocket() {
+  if (state.wsReconnectTimer) {
+    window.clearTimeout(state.wsReconnectTimer);
+    state.wsReconnectTimer = null;
+  }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws`;
   const ws = new WebSocket(wsUrl);
@@ -216,9 +228,23 @@ function setupWebSocket() {
 
   ws.onopen = () => {
     state.isConnected = true;
+    state.wsReconnectAttempts = 0;
+    // WS is the primary channel: stop the fallback poller and clear pending bursts.
+    stopPolling();
+    if (state.pendingSessionRefresh) {
+      window.clearTimeout(state.pendingSessionRefresh);
+      state.pendingSessionRefresh = null;
+    }
+    if (state.pendingOverviewRefresh) {
+      window.clearTimeout(state.pendingOverviewRefresh);
+      state.pendingOverviewRefresh = null;
+    }
     updateConnectionStatus();
     updateUI();
     queueOverviewRefresh(120);
+    if (hasDurableSession()) {
+      queueSessionRefresh(120);
+    }
   };
 
   ws.onmessage = (event) => {
@@ -229,6 +255,10 @@ function setupWebSocket() {
       console.warn('ignored malformed websocket payload', err);
       showToast('Ignored malformed websocket payload from local server.', 'error');
     }
+  };
+
+  ws.onerror = () => {
+    // onclose will fire after onerror; let it own the reconnect logic.
   };
 
   ws.onclose = () => {
@@ -245,8 +275,51 @@ function setupWebSocket() {
     }
     updateUI();
     renderCurrentSession();
-    window.setTimeout(setupWebSocket, 3000);
+    // Fallback poller covers the disconnected window.
+    startPolling();
+    scheduleWebSocketReconnect();
   };
+}
+
+function scheduleWebSocketReconnect() {
+  if (state.wsReconnectTimer) {
+    return;
+  }
+  const attempt = state.wsReconnectAttempts++;
+  const base = Math.min(WS_RECONNECT_BASE_MS * Math.pow(2, attempt), WS_RECONNECT_MAX_MS);
+  const jitter = base * 0.2 * (Math.random() * 2 - 1);
+  const delay = Math.max(WS_RECONNECT_BASE_MS, Math.round(base + jitter));
+  state.wsReconnectTimer = window.setTimeout(() => {
+    state.wsReconnectTimer = null;
+    if (state.visibilityHidden) {
+      // Try again once the tab is visible.
+      scheduleWebSocketReconnect();
+      return;
+    }
+    setupWebSocket();
+  }, delay);
+}
+
+function setupVisibilityHandler() {
+  if (typeof document === 'undefined' || !document.addEventListener) {
+    return;
+  }
+  document.addEventListener('visibilitychange', () => {
+    state.visibilityHidden = document.visibilityState === 'hidden';
+    if (state.visibilityHidden) {
+      stopPolling();
+      return;
+    }
+    if (!state.isConnected) {
+      // Tab visible again: restart fallback polling and try a faster reconnect.
+      startPolling();
+      if (state.wsReconnectTimer) {
+        window.clearTimeout(state.wsReconnectTimer);
+        state.wsReconnectTimer = null;
+      }
+      setupWebSocket();
+    }
+  });
 }
 
 function handleServerEvent(data) {
@@ -1510,9 +1583,12 @@ async function handleGoalAction(button) {
 
 function startPolling() {
   stopPolling();
-  
+  if (state.visibilityHidden) {
+    return;
+  }
+
   const pollStep = () => {
-    let nextInterval = POLL_INTERVAL_MS;
+    let nextInterval = state.isConnected ? POLL_INTERVAL_MS : POLL_INTERVAL_ACTIVE_MS;
 
     if (state.currentView === 'history') {
       fetchHistory(state.historyPage, { showLoading: false, silentError: true });
@@ -1523,17 +1599,28 @@ function startPolling() {
       if (shouldPollCurrentSession()) {
         refreshCurrentSession();
       }
-      
-      // If we are actively generating or disconnected, poll faster. Otherwise relax the interval.
+
+      // While generating or disconnected, keep cadence faster; otherwise relax.
       if (!state.isGenerating && state.isConnected) {
-        nextInterval = Math.min(POLL_INTERVAL_MS * 3, 5000); // 3-5 seconds when idle
+        nextInterval = Math.max(POLL_INTERVAL_MS, 5000);
+      } else if (!state.isConnected) {
+        // Disconnected: probe at active cadence to reflect server-side state changes.
+        nextInterval = POLL_INTERVAL_ACTIVE_MS;
       }
     }
-    
+
+    // Connected + idle: WS will keep us live; skip scheduling another tick.
+    if (state.isConnected && !state.isGenerating && state.currentView !== 'history') {
+      state.pollHandle = null;
+      return;
+    }
+
+    state.pollIntervalMs = nextInterval;
     state.pollHandle = window.setTimeout(pollStep, nextInterval);
   };
-  
-  state.pollHandle = window.setTimeout(pollStep, POLL_INTERVAL_MS);
+
+  state.pollIntervalMs = state.isConnected ? POLL_INTERVAL_MS : POLL_INTERVAL_ACTIVE_MS;
+  state.pollHandle = window.setTimeout(pollStep, state.pollIntervalMs);
 }
 
 function stopPolling() {
