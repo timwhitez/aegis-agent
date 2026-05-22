@@ -104,7 +104,7 @@ function inlineMarkdown(value) {
     if (!safeSrc) {
       tokens.push(`![${escapeHTML(alt)}](${escapeHTML(src)})`);
     } else {
-      tokens.push(`<img src="${escapeAttr(safeSrc)}" alt="${escapeAttr(alt)}" style="max-width: 100%; height: auto;" />`);
+      tokens.push(`<img class="md-img" src="${escapeAttr(safeSrc)}" alt="${escapeAttr(alt)}" loading="lazy" />`);
     }
     return placeholder;
   });
@@ -116,7 +116,7 @@ function inlineMarkdown(value) {
     if (!safeHref) {
       tokens.push(escapeHTML(label));
     } else {
-      tokens.push(`<a href="${escapeAttr(safeHref)}" target="_blank" rel="noreferrer">${escapeHTML(label)}</a>`);
+      tokens.push(`<a href="${escapeAttr(safeHref)}" target="_blank" rel="noopener noreferrer">${escapeHTML(label)}</a>`);
     }
     return placeholder;
   });
