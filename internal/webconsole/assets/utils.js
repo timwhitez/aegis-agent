@@ -363,3 +363,43 @@ function formatClock(value) {
     second: '2-digit'
   });
 }
+
+const MARKDOWN_CACHE_LIMIT = 200;
+const markdownCache = new Map();
+
+function djb2Hash(value) {
+  const text = String(value || '');
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function renderMarkdownCached(key, text) {
+  const source = String(text || '');
+  if (!source) {
+    return safeMarkdown(source);
+  }
+  const cacheKey = `${key || 'anon'}::${source.length}::${djb2Hash(source)}`;
+  const cached = markdownCache.get(cacheKey);
+  if (cached !== undefined) {
+    // Refresh LRU position.
+    markdownCache.delete(cacheKey);
+    markdownCache.set(cacheKey, cached);
+    return cached;
+  }
+  const html = safeMarkdown(source);
+  markdownCache.set(cacheKey, html);
+  if (markdownCache.size > MARKDOWN_CACHE_LIMIT) {
+    const oldestKey = markdownCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      markdownCache.delete(oldestKey);
+    }
+  }
+  return html;
+}
+
+function clearMarkdownCache() {
+  markdownCache.clear();
+}

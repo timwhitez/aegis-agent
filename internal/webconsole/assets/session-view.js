@@ -485,7 +485,8 @@ function renderMessageText(message) {
   if (message.role === 'user') {
     return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
   }
-  return `<div class="message-bubble prose">${safeMarkdown(message.text)}</div>`;
+  const cacheKey = message.id ? `msg:${message.id}` : `optim:${message.optimisticKey || ''}`;
+  return `<div class="message-bubble prose">${renderMarkdownCached(cacheKey, message.text)}</div>`;
 }
 
 function primaryFinalFinishResult(message) {
@@ -499,7 +500,8 @@ function primaryFinalFinishResult(message) {
 
 function renderFinalToolResultBubble(result) {
   const text = result.display_output || result.llm_output || '';
-  return `<div class="message-bubble prose final-response-bubble">${safeMarkdown(text)}</div>`;
+  const cacheKey = result.tool_call_id ? `final:${result.tool_call_id}` : `final-anon:${(text || '').length}`;
+  return `<div class="message-bubble prose final-response-bubble">${renderMarkdownCached(cacheKey, text)}</div>`;
 }
 
 function renderThinkingBlock(thinking) {
@@ -511,7 +513,7 @@ function renderThinkingBlock(thinking) {
         <span>Thinking (${thinking.length} chars)</span>
         <span class="thinking-preview">${escapeHTML(preview)}</span>
       </summary>
-      <div class="thinking-body">${safeMarkdown(thinking)}</div>
+      <div class="thinking-body">${renderMarkdownCached(`thinking:${thinking.length}`, thinking)}</div>
     </details>
   `;
 }
@@ -1607,7 +1609,7 @@ function renderPlanPanel(detail) {
       ${planMarkdown ? `
         <div class="goal-section">
           <div class="goal-section-title">Plan</div>
-          <div class="message-bubble prose plan-markdown">${safeMarkdown(planMarkdown)}</div>
+          <div class="message-bubble prose plan-markdown">${renderMarkdownCached('plan-markdown', planMarkdown)}</div>
         </div>
       ` : ''}
     </div>

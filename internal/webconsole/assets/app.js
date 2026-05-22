@@ -1154,6 +1154,9 @@ function adoptSession(sessionID, backed) {
   if (sessionID !== state.sessionId) {
     state.selectedQueueJobId = '';
     state.selectedQueueJobDetail = null;
+    if (typeof clearMarkdownCache === 'function') {
+      clearMarkdownCache();
+    }
   }
   state.sessionId = sessionID;
   state.sessionBacked = backed;
@@ -1172,6 +1175,9 @@ function resetChatSession() {
   state.selectedQueueJobDetail = null;
   state.goalEnabled = false;
   state.planModeEnabled = false;
+  if (typeof clearMarkdownCache === 'function') {
+    clearMarkdownCache();
+  }
   state.liveActivity = {
     title: 'Ready for a new session',
     copy: 'Send a prompt to create a durable session. Answers, tool calls, and running flow will appear here.',
