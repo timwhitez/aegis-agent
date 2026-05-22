@@ -4276,7 +4276,7 @@ func tailProviderAttempts(items []session.ProviderAttempt, limit int) []session.
 }
 
 var (
-	embeddedAssetCache   sync.Map // name -> *assetCacheEntry
+	embeddedAssetCache sync.Map // name -> *assetCacheEntry
 )
 
 type assetCacheEntry struct {
@@ -4342,19 +4342,49 @@ func clientAcceptsGzip(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
+	gzipQ := -1.0
+	wildcardQ := -1.0
 	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
-		token := strings.TrimSpace(part)
+		token, q := parseAcceptEncodingPart(part)
 		if token == "" {
 			continue
 		}
-		if eq := strings.Index(token, ";"); eq >= 0 {
-			token = strings.TrimSpace(token[:eq])
-		}
 		if strings.EqualFold(token, "gzip") {
-			return true
+			gzipQ = q
+			continue
+		}
+		if token == "*" {
+			wildcardQ = q
 		}
 	}
-	return false
+	if gzipQ >= 0 {
+		return gzipQ > 0
+	}
+	return wildcardQ > 0
+}
+
+func parseAcceptEncodingPart(part string) (string, float64) {
+	q := 1.0
+	fields := strings.Split(part, ";")
+	token := strings.ToLower(strings.TrimSpace(fields[0]))
+	for _, field := range fields[1:] {
+		key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
+			continue
+		}
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			return token, 0
+		}
+		if parsed < 0 {
+			parsed = 0
+		}
+		if parsed > 1 {
+			parsed = 1
+		}
+		q = parsed
+	}
+	return token, q
 }
 
 func serveEmbeddedFileRequest(w http.ResponseWriter, r *http.Request, files fs.FS, name string) {

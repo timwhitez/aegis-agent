@@ -4457,4 +4457,25 @@ func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
 	if !bytes.Equal(plain, original) {
 		t.Fatalf("plain body length = %d, want %d", len(plain), len(original))
 	}
+
+	for _, tc := range []struct {
+		name           string
+		acceptEncoding string
+		wantGzip       bool
+	}{
+		{name: "q zero disables gzip", acceptEncoding: "gzip;q=0, identity;q=1", wantGzip: false},
+		{name: "wildcard permits gzip", acceptEncoding: "br;q=0, *;q=0.5", wantGzip: true},
+		{name: "explicit gzip beats wildcard", acceptEncoding: "gzip;q=0, *;q=1", wantGzip: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+			req.Header.Set("Accept-Encoding", tc.acceptEncoding)
+			serveEmbeddedFileRequest(rec, req, assets, "styles.css")
+			gotGzip := rec.Header().Get("Content-Encoding") == "gzip"
+			if gotGzip != tc.wantGzip {
+				t.Fatalf("Content-Encoding gzip = %v, want %v for %q", gotGzip, tc.wantGzip, tc.acceptEncoding)
+			}
+		})
+	}
 }

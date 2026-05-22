@@ -132,10 +132,10 @@ async function init() {
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons();
   }
+  setupVisibilityHandler();
   setupWebSocket();
   setupEventListeners();
   setupLayoutObservers();
-  setupVisibilityHandler();
   if (hasDurableSession()) {
     state.sessionDetail = null;
     state.optimisticMessages = [];
@@ -217,7 +217,30 @@ function insertChatInputNewline(textarea) {
   textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function isLiveWebSocket(ws) {
+  return typeof WebSocket !== 'undefined' &&
+    ws &&
+    (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN);
+}
+
+function clearPendingRefreshes() {
+  if (state.pendingSessionRefresh) {
+    window.clearTimeout(state.pendingSessionRefresh);
+    state.pendingSessionRefresh = null;
+  }
+  if (state.pendingOverviewRefresh) {
+    window.clearTimeout(state.pendingOverviewRefresh);
+    state.pendingOverviewRefresh = null;
+  }
+}
+
 function setupWebSocket() {
+  if (state.visibilityHidden || typeof WebSocket === 'undefined') {
+    return;
+  }
+  if (isLiveWebSocket(state.ws)) {
+    return;
+  }
   if (state.wsReconnectTimer) {
     window.clearTimeout(state.wsReconnectTimer);
     state.wsReconnectTimer = null;
@@ -228,27 +251,27 @@ function setupWebSocket() {
   state.ws = ws;
 
   ws.onopen = () => {
+    if (state.ws !== ws) {
+      ws.close();
+      return;
+    }
     state.isConnected = true;
     state.wsReconnectAttempts = 0;
-    // WS is the primary channel: stop the fallback poller and clear pending bursts.
-    stopPolling();
-    if (state.pendingSessionRefresh) {
-      window.clearTimeout(state.pendingSessionRefresh);
-      state.pendingSessionRefresh = null;
-    }
-    if (state.pendingOverviewRefresh) {
-      window.clearTimeout(state.pendingOverviewRefresh);
-      state.pendingOverviewRefresh = null;
-    }
+    // WS is currently a health/relay channel; keep REST polling only while a run needs snapshots.
+    clearPendingRefreshes();
     updateConnectionStatus();
     updateUI();
     queueOverviewRefresh(120);
     if (hasDurableSession()) {
       queueSessionRefresh(120);
     }
+    syncPollingForState();
   };
 
   ws.onmessage = (event) => {
+    if (state.ws !== ws) {
+      return;
+    }
     try {
       const data = JSON.parse(event.data);
       handleServerEvent(data);
@@ -259,15 +282,20 @@ function setupWebSocket() {
   };
 
   ws.onerror = () => {
+    if (state.ws !== ws) {
+      return;
+    }
     // onclose will fire after onerror; let it own the reconnect logic.
   };
 
   ws.onclose = () => {
+    if (state.ws !== ws) {
+      return;
+    }
     state.isConnected = false;
     state.ws = null;
     updateConnectionStatus();
     if (state.isGenerating) {
-      state.isGenerating = false;
       state.liveActivity = {
         title: 'Disconnected from the local agent',
         copy: 'The webconsole will retry automatically. Durable session data remains on disk.',
@@ -277,13 +305,13 @@ function setupWebSocket() {
     updateUI();
     renderCurrentSession();
     // Fallback poller covers the disconnected window.
-    startPolling();
+    syncPollingForState();
     scheduleWebSocketReconnect();
   };
 }
 
 function scheduleWebSocketReconnect() {
-  if (state.wsReconnectTimer) {
+  if (state.visibilityHidden || state.wsReconnectTimer || isLiveWebSocket(state.ws)) {
     return;
   }
   const attempt = state.wsReconnectAttempts++;
@@ -293,8 +321,7 @@ function scheduleWebSocketReconnect() {
   state.wsReconnectTimer = window.setTimeout(() => {
     state.wsReconnectTimer = null;
     if (state.visibilityHidden) {
-      // Try again once the tab is visible.
-      scheduleWebSocketReconnect();
+      // Visibility handler reconnects immediately when the tab becomes active again.
       return;
     }
     setupWebSocket();
@@ -305,15 +332,21 @@ function setupVisibilityHandler() {
   if (typeof document === 'undefined' || !document.addEventListener) {
     return;
   }
+  state.visibilityHidden = document.visibilityState === 'hidden';
   document.addEventListener('visibilitychange', () => {
     state.visibilityHidden = document.visibilityState === 'hidden';
     if (state.visibilityHidden) {
       stopPolling();
+      clearPendingRefreshes();
+      if (state.wsReconnectTimer) {
+        window.clearTimeout(state.wsReconnectTimer);
+        state.wsReconnectTimer = null;
+      }
       return;
     }
+    syncPollingForState();
     if (!state.isConnected) {
       // Tab visible again: restart fallback polling and try a faster reconnect.
-      startPolling();
       if (state.wsReconnectTimer) {
         window.clearTimeout(state.wsReconnectTimer);
         state.wsReconnectTimer = null;
@@ -859,6 +892,7 @@ function switchView(viewName, options = {}) {
   if (viewName === 'settings') {
     renderSettings();
   }
+  syncPollingForState();
 }
 
 async function sendMessage() {
@@ -1190,6 +1224,7 @@ function resetChatSession() {
   persistUIState();
   renderCurrentSession();
   updateUI();
+  syncPollingForState();
 }
 
 function setGenerating(value, activity) {
@@ -1202,6 +1237,7 @@ function setGenerating(value, activity) {
   }
   updateUI();
   renderCurrentSession();
+  syncPollingForState();
 }
 
 function updateConnectionStatus() {
@@ -1590,13 +1626,11 @@ async function handleGoalAction(button) {
 
 function startPolling() {
   stopPolling();
-  if (state.visibilityHidden) {
+  if (!shouldRunPollingLoop()) {
     return;
   }
 
   const pollStep = () => {
-    let nextInterval = state.isConnected ? POLL_INTERVAL_MS : POLL_INTERVAL_ACTIVE_MS;
-
     if (state.currentView === 'history') {
       fetchHistory(state.historyPage, { showLoading: false, silentError: true });
     } else {
@@ -1607,27 +1641,58 @@ function startPolling() {
         refreshCurrentSession();
       }
 
-      // While generating or disconnected, keep cadence faster; otherwise relax.
-      if (!state.isGenerating && state.isConnected) {
-        nextInterval = Math.max(POLL_INTERVAL_MS, 5000);
-      } else if (!state.isConnected) {
-        // Disconnected: probe at active cadence to reflect server-side state changes.
-        nextInterval = POLL_INTERVAL_ACTIVE_MS;
-      }
     }
 
-    // Connected + idle: WS will keep us live; skip scheduling another tick.
-    if (state.isConnected && !state.isGenerating && state.currentView !== 'history') {
+    if (!shouldRunPollingLoop()) {
       state.pollHandle = null;
       return;
     }
 
-    state.pollIntervalMs = nextInterval;
-    state.pollHandle = window.setTimeout(pollStep, nextInterval);
+    state.pollIntervalMs = pollingIntervalForState();
+    state.pollHandle = window.setTimeout(pollStep, state.pollIntervalMs);
   };
 
-  state.pollIntervalMs = state.isConnected ? POLL_INTERVAL_MS : POLL_INTERVAL_ACTIVE_MS;
+  state.pollIntervalMs = pollingIntervalForState();
   state.pollHandle = window.setTimeout(pollStep, state.pollIntervalMs);
+}
+
+function shouldRunPollingLoop() {
+  if (state.visibilityHidden) {
+    return false;
+  }
+  if (state.currentView === 'history') {
+    return true;
+  }
+  if (state.currentView !== 'chat') {
+    return false;
+  }
+  if (!state.isConnected) {
+    return true;
+  }
+  if (state.isGenerating) {
+    return true;
+  }
+  return hasDurableSession() && (!state.sessionDetail || sessionDetailHasActiveDescendants(state.sessionDetail));
+}
+
+function pollingIntervalForState() {
+  if (state.currentView === 'history') {
+    return POLL_INTERVAL_MS;
+  }
+  if (!state.isConnected || state.isGenerating || sessionDetailHasActiveDescendants(state.sessionDetail)) {
+    return POLL_INTERVAL_ACTIVE_MS;
+  }
+  return POLL_INTERVAL_MS;
+}
+
+function syncPollingForState() {
+  if (shouldRunPollingLoop()) {
+    if (!state.pollHandle) {
+      startPolling();
+    }
+    return;
+  }
+  stopPolling();
 }
 
 function stopPolling() {
@@ -1833,6 +1898,7 @@ async function refreshCurrentSession() {
     }
     renderCurrentSession();
     updateUI();
+    syncPollingForState();
   } catch (err) {
     console.error('session detail error', err);
   } finally {

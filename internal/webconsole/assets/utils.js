@@ -41,28 +41,27 @@ function safeMarkdownInner(text) {
     codeLang = '';
   };
   lines.forEach((line) => {
-    // Detect a fence: 3+ backticks (or tildes) optionally preceded by up to 3 spaces, with an optional language tag.
-    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})\s*([^\s`~]*)\s*$/.exec(line);
-    if (fenceMatch) {
-      const fence = fenceMatch[1];
-      if (codeFence) {
-        // Closing fence: must be the same character family and at least as long.
+    if (codeFence) {
+      // Closing fence: same character family, at least as long, and no language tag.
+      const closingFenceMatch = /^\s{0,3}(`{3,}|~{3,})\s*$/.exec(line);
+      if (closingFenceMatch) {
+        const fence = closingFenceMatch[1];
         if (fence[0] === codeFence[0] && fence.length >= codeFence.length) {
           flushCode();
           codeFence = '';
           return;
         }
-        // Otherwise treat as part of the code body.
-        codeLines.push(line);
-        return;
       }
+      codeLines.push(line);
+      return;
+    }
+    // Detect an opening fence: 3+ backticks (or tildes) optionally preceded by up to 3 spaces, with an optional language tag.
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})\s*([^\s`~]*)\s*$/.exec(line);
+    if (fenceMatch) {
+      const fence = fenceMatch[1];
       flushList();
       codeFence = fence;
       codeLang = fenceMatch[2] || '';
-      return;
-    }
-    if (codeFence) {
-      codeLines.push(line);
       return;
     }
     if (/^\s*[-*]\s+/.test(line)) {
