@@ -32,6 +32,7 @@ type Definition struct {
 	Description     string
 	InputSchema     map[string]any
 	Execute         func(context.Context, ExecContext, json.RawMessage) (session.ToolResult, error)
+	SkipInputCheck  bool
 	Ephemeral       bool
 	EphemeralWindow int
 }
@@ -179,10 +180,151 @@ func (r *Registry) Execute(ctx context.Context, name string, execCtx ExecContext
 	if !ok {
 		return session.ToolResult{}, fmt.Errorf("unknown tool: %s", name)
 	}
+	if err := validateToolArgs(def, args); err != nil {
+		return errorResult(name, err), nil
+	}
 	if execCtx.Config == nil {
 		execCtx.Config = r.cfg
 	}
 	return def.Execute(ctx, execCtx, args)
+}
+
+func validateToolArgs(def Definition, raw json.RawMessage) error {
+	if def.SkipInputCheck || strings.TrimSpace(def.Name) == "" || len(def.InputSchema) == 0 {
+		return nil
+	}
+	if schemaType, _ := def.InputSchema["type"].(string); schemaType != "" && schemaType != "object" {
+		return nil
+	}
+	_, err := decodeClosedToolArgs(raw, def.InputSchema)
+	return err
+}
+
+func decodeClosedToolArgs(raw json.RawMessage, schema map[string]any) (map[string]json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		trimmed = []byte("{}")
+	}
+	if trimmed[0] != '{' {
+		return nil, errors.New("tool input must be a JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	var args map[string]json.RawMessage
+	if err := decoder.Decode(&args); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("tool input must contain a single JSON value")
+		}
+		return nil, err
+	}
+	if args == nil {
+		args = map[string]json.RawMessage{}
+	}
+	if err := validateClosedToolObject(schema, args, ""); err != nil {
+		return nil, err
+	}
+	return args, nil
+}
+
+func validateClosedToolObject(schema map[string]any, object map[string]json.RawMessage, path string) error {
+	properties, _ := schema["properties"].(map[string]any)
+	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
+		for key := range object {
+			if _, known := properties[key]; !known {
+				return fmt.Errorf("unexpected field %q", toolFieldPath(path, key))
+			}
+		}
+	}
+	for key, rawPropertySchema := range properties {
+		propertySchema, ok := rawPropertySchema.(map[string]any)
+		if !ok {
+			continue
+		}
+		value, exists := object[key]
+		if !exists {
+			continue
+		}
+		if err := validateClosedToolValue(propertySchema, value, toolFieldPath(path, key)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateClosedToolValue(schema map[string]any, raw json.RawMessage, path string) error {
+	if len(schema) == 0 {
+		return nil
+	}
+	expectedType, _ := schema["type"].(string)
+	switch expectedType {
+	case "object":
+		object, ok, err := decodeToolObjectValue(raw)
+		if err != nil || !ok {
+			return err
+		}
+		return validateClosedToolObject(schema, object, path)
+	case "array":
+		itemSchema, _ := schema["items"].(map[string]any)
+		if len(itemSchema) == 0 {
+			return nil
+		}
+		items, ok, err := decodeToolArrayValue(raw)
+		if err != nil || !ok {
+			return err
+		}
+		for i, item := range items {
+			if err := validateClosedToolValue(itemSchema, item, toolIndexPath(path, i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func decodeToolObjectValue(raw json.RawMessage) (map[string]json.RawMessage, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, false, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &object); err != nil {
+		return nil, true, err
+	}
+	if object == nil {
+		object = map[string]json.RawMessage{}
+	}
+	return object, true, nil
+}
+
+func decodeToolArrayValue(raw json.RawMessage) ([]json.RawMessage, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, false, nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return nil, true, err
+	}
+	return items, true, nil
+}
+
+func toolFieldPath(path, field string) string {
+	if strings.TrimSpace(path) == "" {
+		return field
+	}
+	return path + "." + field
+}
+
+func toolIndexPath(path string, index int) string {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Sprintf("[%d]", index)
+	}
+	return fmt.Sprintf("%s[%d]", path, index)
 }
 
 func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control ControlPlane) []Definition {
@@ -2537,9 +2679,10 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 		}
 	}
 	return Definition{
-		Name:        tool.Name,
-		Description: fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. This tool executes from the skill directory. %s", tool.SkillName, description),
-		InputSchema: inputSchema,
+		Name:           tool.Name,
+		Description:    fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. This tool executes from the skill directory. %s", tool.SkillName, description),
+		InputSchema:    inputSchema,
+		SkipInputCheck: true,
 		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			args, err := decodeCommandToolArgs(raw)
 			if err != nil {

@@ -728,6 +728,36 @@ Validation:
 - Focused WebConsole lifecycle regressions.
 - Full WebConsole package test before commit.
 
+### FCA-20260525-026: Built-in tool execution ignores closed input schemas
+
+Severity: Medium
+
+Evidence:
+
+- `spec/04-tools-and-skills.md` requires every tool to expose an `input_schema`, and `spec/03-provider-contracts.md` describes provider tool contracts as object schemas transformed by provider adapters.
+- `internal/tools/registry.go` closes built-in tool schemas with `closeObjectSchemas`, and `internal/tools/registry_test.go` `TestBuiltinToolSchemasDisallowUnknownProperties` verifies nested object schemas have `additionalProperties=false`.
+- Built-in tool handlers decode raw arguments with ordinary `json.Unmarshal` into structs, which ignores unknown object fields.
+- Before this slice, `Registry.Execute` routed built-in raw arguments directly to handlers without checking the closed schema, while skill command tools already had strict argument decoding and closed-schema validation.
+
+Impact:
+
+Provider-emitted built-in tool calls could include unknown top-level or nested object fields and still execute based on a partial struct decode. That made the registry-published closed schema stricter than actual execution and weakened the provider/tool protocol boundary.
+
+Minimal fix:
+
+- Validate built-in tool arguments at `Registry.Execute` before calling the handler.
+- Require built-in arguments to be a single JSON object and reject concatenated trailing JSON values.
+- Enforce closed object schemas recursively through nested object properties and array item schemas.
+- Keep skill command tools on their existing validator path so `additionalProperties:true`, required fields, and command-specific type checks keep the same behavior.
+- Add focused built-in regressions for top-level unknown fields, trailing JSON, and nested unknown fields, plus adjacent skill command validator coverage.
+
+Validation:
+
+- Focused built-in and skill command registry regressions.
+- Full tools package test before commit.
+- Focused runtime tool-dispatch regressions.
+- Full Go vet and test gate before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1430,6 +1460,29 @@ Validation:
 - `go test ./internal/webconsole -run 'TestServiceCloseCancelsPendingStartBeforeSessionID|TestServicePlanModeContinueIsTrackedByLaunchWaitGroup|TestSessionDetailReportsActiveHandleOwner|TestServiceInterruptUsesManualPauseReason|TestServiceStopSessionPausesWithManualStopReason' -count=1`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: no output.
 - `go test ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-026
+
+Slice: `fix(tools): enforce built-in input closure`
+
+Changes:
+
+- Added registry-level built-in input checks before handler execution.
+- Rejected non-object built-in arguments, trailing JSON values, and unknown fields from closed object schemas.
+- Applied unknown-field checks recursively through nested object properties and array item schemas.
+- Kept skill command tools on their existing command-specific validation path.
+- Added focused built-in regressions for top-level unknown fields, trailing JSON, and nested unknown fields.
+
+Validation:
+
+- `go test ./internal/tools -run 'TestBuiltinToolExecutionRejectsUnknownTopLevelField|TestBuiltinToolExecutionRejectsTrailingJSONValue|TestBuiltinToolExecutionRejectsNestedUnknownField|TestBuiltinToolSchemasDisallowUnknownProperties|TestSkillCommandToolRejectsMissingRequiredField|TestSkillCommandToolClosesSchemaByDefault|TestSkillCommandToolRejectsTrailingJSONValue|TestSkillCommandToolPreservesExplicitAdditionalPropertiesTrue' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: no output.
+- `go test ./internal/tools -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineWritesInterruptedToolResultOnPause|TestEngineStopsAfterReplayCompleteToolResultsWhenRunContextCancelsTool|TestEngineMarksInterruptSteerDeferredWhenToolIgnoresCancel|TestEnginePreservesDeadlineToolResultMetadata' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

@@ -45,6 +45,53 @@ func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
 	}
 }
 
+func TestBuiltinToolExecutionRejectsUnknownTopLevelField(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{}, json.RawMessage(`{"command":"pwd","extra":true}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, `unexpected field "extra"`) {
+		t.Fatalf("expected unknown top-level field rejection, got %#v", result)
+	}
+}
+
+func TestBuiltinToolExecutionRejectsTrailingJSONValue(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "todo_read", ExecContext{}, json.RawMessage(`{} {}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "single JSON value") {
+		t.Fatalf("expected trailing JSON rejection, got %#v", result)
+	}
+}
+
+func TestBuiltinToolExecutionRejectsNestedUnknownField(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "todo_write", ExecContext{}, json.RawMessage(`{
+		"todos":[{"content":"x","status":"pending","extra":true}]
+	}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, `unexpected field "todos[0].extra"`) {
+		t.Fatalf("expected nested unknown field rejection, got %#v", result)
+	}
+}
+
 func assertObjectSchemasClosed(t *testing.T, path string, value any) {
 	t.Helper()
 	switch typed := value.(type) {
