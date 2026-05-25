@@ -3830,6 +3830,106 @@ func TestServiceDeleteSessionRejectsRunningSessionWithoutLiveOwner(t *testing.T)
 	}
 }
 
+func TestServiceDeleteSessionRejectsActiveDeepDescendantHandle(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rootMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "delete_tree_root",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "delete_tree_root",
+	}
+	childMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "delete_tree_child",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  rootMeta.ID,
+		RootSessionID:    rootMeta.ID,
+		Depth:            1,
+	}
+	grandchildMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "delete_tree_grandchild",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  childMeta.ID,
+		RootSessionID:    rootMeta.ID,
+		Depth:            2,
+	}
+	greatGrandchildMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "delete_tree_great_grandchild",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  grandchildMeta.ID,
+		RootSessionID:    rootMeta.ID,
+		Depth:            3,
+	}
+	for _, meta := range []session.SessionMetadata{rootMeta, childMeta, grandchildMeta, greatGrandchildMeta} {
+		state := session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}
+		if meta.ID == greatGrandchildMeta.ID {
+			state.Status = session.StatusAwaitingInput
+			state.Phase = "plan_input"
+		}
+		if err := svc.store.Create(meta, state); err != nil {
+			t.Fatalf("create session %s: %v", meta.ID, err)
+		}
+	}
+
+	svc.handles[greatGrandchildMeta.ID] = &launchHandle{
+		sessionID:      greatGrandchildMeta.ID,
+		cancel:         func() {},
+		startedAt:      now,
+		processStartID: "test-process",
+		pid:            os.Getpid(),
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+childMeta.ID, nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected conflict deleting tree with active deep descendant, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "active session tree") {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+	if _, err := svc.store.LoadMetadata(childMeta.ID); err != nil {
+		t.Fatalf("expected target child session to remain, got %v", err)
+	}
+	if _, err := svc.store.LoadMetadata(greatGrandchildMeta.ID); err != nil {
+		t.Fatalf("expected active deep descendant session to remain, got %v", err)
+	}
+}
+
 func TestServiceClearSessionsRejectsRunningQueueJobs(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

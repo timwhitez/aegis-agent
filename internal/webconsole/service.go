@@ -747,7 +747,12 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
-	if s.hasActiveDescendantHandle(sessionID) {
+	hasActiveHandle, err := s.hasActiveDescendantHandle(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if hasActiveHandle {
 		writeError(w, http.StatusConflict, errors.New("cannot delete an active session tree"))
 		return
 	}
@@ -3627,23 +3632,28 @@ func (s *Service) hasAnyActiveHandle() bool {
 	return len(s.handles) > 0
 }
 
-func (s *Service) hasActiveDescendantHandle(sessionID string) bool {
+func (s *Service) hasActiveDescendantHandle(sessionID string) (bool, error) {
 	s.pruneInactiveHandles()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if _, ok := s.handles[sessionID]; ok {
-		return true
-	}
+	handleIDs := make([]string, 0, len(s.handles))
 	for id := range s.handles {
-		meta, err := s.store.LoadMetadata(id)
-		if err != nil {
-			continue
-		}
-		if meta.ParentSessionID == sessionID || meta.RootSessionID == sessionID {
-			return true
+		handleIDs = append(handleIDs, id)
+	}
+	s.mu.RUnlock()
+	if len(handleIDs) == 0 {
+		return false, nil
+	}
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return false, err
+	}
+	targets := sessionTreeTargetIDs(sessionID, items)
+	for _, id := range handleIDs {
+		if _, ok := targets[id]; ok {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (s *Service) pruneInactiveHandles() {
@@ -3700,26 +3710,9 @@ func (s *Service) hasRunningSessions(sessionID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	targets := map[string]struct{}{}
+	var targets map[string]struct{}
 	if strings.TrimSpace(sessionID) != "" {
-		targets[sessionID] = struct{}{}
-		changed := true
-		for changed {
-			changed = false
-			for _, item := range items {
-				if _, ok := targets[item.ID]; ok {
-					continue
-				}
-				if _, ok := targets[item.ParentSessionID]; ok {
-					targets[item.ID] = struct{}{}
-					changed = true
-				}
-				if _, ok := targets[item.RootSessionID]; ok {
-					targets[item.ID] = struct{}{}
-					changed = true
-				}
-			}
-		}
+		targets = sessionTreeTargetIDs(sessionID, items)
 	}
 	for _, item := range items {
 		if len(targets) > 0 {
@@ -3756,20 +3749,7 @@ func (s *Service) hasRunningQueueJobs(sessionID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	targets := map[string]struct{}{sessionID: {}}
-	changed := true
-	for changed {
-		changed = false
-		for _, item := range items {
-			if _, ok := targets[item.ID]; ok {
-				continue
-			}
-			if _, ok := targets[item.ParentSessionID]; ok {
-				targets[item.ID] = struct{}{}
-				changed = true
-			}
-		}
-	}
+	targets := sessionTreeTargetIDs(sessionID, items)
 	for _, job := range jobs {
 		if job.Status != session.QueueStatusRunning {
 			continue
@@ -3785,6 +3765,34 @@ func (s *Service) hasRunningQueueJobs(sessionID string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func sessionTreeTargetIDs(sessionID string, items []session.SessionSummary) map[string]struct{} {
+	sessionID = strings.TrimSpace(sessionID)
+	targets := map[string]struct{}{}
+	if sessionID == "" {
+		return targets
+	}
+	targets[sessionID] = struct{}{}
+	changed := true
+	for changed {
+		changed = false
+		for _, item := range items {
+			if _, ok := targets[item.ID]; ok {
+				continue
+			}
+			if _, ok := targets[item.ParentSessionID]; ok {
+				targets[item.ID] = struct{}{}
+				changed = true
+				continue
+			}
+			if _, ok := targets[item.RootSessionID]; ok {
+				targets[item.ID] = struct{}{}
+				changed = true
+			}
+		}
+	}
+	return targets
 }
 
 func (s *Service) handleForSession(sessionID string) (*launchHandle, bool) {

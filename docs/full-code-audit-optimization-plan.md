@@ -1598,6 +1598,35 @@ Validation:
 - Focused skill zip regression tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-054: Session delete can remove active deep descendants
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires the WebConsole launch manager to maintain per-session active handles for sessions owned by the current Web server process, because interrupt/stop must target the correct in-memory runner and handles cannot be treated as durable facts.
+- `internal/webconsole/service.go` `handleDeleteSession` first called `hasActiveDescendantHandle` before deleting a session tree.
+- Before this slice, `hasActiveDescendantHandle` only checked the target session id, handles whose `ParentSessionID` directly matched the target, or handles whose `RootSessionID` matched the target.
+- `internal/session/store.go` `DeleteSessionTree` deletes descendants transitively through `ParentSessionID`, so deleting an intermediate child also removes grandchildren and deeper descendants.
+- A live Web handle on a deeper descendant below an intermediate child can have `RootSessionID` set to the top-level root and `ParentSessionID` set to its immediate parent, so the old preflight missed it when deleting the intermediate child.
+- `ensureSessionTreeNotLive` only blocked durable `running` sessions/jobs; it did not block current-process active handles in non-running states such as `awaiting_input`.
+
+Impact:
+
+An operator could delete an intermediate session tree while a deeper descendant still had a current-process Web runner waiting for input or otherwise owned by the Web service. That could remove the live runner's session directory while the in-memory handle still existed, violating the local session/state file-fact contract and weakening Web lifecycle controls.
+
+Minimal fix:
+
+- Compute a transitive session-tree target set from session summaries and use it for active handle checks.
+- Reuse the same target-set helper for durable running-session and running-queue checks so all delete preflights agree on tree membership.
+- Return an internal error if the active-handle preflight cannot read session summaries instead of deleting with incomplete evidence.
+- Add a focused Web service regression with an active great-grandchild handle while deleting an intermediate child session.
+
+Validation:
+
+- Focused Web deletion regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1957,6 +1986,12 @@ Evidence gates:
 - Confirmed FCA-20260526-053 against `spec/17-web-console.md`, `handleUploadSkill`, `processSkillZip`, `sanitizeDirName`, `pathWithinRoot`, and the existing skill upload zip-slip / size-limit regressions.
 - Confirmed this is not just a cosmetic duplicate-name issue: duplicate sanitized targets are processed sequentially, and each root removes/recreates the same target before extracting its files.
 - Confirmed the fix belongs in pre-mutation extraction planning so every target is known safe before any installed skill directory is removed.
+
+### Review 52
+
+- Confirmed FCA-20260526-054 against `spec/17-web-console.md`, `handleDeleteSession`, `hasActiveDescendantHandle`, `ensureSessionTreeNotLive`, `DeleteSessionTree`, and Web delete/clear regressions.
+- Confirmed the previous direct-parent/root check protected root deletion and direct children, but missed active handles below an intermediate child when the deeper session was non-running and therefore not blocked by durable running-state checks.
+- Confirmed the fix belongs in the Web service delete preflight, not in `DeleteSessionTree`, because the store cannot know which current-process Web handles are still live.
 
 ## Update Log
 
@@ -3118,6 +3153,30 @@ Changes:
 Validation:
 
 - `go test ./internal/webconsole -run 'TestProcessSkillZipRejectsTraversalEntries|TestProcessSkillZipRejectsSymlinkDestination|TestProcessSkillZipRejectsOversizedEntry|TestProcessSkillZipRejectsDuplicateTargetNamesBeforeMutation|TestProcessSkillZipAllowsNestedSkillFiles|TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-054
+
+Slice: `fix(webconsole): block deleting active descendant sessions`
+
+Changes:
+
+- Changed Web session delete preflight to compute the full transitive session tree before checking current-process active handles.
+- Reused the same transitive session-tree helper for durable running-session and running-queue delete/clear checks, keeping tree membership consistent across preflights.
+- Added a regression proving an active great-grandchild Web handle blocks deletion of an intermediate child session and leaves both target and descendant session facts intact.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceDeleteSessionRejectsActiveDeepDescendantHandle|TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs|TestServiceDeleteSessionRejectsRunningSessionWithoutLiveOwner|TestServiceClearSessionsRejectsRunningSessionsWithoutLiveOwners|TestServiceClearSessionsRejectsRunningQueueJobs' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
