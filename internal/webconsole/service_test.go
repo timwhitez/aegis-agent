@@ -816,6 +816,59 @@ func TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact(t *testing.T)
 	}
 }
 
+func TestServiceMissionPlanApproveRejectsGoalWithoutMissionPlan(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_mission_approve_plain_goal",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_mission_approve_plain_goal",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Plain goal should not approve a missing mission plan",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "mission plan is required") {
+		t.Fatalf("expected missing mission plan error, got %#v", errResp)
+	}
+	loaded, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.Mode != session.GoalModeGoal || loaded.Mission != nil {
+		t.Fatalf("approval mutated plain goal: mode=%s mission=%#v", loaded.Mode, loaded.Mission)
+	}
+	history, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	if goalHistoryContainsType(history, "mission.plan.approved") {
+		t.Fatalf("unexpected mission approval history for plain goal: %#v", history)
+	}
+}
+
 func TestServiceGoalFactsAndMissionCoverageApproval(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

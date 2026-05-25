@@ -742,6 +742,55 @@ func TestStoreGoalApprovalCreatesLinkedPlanMode(t *testing.T) {
 	}
 }
 
+func TestApproveMissionPlanRejectsGoalWithoutMissionPlan(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	created, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Mode:      GoalModeGoal,
+		Objective: "Track a plain goal",
+		Source:    GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if created.Mission != nil {
+		t.Fatalf("plain goal unexpectedly has mission plan: %#v", created.Mission)
+	}
+	_, err = store.ApproveMissionPlan(meta.ID, MissionPlanApprovalInput{Source: GoalSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "mission plan is required") {
+		t.Fatalf("expected missing mission plan error, got %v", err)
+	}
+	loaded, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.Mode != GoalModeGoal || loaded.Mission != nil {
+		t.Fatalf("mission approval mutated plain goal: mode=%s mission=%#v", loaded.Mode, loaded.Mission)
+	}
+	history, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	for _, entry := range history {
+		if entry.Type == "mission.plan.approved" {
+			t.Fatalf("unexpected mission approval history for plain goal: %#v", history)
+		}
+	}
+}
+
 func TestStoreGoalApprovalRelinksExistingPendingPlanMode(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

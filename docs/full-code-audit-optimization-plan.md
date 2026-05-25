@@ -1734,6 +1734,32 @@ Validation:
 - Focused store deletion regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-059: Mission plan approval creates approved empty missions for plain goals
+
+Severity: Medium
+
+Evidence:
+
+- `spec/00-product.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` describe mission plan approval as approval of an existing Goal/Mission internal plan, with linked Plan Mode as the execution gate when approval is required.
+- Before this slice, `internal/session/goal.go` `ApproveMissionPlan` created a `MissionPlan{PlanStatus: draft}` when `goal.Mission == nil`, then immediately marked it `approved`.
+- CLI `goal plan approve` and Web `POST /api/sessions/{id}/mission/plan/approve` both fell through to that store helper when a plain goal did not require linked Plan Mode approval, so both control surfaces could mutate a normal `mode=goal` snapshot into `mode=mission` with an approved empty mission plan.
+- Focused regressions reproduced the behavior: the CLI returned an approved mission JSON for a plain goal, and the Web endpoint returned `200` with an approved empty mission instead of rejecting the missing mission plan.
+
+Impact:
+
+Goal plan approval could create false durable approval facts without any mission plan, validation contract, or linked Plan Mode gate. This weakens `goal.json` / `goal-history.jsonl` as mission approval facts and lets CLI/Web controls imply plan approval for work the agent never proposed.
+
+Minimal fix:
+
+- Make the session store reject `ApproveMissionPlan` when the current goal has no existing mission plan.
+- Keep approval of existing mission plans and linked Plan Mode synchronization unchanged.
+- Add store, CLI, and Web regressions proving plain-goal approval is rejected and does not mutate `goal.json` or append `mission.plan.approved` history.
+
+Validation:
+
+- Focused store, CLI, Web, and runtime linked Plan Mode regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2123,6 +2149,12 @@ Evidence gates:
 - Confirmed FCA-20260526-058 against `spec/14-multi-agent-and-isolation.md`, `spec/15-background-queue.md`, Web `sessionTreeTargetIDs`, store `DeleteSessionTree`, and delete/clear regressions.
 - Confirmed this is a store/Web consistency issue: Web preflight and running-job checks already treat root-linked sessions as part of a tree, but the durable store deletion helper only followed parent links.
 - Confirmed the fix belongs in session storage tree deletion so CLI, Web, SDK, and future cleanup callers share the same durable tree semantics.
+
+### Review 57
+
+- Confirmed FCA-20260526-059 against `spec/00-product.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/17-web-console.md`, store `ApproveMissionPlan`, CLI `goalPlanApproveCommand`, Web `handleMissionPlanApprove`, and runtime linked Plan Mode approval tests.
+- Confirmed this is not a coverage-check issue: `CheckMissionPlanCoverage` correctly returns no blocking coverage for a missing mission, but approval should require an existing mission plan fact before coverage can be meaningful.
+- Confirmed the fix belongs in the session store invariant so CLI, Web, runtime, SDK, and future callers cannot synthesize approved mission plans for ordinary goals.
 
 ## Update Log
 
@@ -3407,6 +3439,33 @@ Changes:
 Validation:
 
 - `go test ./internal/session -run 'TestDeleteSessionTreeRemovesRootLinkedDescendants|TestDeleteSessionTreeDoesNotDeadlockWithReconcilableJob|TestStoreRejectsPathLikeRecordIDs' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-059
+
+Slice: `fix(session): require mission before plan approval`
+
+Changes:
+
+- Changed `ApproveMissionPlan` to reject approval when the current goal has no existing mission plan instead of synthesizing an empty mission and marking it approved.
+- Preserved existing approval behavior for real mission plans, including linked Plan Mode approval synchronization.
+- Added store, CLI, and Web regressions proving plain-goal mission plan approval is rejected without mutating `goal.json` or appending `mission.plan.approved` history.
+
+Validation:
+
+- `go test ./internal/session -run 'TestApproveMissionPlanRejectsGoalWithoutMissionPlan|TestStoreGoalApprovalCreatesLinkedPlanMode|TestMissionPlanCoverageReportsUncoveredAndInvalidAssignments' -count=1`: passed.
+- `go test ./internal/app -run 'TestGoalMissionPlanAndValidationCommands|TestGoalPlanApproveRejectsGoalWithoutMissionPlan' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact|TestServiceMissionPlanApproveRejectsGoalWithoutMissionPlan|TestServiceGoalFactsAndMissionCoverageApproval' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

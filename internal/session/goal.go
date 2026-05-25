@@ -675,8 +675,7 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 			return errors.New("session has no current goal")
 		}
 		if goal.Mission == nil {
-			goal.Mode = GoalModeMission
-			goal.Mission = &MissionPlan{PlanStatus: MissionPlanStatusDraft}
+			return errors.New("mission plan is required before approval")
 		}
 		goal.Mission.PlanStatus = MissionPlanStatusApproved
 		goal.Mission.ApprovedAt = approvedAt
