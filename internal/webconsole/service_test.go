@@ -881,6 +881,29 @@ func TestServicePlanModeInputDetailKeepsLiveHandle(t *testing.T) {
 		t.Fatalf("expected pending request after detail read, got %#v", planMode)
 	}
 
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+result.SessionID+"/planmode/input", map[string]any{
+		"answers": []map[string]any{{
+			"question_id": "scope_choice",
+			"label":       "Narrow",
+			"value":       "Narrow",
+		}},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "request_id is required") {
+		t.Fatalf("expected missing request id rejection before live input delivery, got %#v", errResp)
+	}
+
+	errResp = postJSONError(t, ts.URL+"/api/sessions/"+result.SessionID+"/planmode/input", map[string]any{
+		"request_id": planMode.PendingRequest.RequestID,
+		"answers": []map[string]any{{
+			"question_id": "unknown_choice",
+			"label":       "Narrow",
+			"value":       "Narrow",
+		}},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unknown plan input question id") {
+		t.Fatalf("expected invalid answer rejection before live input delivery, got %#v", errResp)
+	}
+
 	var inputLaunch LaunchResponse
 	postJSON(t, ts.URL+"/api/sessions/"+result.SessionID+"/planmode/input", map[string]any{
 		"request_id": planMode.PendingRequest.RequestID,

@@ -1712,6 +1712,28 @@ func (s *Service) handlePlanModeInput(w http.ResponseWriter, r *http.Request, se
 		writeError(w, http.StatusBadRequest, errors.New("answers are required"))
 		return
 	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("request_id is required"))
+		return
+	}
+	planMode, err := s.store.LoadPlanMode(sessionID)
+	if err != nil {
+		writeError(w, planModeActionStatus(err), err)
+		return
+	}
+	if planMode.PendingRequest == nil {
+		writeError(w, http.StatusConflict, errors.New("plan mode has no pending input request"))
+		return
+	}
+	pendingRequest := *planMode.PendingRequest
+	if pendingRequest.RequestID != req.RequestID {
+		writeError(w, http.StatusConflict, fmt.Errorf("plan input request mismatch: %s", req.RequestID))
+		return
+	}
+	if err := session.ValidatePlanModeAnswers(pendingRequest, req.Answers); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if handle, ok := s.handleForSession(sessionID); ok {
 		if handle.runner.AnswerActivePlanInput(sessionID, req.RequestID, req.Answers) {
 			writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})

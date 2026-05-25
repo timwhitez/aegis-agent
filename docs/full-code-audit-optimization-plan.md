@@ -174,6 +174,33 @@ Validation:
 - Adjacent Plan Mode service tests.
 - Full `go test ./internal/webconsole/` before commit.
 
+### FCA-20260522-006: Plan Mode input API accepts invalid live answers before validation
+
+Severity: Medium
+
+Evidence:
+
+- `handlePlanModeInput` only required a non-empty `answers` array before checking the current live handle.
+- `AnswerActivePlanInput` sends the answers directly to the blocked runner by `session_id` and `request_id` without validating them against the stored pending request.
+- `ValidatePlanModeAnswers` ran later inside the `request_user_input` tool path or fallback continue path, after the HTTP endpoint had already returned `202 Accepted`.
+
+Impact:
+
+Malformed Web input such as a missing `request_id` or an unknown question id could be accepted as if the operator had answered the pending Plan Mode prompt. On the live path this unblocked the waiting runner and turned a client/API error into a model-visible tool error, so the browser lost the chance to correct the same pending request before execution continued.
+
+Minimal fix:
+
+- Require `request_id` in `/planmode/input`.
+- Load the stored pending Plan Mode request before answering a live runner or launching fallback continue.
+- Reject missing pending requests, request-id mismatches, and invalid answers at the HTTP boundary.
+- Add a live-runner regression that verifies invalid input is rejected before delivery and a later valid answer still reaches the original waiter.
+
+Validation:
+
+- Focused live Plan Mode input validation regression test.
+- Adjacent Plan Mode service tests.
+- Full `go test ./internal/webconsole/` before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -259,6 +286,12 @@ Evidence gates:
 - Confirmed FCA-20260522-005 against `request_user_input`, `AnswerActivePlanInput`, `sessionDetail`, `activeHandleOwner`, and `pruneInactiveHandles`.
 - Confirmed Plan Mode planning must resume through `submit_plan` after live input; a direct `finish` response is not a valid planning-stage completion path.
 - Confirmed the fix keeps current-process handles for non-terminal states without making Web Console handles durable or introducing a second state authority.
+
+### Review 6
+
+- Confirmed FCA-20260522-006 against `handlePlanModeInput`, `AnswerActivePlanInput`, and `ValidatePlanModeAnswers`.
+- Confirmed the validation belongs in the Web service adapter before selecting the live-handle or fallback-continue execution path.
+- Confirmed the fix still preserves the runtime/store Plan Mode authority by validating against `planmode.json` rather than introducing browser-side state as authority.
 
 ## Update Log
 
@@ -351,5 +384,24 @@ Validation:
 - `go test ./internal/webconsole/ -run TestServicePlanModeInputDetailKeepsLiveHandle -count=1`: passed.
 - `go test ./internal/webconsole/ -run TestServicePlanMode -count=1`: passed.
 - `go test ./internal/webconsole/ -run TestSessionDetailReportsActiveHandleOwner -count=1`: passed.
+- `go test ./internal/webconsole/ -count=1`: passed.
+- `go vet ./internal/webconsole/`: passed.
+
+### FCA-20260522-006
+
+Slice: `fix(webconsole): validate plan input before delivery`
+
+Changes:
+
+- Required `request_id` for Web Plan Mode input answers.
+- Loaded and checked the stored pending Plan Mode request before answering a live runner or launching fallback continue.
+- Rejected request mismatches and invalid answer payloads at the HTTP boundary.
+- Extended the live Plan Mode input regression to prove invalid answers do not unblock the waiter and a later valid answer still advances to plan approval.
+
+Validation:
+
+- `go test ./internal/webconsole/ -run TestServicePlanModeInputDetailKeepsLiveHandle -count=1`: passed.
+- `go test ./internal/webconsole/ -run TestServicePlanMode -count=1`: passed.
+- `go test ./internal/webconsole/ -run TestServicePlanModeReviseInputAndCancelControls -count=1`: passed.
 - `go test ./internal/webconsole/ -count=1`: passed.
 - `go vet ./internal/webconsole/`: passed.
