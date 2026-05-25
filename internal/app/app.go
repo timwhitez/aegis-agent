@@ -654,7 +654,7 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 			return err
 		}
 		if cleared {
-			_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+			if err := store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
 				GoalID: goal.GoalID,
 				Type:   "goal.cleared",
 				Source: session.GoalSourceCLI,
@@ -662,11 +662,15 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 				Data: map[string]any{
 					"previous_status": goal.Status,
 				},
-			})
-			_ = store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
+			}); err != nil {
+				return err
+			}
+			if err := store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
 				"goal_id":         goal.GoalID,
 				"previous_status": goal.Status,
-			}))
+			})); err != nil {
+				return err
+			}
 		}
 		if *jsonMode {
 			return json.NewEncoder(stdout).Encode(map[string]any{"session_id": sessionID, "cleared": cleared})
@@ -858,18 +862,22 @@ func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status,
 	if err != nil {
 		return err
 	}
-	_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+	if err := store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
 		GoalID: goal.GoalID,
 		Type:   eventType,
 		Source: session.GoalSourceCLI,
 		Status: goal.Status,
-	})
-	_ = store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", map[string]any{
+	}); err != nil {
+		return err
+	}
+	if err := store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", map[string]any{
 		"goal_id":   goal.GoalID,
 		"status":    goal.Status,
 		"mode":      goal.Mode,
 		"objective": goal.Objective,
-	}))
+	})); err != nil {
+		return err
+	}
 	if jsonMode {
 		return json.NewEncoder(stdout).Encode(goal)
 	}

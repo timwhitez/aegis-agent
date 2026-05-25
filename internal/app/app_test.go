@@ -586,6 +586,66 @@ func TestGoalStatusCommandPreservesAccountingAndProgressFacts(t *testing.T) {
 	}
 }
 
+func TestGoalStatusCommandReportsHistoryAppendError(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := testAppSessionMetadata(t, "session_goal_status_history_error")
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Pause through CLI with history",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockAppGoalHistoryPath(t, store, meta.ID)
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"goal", "pause", meta.ID, "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestGoalClearCommandReportsHistoryAppendError(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := testAppSessionMetadata(t, "session_goal_clear_history_error")
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Clear through CLI with history",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockAppGoalHistoryPath(t, store, meta.ID)
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"goal", "clear", meta.ID, "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunCommandSupportsInitFlag(t *testing.T) {
 	fake := newFakeRunner()
 	fake.startResult = runtime.RunResult{
@@ -1881,5 +1941,33 @@ func TestTopLevelWebCommandDispatches(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "go-cli-agent experimental web") {
 		t.Fatalf("top-level web should not be treated as experimental migration, got %v", err)
+	}
+}
+
+func testAppSessionMetadata(t *testing.T, id string) session.SessionMetadata {
+	t.Helper()
+	workdir := t.TempDir()
+	return session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               id,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		RequestedWorkdir: workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    id,
+	}
+}
+
+func blockAppGoalHistoryPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "goal-history.jsonl")
+	if err := os.Remove(historyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove goal history: %v", err)
+	}
+	if err := os.Mkdir(historyPath, 0o700); err != nil {
+		t.Fatalf("block goal history path: %v", err)
 	}
 }

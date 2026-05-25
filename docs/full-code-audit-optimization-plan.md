@@ -3681,3 +3681,33 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-064
+
+Slice: `fix(cli): report goal control history failures`
+
+Finding:
+
+- CLI fallback goal controls mutated `goal.json` and then ignored failures appending the corresponding durable history/event facts.
+- Blocked `artifacts/goal-history.jsonl` paths reproduced false-success CLI output for both `goal pause --json` and `goal clear --json`, leaving the operator with a successful command response even though the required goal history source fact was missing.
+
+Changes:
+
+- Changed `goal pause` / `goal resume` / `goal complete` to return `AppendGoalHistory` and event append errors.
+- Changed `goal clear` to return `AppendGoalHistory` and event append errors after clearing the goal.
+- Added focused CLI regressions for status mutation and clear when `artifacts/goal-history.jsonl` is blocked.
+
+Validation:
+
+- `go test ./internal/app -run 'TestGoalStatusCommandReportsHistoryAppendError|TestGoalClearCommandReportsHistoryAppendError' -count=1`: failed before the fix with nil errors and success JSON.
+- `go test ./internal/app -run 'TestGoalStatusCommandReportsHistoryAppendError|TestGoalClearCommandReportsHistoryAppendError|TestGoalStatusCommandPreservesAccountingAndProgressFacts|TestGoalPlanApproveRejectsGoalWithoutMissionPlan' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
