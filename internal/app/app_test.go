@@ -677,6 +677,9 @@ func TestTasksCommandRendersTaskBoard(t *testing.T) {
 			"ready": {
 				{ID: "task_0001", Subject: "Implement hook tests"},
 			},
+			"cancelled": {
+				{ID: "task_0002", Subject: "Drop stale path", Status: "cancelled"},
+			},
 		},
 	}
 	restore := runnerLoader
@@ -690,7 +693,11 @@ func TestTasksCommandRendersTaskBoard(t *testing.T) {
 	if err := Run(context.Background(), []string{"tasks", "s1"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "Audit provider") || !strings.Contains(stdout.String(), "Active implementation") || !strings.Contains(stdout.String(), "Implement hook tests") {
+	if !strings.Contains(stdout.String(), "Audit provider") ||
+		!strings.Contains(stdout.String(), "Active implementation") ||
+		!strings.Contains(stdout.String(), "Implement hook tests") ||
+		!strings.Contains(stdout.String(), "CANCELLED") ||
+		!strings.Contains(stdout.String(), "Drop stale path") {
 		t.Fatalf("unexpected output: %s", stdout.String())
 	}
 }

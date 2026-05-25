@@ -1439,6 +1439,32 @@ Validation:
 - JavaScript syntax validation.
 - Standard grouped validation before commit.
 
+### FCA-20260526-048: CLI tasks view hides cancelled task group
+
+Severity: Low
+
+Evidence:
+
+- `spec/12-task-system.md` says `completed` and `cancelled` are both done states, but only `completed` unlocks dependents.
+- FCA-20260525-041 changed `BuildTaskBoard` to expose separate `completed`, `cancelled`, and combined `done` groups/counters.
+- `internal/app/app.go` `tasksCommand` still rendered only `in_progress`, `ready`, `blocked`, and `completed` groups in normal text mode.
+- `normalizeTaskBoard` also only initialized `ready`, `blocked`, and `completed`, so fallback callers with sparse task-board data had no normalized `cancelled` group.
+
+Impact:
+
+CLI fallback users could miss cancelled durable task graph nodes unless they remembered `--all`. That made the CLI less accurate than Web/task-list facts for recovery and handoff review.
+
+Minimal fix:
+
+- Render `cancelled` as its own normal text-mode task group.
+- Normalize the separated task groups, including `cancelled` and compatibility `done`.
+- Extend the tasks command regression so cancelled tasks are visible without `--all`.
+
+Validation:
+
+- Focused CLI tasks command regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1762,6 +1788,12 @@ Evidence gates:
 - Confirmed FCA-20260526-047 against `spec/17-web-console.md`, `handleMissionPlanApprove`, `handlePlanModeAction`, `handleGoalAction`, `refreshCurrentSession`, and polling predicates.
 - Confirmed the backend correctly launches linked Plan Mode approval and returns `202 Accepted`; the bug is frontend state handling for the Goal inspector path only.
 - Confirmed the fix belongs in the shared frontend launch-response handling, not in runtime or store Plan Mode state transitions.
+
+### Review 46
+
+- Confirmed FCA-20260526-048 against `spec/12-task-system.md`, `BuildTaskBoard`, `tasksCommand`, `normalizeTaskBoard`, and existing CLI task command tests.
+- Confirmed this is a CLI fallback visibility drift after FCA-20260525-041: Web and tool task facts are separated, but normal CLI text output skipped the new `cancelled` group.
+- Confirmed the fix belongs in CLI rendering only; no session task graph or Web change is needed.
 
 ## Update Log
 
@@ -2790,6 +2822,31 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-048
+
+Slice: `fix(app): show cancelled tasks in cli task view`
+
+Changes:
+
+- Added the `cancelled` group to normal `go-cli-agent tasks <session-id>` text output.
+- Normalized separated task-board groups including `in_progress`, `cancelled`, and compatibility `done`.
+- Extended the CLI tasks command regression so cancelled tasks are visible without `--all`.
+
+Validation:
+
+- `go test ./internal/app -run 'TestTasksCommandRendersTaskBoard|TestTasksCommandAllRendersFlatTaskList' -count=1`: passed.
+- `gofmt -l internal/app/app.go internal/app/app_test.go`: no output.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

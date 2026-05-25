@@ -1033,7 +1033,7 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "[%s] %s\n", marker(item.Status), item.Content)
 	}
 	fmt.Fprintln(stdout, "\n== tasks ==")
-	for _, group := range []string{"in_progress", "ready", "blocked", "completed"} {
+	for _, group := range []string{"in_progress", "ready", "blocked", "completed", "cancelled"} {
 		tasks := board.Groups[group]
 		if len(tasks) == 0 {
 			continue
@@ -1999,7 +1999,7 @@ func normalizeTaskBoard(board session.TaskBoard) session.TaskBoard {
 	if board.Groups == nil {
 		board.Groups = map[string][]session.Task{}
 	}
-	for _, key := range []string{"ready", "blocked", "completed"} {
+	for _, key := range []string{"in_progress", "ready", "blocked", "completed", "cancelled", "done"} {
 		if board.Groups[key] == nil {
 			board.Groups[key] = []session.Task{}
 		}
