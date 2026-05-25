@@ -1512,6 +1512,14 @@ async function confirmCoverageOverride() {
   return window.confirm('Validation coverage blocks approval. Continue only if you accept the uncovered validation risk for this local session.');
 }
 
+async function confirmGoalClear() {
+  return window.confirm('Clear the durable goal for this local session? This removes goal state and history links from the current session view.');
+}
+
+async function confirmSkillUninstall(id) {
+  return window.confirm(`Uninstall skill ${id} from the local catalog?`);
+}
+
 async function handlePlanModeAction(button) {
   if (!hasDurableSession()) {
     showToast('No durable session is loaded.', 'info');
@@ -1639,6 +1647,10 @@ async function handleGoalAction(button) {
       await completeGoal(state.sessionId);
       showToast('Goal marked complete.', 'success');
     } else if (action === 'clear') {
+      if (!await confirmGoalClear()) {
+        showToast('Goal clear cancelled.', 'info');
+        return;
+      }
       await deleteGoal(state.sessionId);
       showToast('Goal cleared.', 'success');
     } else if (action === 'approve-plan') {
@@ -2583,6 +2595,10 @@ async function handleSkillAction(id, isInstalled, button) {
     } else {
       showToast('Upload input not available.', 'error');
     }
+    return;
+  }
+  if (!await confirmSkillUninstall(id)) {
+    showToast('Skill uninstall cancelled.', 'info');
     return;
   }
   button.disabled = true;

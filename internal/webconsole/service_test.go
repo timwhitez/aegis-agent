@@ -2168,6 +2168,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(settingsBody, "apiProviderSelect.addEventListener('change'") || !strings.Contains(settingsBody, "reasoningModesForAPIProvider") || !strings.Contains(settingsBody, "reasoningSummaryModesForAPIProvider") {
 		t.Fatalf("expected settings view to refresh reasoning controls when API Provider changes, got settings-view.js body: %s", settingsBody)
 	}
+	if !strings.Contains(settingsBody, "confirmSettingsSave") || !strings.Contains(settingsBody, "write the entered API key to the local env file") {
+		t.Fatalf("expected settings save to require explicit local config/API key confirmation, got settings-view.js body: %s", settingsBody)
+	}
 	workspaceBody := checkBody(server.URL + "/workspace-view.js")
 	if !strings.Contains(workspaceBody, "fetchWorkspace") || !strings.Contains(workspaceBody, "renderFileTree") || !strings.Contains(workspaceBody, "selectedWorkspaceWorkdir") {
 		t.Fatalf("unexpected workspace-view.js body: %s", workspaceBody)
@@ -2204,6 +2207,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "isCoverageApprovalBlock") || !strings.Contains(jsBody, "confirmCoverageOverride") || !strings.Contains(jsBody, "override_coverage: true") {
 		t.Fatalf("expected app.js to require explicit coverage override confirmation, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "confirmGoalClear") || !strings.Contains(jsBody, "confirmSkillUninstall") || !strings.Contains(jsBody, "Skill uninstall cancelled") {
+		t.Fatalf("expected risky goal clear and skill uninstall actions to require confirmation, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "setComposerMode") || !strings.Contains(jsBody, "normalizeComposerMode") || !strings.Contains(jsBody, "mode === 'goal'") || !strings.Contains(jsBody, "mode === 'plan'") {
 		t.Fatalf("expected Goal and Plan composer controls to be mutually exclusive, got app.js body: %s", jsBody)

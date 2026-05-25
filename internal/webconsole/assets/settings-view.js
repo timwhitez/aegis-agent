@@ -354,8 +354,6 @@ async function renderSettings() {
     });
 
     saveButton.addEventListener('click', async () => {
-      saveButton.innerText = 'Saving...';
-      saveButton.disabled = true;
       try {
         if (!disableHardTurnLimitInput.checked) {
           const parsed = Number.parseInt(maxTurnsHardInput.value, 10);
@@ -363,6 +361,12 @@ async function renderSettings() {
             throw new Error('Hard max turns must be a positive integer, or disable the hard limit.');
           }
         }
+        if (!confirmSettingsSave(apiKeyInput, maskedKey)) {
+          showToast('Settings save cancelled.', 'info');
+          return;
+        }
+        saveButton.innerText = 'Saving...';
+        saveButton.disabled = true;
         await saveConfig(buildConfigPayload());
         showToast('Settings saved.', 'success');
         saveButton.innerText = 'Saved';
@@ -386,4 +390,13 @@ async function renderSettings() {
     container.innerHTML = '<div class="empty-panel">Failed to load backend settings.</div>';
     showToast('Failed to load backend settings.', 'error');
   }
+}
+
+function confirmSettingsSave(apiKeyInput, maskedKey) {
+  const value = String(apiKeyInput?.value || '').trim();
+  const writesAPIKey = value !== '' && value !== maskedKey;
+  const message = writesAPIKey
+    ? 'Save settings and write the entered API key to the local env file?'
+    : 'Save settings to the local configuration files?';
+  return window.confirm(message);
 }

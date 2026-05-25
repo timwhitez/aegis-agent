@@ -334,6 +334,34 @@ Validation:
 - Embedded shell asset contract test.
 - Frontend utility tests and full WebConsole package test before commit.
 
+### FCA-20260522-012: Risky Web actions miss explicit confirmation
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` says risky actions such as writing config/API keys, deleting/clearing, and skill install/uninstall require explicit confirmation.
+- Settings save wrote provider config and could write an API key without a confirmation.
+- Goal clear deleted durable goal state without a confirmation.
+- Skill uninstall removed a local skill directory without a confirmation.
+
+Impact:
+
+Local WebConsole users could accidentally persist config/API key changes or remove durable local state with a single click, which conflicts with the Web-first local-console safety contract.
+
+Minimal fix:
+
+- Add explicit Settings save confirmation, with API-key-specific wording when a new key will be written.
+- Add explicit Goal clear confirmation.
+- Add explicit Skill uninstall confirmation.
+- Extend embedded asset tests to assert those confirmation hooks remain wired.
+
+Validation:
+
+- JS syntax checks for `app.js` and `settings-view.js`.
+- Embedded shell asset contract test.
+- Frontend utility tests and full WebConsole package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -453,6 +481,11 @@ Evidence gates:
 
 - Confirmed FCA-20260522-011 against `sendMessage`, `updateUI`, and the state transition before `startSession` returns a durable session id.
 - Confirmed the fix stays in frontend request guarding and does not create browser-side session authority.
+
+### Review 12
+
+- Confirmed FCA-20260522-012 against `settings-view.js` save handling, `handleGoalAction`, `handleSkillAction`, and the explicit confirmation requirement in `spec/17-web-console.md`.
+- Confirmed session delete/clear history already had confirmation; the fix covers the remaining risky actions named in the finding.
 
 ## Update Log
 
@@ -648,6 +681,25 @@ Changes:
 Validation:
 
 - `node --check internal/webconsole/assets/app.js`: passed.
+- `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 6/6 tests.
+- `go test ./internal/webconsole/ -count=1`: passed.
+
+### FCA-20260522-012
+
+Slice: `fix(webconsole): confirm risky local actions`
+
+Changes:
+
+- Added a Settings save confirmation, including API-key-specific copy when a non-masked key will be written.
+- Added confirmation before clearing the current durable goal.
+- Added confirmation before uninstalling a local skill.
+- Extended embedded asset tests to assert risky Web actions keep explicit confirmation hooks.
+
+Validation:
+
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
 - `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 6/6 tests.
 - `go test ./internal/webconsole/ -count=1`: passed.
