@@ -1037,6 +1037,8 @@ function renderSummaryPanel(detail) {
       </div>
     </section>
 
+    ${renderProviderAttemptsSection(detail.provider_attempts)}
+
     <section class="panel-section">
       <div class="section-title-row">
         <h4>Recent tool activity</h4>
@@ -1060,6 +1062,105 @@ function renderSummaryPanel(detail) {
       </div>
     </section>
   `;
+}
+
+function renderProviderAttemptsSection(items) {
+  const attempts = maybeArray(items);
+  if (!attempts.length) {
+    return '';
+  }
+  const summary = summarizeProviderAttemptCounters(attempts);
+  const recoveryCount = summary.retry + summary.autoResume;
+  const recent = attempts.slice(-4).reverse();
+  return `
+    <section class="panel-section">
+      <div class="section-title-row">
+        <h4>Provider attempts</h4>
+      </div>
+      <div class="summary-grid wide">
+        ${renderMetricCard('Attempts', String(attempts.length), `${summary.success} success · ${summary.failure} failed`)}
+        ${renderMetricCard('Recovery', String(recoveryCount), `${summary.retry} retry · ${summary.autoResume} auto-resume`)}
+        ${renderMetricCard('Cache read', String(summary.cacheRead), `${summary.cacheCreation} creation`)}
+      </div>
+      <div class="card-stack">
+        ${recent.map((attempt) => renderProviderAttemptCard(attempt)).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function summarizeProviderAttemptCounters(items) {
+  return maybeArray(items).reduce((summary, attempt) => {
+    const outcome = String(attempt?.outcome || '').toLowerCase();
+    if (outcome === 'success') summary.success += 1;
+    if (outcome === 'failure') summary.failure += 1;
+    if (outcome === 'retry') summary.retry += 1;
+    if (outcome === 'auto_resume') summary.autoResume += 1;
+    summary.cacheRead += Number(attempt?.cache_read_input_tokens || 0);
+    summary.cacheCreation += Number(attempt?.cache_creation_input_tokens || 0);
+    return summary;
+  }, {
+    success: 0,
+    failure: 0,
+    retry: 0,
+    autoResume: 0,
+    cacheRead: 0,
+    cacheCreation: 0
+  });
+}
+
+function renderProviderAttemptCard(attempt) {
+  attempt = attempt || {};
+  const outcome = String(attempt.outcome || 'unknown');
+  const responseID = String(attempt.provider_response_id || '').trim();
+  const copy = attempt.error
+    ? truncateText(attempt.error, 180)
+    : responseID
+      ? `response ${shortId(responseID)}`
+      : `${attempt.provider || 'provider'} / ${attempt.model || 'model'}`;
+  const metaParts = [
+    attempt.provider || '',
+    attempt.model || '',
+    attempt.turn ? `turn ${attempt.turn}` : '',
+    attempt.attempt ? `attempt ${attempt.attempt}` : '',
+    attempt.error_class ? `class ${attempt.error_class}` : '',
+    attempt.timeout_kind || '',
+    attempt.status_code ? `HTTP ${attempt.status_code}` : '',
+    attempt.cache_read_input_tokens ? `cache read ${attempt.cache_read_input_tokens}` : '',
+    attempt.cache_creation_input_tokens ? `cache create ${attempt.cache_creation_input_tokens}` : '',
+    attempt.created_at ? formatTimestamp(attempt.created_at) : ''
+  ].filter(Boolean);
+  return `
+    <div class="notification-card provider-attempt-card">
+      <div class="job-card-top">
+        <div class="job-card-title">${escapeHTML(providerAttemptTitle(attempt))}</div>
+        <span class="status-badge ${providerAttemptTone(outcome)}">${escapeHTML(humanizeStatus(outcome))}</span>
+      </div>
+      <div class="notification-copy">${escapeHTML(copy)}</div>
+      <div class="job-card-meta">${escapeHTML(metaParts.join(' · '))}</div>
+    </div>
+  `;
+}
+
+function providerAttemptTitle(attempt) {
+  const parts = [];
+  if (attempt?.turn) parts.push(`turn ${attempt.turn}`);
+  if (attempt?.attempt) parts.push(`attempt ${attempt.attempt}`);
+  return parts.join(' · ') || 'provider attempt';
+}
+
+function providerAttemptTone(outcome) {
+  switch (String(outcome || '').toLowerCase()) {
+    case 'success':
+      return 'live';
+    case 'failure':
+      return 'danger';
+    case 'retry':
+    case 'auto_resume':
+      return 'queued';
+    default:
+      return 'neutral';
+  }
 }
 
 function renderTimelinePanel(detail) {

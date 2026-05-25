@@ -1384,6 +1384,33 @@ Validation:
 - Focused compaction regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-046: Web summary drops provider-attempt ledger facts
+
+Severity: Low
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `provider-attempts.jsonl` as a recovery and diagnostic fact source, and `spec/17-web-console.md` requires session detail to expose provider attempts and latest error state in the Web-first operator surface.
+- `internal/webconsole/service.go` loads `provider-attempts.jsonl` and returns the tailed facts as `provider_attempts` in `SessionDetailResponse`.
+- `internal/webconsole/assets/session-view.js` did not read `detail.provider_attempts`; the summary panel only inferred retry context from recent events and `state.last_error`.
+- `rg` over `internal/webconsole/assets` and `validation/scripts` found no provider-attempt renderer or frontend regression coverage before this slice.
+
+Impact:
+
+Operators using the default Web console could miss durable retry, auto-resume, final failure, success, response id, cache token, and timeout/status facts even though the backend had already returned them. Diagnosing provider failures still required leaving the Web UI for `session.md` or `provider-attempts.jsonl`.
+
+Minimal fix:
+
+- Render a compact Provider Attempts section in the session Summary inspector when `provider_attempts` are present.
+- Show total attempts, recovery attempts, cache counters, recent outcomes, turn/attempt numbers, error class, timeout kind, status code, response id, and cache read/create counts.
+- Add a frontend renderer regression proving session summary output includes provider-attempt ledger facts.
+
+Validation:
+
+- Focused frontend renderer regression.
+- JavaScript syntax validation.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1695,6 +1722,12 @@ Evidence gates:
 - Confirmed FCA-20260526-045 against `spec/12-task-system.md`, `taskCounts`, `writeSessionSummary`, `writeLongRunCheckpoint`, `contextLoadedEventData`, and compaction summary/event generation.
 - Confirmed this is a recovery-artifact drift from FCA-20260525-041: Web/task-list derived facts were fixed, but runtime summaries and compaction metadata still used the old conflated helper.
 - Confirmed the fix belongs in the shared runtime helper and derived artifact writers, preserving compatibility by keeping existing `completed_task_count` while adding `cancelled_task_count` and `done_task_count`.
+
+### Review 44
+
+- Confirmed FCA-20260526-046 against `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, `SessionDetailResponse.ProviderAttempts`, `sessionDetail`, and the session summary renderer.
+- Confirmed the backend API already returned tailed provider-attempt facts, so the drift was confined to the frontend Web operator surface rather than provider ledger persistence.
+- Confirmed the minimal fix belongs in `session-view.js` with renderer coverage, not in runtime/provider code.
 
 ## Update Log
 
@@ -2671,6 +2704,32 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go test -timeout 120s ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-046
+
+Slice: `fix(webconsole): show provider attempt ledger`
+
+Changes:
+
+- Added a Provider Attempts section to the session Summary inspector when backend `provider_attempts` facts are present.
+- Rendered total attempts, retry/auto-resume recovery counts, cache read/create counters, recent outcomes, turn/attempt ids, error class, timeout kind, status code, response id, and cache facts.
+- Added frontend renderer coverage proving the Summary panel exposes provider-attempt ledger facts.
+
+Validation:
+
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: initially failed because the existing VM harness lacked app-level stubs for `collectRecentToolEntries` and `phaseHeadline`; added narrow stubs, reran, and passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.

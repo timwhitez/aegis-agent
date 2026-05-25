@@ -85,6 +85,12 @@ vm.runInContext(`
     const normalized = String(status).replaceAll('_', ' ').replaceAll('-', ' ').replace(/\\s+/g, ' ').trim();
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
+  function collectRecentToolEntries() {
+    return [];
+  }
+  function phaseHeadline(phase) {
+    return humanizeStatus(phase);
+  }
 `, context, { filename: 'renderer-test-stubs.js' });
 vm.runInContext(sessionViewSource, context, { filename: 'session-view.js' });
 
@@ -233,4 +239,57 @@ test('task panel renders cancelled count separately from completed tasks', () =>
   assert.match(html, /<span class="metric-label">Completed<\/span>/);
   assert.match(html, /<div class="metric-card-value">1<\/div>/);
   assert.match(html, /<div class="metric-card-copy">1 cancelled<\/div>/);
+});
+
+test('summary panel renders provider attempt ledger facts', () => {
+  const html = context.renderSummaryPanel({
+    state: {
+      status: 'failed',
+      phase: 'provider_call',
+      turn: 2,
+      loaded_skills: []
+    },
+    metadata: {
+      id: 'sess_provider_attempts',
+      provider: 'openai-compatible',
+      model: 'gpt-test',
+      mode: 'exec',
+      workdir: '/tmp/workspace'
+    },
+    messages: [],
+    steer_requests: [],
+    background_notifications: [],
+    provider_attempts: [
+      {
+        turn: 2,
+        attempt: 1,
+        provider: 'openai-compatible',
+        model: 'gpt-test',
+        outcome: 'retry',
+        error_class: 'upstream_timeout',
+        timeout_kind: 'request_timeout',
+        status_code: 504,
+        error: 'gateway timed out'
+      },
+      {
+        turn: 2,
+        attempt: 2,
+        provider: 'openai-compatible',
+        model: 'gpt-test',
+        outcome: 'success',
+        provider_response_id: 'resp_provider_attempts_done',
+        cache_read_input_tokens: 23,
+        cache_creation_input_tokens: 11
+      }
+    ]
+  });
+
+  assert.match(html, />Provider attempts<\/h4>/);
+  assert.match(html, /<span class="metric-label">Attempts<\/span>/);
+  assert.match(html, /1 success · 0 failed/);
+  assert.match(html, /1 retry · 0 auto-resume/);
+  assert.match(html, /cache read 23/);
+  assert.match(html, /cache create 11/);
+  assert.match(html, /request_timeout/);
+  assert.match(html, /response resp_p.+done/);
 });
