@@ -120,6 +120,59 @@ func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 	}
 }
 
+func TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	firstInstruction := session.NewMessage("user", "Write reports/final.md with the final implementation summary.")
+	if err := store.AppendMessage(meta.ID, firstInstruction); err != nil {
+		t.Fatalf("append first instruction: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh first contract: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("initial summary"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	controller.TrackToolResult("write_file", session.ToolResult{
+		Name:          "write_file",
+		LLMOutput:     "wrote reports/final.md",
+		DisplayOutput: "wrote reports/final.md",
+		Metadata:      map[string]any{"path": artifactPath},
+	}, 2)
+	if kind, text := controller.requiredArtifactGate("finish"); kind != "" || text != "" {
+		t.Fatalf("expected first artifact write to satisfy gate, kind=%q text=%q", kind, text)
+	}
+
+	secondInstruction := session.NewMessage("user", "Write reports/final.md again with additional validation notes before finish.")
+	if err := store.AppendMessage(meta.ID, secondInstruction); err != nil {
+		t.Fatalf("append second instruction: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh second contract: %v", err)
+	}
+	contract, err := store.LoadContract(meta.ID)
+	if err != nil {
+		t.Fatalf("load refreshed contract: %v", err)
+	}
+	if contract.SourceMessageID != secondInstruction.ID {
+		t.Fatalf("expected contract to track latest instruction %q, got %#v", secondInstruction.ID, contract)
+	}
+	tracker, err := store.LoadArtifactTracker(meta.ID)
+	if err != nil {
+		t.Fatalf("load tracker: %v", err)
+	}
+	if len(tracker) != 1 || tracker[0].Status.TouchedBySession {
+		t.Fatalf("expected latest same-path instruction to reset artifact freshness, got %#v", tracker)
+	}
+	if kind, text := controller.requiredArtifactGate("finish"); kind != "required_artifact" || !strings.Contains(text, "not touched or changed") {
+		t.Fatalf("expected stale artifact block after latest same-path instruction, kind=%q text=%q", kind, text)
+	}
+}
+
 func TestRequiredArtifactGateRejectsSymlinkedArtifactAfterContractCreation(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {

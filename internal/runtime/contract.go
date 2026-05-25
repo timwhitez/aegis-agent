@@ -21,6 +21,7 @@ const (
 
 func buildSessionContract(meta session.SessionMetadata, messages []session.Message) session.SessionContract {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	latestInstruction, hasLatestInstruction := latestExternalInstruction(messages)
 	contract := session.SessionContract{
 		SchemaVersion: 1,
 		ContractID:    "contract_" + meta.ID,
@@ -30,6 +31,10 @@ func buildSessionContract(meta session.SessionMetadata, messages []session.Messa
 		AgentRole:     meta.AgentRole,
 		CreatedAt:     now,
 		UpdatedAt:     now,
+	}
+	if hasLatestInstruction {
+		contract.SourceMessageID = latestInstruction.ID
+		contract.SourceMessageHash = hashInstructionText(latestInstruction.Text)
 	}
 	if meta.ProviderOptions.MaxOutputTokens > 0 {
 		contract.MaxTurns = 0
@@ -170,6 +175,19 @@ func cleanAbsPath(path string) string {
 	return filepath.Clean(abs)
 }
 
+func latestExternalInstruction(messages []session.Message) (session.Message, bool) {
+	idx := latestExternalInstructionIndex(messages)
+	if idx < 0 {
+		return session.Message{}, false
+	}
+	return messages[idx], true
+}
+
+func hashInstructionText(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
 func (r *Runner) refreshContractFromMessages(meta session.SessionMetadata, phase string) error {
 	return refreshContractForSession(r.store, func(eventType string, data map[string]any) {
 		r.emit(meta.ID, eventType, phase, data)
@@ -238,6 +256,9 @@ func requiredArtifactEventPayload(artifacts []session.RequiredArtifact) []map[st
 }
 
 func contractsEquivalent(a, b session.SessionContract) bool {
+	if a.SourceMessageID != b.SourceMessageID || a.SourceMessageHash != b.SourceMessageHash {
+		return false
+	}
 	if a.Profile != b.Profile || a.AgentRole != b.AgentRole || strings.Join(a.CompletionGates, "\x00") != strings.Join(b.CompletionGates, "\x00") {
 		return false
 	}

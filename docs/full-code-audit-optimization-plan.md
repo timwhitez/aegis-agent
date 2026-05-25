@@ -997,6 +997,38 @@ Validation:
 - Focused steer store/runtime regressions before commit.
 - Full Go vet and grouped package validation before commit.
 
+### FCA-20260525-034: Same-path artifact instructions can inherit stale completion freshness
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires the session contract and artifact tracker to refresh after new external instructions so explicit artifact constraints participate in later completion gates.
+- `internal/runtime/contract.go` derives `contract.json` and `artifact-tracker.json` from the latest external user instruction, but `contractsEquivalent` only compared profile, gates, anchors, and required artifact paths.
+- If a session already wrote `reports/final.md`, then a later user message again requested `reports/final.md` with new content requirements, `refreshContractForSession` treated the contract as equivalent and kept the old `artifact-tracker.json` status with `touched_by_session=true`.
+- A focused regression reproduces the behavior: the first instruction writes and tracks `reports/final.md`; the second same-path instruction refreshes the contract; before the fix, `requiredArtifactGate("finish")` could still pass without any artifact write after the second instruction.
+
+Impact:
+
+A model can satisfy an earlier required-artifact instruction, receive a later same-path revision request, and then finish without updating that artifact for the latest instruction. This weakens the latest-user-instruction contract and can produce stale deliverables while the completion gate reports success.
+
+Minimal fix:
+
+- Persist the latest external instruction identity and text hash in `SessionContract`.
+- Include those source fields in contract equivalence, so a new user instruction with the same required artifact path rebuilds the artifact baseline and clears old freshness status.
+- Add a regression proving same-path newer instructions block finish until the artifact is touched or changed again.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction|TestCompletionControllerRequiresSessionTouchedArtifact|TestSessionContractTracksRequiredArtifactAndCompletionGate' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1236,6 +1268,12 @@ Evidence gates:
 - Confirmed FCA-20260525-033 against `UpdateSteerRequests`, Runner `Steer`, Engine `deferPendingInterrupts`, Engine `drainSteer`, and the session detail consumers of `pending_steer_count`.
 - Confirmed `control/steer.jsonl` already remains authoritative and merge-safe; the bug is the derived `state.json` counter drifting after a stale snapshot or later engine state save.
 - Confirmed the fix belongs in the session store/runner/runtime boundary, with no change to steer queue acceptance semantics or provider/tool control flow.
+
+### Review 32
+
+- Confirmed FCA-20260525-034 against `refreshContractForSession`, `contractsEquivalent`, `TrackToolResult`, and `requiredArtifactGate`.
+- Confirmed the contract source is the latest external user message, so a later same-path artifact instruction is a new completion contract even when the extracted artifact path is unchanged.
+- Confirmed the fix belongs in the runtime/session contract snapshot, not in Web or CLI adapters, because all accepted user inputs share the same artifact completion gate.
 
 ## Update Log
 
@@ -1926,6 +1964,27 @@ Validation:
 
 - `go test ./internal/session -run 'TestUpdateSteerRequestsMergesConcurrentAppend|TestRefreshPendingSteerCountUsesMergedDurableRequests|TestStoreSaveStateRefreshesUpdatedAt|TestStoreSaveStatePreservesCurrentLoadedSkills' -count=1`: passed.
 - `go test ./internal/runtime -run 'TestEngineAcceptsPendingSteerBeforeProviderCall|TestEngineRefreshesPendingSteerCountAfterConcurrentAppend|TestRunnerSteerQueuesRequestAndUpdatesPendingCount' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-034
+
+Slice: `fix(runtime): refresh artifact contract source`
+
+Changes:
+
+- Added latest external instruction source fields to `SessionContract`.
+- Made contract equivalence include the source message id and text hash, so a newer same-path artifact instruction rebuilds `contract.json` and `artifact-tracker.json`.
+- Added a regression proving a later same-path required artifact instruction blocks finish until the artifact is touched or changed again.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction|TestCompletionControllerRequiresSessionTouchedArtifact|TestSessionContractTracksRequiredArtifactAndCompletionGate' -count=1`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

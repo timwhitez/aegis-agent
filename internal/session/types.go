@@ -124,6 +124,8 @@ type SessionContract struct {
 	SchemaVersion             int                `json:"schema_version"`
 	ContractID                string             `json:"contract_id"`
 	Source                    string             `json:"source"`
+	SourceMessageID           string             `json:"source_message_id,omitempty"`
+	SourceMessageHash         string             `json:"source_message_hash,omitempty"`
 	TrustSource               string             `json:"trust_source"`
 	Profile                   string             `json:"profile"`
 	AgentRole                 string             `json:"agent_role,omitempty"`
