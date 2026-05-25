@@ -2008,6 +2008,11 @@ function renderBackgroundNotificationsPreview(items) {
       </div>
       <div class="notification-copy">${escapeHTML(truncateText(item.final_text || item.last_error || 'No final text recorded.', 180))}</div>
       <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}</div>
+      ${item.queue_job_id ? `
+        <div class="card-actions">
+          <button class="mini-link-btn" type="button" data-open-job="${escapeAttr(item.queue_job_id)}">Open job</button>
+        </div>
+      ` : ''}
     </div>
   `).join('');
 }
@@ -2132,6 +2137,7 @@ function renderNotificationCard(item) {
       <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}${item.delivery_status ? ` · ${escapeHTML(item.delivery_status)}` : ''}</div>
       ${renderVisiblePaths(item.visible_paths)}
       <div class="card-actions">
+        ${item.queue_job_id ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(item.queue_job_id)}">Open job</button>` : ''}
         ${item.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>` : ''}
       </div>
     </div>

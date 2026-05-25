@@ -1200,6 +1200,40 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-040: Background notifications do not expose Open job actions
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` says background notification links must let the operator use `Open job` in the Background inspector to expand selected queue job facts.
+- `internal/webconsole/assets/app.js` already handles `[data-open-job]` by setting `selectedQueueJobId`, switching the inspector to Background, fetching `/api/queue/jobs/{id}`, and rendering the selected job facts panel.
+- `internal/webconsole/assets/session-view.js` `renderBackgroundResultItem`, `renderSubAgentCard`, and `renderQueueJobCard` already expose `data-open-job` actions.
+- `internal/webconsole/assets/session-view.js` `renderNotificationCard` only renders `Open child session` for background notifications and omits `Open job` even when `queue_job_id` exists; `renderBackgroundNotificationsPreview` renders recent notification cards with no actions at all.
+
+Impact:
+
+Operators can see a background notification in the parent session but cannot open the linked queue job facts from that notification, despite the selected job facts panel and handler already existing. This makes the Web Background inspector less traceable than the spec requires, especially for notifications where the queue job has useful prompt/error/final-text context or the child session is unavailable.
+
+Minimal fix:
+
+- Add `Open job` actions to full background notification cards when `queue_job_id` is present.
+- Add the same lightweight action to the summary notification preview so the Summary panel's queued input/notifications card can open selected queue job facts directly.
+- Add focused frontend renderer coverage proving both notification renderers emit the expected `data-open-job` action.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test ./internal/webconsole -run 'TestServiceEmbeddedAssetsExposeWebFirstConsole|TestServiceQueueWorkersProcessJob|TestServiceParallelQueueWorkersPersistAllJobs' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1475,6 +1509,12 @@ Evidence gates:
 - Confirmed FCA-20260525-039 against `Engine.drainBackground`, `Store.UpdateBackgroundNotifications`, `mergeBackgroundNotifications`, `EnsureBackgroundNotification`, `NewBackgroundNotification`, and Web session detail background notification rendering.
 - Confirmed this is not a duplicate-notification display issue; the store merge can overwrite the durable terminal notification fact before Web or runtime can observe it.
 - Confirmed the fix belongs in `internal/session` so runtime background drain, Web detail, session summaries, and CLI/API queue readers share the same durable notification merge semantics.
+
+### Review 38
+
+- Confirmed FCA-20260525-040 against `spec/17-web-console.md`, `renderNotificationCard`, `renderBackgroundNotificationsPreview`, existing `data-open-job` action handling, and selected queue job detail refresh.
+- Confirmed this is a frontend navigation/traceability gap, not a backend queue fact loss; the API and selected job panel already exist.
+- Confirmed the fix should stay in the Web renderer and reuse `data-open-job`, without adding a standalone queue page or new browser-side authority.
 
 ## Update Log
 
@@ -2306,6 +2346,29 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-040
+
+Slice: `fix(webconsole): open jobs from background notifications`
+
+Changes:
+
+- Added `Open job` actions to full background notification cards when a notification has `queue_job_id`.
+- Added the same `Open job` action to the recent notification preview in the Summary panel.
+- Extended the Node frontend utility test harness to load the session renderer and assert both notification renderers emit `data-open-job` actions.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test ./internal/webconsole -run 'TestServiceEmbeddedAssetsExposeWebFirstConsole|TestServiceQueueWorkersProcessJob|TestServiceParallelQueueWorkersPersistAllJobs' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
