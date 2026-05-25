@@ -405,7 +405,7 @@ func (s *Service) meta() (MetaResponse, error) {
 	return MetaResponse{
 		SessionRoot:              s.store.Root(),
 		WorkspaceRoot:            workspaceRoot,
-		WorkspaceSwitchSupported: true,
+		WorkspaceSwitchSupported: false,
 		DefaultMode:              cfg.Runtime.Isolation.DefaultMode,
 		QueuePollMS:              cfg.Runtime.Queue.PollIntervalMS,
 		WorkerCount:              s.workers.Snapshot().DesiredCount,

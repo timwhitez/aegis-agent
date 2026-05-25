@@ -421,6 +421,33 @@ Validation:
 - Existing Anthropic adapter cache-marker test.
 - Repository-wide Go tests and vet before commit.
 
+### FCA-20260525-015: Web workspace meta advertises unsupported root switching
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` says the current Workspace panel is a read-only browser for the server workspace and does not promise independent workspace-root switching.
+- `internal/webconsole/service.go` returned `workspace_switch_supported: true` from `/api/meta`.
+- `internal/webconsole/assets/workspace-view.js` used that flag to display "switch roots when needed."
+- `internal/webconsole/service_test.go` asserted the stale true value.
+
+Impact:
+
+The default Web Console told operators that root switching was supported even though the current product boundary only supports browsing within the local server workspace surface. This is a small but visible contract drift in the Web-first default UI.
+
+Minimal fix:
+
+- Return `workspace_switch_supported: false` from Web meta.
+- Keep the existing file browser behavior, but make the UI copy say root switching is not available.
+- Update the service regression test to lock the contract.
+
+Validation:
+
+- Focused WebConsole meta test.
+- Frontend JS syntax check for `workspace-view.js`.
+- Full WebConsole package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -557,6 +584,12 @@ Evidence gates:
 - Confirmed FCA-20260522-014 against `spec/03-provider-contracts.md`, `providerOptionsFromConfig`, runtime turn request construction, `Runner.Probe`, and the Anthropic adapter's `promptCacheEnabled` gate.
 - Confirmed the issue is diagnostic fidelity only: normal session execution already passes persisted `PromptCache` into provider requests.
 - Confirmed the fix belongs in `Runner.Probe`, with Web and CLI continuing to use the runtime facade rather than building provider-specific cache markers themselves.
+
+### Review 15
+
+- Confirmed FCA-20260525-015 against `spec/17-web-console.md`, `/api/meta`, the Workspace view copy, and `TestServiceMetaReportsDefaultWorkspaceSubdirOnly`.
+- Confirmed the fix is a Web service/UI contract correction only; it does not change runtime session workdir selection, file browser path safety, or server-side workspace facts.
+- Confirmed the default Web page remains a local read-only workspace browser, not a browser-side IDE or root-switching authority.
 
 ## Update Log
 
@@ -814,4 +847,23 @@ Validation:
 - `go test ./internal/runtime ./internal/webconsole ./internal/provider -count=1`: passed.
 - `go vet ./internal/runtime ./internal/webconsole ./internal/provider`: passed.
 - `go test ./... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-015
+
+Slice: `fix(webconsole): stop advertising workspace switching`
+
+Changes:
+
+- Changed `/api/meta` so `workspace_switch_supported` is false for the current local Workspace surface.
+- Updated Workspace view copy to state that root switching is not available.
+- Updated the WebConsole meta regression test to assert that root switching is not advertised.
+
+Validation:
+
+- `go test ./internal/webconsole -run TestServiceMetaReportsDefaultWorkspaceSubdirOnly -count=1`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/*.js` equivalent explicit asset list: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

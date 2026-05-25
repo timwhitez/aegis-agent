@@ -22,7 +22,7 @@ function updateWorkspaceMeta() {
     if (state.meta?.workspace_switch_supported) {
       nodes.workspaceSubtitle.textContent = 'Browse the active workspace and switch roots when needed.';
     } else {
-      nodes.workspaceSubtitle.textContent = 'Browsing the selected workspace path. Use .. to move to the parent directory.';
+      nodes.workspaceSubtitle.textContent = 'Browsing the current server workspace only. Switching roots is not available in this view.';
     }
   }
   if (nodes.workspaceRootChip) {

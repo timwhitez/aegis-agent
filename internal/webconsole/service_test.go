@@ -3964,8 +3964,8 @@ func TestServiceMetaReportsDefaultWorkspaceSubdirOnly(t *testing.T) {
 	if info, err := os.Stat(workspaceRoot); err != nil || !info.IsDir() {
 		t.Fatalf("expected workspace root to be created, info=%#v err=%v", info, err)
 	}
-	if !meta.WorkspaceSwitchSupported {
-		t.Fatalf("expected workspace parent navigation to be enabled, got %#v", meta)
+	if meta.WorkspaceSwitchSupported {
+		t.Fatalf("workspace root switching should not be advertised, got %#v", meta)
 	}
 }
 
