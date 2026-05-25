@@ -2226,6 +2226,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "sessionDetailHasActiveDescendants") || !strings.Contains(jsBody, "needsSessionRefresh") {
 		t.Fatalf("expected current session polling to track active descendants and coalesced refreshes, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "launchInFlight") || !strings.Contains(jsBody, "Session launch is already in progress") || !strings.Contains(jsBody, "launchPendingWithoutSession") {
+		t.Fatalf("expected initial session launch to have a pending-submit guard, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "STOP_FALLBACK_STEER_MESSAGE") || !strings.Contains(jsBody, "requestStopViaBestAvailablePath") || !strings.Contains(jsBody, "data-stop-session-id") {
 		t.Fatalf("expected inline session stop handling with interrupt-steer fallback, got app.js body: %s", jsBody)
 	}

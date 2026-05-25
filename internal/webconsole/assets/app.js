@@ -21,6 +21,7 @@ const SHORTCUTS = {
 const state = {
   currentView: 'chat',
   isGenerating: false,
+  launchInFlight: false,
   isConnected: false,
   ws: null,
   meta: null,
@@ -902,6 +903,10 @@ async function sendMessage() {
   if (!text) {
     return;
   }
+  if (state.launchInFlight && !hasDurableSession()) {
+    showToast('Session launch is already in progress.', 'info');
+    return;
+  }
 
   const optimisticID = appendOptimisticMessage('user', text, {
     source: state.isGenerating ? 'steer' : 'user',
@@ -1006,6 +1011,7 @@ async function sendMessage() {
       return;
     }
     try {
+      state.launchInFlight = true;
       setGenerating(true, {
         title: 'Launching session',
         copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
@@ -1021,6 +1027,7 @@ async function sendMessage() {
       state.goalEnabled = false;
       state.planModeEnabled = false;
       adoptSession(resp.session_id, true);
+      state.launchInFlight = false;
       setGenerating(true, {
         title: 'Launching session',
         copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
@@ -1031,6 +1038,7 @@ async function sendMessage() {
     } catch (err) {
       removeOptimisticMessage(optimisticID);
       state.isGenerating = false;
+      state.launchInFlight = false;
       showToast(err.message || 'Failed to start session.', 'error');
       updateUI();
       renderCurrentSession();
@@ -1223,6 +1231,7 @@ function resetChatSession() {
     tone: 'neutral'
   };
   state.isGenerating = false;
+  state.launchInFlight = false;
   state.lastInputWasEmpty = !nodes.chatInput.value.trim();
   updateSessionId();
   persistUIState();
@@ -1267,10 +1276,11 @@ function updateSessionId() {
 
 function updateUI() {
   const hasDraft = nodes.chatInput.value.trim().length > 0;
-  nodes.sendBtn.disabled = !hasDraft;
-  nodes.sendBtn.classList.toggle('is-loading', state.isGenerating && hasDraft);
+  const launchPendingWithoutSession = state.launchInFlight && !hasDurableSession();
+  nodes.sendBtn.disabled = !hasDraft || launchPendingWithoutSession;
+  nodes.sendBtn.classList.toggle('is-loading', (state.isGenerating || state.launchInFlight) && hasDraft);
   nodes.sendBtn.classList.toggle('is-interrupt', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
-  nodes.inputContainer.classList.toggle('is-busy', state.isGenerating);
+  nodes.inputContainer.classList.toggle('is-busy', state.isGenerating || state.launchInFlight);
   nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
   nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
   nodes.stopSessionBtn?.classList.toggle('is-visible', state.isGenerating);

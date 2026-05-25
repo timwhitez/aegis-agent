@@ -307,6 +307,33 @@ Validation:
 - Focused embedded WebConsole asset test.
 - Full WebConsole package test before commit.
 
+### FCA-20260522-011: Initial Web session launch lacks a pending-submit guard
+
+Severity: Medium
+
+Evidence:
+
+- `sendMessage` set `isGenerating` for initial launch, but before a durable session id existed the send path could still enter the new-session branch.
+- `updateUI` disabled the send button only when the draft was empty, so typing a second prompt while `/api/sessions/start` was pending could re-enable the button.
+- The steer path is guarded by `hasDurableSession()`, so an in-flight launch without a session id was not treated as a running session.
+
+Impact:
+
+A fast follow-up submit during initial launch could start a second unrelated session instead of waiting for the first launch to adopt its durable session id. That weakens the Web-first default workflow and can produce confusing stale optimistic messages or duplicate sessions.
+
+Minimal fix:
+
+- Add an explicit `launchInFlight` state flag.
+- Reject sends while launch is pending and no durable session id exists.
+- Disable the send button and show busy styling during that pending initial launch.
+- Clear the pending flag on successful adoption, start failure, and new-session reset.
+
+Validation:
+
+- JS syntax check for the WebConsole app bundle.
+- Embedded shell asset contract test.
+- Frontend utility tests and full WebConsole package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -421,6 +448,11 @@ Evidence gates:
 
 - Confirmed FCA-20260522-010 against `spec/17-web-console.md` accessibility requirements and the current send-button markup.
 - Confirmed the fix is static shell markup only and does not change WebConsole control flow.
+
+### Review 11
+
+- Confirmed FCA-20260522-011 against `sendMessage`, `updateUI`, and the state transition before `startSession` returns a durable session id.
+- Confirmed the fix stays in frontend request guarding and does not create browser-side session authority.
 
 ## Update Log
 
@@ -600,4 +632,22 @@ Changes:
 Validation:
 
 - `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test ./internal/webconsole/ -count=1`: passed.
+
+### FCA-20260522-011
+
+Slice: `fix(webconsole): guard initial launch submits`
+
+Changes:
+
+- Added `launchInFlight` state for the pre-adoption initial start request.
+- Guarded `sendMessage` so a second prompt cannot start another session while the first `/sessions/start` is pending.
+- Disabled the send button and kept composer busy styling during initial launch pending state.
+- Extended the embedded asset test to assert the launch-pending guard remains wired.
+
+Validation:
+
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 6/6 tests.
 - `go test ./internal/webconsole/ -count=1`: passed.
