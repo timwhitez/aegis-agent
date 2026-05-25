@@ -235,6 +235,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		callCtx, cancel := context.WithCancel(ctx)
 		e.control.setCancel(cancel)
 		providerStart := time.Now()
+		var providerAttemptErr error
 		result, err := adapter.RunTurn(callCtx, provider.TurnRequest{
 			SessionID:        meta.ID,
 			Model:            meta.Model,
@@ -257,11 +258,22 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}, func(eventType string, data map[string]any) {
 			e.emit(meta.ID, eventType, "provider_call", data)
 			if eventType == "provider.retry" {
-				recordProviderRetry(e.store, meta, state.Turn, data)
-				_ = writeSessionSummary(e.store, meta.ID)
+				if appendErr := recordProviderRetry(e.store, meta, state.Turn, data); appendErr != nil && providerAttemptErr == nil {
+					providerAttemptErr = appendErr
+					if cancel != nil {
+						cancel()
+					}
+					return
+				}
+				if providerAttemptErr == nil {
+					_ = writeSessionSummary(e.store, meta.ID)
+				}
 			}
 		})
 		e.control.clearCancel(cancel)
+		if providerAttemptErr != nil {
+			return e.fail(ctx, meta, state, providerAttemptErr, hookManager)
+		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				switch {
@@ -282,7 +294,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					return RunResult{}, err
 				}
 				e.emitProviderAutoResume(meta.ID, err, state.ProviderAutoResumeCount)
-				recordProviderAutoResumeAttempt(e.store, meta, state.Turn, err, state.ProviderAutoResumeCount)
+				if appendErr := recordProviderAutoResumeAttempt(e.store, meta, state.Turn, err, state.ProviderAutoResumeCount); appendErr != nil {
+					return e.fail(ctx, meta, state, appendErr, hookManager)
+				}
 				_ = writeSessionSummary(e.store, meta.ID)
 				_ = writeLongRunCheckpoint(e.store, meta.ID)
 				if _, appendErr := e.appendHarnessReminder(meta, "provider_call", providerAutoResumePrompt(err, state.ProviderAutoResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts), "provider_auto_resume"); appendErr != nil {
@@ -295,7 +309,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			state.Phase = "provider_call"
 			_ = e.store.SaveState(meta.ID, state)
 			e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"error": err.Error()})
-			recordProviderFailure(e.store, meta, state.Turn, err, false)
+			if appendErr := recordProviderFailure(e.store, meta, state.Turn, err, false); appendErr != nil {
+				return e.fail(ctx, meta, state, appendErr, hookManager)
+			}
 			_ = writeSessionSummary(e.store, meta.ID)
 			_ = writeLongRunCheckpoint(e.store, meta.ID)
 			return RunResult{SessionID: meta.ID, Status: state.Status, LastError: err.Error()}, WrapProviderError(err)
@@ -305,7 +321,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				return RunResult{}, err
 			}
 		}
-		recordProviderSuccess(e.store, meta, state.Turn, result)
+		if err := recordProviderSuccess(e.store, meta, state.Turn, result); err != nil {
+			return e.fail(ctx, meta, state, err, hookManager)
+		}
 		accountedGoal, budgetLimited, err := e.updateGoalAccounting(meta.ID, state.Turn, result.Usage, time.Since(providerStart))
 		if err != nil {
 			return e.fail(ctx, meta, state, err, hookManager)

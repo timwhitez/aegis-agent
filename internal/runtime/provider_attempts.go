@@ -11,7 +11,7 @@ import (
 	"go-cli-agent/internal/session"
 )
 
-func recordProviderRetry(store *session.Store, meta session.SessionMetadata, turn int, data map[string]any) {
+func recordProviderRetry(store *session.Store, meta session.SessionMetadata, turn int, data map[string]any) error {
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "retry"
 	attempt.Retryable = true
@@ -21,12 +21,12 @@ func recordProviderRetry(store *session.Store, meta session.SessionMetadata, tur
 	attempt.ErrorClass = stringFromAny(data["class"])
 	attempt.TimeoutKind = stringFromAny(data["timeout_kind"])
 	attempt.StatusCode = intFromAny(data["status_code"])
-	_ = store.AppendProviderAttempt(meta.ID, attempt)
+	return store.AppendProviderAttempt(meta.ID, attempt)
 }
 
-func recordProviderFailure(store *session.Store, meta session.SessionMetadata, turn int, err error, responseCommitted bool) {
+func recordProviderFailure(store *session.Store, meta session.SessionMetadata, turn int, err error, responseCommitted bool) error {
 	if err == nil {
-		return
+		return nil
 	}
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "failure"
@@ -39,10 +39,10 @@ func recordProviderFailure(store *session.Store, meta session.SessionMetadata, t
 		attempt.TimeoutKind = httpErr.TimeoutKind
 		attempt.StatusCode = httpErr.StatusCode
 	}
-	_ = store.AppendProviderAttempt(meta.ID, attempt)
+	return store.AppendProviderAttempt(meta.ID, attempt)
 }
 
-func recordProviderSuccess(store *session.Store, meta session.SessionMetadata, turn int, result provider.TurnResult) {
+func recordProviderSuccess(store *session.Store, meta session.SessionMetadata, turn int, result provider.TurnResult) error {
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "success"
 	attempt.Attempt = terminalProviderAttempt(store, meta.ID, turn)
@@ -50,7 +50,7 @@ func recordProviderSuccess(store *session.Store, meta session.SessionMetadata, t
 	attempt.ProviderResponseID = result.ProviderResponseID
 	attempt.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
 	attempt.CacheReadInputTokens = result.Usage.CacheReadInputTokens
-	_ = store.AppendProviderAttempt(meta.ID, attempt)
+	return store.AppendProviderAttempt(meta.ID, attempt)
 }
 
 func terminalProviderAttempt(store *session.Store, sessionID string, turn int) int {
@@ -70,7 +70,7 @@ func terminalProviderAttempt(store *session.Store, sessionID string, turn int) i
 	return maxAttempt + 1
 }
 
-func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, err error, attemptNo int) {
+func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, err error, attemptNo int) error {
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "auto_resume"
 	attempt.Retryable = true
@@ -82,7 +82,7 @@ func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionM
 		attempt.TimeoutKind = httpErr.TimeoutKind
 		attempt.StatusCode = httpErr.StatusCode
 	}
-	_ = store.AppendProviderAttempt(meta.ID, attempt)
+	return store.AppendProviderAttempt(meta.ID, attempt)
 }
 
 func baseProviderAttempt(meta session.SessionMetadata, turn int) session.ProviderAttempt {

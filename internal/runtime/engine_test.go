@@ -179,6 +179,137 @@ func TestEngineProviderParseErrorFailsBeforeAssistantPersist(t *testing.T) {
 	}
 }
 
+func TestEngineProviderRetryReportsProviderAttemptAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	blockRuntimeProviderAttemptsPath(t, engine.store, meta.ID)
+	adapter := emittingAdapter{
+		run: func(ctx context.Context, _ provider.TurnRequest, emit provider.EmitFunc) (provider.TurnResult, error) {
+			emit("provider.retry", map[string]any{
+				"attempt":      1,
+				"delay_ms":     1,
+				"error":        "temporary timeout",
+				"class":        "upstream_timeout",
+				"timeout_kind": "request_timeout",
+			})
+			select {
+			case <-ctx.Done():
+				return provider.TurnResult{}, ctx.Err()
+			default:
+			}
+			return provider.TurnResult{Text: "should not persist", StopReason: "done_candidate"}, nil
+		},
+	}
+
+	result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "provider-attempts.jsonl") {
+		t.Fatalf("expected provider-attempt append error, result=%#v err=%v", result, err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed result after provider-attempt append error, got %#v", result)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			t.Fatalf("provider retry ledger failure should stop before assistant persistence: %#v", messages)
+		}
+	}
+}
+
+func TestEngineProviderFailureReportsProviderAttemptAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	blockRuntimeProviderAttemptsPath(t, engine.store, meta.ID)
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{}, &provider.HTTPError{
+			Provider: "openai",
+			Class:    "response_parse_error",
+			Message:  "function_call arguments for \"shell\" are not valid JSON",
+		}
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "provider-attempts.jsonl") {
+		t.Fatalf("expected provider-attempt append error, result=%#v err=%v", result, err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed result after provider-attempt append error, got %#v", result)
+	}
+}
+
+func TestEngineProviderAutoResumeReportsProviderAttemptAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
+	engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 2
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Return a finish tool call.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	blockRuntimeProviderAttemptsPath(t, engine.store, meta.ID)
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{}, &provider.HTTPError{
+				Provider:    "fake",
+				Class:       "upstream_timeout",
+				Message:     "context deadline exceeded",
+				TimeoutKind: "request_timeout",
+			}
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			t.Fatalf("provider should not be recalled after provider-attempt append failure")
+			return provider.TurnResult{}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "provider-attempts.jsonl") {
+		t.Fatalf("expected provider-attempt append error, result=%#v err=%v", result, err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed result after provider-attempt append error, got %#v", result)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected provider to stop after first failed call, got %d calls", callCount)
+	}
+}
+
+func TestEngineProviderSuccessReportsProviderAttemptAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	blockRuntimeProviderAttemptsPath(t, engine.store, meta.ID)
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "should not persist", StopReason: "done_candidate"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "provider-attempts.jsonl") {
+		t.Fatalf("expected provider-attempt append error, result=%#v err=%v", result, err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed result after provider-attempt append error, got %#v", result)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			t.Fatalf("provider success ledger failure should stop before assistant persistence: %#v", messages)
+		}
+	}
+}
+
 func TestEngineWritesReplayCompleteToolResultsWhenBeforeHookFails(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
@@ -2466,6 +2597,29 @@ func blockRuntimeGoalHistoryPath(t *testing.T, store *session.Store, sessionID s
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block goal history path: %v", err)
 	}
+}
+
+func blockRuntimeProviderAttemptsPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	attemptsPath := filepath.Join(store.SessionDir(sessionID), "provider-attempts.jsonl")
+	if err := os.Remove(attemptsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove provider attempts: %v", err)
+	}
+	if err := os.Mkdir(attemptsPath, 0o700); err != nil {
+		t.Fatalf("block provider attempts path: %v", err)
+	}
+}
+
+type emittingAdapter struct {
+	run func(context.Context, provider.TurnRequest, provider.EmitFunc) (provider.TurnResult, error)
+}
+
+func (a emittingAdapter) Name() string {
+	return "emitting"
+}
+
+func (a emittingAdapter) RunTurn(ctx context.Context, req provider.TurnRequest, emit provider.EmitFunc) (provider.TurnResult, error) {
+	return a.run(ctx, req, emit)
 }
 
 func bytesSplitNonEmpty(data []byte, sep byte) [][]byte {

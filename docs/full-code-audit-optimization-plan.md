@@ -1837,6 +1837,34 @@ Validation:
 - Focused runtime and Web Plan Mode cancellation/approval regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-067: Runtime provider attempts hide ledger append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `provider-attempts.jsonl` as the durable provider retry, auto-resume, final failure, and success ledger for recovery, diagnostics, and Web display; `spec/03-provider-contracts.md` repeats that runtime appends retry/auto-resume/failure/success facts there.
+- Before this slice, `internal/runtime/provider_attempts.go` ignored every `AppendProviderAttempt` error for retry, auto-resume, final failure, and success attempts.
+- Focused regressions reproduced the inconsistency by replacing `provider-attempts.jsonl` with a directory: retry and success paths continued to `awaiting_input`, auto-resume recalled the provider, and final provider failure returned only the upstream provider error while losing the durable ledger write failure.
+- `internal/session/store.go` also returned raw append errors for provider attempts without the failed `provider-attempts.jsonl` path context, unlike the Goal, Plan Mode, and contract history append diagnostics.
+
+Impact:
+
+Operators using WebConsole or recovery artifacts could see provider events, state transitions, assistant output, or auto-resume behavior without the durable provider-attempt facts required to explain retry count, timeout class, status code, response id, and cache telemetry. This weakens recovery diagnostics and can make `session.md` / checkpoint summaries diverge from runtime behavior.
+
+Minimal fix:
+
+- Return provider-attempt append errors from retry, auto-resume, failure, and success ledger helpers.
+- Stop the provider loop through the existing failure path when the ledger cannot be written, before assistant persistence or auto-resume continuation.
+- Add file-path context to `AppendProviderAttempt` errors.
+- Add focused runtime regressions for blocked `provider-attempts.jsonl` on retry, auto-resume, final failure, and success paths.
+
+Validation:
+
+- Focused provider-attempt ledger failure regressions.
+- Adjacent provider metadata, parse-error, auto-resume, and summary/checkpoint regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2250,6 +2278,12 @@ Evidence gates:
 - Confirmed FCA-20260526-062 against `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, runtime `appendPlanInputCancelToolResult`, store `CancelPlanMode`, and focused blocked-history regression.
 - Confirmed this is a runtime recovery helper gap, not a duplicate of the store transition fix: the helper writes the replay tool result and an extra `planmode.input_cancelled` history fact before the store-owned `planmode.cancelled` transition.
 - Confirmed the fix should preserve idempotent cancellation tool-result recovery while reporting failure when the durable input-cancelled history fact cannot be written.
+
+### Review 61
+
+- Confirmed FCA-20260526-067 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `recordProviderRetry`, `recordProviderAutoResumeAttempt`, `recordProviderFailure`, `recordProviderSuccess`, and focused blocked-ledger regressions.
+- Confirmed this is not a retry-policy control issue: the provider-attempt ledger does not drive adapter retry decisions, but it is still the durable recovery/diagnostic/Web fact for runtime-observed retry, auto-resume, final failure, success, response id, and cache telemetry.
+- Confirmed the fix should stop before the next durable step when the ledger write fails: retry callbacks cancel the in-flight provider context, auto-resume does not recall the provider, and success fails before assistant-message persistence.
 
 ## Update Log
 
@@ -3771,3 +3805,36 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-067
+
+Slice: `fix(runtime): report provider attempt ledger failures`
+
+Finding:
+
+- Runtime ignored `AppendProviderAttempt` failures while recording provider retry, auto-resume, final failure, and success facts.
+- Blocked `provider-attempts.jsonl` reproduced false-progress behavior: retry and success paths continued to `awaiting_input`, auto-resume recalled the provider, and final provider failure returned only the upstream provider error even though the durable provider-attempt ledger write had failed.
+
+Changes:
+
+- Changed provider-attempt recording helpers to return append failures.
+- Changed the engine to fail through the existing session failure path when retry, auto-resume, final failure, or success ledger writes fail.
+- Cancels the active provider context when a retry callback cannot write the ledger, so execution stops before assistant persistence.
+- Added path context to `AppendProviderAttempt` errors.
+- Added focused runtime regressions for blocked `provider-attempts.jsonl` on retry, auto-resume, final failure, and success paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProvider(Retry|Failure|AutoResume|Success)ReportsProviderAttemptAppendError' -count=1`: failed before the fix with false-progress behavior.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProvider(Retry|Failure|AutoResume|Success)ReportsProviderAttemptAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEnginePersistsProviderTurnMetadata|TestEngineProviderParseErrorFailsBeforeAssistantPersist|TestEngineProvider(Retry|Failure|AutoResume|Success)ReportsProviderAttemptAppendError|TestEngineAutoResumesProviderTimeoutBeforeFailing|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

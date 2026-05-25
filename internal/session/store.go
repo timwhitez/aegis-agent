@@ -377,7 +377,10 @@ func (s *Store) AppendProviderAttempt(sessionID string, attempt ProviderAttempt)
 	if err != nil {
 		return err
 	}
-	return s.appendJSONL(path, attempt)
+	if err := s.appendJSONL(path, attempt); err != nil {
+		return fmt.Errorf("append provider attempt %s: %w", path, err)
+	}
+	return nil
 }
 
 func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error) {
