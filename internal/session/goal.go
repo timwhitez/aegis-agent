@@ -564,7 +564,7 @@ func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source
 			if err := s.SavePlanMode(sessionID, existing); err != nil {
 				return PlanModeState{}, false, err
 			}
-			_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+			if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 				PlanModeID: existing.PlanModeID,
 				Type:       "planmode.linked_goal",
 				Source:     normalizePlanModeSource(source),
@@ -572,7 +572,9 @@ func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source
 				Data: map[string]any{
 					"linked_goal_id": goal.GoalID,
 				},
-			})
+			}); err != nil {
+				return PlanModeState{}, false, err
+			}
 			return existing, false, nil
 		}
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {

@@ -273,7 +273,7 @@ func (s *Store) CreatePlanMode(sessionID string, draft PlanModeDraft) (PlanModeS
 	if err := s.SavePlanMode(sessionID, state); err != nil {
 		return PlanModeState{}, err
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID: state.PlanModeID,
 		Type:       "planmode.created",
 		Source:     state.Source,
@@ -281,7 +281,9 @@ func (s *Store) CreatePlanMode(sessionID string, draft PlanModeDraft) (PlanModeS
 		Data: map[string]any{
 			"objective": state.Objective,
 		},
-	})
+	}); err != nil {
+		return PlanModeState{}, err
+	}
 	return state, nil
 }
 
@@ -394,7 +396,10 @@ func (s *Store) AppendPlanModeHistory(sessionID string, entry PlanModeHistoryEnt
 	if err != nil {
 		return err
 	}
-	return s.appendJSONL(path, entry)
+	if err := s.appendJSONL(path, entry); err != nil {
+		return fmt.Errorf("append plan mode history %s: %w", path, err)
+	}
+	return nil
 }
 
 func (s *Store) LoadPlanModeHistory(sessionID string) ([]PlanModeHistoryEntry, error) {
@@ -455,7 +460,7 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 	if err := s.WritePlanModeMarkdown(sessionID, state); err != nil {
 		return PlanModeState{}, err
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
 		Type:        "planmode.plan_submitted",
 		Source:      normalizePlanModeSource(input.Source),
@@ -465,7 +470,9 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 			"title":   strings.TrimSpace(input.Title),
 			"summary": state.Summary,
 		},
-	})
+	}); err != nil {
+		return PlanModeState{}, err
+	}
 	return state, nil
 }
 
@@ -512,7 +519,7 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 	if !mutated {
 		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID: state.PlanModeID,
 		Type:       "planmode.input_requested",
 		Source:     normalizePlanModeSource(source),
@@ -522,7 +529,9 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 			"tool_call_id": request.ToolCallID,
 			"questions":    len(request.Questions),
 		},
-	})
+	}); err != nil {
+		return PlanModeState{}, err
+	}
 	return state, nil
 }
 
@@ -555,7 +564,7 @@ func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers
 	if !mutated {
 		return PlanModeState{}, PlanModeInputRequest{}, errors.New("session has no current plan mode")
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID: state.PlanModeID,
 		Type:       "planmode.input_answered",
 		Source:     normalizePlanModeSource(source),
@@ -564,7 +573,9 @@ func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers
 			"request_id": request.RequestID,
 			"answers":    answers,
 		},
-	})
+	}); err != nil {
+		return PlanModeState{}, PlanModeInputRequest{}, err
+	}
 	return state, request, nil
 }
 
@@ -596,13 +607,15 @@ func (s *Store) ApprovePlanMode(sessionID string, source string) (PlanModeState,
 	if !mutated {
 		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
 		Type:        "planmode.plan_approved",
 		Source:      normalizePlanModeSource(source),
 		Status:      state.Status,
 		PlanVersion: state.PlanVersion,
-	})
+	}); err != nil {
+		return PlanModeState{}, err
+	}
 	return state, nil
 }
 
@@ -626,13 +639,15 @@ func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanMode
 	if !mutated {
 		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
 		Type:        "planmode.execution_started",
 		Source:      normalizePlanModeSource(source),
 		Status:      state.Status,
 		PlanVersion: state.ApprovedVersion,
-	})
+	}); err != nil {
+		return PlanModeState{}, err
+	}
 	return state, nil
 }
 
@@ -654,7 +669,7 @@ func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState
 	if !mutated {
 		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
 		Type:        "planmode.plan_revised",
 		Source:      normalizePlanModeSource(source),
@@ -663,7 +678,9 @@ func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState
 		Data: map[string]any{
 			"message": strings.TrimSpace(message),
 		},
-	})
+	}); err != nil {
+		return PlanModeState{}, err
+	}
 	return state, nil
 }
 
@@ -686,13 +703,15 @@ func (s *Store) CancelPlanMode(sessionID string, source string) (PlanModeState, 
 	if !mutated {
 		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
-	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
 		Type:        "planmode.cancelled",
 		Source:      normalizePlanModeSource(source),
 		Status:      state.Status,
 		PlanVersion: state.PlanVersion,
-	})
+	}); err != nil {
+		return PlanModeState{}, err
+	}
 	return state, nil
 }
 

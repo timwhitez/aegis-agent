@@ -1760,6 +1760,32 @@ Validation:
 - Focused store, CLI, Web, and runtime linked Plan Mode regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-060: Plan Mode transitions hide history append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/11-spec-audit-and-traceability.md` define `planmode.json` and `artifacts/planmode-history.jsonl` as durable Plan Mode facts, with planning, approval, revision, cancellation, input, and execution transitions recorded in history.
+- Before this slice, `internal/session/planmode.go` saved `planmode.json` and then ignored `AppendPlanModeHistory` errors in `CreatePlanMode`, `SubmitPlanMode`, `SetPlanModePendingRequest`, `AnswerPlanModeInput`, `ApprovePlanMode`, `MarkPlanModeExecuting`, `RevisePlanMode`, and `CancelPlanMode`.
+- `internal/session/goal.go` `EnsurePlanModeForGoal` also ignored `planmode.linked_goal` history append errors after saving a linked pending Plan Mode.
+- Focused regressions reproduced the failure by replacing `artifacts/planmode-history.jsonl` with a directory: `SubmitPlanMode` and `ApprovePlanMode` returned success after mutating `planmode.json`, while the required history append failed.
+
+Impact:
+
+Plan Mode control surfaces could report a successful submitted or approved plan while the durable transition history was missing. That weakens recovery, Web inspector timelines, and provider replay diagnostics for the explicit planning gate because the current snapshot and history facts can diverge without any caller-visible error.
+
+Minimal fix:
+
+- Propagate `AppendPlanModeHistory` errors from all Plan Mode store transition helpers instead of swallowing them.
+- Add path context to `AppendPlanModeHistory` errors so callers can identify the failed durable history file.
+- Add focused store regressions for submitted and approved transitions with a blocked history path.
+
+Validation:
+
+- Focused Plan Mode store, runtime, and Web regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2155,6 +2181,12 @@ Evidence gates:
 - Confirmed FCA-20260526-059 against `spec/00-product.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/17-web-console.md`, store `ApproveMissionPlan`, CLI `goalPlanApproveCommand`, Web `handleMissionPlanApprove`, and runtime linked Plan Mode approval tests.
 - Confirmed this is not a coverage-check issue: `CheckMissionPlanCoverage` correctly returns no blocking coverage for a missing mission, but approval should require an existing mission plan fact before coverage can be meaningful.
 - Confirmed the fix belongs in the session store invariant so CLI, Web, runtime, SDK, and future callers cannot synthesize approved mission plans for ordinary goals.
+
+### Review 58
+
+- Confirmed FCA-20260526-060 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `CreatePlanMode`, `SubmitPlanMode`, `ApprovePlanMode`, other Plan Mode transition helpers, and focused blocked-history regressions.
+- Confirmed this is not only an operator-readable artifact issue: Plan Mode history is specified as a session file fact source for state transitions, while `artifacts/planmode-plan.md` remains the derived Markdown plan.
+- Confirmed the fix belongs in session storage transition helpers so CLI, Web, runtime, SDK, and future callers cannot report Plan Mode state changes as successful when their required history append failed.
 
 ## Update Log
 
@@ -3466,6 +3498,33 @@ Validation:
 - `go test ./internal/app -run 'TestGoalMissionPlanAndValidationCommands|TestGoalPlanApproveRejectsGoalWithoutMissionPlan' -count=1`: passed.
 - `go test ./internal/webconsole -run 'TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact|TestServiceMissionPlanApproveRejectsGoalWithoutMissionPlan|TestServiceGoalFactsAndMissionCoverageApproval' -count=1`: passed.
 - `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-060
+
+Slice: `fix(session): report plan mode history failures`
+
+Changes:
+
+- Changed Plan Mode store transitions to return `AppendPlanModeHistory` errors instead of silently succeeding after updating `planmode.json`.
+- Added file-path context to Plan Mode history append errors so failed durable facts are diagnosable from CLI/Web/runtime callers.
+- Changed linked goal Plan Mode relinking to report `planmode.linked_goal` history append failures after saving the link.
+- Added regressions proving submitted and approved Plan Mode transitions report a blocked `artifacts/planmode-history.jsonl` path.
+
+Validation:
+
+- `go test ./internal/session -run 'TestPlanModeSubmitApproveAndHistory|TestSubmitPlanModeReturnsHistoryAppendError|TestApprovePlanModeReturnsHistoryAppendError|TestPlanModeInputValidationAndAnswer|TestStoreGoalApprovalRelinksExistingPendingPlanMode' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation|TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServicePlanModeGetAndParentQueueGate|TestServicePlanModeApproveAppendsReplayableUserMessage|TestServicePlanModeReviseInputAndCancelControls' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

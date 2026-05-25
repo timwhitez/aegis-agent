@@ -92,6 +92,53 @@ func TestPlanModeSubmitApproveAndHistory(t *testing.T) {
 	}
 }
 
+func TestSubmitPlanModeReturnsHistoryAppendError(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Plan a history failure",
+		Source:    PlanModeSourceCLI,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	blockPlanModeHistoryPath(t, store, sessionID)
+	_, err := store.SubmitPlanMode(sessionID, PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "This transition must report history write failures.",
+		PlanMarkdown: "# Summary\n\nSubmit with blocked history.\n",
+		Verification: []string{"manual"},
+		Source:       PlanModeSourceTool,
+	})
+	if err == nil || !strings.Contains(err.Error(), "planmode-history.jsonl") {
+		t.Fatalf("expected plan mode history append error, got %v", err)
+	}
+}
+
+func TestApprovePlanModeReturnsHistoryAppendError(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Approve with history failure",
+		Source:    PlanModeSourceCLI,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := store.SubmitPlanMode(sessionID, PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Submit before approval.",
+		PlanMarkdown: "# Summary\n\nSubmit before approval.\n",
+		Verification: []string{"manual"},
+		Source:       PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan: %v", err)
+	}
+	blockPlanModeHistoryPath(t, store, sessionID)
+	_, err := store.ApprovePlanMode(sessionID, PlanModeSourceCLI)
+	if err == nil || !strings.Contains(err.Error(), "planmode-history.jsonl") {
+		t.Fatalf("expected plan mode history append error, got %v", err)
+	}
+}
+
 func TestPlanModeInputValidationAndAnswer(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{Enabled: true, Objective: "Plan decisions"}); err != nil {
@@ -233,5 +280,16 @@ func TestPlanModeConcurrentMutationsReadLatestSnapshot(t *testing.T) {
 	}
 	if len(loaded.Approvals) != 1 || loaded.Approvals[0].Version != 1 {
 		t.Fatalf("expected approval for submitted version, got %#v", loaded.Approvals)
+	}
+}
+
+func blockPlanModeHistoryPath(t *testing.T, store *Store, sessionID string) {
+	t.Helper()
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "planmode-history.jsonl")
+	if err := os.Remove(historyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove plan mode history: %v", err)
+	}
+	if err := os.Mkdir(historyPath, 0o700); err != nil {
+		t.Fatalf("block plan mode history path: %v", err)
 	}
 }
