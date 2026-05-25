@@ -64,6 +64,9 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			PromptTokenCount     int `json:"promptTokenCount"`
 			CandidatesTokenCount int `json:"candidatesTokenCount"`
 		} `json:"usageMetadata"`
+		PromptFeedback struct {
+			BlockReason string `json:"blockReason"`
+		} `json:"promptFeedback"`
 	}
 	path := fmt.Sprintf("/v1beta/models/%s:generateContent", req.Model)
 	err := a.client.DoJSON(ctx, http.MethodPost, path, map[string]string{
@@ -73,6 +76,22 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		return TurnResult{}, err
 	}
 	if len(resp.Candidates) == 0 {
+		if blockReason := strings.TrimSpace(resp.PromptFeedback.BlockReason); blockReason != "" {
+			return TurnResult{
+				StopReason:         "blocked",
+				ProviderResponseID: resp.ResponseID,
+				Usage: Usage{
+					InputTokens:  resp.UsageMetadata.PromptTokenCount,
+					OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
+				},
+				RawProvider: rawProviderEnvelope("block_reason", blockReason, map[string]any{
+					"model_version":             resp.ModelVersion,
+					"thinking_visible_observed": false,
+					"thinking_replay_observed":  false,
+					"thinking_strategy":         thinkingStrategy,
+				}),
+			}, nil
+		}
 		return TurnResult{}, fmt.Errorf("google: empty candidates")
 	}
 	candidate := resp.Candidates[0]

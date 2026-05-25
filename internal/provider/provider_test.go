@@ -502,6 +502,44 @@ func TestGoogleAdapterSerializesAndParses(t *testing.T) {
 	}
 }
 
+func TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_blocked",
+			"modelVersion":"gemini-2.5-flash",
+			"promptFeedback":{"blockReason":"SAFETY"},
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":0}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "blocked" {
+		t.Fatalf("expected blocked stop reason, got %#v", result)
+	}
+	if result.ProviderResponseID != "resp_google_blocked" {
+		t.Fatalf("expected response id to be preserved, got %#v", result.ProviderResponseID)
+	}
+	if result.Usage.InputTokens != 7 || result.Usage.OutputTokens != 0 {
+		t.Fatalf("expected prompt-block usage telemetry, got %#v", result.Usage)
+	}
+	if result.RawProvider["provider_stop_reason_source"] != "block_reason" || result.RawProvider["provider_stop_reason"] != "SAFETY" || result.RawProvider["block_reason"] != "SAFETY" {
+		t.Fatalf("expected prompt block metadata in raw provider, got %#v", result.RawProvider)
+	}
+}
+
 func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -474,6 +474,33 @@ Validation:
 - Focused tools relative-display regression.
 - Full session/tools package tests before commit.
 
+### FCA-20260525-017: Google prompt-level safety blocks become generic provider errors
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` maps Google safety blocking to internal stop reason `blocked`.
+- `internal/provider/google.go` only maps candidate-level `finishReason == "SAFETY"` to `blocked`.
+- The same adapter returns `google: empty candidates` whenever `candidates` is empty, before checking prompt-level safety facts.
+- Google prompt-level safety blocks can be represented without a candidate, so the runtime sees a generic provider error instead of a provider stop reason it can record as `provider_blocked`.
+
+Impact:
+
+Prompt-level Gemini safety blocking is handled as an adapter failure rather than a normalized blocked stop reason. That loses provider-specific stop facts, bypasses the runtime's provider stop-reason handling, and weakens session recovery/diagnostics for a known Google response shape.
+
+Minimal fix:
+
+- Parse Google `promptFeedback.blockReason`.
+- When no candidates are present and `blockReason` is non-empty, return a `TurnResult` with `StopReason: "blocked"` and raw provider stop metadata instead of an error.
+- Preserve the existing generic error for genuinely empty candidate responses without a safety block.
+- Add a focused Google adapter regression for prompt-level safety blocking.
+
+Validation:
+
+- Focused Google adapter prompt-block regression.
+- Full provider package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -622,6 +649,12 @@ Evidence gates:
 - Confirmed FCA-20260525-016 with a static scan for `strings.HasPrefix(rel, "..")`; only the session visible-path helper and tools display helper used the unsafe prefix shape.
 - Confirmed adjacent helpers such as `pathWithinRoot` and `resolveQueueVisiblePath` already use separator-aware traversal checks, so the fix should align these two outliers rather than change broader path policy.
 - Confirmed this is a false-negative visibility/display bug, not a workspace escape; outside paths still remain rejected.
+
+### Review 17
+
+- Confirmed FCA-20260525-017 against `spec/03-provider-contracts.md` and the owning Google adapter response path.
+- Confirmed existing candidate-level `finishReason == "SAFETY"` handling is correct but does not cover prompt-level safety blocks that arrive without candidates.
+- Confirmed the fix belongs in `internal/provider/google.go`, keeping Google response-shape logic inside the provider adapter and letting runtime consume the normalized `blocked` stop reason.
 
 ## Update Log
 
@@ -916,5 +949,26 @@ Validation:
 - `go test ./internal/tools -run TestRelativeOrAbsoluteAllowsDotPrefixedChildPath -count=1`: passed.
 - `go test ./internal/session ./internal/tools -count=1`: passed.
 - `gofmt -l internal/session/store.go internal/session/store_test.go internal/tools/registry.go internal/tools/registry_test.go`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-017
+
+Slice: `fix(provider): map google prompt safety blocks`
+
+Changes:
+
+- Parsed Google `promptFeedback.blockReason` in the provider adapter.
+- Returned a normalized `TurnResult{StopReason: "blocked"}` when Google returns a prompt-level safety block without candidates.
+- Preserved provider response id, usage telemetry, thinking strategy, and raw provider stop metadata for the blocked response.
+- Added a focused Google adapter regression for no-candidate prompt safety blocks.
+
+Validation:
+
+- `go test ./internal/provider -run TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates -count=1`: passed.
+- `gofmt -l internal/provider/google.go internal/provider/provider_test.go`: no output.
+- `go test ./internal/provider -count=1`: passed.
+- `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
+- `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
