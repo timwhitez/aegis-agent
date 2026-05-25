@@ -99,6 +99,30 @@ Validation:
 - Full `go test ./internal/webconsole/`
 - Full package test gate before commit if runtime/service behavior changes.
 
+### FCA-20260522-003: Web JSON decoder accepts trailing JSON values
+
+Severity: Medium
+
+Evidence:
+
+- `internal/webconsole/service.go` `decodeJSON` uses `json.Decoder` with `DisallowUnknownFields`, but returns after the first successful `Decode` without checking for additional tokens.
+- All Web mutation endpoints using `decodeJSON` therefore parse the first JSON value and ignore a second concatenated JSON value in the same request body.
+
+Impact:
+
+Malformed or ambiguous API requests can be accepted based only on their first JSON object. This weakens the strict local Web Console API contract and can hide client-side serialization bugs during operator workflows.
+
+Minimal fix:
+
+- After decoding the expected request object, perform a second decode and require `io.EOF`.
+- Add a focused Web Console test that verifies `/api/sessions/start` rejects a valid object followed by another JSON value.
+
+Validation:
+
+- Focused decoder regression test.
+- Existing unknown-field decoder regression test.
+- Full `go test ./internal/webconsole/` before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -167,6 +191,12 @@ Evidence gates:
 - Confirmed `spec/17-web-console.md` documents `/planmode/input` as explicit `{ request_id, answers }`.
 - Confirmed the older untracked `docs/webconsole-frontend-optimization-plan.md` is not treated as current evidence for this audit.
 
+### Review 3
+
+- Confirmed FCA-20260522-003 against the current `decodeJSON` implementation.
+- Confirmed `decodeJSON` is shared by Web mutation endpoints such as session start, continue, Plan Mode, Goal/Mission, config, and skill uninstall handlers.
+- Confirmed existing tests covered unknown fields but not trailing concatenated JSON values.
+
 ## Update Log
 
 ### FCA-20260522-001
@@ -209,5 +239,21 @@ Validation:
 - `go test ./internal/webconsole/ -run TestServicePlanModeContinueIsTrackedByLaunchWaitGroup -count=1`: passed.
 - `go test ./internal/webconsole/ -run PlanMode -count=1`: passed.
 - `go test ./internal/webconsole/ -run TestServicePlanModeReviseInputAndCancelControls -count=1`: passed.
+- `go test ./internal/webconsole/ -count=1`: passed.
+- `go vet ./internal/webconsole/`: passed.
+
+### FCA-20260522-003
+
+Slice: `fix(webconsole): reject trailing json request data`
+
+Changes:
+
+- Hardened `decodeJSON` to reject request bodies containing more than one JSON value.
+- Added a focused `/api/sessions/start` regression test for a valid object followed by a second object.
+
+Validation:
+
+- `go test ./internal/webconsole/ -run TestStartSessionRejectsTrailingJSONValue -count=1`: passed.
+- `go test ./internal/webconsole/ -run TestStartSessionRejectsUnknownField -count=1`: passed.
 - `go test ./internal/webconsole/ -count=1`: passed.
 - `go vet ./internal/webconsole/`: passed.

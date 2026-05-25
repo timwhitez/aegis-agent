@@ -1626,6 +1626,23 @@ func TestStartSessionRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestStartSessionRejectsTrailingJSONValue(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postRawJSONError(t, ts.URL+"/api/sessions/start", `{"prompt":"hello"} {"prompt":"ignored"}`, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "single JSON value") {
+		t.Fatalf("expected trailing JSON error, got %#v", errResp)
+	}
+}
+
 func TestContinueSessionRejectsUnknownField(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -4406,7 +4423,12 @@ func postJSONError(t *testing.T, url string, payload any, wantStatus int) ErrorR
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	return postRawJSONError(t, url, string(data), wantStatus)
+}
+
+func postRawJSONError(t *testing.T, url string, body string, wantStatus int) ErrorResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new post %s: %v", url, err)
 	}

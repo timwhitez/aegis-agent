@@ -4439,6 +4439,13 @@ func decodeJSON(r *http.Request, target any) error {
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain a single JSON value")
+		}
+		return err
+	}
 	return nil
 }
 
