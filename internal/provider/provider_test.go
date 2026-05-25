@@ -608,6 +608,39 @@ func TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates(t *testing.T) {
 	}
 }
 
+func TestGoogleAdapterMapsUnknownFinishReasonToErrorStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_unknown_finish",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[{"text":"partial"}]},
+				"finishReason":"RECITATION"
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected error stop reason, got %#v", result)
+	}
+	if result.RawProvider["provider_stop_reason"] != "RECITATION" || result.RawProvider["finish_reason"] != "RECITATION" {
+		t.Fatalf("expected raw finish reason to be preserved, got %#v", result.RawProvider)
+	}
+}
+
 func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

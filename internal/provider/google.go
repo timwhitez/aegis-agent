@@ -167,10 +167,14 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	switch {
 	case len(calls) > 0:
 		stopReason = "tool_use"
+	case candidate.FinishReason == "STOP":
+		stopReason = "done_candidate"
 	case candidate.FinishReason == "MAX_TOKENS":
 		stopReason = "max_tokens"
 	case candidate.FinishReason == "SAFETY":
 		stopReason = "blocked"
+	case strings.TrimSpace(candidate.FinishReason) != "":
+		stopReason = "error"
 	}
 	return TurnResult{
 		Text:                  text,

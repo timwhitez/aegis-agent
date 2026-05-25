@@ -557,6 +557,34 @@ Validation:
 - Focused runtime provider stop-reason regression.
 - Full provider/runtime package tests before commit.
 
+### FCA-20260525-020: Google unknown finish reasons are treated as normal done candidates
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` maps Google `finishReason=STOP` to `done_candidate`, `finishReason=MAX_TOKENS` to `max_tokens`, and safety blocking to `blocked`.
+- `internal/provider/google.go` initialized `stopReason := "done_candidate"` and only changed it for tool calls, `MAX_TOKENS`, or `SAFETY`.
+- Therefore a non-tool response with a different non-empty finish reason, such as `RECITATION`, returned `StopReason: "done_candidate"`.
+- `internal/runtime/engine.go` treats `done_candidate` as a normal assistant turn, while provider stop failures are driven by `max_tokens`, `blocked`, and `error`.
+
+Impact:
+
+Gemini finish reasons outside the explicitly supported normal/limit/safety set can be misclassified as ordinary completion. That hides the provider stop condition from runtime recovery and diagnostics, and can leave a session awaiting user input or finish instead of marking a resumable provider stop failure.
+
+Minimal fix:
+
+- Map Google `finishReason=STOP` explicitly to `done_candidate`.
+- Map non-empty unrecognized Google finish reasons to internal `StopReason: "error"`.
+- Preserve raw Google finish reason metadata for diagnostics.
+- Add a focused Google adapter regression for an unknown finish reason.
+
+Validation:
+
+- Focused Google unknown-finish regression.
+- Focused runtime provider stop-reason regression.
+- Full provider/runtime package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -723,6 +751,12 @@ Evidence gates:
 - Confirmed FCA-20260525-019 against the OpenAI stop-reason contract, adapter status mapping, and runtime provider stop failure handling.
 - Confirmed `status=completed` remains the only OpenAI status that should map to `done_candidate`; unrecognized non-empty statuses should not inherit the default normal-candidate path.
 - Confirmed the fix belongs in the OpenAI adapter, keeping provider status interpretation out of Web, CLI, tools, and generic runtime code.
+
+### Review 20
+
+- Confirmed FCA-20260525-020 against the Google stop-reason contract, adapter finish-reason mapping, and runtime provider stop failure handling.
+- Confirmed `finishReason=STOP` is the normal done-candidate case; non-empty unrecognized finish reasons should not inherit the default normal-candidate path.
+- Confirmed the fix belongs in the Google adapter, preserving provider-specific finish-reason interpretation inside the provider layer.
 
 ## Update Log
 
@@ -1079,6 +1113,29 @@ Validation:
 - `go test ./internal/provider -run 'TestOpenAIAdapterMapsNonCompletedStatusToErrorStop|TestOpenAIAdapterSerializesAndParses' -count=1`: passed.
 - `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
 - `gofmt -l internal/provider/openai.go internal/provider/provider_test.go`: no output.
+- `go test ./internal/provider -count=1`: passed.
+- `go test ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-020
+
+Slice: `fix(provider): map google unknown finishes`
+
+Changes:
+
+- Made Google `finishReason=STOP` the explicit normal done-candidate mapping.
+- Mapped other non-empty Google finish reasons to internal `error`.
+- Preserved raw Google finish reason metadata for diagnostics.
+- Added a Google adapter regression for an unknown finish reason.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestGoogleAdapterMapsUnknownFinishReasonToErrorStop|TestGoogleAdapterSerializesAndParses|TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates' -count=1`: passed.
+- `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
+- `gofmt -l internal/provider/google.go internal/provider/provider_test.go`: no output.
 - `go test ./internal/provider -count=1`: passed.
 - `go test ./internal/runtime -count=1`: passed.
 - `git diff --check`: passed.
