@@ -3651,3 +3651,33 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-063
+
+Slice: `fix(webconsole): report goal clear history failures`
+
+Finding:
+
+- Web `DELETE /api/sessions/{id}/goal` removed `goal.json` and then ignored failures appending the required `goal.cleared` history/event facts.
+- A blocked `artifacts/goal-history.jsonl` path reproduced a false-success response: the API returned `200` with `cleared:true` even though the durable goal history source fact was missing.
+
+Changes:
+
+- Changed Web goal clear to propagate `AppendGoalHistory` failures for `goal.cleared`.
+- Changed Web goal clear to propagate the corresponding `goal.cleared` event append failure instead of silently dropping the event fact.
+- Added a regression that blocks `artifacts/goal-history.jsonl` and proves the Web API reports the durable fact write failure.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceGoalClearReportsHistoryAppendError' -count=1`: failed before the fix with `200` instead of `500`.
+- `go test ./internal/webconsole -run 'TestServiceGoalClearReportsHistoryAppendError|TestServiceGoalEndpointsMutateDurableGoal|TestServiceGoalStatusPreservesAccountingAndProgressFacts' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

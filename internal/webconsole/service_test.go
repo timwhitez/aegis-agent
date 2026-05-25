@@ -261,6 +261,36 @@ func TestServiceGoalStatusPreservesAccountingAndProgressFacts(t *testing.T) {
 	}
 }
 
+func TestServiceGoalClearReportsHistoryAppendError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_clear_history_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Clear goal with history",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebGoalHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	requestJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %#v", apiErr)
+	}
+}
+
 func TestServiceGoalPatchPreservesRuntimeProgressFacts(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -5470,6 +5500,17 @@ func goalHistoryContainsType(history []session.GoalHistoryEntry, target string) 
 		}
 	}
 	return false
+}
+
+func blockWebGoalHistoryPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "goal-history.jsonl")
+	if err := os.Remove(historyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove goal history: %v", err)
+	}
+	if err := os.Mkdir(historyPath, 0o700); err != nil {
+		t.Fatalf("block goal history path: %v", err)
+	}
 }
 
 func postJSONError(t *testing.T, url string, payload any, wantStatus int) ErrorResponse {

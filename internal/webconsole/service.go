@@ -1109,7 +1109,7 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
 		return
 	}
 	if cleared {
-		_ = s.store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+		if err := s.store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
 			GoalID: goal.GoalID,
 			Type:   "goal.cleared",
 			Source: session.GoalSourceWeb,
@@ -1117,11 +1117,17 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
 			Data: map[string]any{
 				"previous_status": goal.Status,
 			},
-		})
-		_ = s.store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if err := s.store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
 			"goal_id":         goal.GoalID,
 			"previous_status": goal.Status,
-		}))
+		})); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "cleared": cleared})
 }
