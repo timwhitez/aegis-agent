@@ -362,6 +362,34 @@ Validation:
 - Embedded shell asset contract test.
 - Frontend utility tests and full WebConsole package test before commit.
 
+### FCA-20260522-013: Background notification updates can drop concurrent child results
+
+Severity: High
+
+Evidence:
+
+- `internal/runtime/engine.go` `drainBackground` loads `control/background.jsonl`, appends a provider-visible `<background-agent-results>` user message, marks pending notifications accepted in memory, then calls `Store.UpdateBackgroundNotifications`.
+- `internal/session/store.go` `UpdateBackgroundNotifications` rewrote the entire `control/background.jsonl` file from that stale in-memory snapshot.
+- `internal/session/store.go` `AppendBackgroundNotification` and `EnsureBackgroundNotification` appended/read-deduped without the `control/background.lock` protection used by steer requests.
+- `spec/01-runtime-architecture.md` and `spec/17-web-console.md` treat background notifications as durable session facts, and `spec/17-web-console.md` explicitly calls out queue completion versus stale-running reconcile deduplication by `queue_job_id`.
+
+Impact:
+
+If a parent run drains and accepts one pending background result while a queue worker or reconciliation path appends another completed child notification, the stale whole-file update can overwrite the newly appended notification. The parent can then miss a completed child result, weakening completion gates, WebConsole background visibility, and provider replay traceability.
+
+Minimal fix:
+
+- Serialize background notification append, ensure, and update operations through `control/background.lock`.
+- Merge `UpdateBackgroundNotifications` against the current file before writing, replacing matching notifications by `queue_job_id` or notification id while preserving newly appended notifications.
+- Add focused store regressions for stale-snapshot merge and symlinked background lock rejection.
+
+Validation:
+
+- Focused session store regression for stale `UpdateBackgroundNotifications` snapshots.
+- Focused runtime background-result drain test.
+- Full `go test ./internal/session/ ./internal/runtime/`.
+- Repository-wide Go tests and vet before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -486,6 +514,12 @@ Evidence gates:
 
 - Confirmed FCA-20260522-012 against `settings-view.js` save handling, `handleGoalAction`, `handleSkillAction`, and the explicit confirmation requirement in `spec/17-web-console.md`.
 - Confirmed session delete/clear history already had confirmation; the fix covers the remaining risky actions named in the finding.
+
+### Review 13
+
+- Confirmed FCA-20260522-013 against `drainBackground`, `UpdateBackgroundNotifications`, `AppendBackgroundNotification`, and `EnsureBackgroundNotification`.
+- Confirmed `UpdateSteerRequests` already had a merge-and-lock pattern for the same stale-snapshot class, while background notifications did not.
+- Confirmed the fix belongs in `internal/session` so WebConsole, runtime, queue workers, and CLI paths continue sharing the same durable file authority.
 
 ## Update Log
 
@@ -703,3 +737,23 @@ Validation:
 - `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 6/6 tests.
 - `go test ./internal/webconsole/ -count=1`: passed.
+
+### FCA-20260522-013
+
+Slice: `fix(session): preserve background notifications`
+
+Changes:
+
+- Added `control/background.lock` protection for background notification append, ensure, and whole-file update operations.
+- Changed `UpdateBackgroundNotifications` to merge against the current durable file before writing, replacing matching notifications by `queue_job_id` or notification id.
+- Added a stale-snapshot regression proving a parent acceptance update preserves a concurrently appended child notification.
+- Added a symlink-lock regression for the new background notification lock path.
+
+Validation:
+
+- `go test ./internal/session/ -run 'TestUpdateBackgroundNotificationsMergesConcurrentAppend|TestAppendBackgroundNotificationRejectsSymlinkLockFile|TestUpdateSteerRequestsMergesConcurrentAppend' -count=1`: passed.
+- `go test ./internal/runtime/ -run 'TestEngineInjectsBackgroundResultsBeforeProviderCall|TestParentCoordinationGate|TestBackground|TestDelegation' -count=1`: passed.
+- `go test ./internal/session/ ./internal/runtime/ -count=1`: passed.
+- `go vet ./internal/session/ ./internal/runtime/`: passed.
+- `go test ./... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

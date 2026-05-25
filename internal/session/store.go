@@ -552,7 +552,13 @@ func (s *Store) AppendBackgroundNotification(sessionID string, notification Back
 	if err != nil {
 		return err
 	}
-	return s.appendJSONL(path, notification)
+	lockPath, err := s.sessionPath(sessionID, "control", "background.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		return s.appendJSONL(path, notification)
+	})
 }
 
 func (s *Store) EnsureBackgroundNotification(sessionID string, notification BackgroundNotification) error {
@@ -562,19 +568,25 @@ func (s *Store) EnsureBackgroundNotification(sessionID string, notification Back
 	if err != nil {
 		return err
 	}
-	var existing []BackgroundNotification
-	err = readJSONL(path, &existing)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	lockPath, err := s.sessionPath(sessionID, "control", "background.lock")
+	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(notification.QueueJobID) != "" {
-		for _, item := range existing {
-			if item.QueueJobID == notification.QueueJobID {
-				return nil
+	return s.withFileLock(lockPath, func() error {
+		var existing []BackgroundNotification
+		err := readJSONL(path, &existing)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if strings.TrimSpace(notification.QueueJobID) != "" {
+			for _, item := range existing {
+				if item.QueueJobID == notification.QueueJobID {
+					return nil
+				}
 			}
 		}
-	}
-	return s.appendJSONL(path, notification)
+		return s.appendJSONL(path, notification)
+	})
 }
 
 func (s *Store) LoadBackgroundNotifications(sessionID string) ([]BackgroundNotification, error) {
@@ -597,7 +609,21 @@ func (s *Store) UpdateBackgroundNotifications(sessionID string, notifications []
 	if err != nil {
 		return err
 	}
-	return s.writeJSONL(path, notifications)
+	lockPath, err := s.sessionPath(sessionID, "control", "background.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		var current []BackgroundNotification
+		err := readJSONL(path, &current)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if len(current) > 0 {
+			notifications = mergeBackgroundNotifications(notifications, current)
+		}
+		return s.writeJSONL(path, notifications)
+	})
 }
 
 func (s *Store) PendingBackgroundNotifications(sessionID string) ([]BackgroundNotification, error) {
@@ -2019,6 +2045,52 @@ func mergeSteerRequests(updated, current []SteerRequest) []SteerRequest {
 		merged = append(merged, request)
 	}
 	return merged
+}
+
+func mergeBackgroundNotifications(updated, current []BackgroundNotification) []BackgroundNotification {
+	byKey := make(map[string]BackgroundNotification, len(updated))
+	for _, notification := range updated {
+		key := backgroundNotificationMergeKey(notification)
+		if key == "" {
+			continue
+		}
+		byKey[key] = notification
+	}
+	seen := make(map[string]struct{}, len(current))
+	merged := make([]BackgroundNotification, 0, len(current)+len(updated))
+	for _, notification := range current {
+		key := backgroundNotificationMergeKey(notification)
+		if replacement, ok := byKey[key]; key != "" && ok {
+			merged = append(merged, replacement)
+			seen[key] = struct{}{}
+			continue
+		}
+		merged = append(merged, notification)
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, notification := range updated {
+		key := backgroundNotificationMergeKey(notification)
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		merged = append(merged, notification)
+	}
+	return merged
+}
+
+func backgroundNotificationMergeKey(notification BackgroundNotification) string {
+	if strings.TrimSpace(notification.QueueJobID) != "" {
+		return "queue:" + notification.QueueJobID
+	}
+	if strings.TrimSpace(notification.ID) != "" {
+		return "id:" + notification.ID
+	}
+	return ""
 }
 
 func newRecordID(prefix string) string {

@@ -1142,6 +1142,69 @@ func TestUpdateSteerRequestsMergesConcurrentAppend(t *testing.T) {
 	}
 }
 
+func TestUpdateBackgroundNotificationsMergesConcurrentAppend(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := storeA.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_first",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_first",
+		SessionStatus: StatusCompleted,
+	})
+	if err := storeA.AppendBackgroundNotification(meta.ID, first); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	snapshot, err := storeA.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	snapshot[0].DeliveryStatus = BackgroundNotificationAccepted
+
+	second := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_second",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_second",
+		SessionStatus: StatusCompleted,
+	})
+	if err := storeB.AppendBackgroundNotification(meta.ID, second); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if err := storeA.UpdateBackgroundNotifications(meta.ID, snapshot); err != nil {
+		t.Fatalf("update snapshot: %v", err)
+	}
+
+	loaded, err := storeA.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load merged: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected both background notifications to survive merge, got %#v", loaded)
+	}
+	statusByJob := map[string]string{}
+	for _, notification := range loaded {
+		statusByJob[notification.QueueJobID] = notification.DeliveryStatus
+	}
+	if statusByJob["job_background_first"] != BackgroundNotificationAccepted || statusByJob["job_background_second"] != BackgroundNotificationPending {
+		t.Fatalf("unexpected merged statuses: %#v", loaded)
+	}
+}
+
 func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)
@@ -1167,6 +1230,38 @@ func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 
 	if err := store.AppendSteerRequest(meta.ID, NewSteerRequest("hello", false)); err == nil {
 		t.Fatal("expected symlinked steer lock to fail")
+	}
+	if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside lock target should not be created, got %v", err)
+	}
+}
+
+func TestAppendBackgroundNotificationRejectsSymlinkLockFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.lock")
+	lockPath := filepath.Join(store.SessionDir(meta.ID), "control", "background.lock")
+	if err := os.Symlink(outside, lockPath); err != nil {
+		t.Fatalf("symlink lock: %v", err)
+	}
+
+	notification := NewBackgroundNotification(QueueJob{ID: "job_background_lock", Status: QueueStatusCompleted})
+	if err := store.AppendBackgroundNotification(meta.ID, notification); err == nil {
+		t.Fatal("expected symlinked background lock to fail")
 	}
 	if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("outside lock target should not be created, got %v", err)
