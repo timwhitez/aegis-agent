@@ -284,6 +284,29 @@ Validation:
 - Existing parent coordination gate/event tests.
 - Full runtime and session package tests before commit.
 
+### FCA-20260522-010: Icon-only send button lacks an accessible name
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires icon-only buttons to have `aria-label`.
+- The composer send button in `internal/webconsole/assets/index.html` rendered only the send icon and had no text, `aria-label`, or `title`.
+
+Impact:
+
+Assistive technologies could expose the main composer send action as an unnamed button, making the default Web-first workflow harder to operate.
+
+Minimal fix:
+
+- Add `type="button"`, `aria-label="Send message"`, and `title="Send message"` to the send button.
+- Extend the embedded shell asset test to assert the accessible name contract.
+
+Validation:
+
+- Focused embedded WebConsole asset test.
+- Full WebConsole package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -393,6 +416,11 @@ Evidence gates:
 - Confirmed FCA-20260522-009 against `addParentQueueJob`, `resolveParentQueueJob`, `resolveParentChildSession`, `LoadParentCoordination`, and `SaveParentCoordination`.
 - Confirmed queue status reconciliation had the same load/mutate/save shape and should share the transactional mutation helper.
 - Confirmed the fix keeps `parent-coordination.json` as the durable authority and only changes how updates are merged.
+
+### Review 10
+
+- Confirmed FCA-20260522-010 against `spec/17-web-console.md` accessibility requirements and the current send-button markup.
+- Confirmed the fix is static shell markup only and does not change WebConsole control flow.
 
 ## Update Log
 
@@ -559,3 +587,17 @@ Validation:
 - `go test ./internal/runtime/ -run 'TestParentCoordinationConcurrentQueueResolutionsPreserveAllResults|TestParentCoordinationWritesParkedAndResumedEvents|TestParentCoordinationGate' -count=1`: passed.
 - `go test ./internal/runtime/ ./internal/session/ -count=1`: passed.
 - `go vet ./internal/runtime/ ./internal/session/`: passed.
+
+### FCA-20260522-010
+
+Slice: `fix(webconsole): label send icon button`
+
+Changes:
+
+- Added an explicit button type, accessible label, and hover title to the icon-only composer send button.
+- Extended the embedded shell asset test to assert the send button accessible-name contract.
+
+Validation:
+
+- `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test ./internal/webconsole/ -count=1`: passed.

@@ -2121,6 +2121,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "Enter to send, Shift+Enter / Ctrl+Enter for new line") {
 		t.Fatalf("expected updated input shortcut hint, got shell body: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, `id="send-btn" type="button" aria-label="Send message" title="Send message"`) {
+		t.Fatalf("expected icon-only send button to expose an accessible name, got shell body: %s", indexBody)
+	}
 	if strings.Contains(indexBody, "theme-toggle") || strings.Contains(indexBody, "Toggle theme") {
 		t.Fatalf("expected dark mode toggle to be removed, got shell body: %s", indexBody)
 	}
