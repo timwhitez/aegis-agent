@@ -390,6 +390,37 @@ Validation:
 - Full `go test ./internal/session/ ./internal/runtime/`.
 - Repository-wide Go tests and vet before commit.
 
+### FCA-20260522-014: Anthropic-compatible probes omit default prompt cache markers
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` says `anthropic-compatible` profile `prompt_cache` defaults on, and cache markers are constructed only in the Anthropic adapter.
+- Real sessions persist that default through `providerOptionsFromConfig` into `SessionMetadata.ProviderOptions.PromptCache`.
+- Runtime turns pass `meta.ProviderOptions.PromptCache` into `provider.TurnRequest`.
+- `internal/runtime/runner.go` `Runner.Probe` built its `provider.TurnRequest` with generation, reasoning, thinking, API provider, and store options, but omitted `PromptCache`.
+- `internal/provider/anthropic.go` gates `cache_control` markers on `promptCacheEnabled(req.PromptCache)`, where nil means disabled.
+- Web Settings config-test and CLI/doctor provider probes go through `Runner.Probe`, so they inherited the mismatch.
+
+Impact:
+
+`probe-provider`, `doctor`, and Web Settings "test config" could pass against an Anthropic-compatible gateway without sending the cache markers that normal sessions send by default. A gateway that rejects or mishandles Anthropic cache markers could therefore look healthy in diagnostics but fail or behave differently during real session execution.
+
+Minimal fix:
+
+- Pass `defaultPromptCacheForAPIProvider(apiProvider, providerCfg.PromptCache)` into the `Runner.Probe` provider request.
+- Keep provider-specific `cache_control` construction inside the Anthropic adapter.
+- Add focused runtime probe tests for default-on and explicit `prompt_cache=false`.
+- Add a Web config-test regression proving the endpoint uses the same default Anthropic-compatible cache-marker request shape.
+
+Validation:
+
+- Focused runtime probe tests for Anthropic-compatible prompt cache parity.
+- Focused Web Settings config-test probe test.
+- Existing Anthropic adapter cache-marker test.
+- Repository-wide Go tests and vet before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -520,6 +551,12 @@ Evidence gates:
 - Confirmed FCA-20260522-013 against `drainBackground`, `UpdateBackgroundNotifications`, `AppendBackgroundNotification`, and `EnsureBackgroundNotification`.
 - Confirmed `UpdateSteerRequests` already had a merge-and-lock pattern for the same stale-snapshot class, while background notifications did not.
 - Confirmed the fix belongs in `internal/session` so WebConsole, runtime, queue workers, and CLI paths continue sharing the same durable file authority.
+
+### Review 14
+
+- Confirmed FCA-20260522-014 against `spec/03-provider-contracts.md`, `providerOptionsFromConfig`, runtime turn request construction, `Runner.Probe`, and the Anthropic adapter's `promptCacheEnabled` gate.
+- Confirmed the issue is diagnostic fidelity only: normal session execution already passes persisted `PromptCache` into provider requests.
+- Confirmed the fix belongs in `Runner.Probe`, with Web and CLI continuing to use the runtime facade rather than building provider-specific cache markers themselves.
 
 ## Update Log
 
@@ -755,5 +792,26 @@ Validation:
 - `go test ./internal/runtime/ -run 'TestEngineInjectsBackgroundResultsBeforeProviderCall|TestParentCoordinationGate|TestBackground|TestDelegation' -count=1`: passed.
 - `go test ./internal/session/ ./internal/runtime/ -count=1`: passed.
 - `go vet ./internal/session/ ./internal/runtime/`: passed.
+- `go test ./... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260522-014
+
+Slice: `fix(runtime): align anthropic probe cache`
+
+Changes:
+
+- Passed the Anthropic-compatible `prompt_cache` default into `Runner.Probe` provider requests.
+- Added runtime probe coverage proving Anthropic-compatible probes send default cache markers.
+- Added runtime probe coverage proving explicit `prompt_cache=false` suppresses cache markers.
+- Added Web Settings config-test coverage proving `/api/config/test` inherits the same default Anthropic-compatible probe shape.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestCustomAnthropicAPIProviderUsesAnthropicAdapter|TestProbeHonorsPromptCacheFalseForAnthropicCompatible|TestProviderOptionsFromConfigDefaultsPromptCacheForAnthropicCompatible|TestProbeDefaultsStoreFalseForCustomOpenAICompatible' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServiceConfigTestUsesAnthropicPromptCacheDefault|TestServiceConfigTestAppliesReasoningModeWithoutPersisting' -count=1`: passed.
+- `go test ./internal/provider -run TestAnthropicAdapterAppliesPromptCacheMarkersAndTelemetry -count=1`: passed.
+- `go test ./internal/runtime ./internal/webconsole ./internal/provider -count=1`: passed.
+- `go vet ./internal/runtime ./internal/webconsole ./internal/provider`: passed.
 - `go test ./... -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

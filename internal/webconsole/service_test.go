@@ -3671,6 +3671,55 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 	}
 }
 
+func TestServiceConfigTestUsesAnthropicPromptCacheDefault(t *testing.T) {
+	seenRequest := make(chan map[string]any, 1)
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected provider path: %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		seenRequest <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_probe_1",
+			"stop_reason":"end_turn",
+			"content":[{"type":"text","text":"provider probe ok"}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	apiProvider := "anthropic-compatible"
+	var result TestConfigResponse
+	postJSON(t, ts.URL+"/api/config/test", map[string]any{
+		"provider":     "openai",
+		"api_provider": apiProvider,
+		"base_url":     providerServer.URL,
+		"model":        "claude-test",
+	}, http.StatusOK, &result)
+
+	if !result.Success || result.EffectiveAPIProvider != "anthropic-compatible" || result.Model != "claude-test" {
+		t.Fatalf("unexpected test config response: %#v", result)
+	}
+	seen := <-seenRequest
+	if !webAnthropicCacheControlOnFirstSystemBlock(seen) || !webAnthropicCacheControlOnLastMessageBlock(seen) {
+		t.Fatalf("expected Web config-test probe to send default prompt cache markers, got %#v", seen)
+	}
+}
+
 func TestServiceSessionMessagesPagination(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -4325,6 +4374,39 @@ func anySliceStrings(values []any) []string {
 		out = append(out, text)
 	}
 	return out
+}
+
+func webHasAnthropicCacheControl(value any) bool {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	cache, ok := obj["cache_control"].(map[string]any)
+	return ok && cache["type"] == "ephemeral"
+}
+
+func webAnthropicCacheControlOnFirstSystemBlock(body map[string]any) bool {
+	system, ok := body["system"].([]any)
+	if !ok || len(system) == 0 {
+		return false
+	}
+	return webHasAnthropicCacheControl(system[0])
+}
+
+func webAnthropicCacheControlOnLastMessageBlock(body map[string]any) bool {
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return false
+	}
+	msg, ok := messages[len(messages)-1].(map[string]any)
+	if !ok {
+		return false
+	}
+	content, ok := msg["content"].([]any)
+	if !ok || len(content) == 0 {
+		return false
+	}
+	return webHasAnthropicCacheControl(content[len(content)-1])
 }
 
 func testSessionMetadata(t *testing.T, id string) session.SessionMetadata {

@@ -1056,6 +1056,7 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		TextVerbosity:    strings.TrimSpace(providerCfg.TextVerbosity),
 		ThinkingBudget:   providerCfg.ThinkingBudget,
 		IncludeThoughts:  providerCfg.IncludeThoughts,
+		PromptCache:      defaultPromptCacheForAPIProvider(apiProvider, providerCfg.PromptCache),
 		Store:            defaultStoreForAPIProvider(apiProvider, providerCfg.Store),
 	}, func(string, map[string]any) {})
 	if err != nil {

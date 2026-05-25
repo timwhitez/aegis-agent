@@ -28,6 +28,47 @@ func containsToolName(items []string, target string) bool {
 	return false
 }
 
+func hasAnthropicCacheControl(value any) bool {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	cache, ok := obj["cache_control"].(map[string]any)
+	return ok && cache["type"] == "ephemeral"
+}
+
+func anthropicProbeSystemHasCacheControl(body map[string]any) bool {
+	system, ok := body["system"].([]any)
+	if !ok || len(system) == 0 {
+		return false
+	}
+	return hasAnthropicCacheControl(system[0])
+}
+
+func anthropicProbeFinalToolHasCacheControl(body map[string]any) bool {
+	tools, ok := body["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return false
+	}
+	return hasAnthropicCacheControl(tools[len(tools)-1])
+}
+
+func anthropicProbeMessageHasCacheControl(body map[string]any) bool {
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return false
+	}
+	msg, ok := messages[len(messages)-1].(map[string]any)
+	if !ok {
+		return false
+	}
+	content, ok := msg["content"].([]any)
+	if !ok || len(content) == 0 {
+		return false
+	}
+	return hasAnthropicCacheControl(content[len(content)-1])
+}
+
 func openAIRequestToolNames(value any) []string {
 	rawTools, ok := value.([]any)
 	if !ok {
@@ -130,6 +171,55 @@ func TestCustomAnthropicAPIProviderUsesAnthropicAdapter(t *testing.T) {
 	thinking, _ := seenBody["thinking"].(map[string]any)
 	if thinking["type"] != "enabled" || int(thinking["budget_tokens"].(float64)) != 1024 {
 		t.Fatalf("expected configured thinking budget, got %#v", seenBody)
+	}
+	if !anthropicProbeSystemHasCacheControl(seenBody) || !anthropicProbeFinalToolHasCacheControl(seenBody) || !anthropicProbeMessageHasCacheControl(seenBody) {
+		t.Fatalf("expected anthropic-compatible probe to send default prompt cache markers, got %#v", seenBody)
+	}
+}
+
+func TestProbeHonorsPromptCacheFalseForAnthropicCompatible(t *testing.T) {
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(data, &seenBody); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_1",
+			"stop_reason":"tool_use",
+			"content":[
+				{"type":"tool_use","id":"toolu_1","name":"finish","input":{"message":"provider probe ok"}}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	disabled := false
+	cfg := config.Default()
+	cfg.DefaultProvider = "anthropic-gateway"
+	cfg.Providers["anthropic-gateway"] = config.Provider{
+		APIProvider:       "anthropic-compatible",
+		APIKeyEnv:         "ANTHROPIC_GATEWAY_API_KEY",
+		BaseURL:           server.URL,
+		Model:             "claude-sonnet-4-6",
+		TimeoutSec:        3,
+		PromptCache:       &disabled,
+		AnthropicVersion:  "2023-06-01",
+		RequestTimeoutSec: 3,
+	}
+	t.Setenv("ANTHROPIC_GATEWAY_API_KEY", "test-key")
+
+	if _, err := NewRunner(cfg).Probe(context.Background(), ProbeRequest{Provider: "anthropic-gateway"}); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if anthropicProbeSystemHasCacheControl(seenBody) || anthropicProbeFinalToolHasCacheControl(seenBody) || anthropicProbeMessageHasCacheControl(seenBody) {
+		t.Fatalf("expected prompt_cache=false probe to omit cache markers, got %#v", seenBody)
 	}
 }
 
