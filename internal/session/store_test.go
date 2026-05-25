@@ -1415,6 +1415,76 @@ func TestUpdateBackgroundNotificationsMergesConcurrentAppend(t *testing.T) {
 	}
 }
 
+func TestEnsureBackgroundNotificationRefreshesChangedQueueFacts(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	blocked := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_refresh",
+		Status:        QueueStatusBlocked,
+		SessionID:     "child_background_refresh",
+		SessionStatus: StatusAwaitingInput,
+		LastError:     "child session is resumable: awaiting_input",
+	})
+	if err := store.EnsureBackgroundNotification(meta.ID, blocked); err != nil {
+		t.Fatalf("ensure blocked: %v", err)
+	}
+	loaded, err := store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load blocked notification: %v", err)
+	}
+	loaded[0].DeliveryStatus = BackgroundNotificationAccepted
+	if err := store.UpdateBackgroundNotifications(meta.ID, loaded); err != nil {
+		t.Fatalf("accept blocked notification: %v", err)
+	}
+	completed := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_refresh",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_refresh",
+		SessionStatus: StatusCompleted,
+		FinalText:     "child completed after continue",
+	})
+	if err := store.EnsureBackgroundNotification(meta.ID, completed); err != nil {
+		t.Fatalf("ensure completed: %v", err)
+	}
+
+	loaded, err = store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load refreshed notification: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one refreshed notification, got %#v", loaded)
+	}
+	if loaded[0].Status != QueueStatusCompleted || loaded[0].SessionStatus != StatusCompleted || loaded[0].FinalText != "child completed after continue" {
+		t.Fatalf("expected completed notification facts, got %#v", loaded[0])
+	}
+	if loaded[0].DeliveryStatus != BackgroundNotificationPending {
+		t.Fatalf("expected changed terminal facts to be re-delivered, got %#v", loaded[0])
+	}
+	if err := store.EnsureBackgroundNotification(meta.ID, completed); err != nil {
+		t.Fatalf("ensure completed again: %v", err)
+	}
+	loaded, err = store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("reload refreshed notification: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected idempotent notification refresh, got %#v", loaded)
+	}
+}
+
 func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)

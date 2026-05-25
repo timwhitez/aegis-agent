@@ -1691,6 +1691,98 @@ func TestEngineAcceptsBackgroundResultsBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestEngineCompletingQueuedChildReconcilesParentQueueFacts(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	parentMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_queue_reconcile",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "parent_queue_reconcile",
+	}
+	if err := engine.store.Create(parentMeta, session.State{Status: session.StatusRunning, Phase: "turn_decide", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	meta.ParentSessionID = parentMeta.ID
+	meta.RootSessionID = parentMeta.ID
+	meta.QueueJobID = "job_child_reconcile"
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save child metadata: %v", err)
+	}
+	if err := engine.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              meta.QueueJobID,
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       meta.ID,
+		SessionStatus:   session.StatusAwaitingInput,
+		Prompt:          "continue child",
+		Mode:            session.ModeExec,
+		Background:      true,
+		LastError:       "child session is resumable: awaiting_input",
+	}); err != nil {
+		t.Fatalf("save blocked job: %v", err)
+	}
+	if err := addParentQueueJob(engine.store, parentMeta.ID, meta.QueueJobID, "wait-all"); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+	blockedNotification := session.NewBackgroundNotification(session.QueueJob{
+		ID:            meta.QueueJobID,
+		Status:        session.QueueStatusBlocked,
+		SessionID:     meta.ID,
+		SessionStatus: session.StatusAwaitingInput,
+		LastError:     "child session is resumable: awaiting_input",
+	})
+	if err := engine.store.EnsureBackgroundNotification(parentMeta.ID, blockedNotification); err != nil {
+		t.Fatalf("ensure blocked notification: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish child")); err != nil {
+		t.Fatalf("append child prompt: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"child done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run child: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed child, got %#v", result)
+	}
+	job, err := engine.store.LoadJob(meta.QueueJobID)
+	if err != nil {
+		t.Fatalf("load reconciled job: %v", err)
+	}
+	if job.Status != session.QueueStatusCompleted || job.SessionStatus != session.StatusCompleted || job.FinalText != "child done" {
+		t.Fatalf("expected completed queue job facts, got %#v", job)
+	}
+	coordination, err := engine.store.LoadParentCoordination(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if containsString(coordination.UnresolvedQueueJobs, meta.QueueJobID) || !containsString(coordination.CompletedQueueJobs, meta.QueueJobID) || coordination.Parked {
+		t.Fatalf("expected parent coordination resolved, got %#v", coordination)
+	}
+	notifications, err := engine.store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load parent notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].Status != session.QueueStatusCompleted || notifications[0].FinalText != "child done" || notifications[0].DeliveryStatus != session.BackgroundNotificationPending {
+		t.Fatalf("expected refreshed completed notification, got %#v", notifications)
+	}
+}
+
 func TestEngineAcceptsSteerAfterProviderDoneCandidateBoundary(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "initial")); err != nil {

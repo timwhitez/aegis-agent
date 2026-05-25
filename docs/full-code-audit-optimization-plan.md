@@ -1128,6 +1128,43 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-038: Continued queue children do not notify parent on terminal completion
+
+Severity: Medium
+
+Evidence:
+
+- `spec/15-background-queue.md` says blocked queue jobs are resumable and keep `session_id` / `session_status` so the child can be continued, and child completion/failure must flow back to the parent through background notification.
+- `internal/runtime/delegation.go` `ProcessNextJob` updates the queue job, parent notification, and parent coordination when the worker-run child returns terminal in the same call.
+- A blocked child resumed later through normal `Runner.Continue` reaches `Engine.complete` / `Engine.fail`, which only updates the child `state.json`, child `session.md`, and child checkpoint.
+- `internal/session/store.go` can repair a linked queue job to terminal when `LoadJob` / `ListJobs` calls `reconcileQueueJobSession`, but that is observer-triggered rather than part of the child terminal transition.
+- `EnsureBackgroundNotification` dedupes only by `queue_job_id` and returns without replacing an older blocked notification, so even observer-triggered terminal repair can leave the parent `control/background.jsonl` with stale blocked status.
+
+Impact:
+
+If a background child pauses or awaits input, the queue job becomes `blocked` as designed. After an operator continues that child to completion, the parent can remain parked, miss the terminal background result, and keep stale blocked notification facts until an unrelated queue read occurs; even then, notification dedupe can preserve the old blocked notification. This weakens queue recovery, parent completion gates, Web Background inspector, and provider-visible background result replay for resumable child jobs.
+
+Minimal fix:
+
+- Add a runtime/store helper that reconciles linked queue jobs immediately after child terminal or resumable state changes.
+- Let terminal queue reconciliation replace an existing same-job background notification with fresher terminal facts.
+- Call the helper from `Engine.complete`, `Engine.fail`, pause, and awaiting-input paths so resumed queue children update parent facts at the state transition boundary.
+- Add focused regressions covering a blocked queue child continuing to completed, updating the job, parent coordination, and background notification.
+
+Validation:
+
+- `go test ./internal/session -run 'TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsMergesConcurrentAppend|TestReconcileCompletedSessionCompletesJob' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineAcceptsBackgroundResultsBeforeProviderCall|TestParentCoordinationWritesParkedAndResumedEvents' -count=1`: passed.
+- `go test ./internal/session -run 'TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsMergesConcurrentAppend' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineAcceptsBackgroundResultsBeforeProviderCall' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1391,6 +1428,12 @@ Evidence gates:
 - Confirmed FCA-20260525-037 against `spec/15-background-queue.md`, `spec/02-cli-and-config.md`, runtime queue status mapping, session store `queueStatuses()`, and CLI doctor `doctorQueueStatuses()`.
 - Confirmed this does not affect runtime queue processing or WebConsole queue views; those use `internal/session` queue readers that include `blocked`.
 - Confirmed the fix belongs in `internal/app/doctor_helpers.go` because the bug is in the doctor diagnostic directory scan, not in the durable queue store.
+
+### Review 36
+
+- Confirmed FCA-20260525-038 against `ProcessNextJob`, `Runner.Continue`, `Engine.complete`, `Engine.fail`, `awaitingInput`, `pause`, session store queue reconciliation, `EnsureBackgroundNotification`, parent coordination, and the background-result completion gate.
+- Confirmed worker same-call completion is already handled; the gap is resumed blocked queue children that become terminal through ordinary continue paths.
+- Confirmed the fix should not add a workflow engine or automatic child orchestration. It should only propagate the already-durable child session terminal/resumable state into the linked queue job and parent facts.
 
 ## Update Log
 
@@ -2173,6 +2216,33 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-038
+
+Slice: `fix(runtime): reconcile continued queue children`
+
+Changes:
+
+- Added a session-store reconciliation entry point for a child session's linked queue job.
+- Called linked queue reconciliation from runtime terminal and resumable state transitions (`completed`, `failed`, `paused`, `awaiting_input` variants).
+- Updated parent coordination parking during store-driven queue reconciliation so completed/failed repaired jobs release parent wait state.
+- Changed background notification ensure semantics to refresh changed same-job facts, while leaving unchanged accepted notifications idempotent.
+- Added store coverage for refreshing blocked notification facts to completed facts.
+- Added runtime coverage for a previously blocked queue child completing and immediately updating queue job, parent coordination, and parent notification facts.
+
+Validation:
+
+- `go test ./internal/session -run 'TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsMergesConcurrentAppend|TestReconcileCompletedSessionCompletesJob' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineAcceptsBackgroundResultsBeforeProviderCall|TestParentCoordinationWritesParkedAndResumedEvents' -count=1`: passed.
+- `go test ./internal/session -run 'TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsMergesConcurrentAppend' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineAcceptsBackgroundResultsBeforeProviderCall' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

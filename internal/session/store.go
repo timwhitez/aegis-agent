@@ -668,9 +668,10 @@ func (s *Store) EnsureBackgroundNotification(sessionID string, notification Back
 			return err
 		}
 		if strings.TrimSpace(notification.QueueJobID) != "" {
-			for _, item := range existing {
+			for index, item := range existing {
 				if item.QueueJobID == notification.QueueJobID {
-					return nil
+					existing[index] = mergeBackgroundNotification(item, notification)
+					return s.writeJSONL(path, existing)
 				}
 			}
 		}
@@ -1857,6 +1858,21 @@ func (s *Store) reconcileSessionQueueJob(meta SessionMetadata) {
 	_, _ = s.LoadJob(meta.QueueJobID)
 }
 
+func (s *Store) ReconcileSessionQueueJob(sessionID string) (QueueJob, bool, error) {
+	meta, err := s.LoadMetadata(sessionID)
+	if err != nil {
+		return QueueJob{}, false, err
+	}
+	if strings.TrimSpace(meta.QueueJobID) == "" {
+		return QueueJob{}, false, nil
+	}
+	job, err := s.LoadJob(meta.QueueJobID)
+	if err != nil {
+		return QueueJob{}, false, err
+	}
+	return job, true, nil
+}
+
 func isTerminalQueueStatus(status string) bool {
 	return status == QueueStatusCompleted || status == QueueStatusFailed
 }
@@ -1908,8 +1924,29 @@ func (s *Store) reconcileParentQueueJobStatus(job QueueJob) {
 		default:
 			coordination.UnresolvedQueueJobs = appendUniqueString(coordination.UnresolvedQueueJobs, job.ID)
 		}
+		coordination.Parked = shouldParkParentCoordination(*coordination)
 		return nil
 	})
+}
+
+func shouldParkParentCoordination(coordination ParentCoordination) bool {
+	if len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0 {
+		return false
+	}
+	if normalizeParentWaitMode(coordination.WaitMode) == "wait-any" &&
+		(len(coordination.CompletedChildSessions) > 0 || len(coordination.CompletedQueueJobs) > 0) {
+		return false
+	}
+	return true
+}
+
+func normalizeParentWaitMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "any", "wait-any", "wait_any":
+		return "wait-any"
+	default:
+		return "wait-all"
+	}
 }
 
 func appendUniqueString(items []string, value string) []string {
@@ -2370,6 +2407,97 @@ func mergeBackgroundNotifications(updated, current []BackgroundNotification) []B
 		merged = append(merged, notification)
 	}
 	return merged
+}
+
+func mergeBackgroundNotification(existing, next BackgroundNotification) BackgroundNotification {
+	factsChanged := backgroundNotificationFactsChanged(existing, next)
+	if !factsChanged {
+		return existing
+	}
+	merged := existing
+	if strings.TrimSpace(next.ID) != "" {
+		merged.ID = next.ID
+	}
+	if strings.TrimSpace(next.CreatedAt) != "" {
+		merged.CreatedAt = next.CreatedAt
+	}
+	if strings.TrimSpace(next.Source) != "" {
+		merged.Source = next.Source
+	}
+	if strings.TrimSpace(next.QueueJobID) != "" {
+		merged.QueueJobID = next.QueueJobID
+	}
+	if strings.TrimSpace(next.SessionID) != "" {
+		merged.SessionID = next.SessionID
+	}
+	if strings.TrimSpace(next.AgentName) != "" {
+		merged.AgentName = next.AgentName
+	}
+	if strings.TrimSpace(next.AgentRole) != "" {
+		merged.AgentRole = next.AgentRole
+	}
+	if strings.TrimSpace(next.Status) != "" {
+		merged.Status = next.Status
+	}
+	if strings.TrimSpace(next.SessionStatus) != "" {
+		merged.SessionStatus = next.SessionStatus
+	}
+	if strings.TrimSpace(next.RequestedWorkdir) != "" {
+		merged.RequestedWorkdir = next.RequestedWorkdir
+	}
+	if strings.TrimSpace(next.EffectiveWorkdir) != "" {
+		merged.EffectiveWorkdir = next.EffectiveWorkdir
+	}
+	if next.VisiblePaths != nil {
+		merged.VisiblePaths = append([]string(nil), next.VisiblePaths...)
+	}
+	if strings.TrimSpace(next.FinalText) != "" {
+		merged.FinalText = next.FinalText
+	}
+	if strings.TrimSpace(next.LastError) != "" {
+		merged.LastError = next.LastError
+	}
+	if strings.TrimSpace(next.DeliveryStatus) != "" {
+		merged.DeliveryStatus = next.DeliveryStatus
+	}
+	return merged
+}
+
+func backgroundNotificationFactsChanged(existing, next BackgroundNotification) bool {
+	if strings.TrimSpace(next.QueueJobID) != "" && existing.QueueJobID != next.QueueJobID {
+		return true
+	}
+	if strings.TrimSpace(next.SessionID) != "" && existing.SessionID != next.SessionID {
+		return true
+	}
+	if strings.TrimSpace(next.AgentName) != "" && existing.AgentName != next.AgentName {
+		return true
+	}
+	if strings.TrimSpace(next.AgentRole) != "" && existing.AgentRole != next.AgentRole {
+		return true
+	}
+	if strings.TrimSpace(next.Status) != "" && existing.Status != next.Status {
+		return true
+	}
+	if strings.TrimSpace(next.SessionStatus) != "" && existing.SessionStatus != next.SessionStatus {
+		return true
+	}
+	if strings.TrimSpace(next.RequestedWorkdir) != "" && existing.RequestedWorkdir != next.RequestedWorkdir {
+		return true
+	}
+	if strings.TrimSpace(next.EffectiveWorkdir) != "" && existing.EffectiveWorkdir != next.EffectiveWorkdir {
+		return true
+	}
+	if next.VisiblePaths != nil && !equalStringSlices(existing.VisiblePaths, next.VisiblePaths) {
+		return true
+	}
+	if strings.TrimSpace(next.FinalText) != "" && existing.FinalText != next.FinalText {
+		return true
+	}
+	if strings.TrimSpace(next.LastError) != "" && existing.LastError != next.LastError {
+		return true
+	}
+	return false
 }
 
 func backgroundNotificationMergeKey(notification BackgroundNotification) string {

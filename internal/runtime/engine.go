@@ -700,6 +700,7 @@ func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{})
+	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
@@ -720,6 +721,7 @@ func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionM
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "goal_budget_limited"})
+	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
@@ -736,6 +738,7 @@ func (e *Engine) awaitingPlanApproval(ctx context.Context, meta session.SessionM
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_approval"})
+	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode is awaiting approval."}, nil
@@ -752,6 +755,7 @@ func (e *Engine) awaitingPlanCancelled(ctx context.Context, meta session.Session
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_cancelled"})
+	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode cancelled."}, nil
@@ -771,6 +775,7 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.completed", state.Phase, map[string]any{})
+	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
@@ -787,6 +792,7 @@ func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state 
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.paused", state.Phase, map[string]any{"reason": reason})
+	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status}, nil
@@ -805,9 +811,17 @@ func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state s
 		return RunResult{}, saveErr
 	}
 	e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"error": state.LastError})
+	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, err
+}
+
+func (e *Engine) reconcileLinkedQueueJob(sessionID string) {
+	if job, ok, err := e.store.ReconcileSessionQueueJob(sessionID); err == nil && ok && strings.TrimSpace(job.ParentSessionID) != "" {
+		_ = writeSessionSummary(e.store, job.ParentSessionID)
+		_ = writeLongRunCheckpoint(e.store, job.ParentSessionID)
+	}
 }
 
 func (e *Engine) emit(sessionID, eventType, phase string, data map[string]any) {
