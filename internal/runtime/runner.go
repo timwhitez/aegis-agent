@@ -839,7 +839,7 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 	if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
 		return err
 	}
-	_ = r.store.AppendPlanModeHistory(sessionID, session.PlanModeHistoryEntry{
+	if err := r.store.AppendPlanModeHistory(sessionID, session.PlanModeHistoryEntry{
 		PlanModeID: planMode.PlanModeID,
 		Type:       "planmode.input_cancelled",
 		Source:     source,
@@ -848,7 +848,9 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 			"request_id":   request.RequestID,
 			"tool_call_id": request.ToolCallID,
 		},
-	})
+	}); err != nil {
+		return err
+	}
 	r.emit(sessionID, "planmode.input_cancelled", "plan_input", map[string]any{
 		"plan_mode_id": planMode.PlanModeID,
 		"request_id":   request.RequestID,

@@ -1812,6 +1812,31 @@ Validation:
 - Focused Goal store, CLI, Web, and runtime regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-062: Plan input cancellation hides input-cancelled history failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md` require Plan Mode input/cancellation transitions to be durable in `planmode.json`, `artifacts/planmode-history.jsonl`, and replayable tool results.
+- Before this slice, `internal/runtime/runner.go` `appendPlanInputCancelToolResult` appended the replay-critical `request_user_input` tool result and then ignored `AppendPlanModeHistory` errors for the matching `planmode.input_cancelled` fact.
+- Focused regression reproduced the failure by replacing `artifacts/planmode-history.jsonl` with a directory: `appendPlanInputCancelToolResult` returned success after writing the tool result while losing the `planmode.input_cancelled` history fact.
+- This was not covered by FCA-20260526-060 because that slice fixed store-owned Plan Mode transitions; this recovery helper writes an extra runtime-owned input-cancelled history fact before `CancelPlanMode`.
+
+Impact:
+
+Recovered Plan Mode cancellation could become replay-complete for the provider while losing the durable input-cancelled history fact. That leaves operators and recovery logic with a cancelled plan but no history record tying the pending `request_user_input` tool call to the synthetic cancellation result.
+
+Minimal fix:
+
+- Return `AppendPlanModeHistory` errors from `appendPlanInputCancelToolResult` instead of ignoring them.
+- Add a runtime regression for blocked `planmode-history.jsonl` during recovered Plan Mode input cancellation.
+
+Validation:
+
+- Focused runtime and Web Plan Mode cancellation/approval regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2219,6 +2244,12 @@ Evidence gates:
 - Confirmed FCA-20260526-061 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `CompleteGoal`, `ApproveMissionPlan`, `UpdateGoalAccounting`, `RecordGoalProgress`, and focused blocked-history regressions.
 - Confirmed this is not only a CLI/Web display issue: Goal history is a durable session fact source, and runtime budget/accounting/progress paths depend on the store helpers returning whether durable facts were actually written.
 - Confirmed the fix belongs in session storage transition helpers so CLI, Web, runtime, SDK, and future callers cannot report Goal state changes as successful when their required history append failed.
+
+### Review 60
+
+- Confirmed FCA-20260526-062 against `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, runtime `appendPlanInputCancelToolResult`, store `CancelPlanMode`, and focused blocked-history regression.
+- Confirmed this is a runtime recovery helper gap, not a duplicate of the store transition fix: the helper writes the replay tool result and an extra `planmode.input_cancelled` history fact before the store-owned `planmode.cancelled` transition.
+- Confirmed the fix should preserve idempotent cancellation tool-result recovery while reporting failure when the durable input-cancelled history fact cannot be written.
 
 ## Update Log
 
@@ -3585,6 +3616,31 @@ Validation:
 - `go test ./internal/runtime -run 'TestGoal|TestCompletion|TestBudget|TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
 - `go test ./internal/app -run 'TestGoalMissionPlanAndValidationCommands|TestGoalPlanApproveRejectsGoalWithoutMissionPlan|TestGoalStatusCommandPreservesAccountingAndProgressFacts' -count=1`: passed.
 - `go test ./internal/webconsole -run 'TestServiceGoal|TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact|TestServiceMissionPlanApproveRejectsGoalWithoutMissionPlan' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-062
+
+Slice: `fix(runtime): report plan input cancel history failures`
+
+Changes:
+
+- Changed recovered Plan Mode input cancellation to return `AppendPlanModeHistory` errors for the `planmode.input_cancelled` fact instead of silently succeeding after appending the replay tool result.
+- Preserved idempotent cancellation replay behavior: existing `request_user_input` tool results are still not duplicated.
+- Added a runtime regression proving blocked `artifacts/planmode-history.jsonl` is reported during recovered Plan Mode input cancellation.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestPlanInputCancelReturnsHistoryAppendError|TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult|TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServicePlanModeReviseInputAndCancelControls|TestServicePlanModeApproveAppendsReplayableUserMessage' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
