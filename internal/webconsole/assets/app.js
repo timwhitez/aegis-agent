@@ -81,6 +81,7 @@ const state = {
   oldestMessageId: '',
   loadingEarlier: false,
   loadedAllEarlierMessages: false,
+  messageGapAnchorId: '',
   preserveScrollAfterRender: null,
   goalEnabled: false,
   planModeEnabled: false
@@ -1200,6 +1201,12 @@ function adoptSession(sessionID, backed) {
     state.selectedQueueJobId = '';
     state.selectedQueueJobDetail = null;
     state.planInputSelections = {};
+    state.hasMoreMessages = false;
+    state.oldestMessageId = '';
+    state.loadingEarlier = false;
+    state.loadedAllEarlierMessages = false;
+    state.messageGapAnchorId = '';
+    state.preserveScrollAfterRender = null;
     if (typeof clearMarkdownCache === 'function') {
       clearMarkdownCache();
     }
@@ -1222,6 +1229,12 @@ function resetChatSession() {
   state.planInputSelections = {};
   state.goalEnabled = false;
   state.planModeEnabled = false;
+  state.hasMoreMessages = false;
+  state.oldestMessageId = '';
+  state.loadingEarlier = false;
+  state.loadedAllEarlierMessages = false;
+  state.messageGapAnchorId = '';
+  state.preserveScrollAfterRender = null;
   if (typeof clearMarkdownCache === 'function') {
     clearMarkdownCache();
   }
@@ -1967,26 +1980,37 @@ async function refreshCurrentSession() {
 }
 
 async function loadEarlierMessages() {
-  if (state.loadingEarlier || !state.hasMoreMessages || !state.oldestMessageId) {
+  if (state.loadingEarlier || !state.hasMoreMessages || !(state.messageGapAnchorId || state.oldestMessageId)) {
     return;
   }
   state.loadingEarlier = true;
   renderCurrentSession();
   try {
     const beforeScrollHeight = nodes.chatContainer.scrollHeight;
-    const resp = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/messages?before_id=${encodeURIComponent(state.oldestMessageId)}&limit=40`);
+    const fillingGap = Boolean(state.messageGapAnchorId);
+    const beforeID = state.messageGapAnchorId || state.oldestMessageId;
+    const resp = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/messages?before_id=${encodeURIComponent(beforeID)}&limit=40`);
     const olderMessages = maybeArray(resp?.messages);
     if (olderMessages.length > 0) {
       const currentMessages = maybeArray(state.sessionDetail?.messages);
-      state.sessionDetail.messages = olderMessages.concat(currentMessages);
-      state.oldestMessageId = olderMessages[0].id;
-      state.hasMoreMessages = resp?.has_more === true;
-      state.loadedAllEarlierMessages = resp?.has_more !== true;
+      state.sessionDetail.messages = mergeMessagesBeforeAnchor(currentMessages, olderMessages, beforeID);
+      const mergedMessages = maybeArray(state.sessionDetail?.messages);
+      state.oldestMessageId = mergedMessages.length > 0 ? mergedMessages[0].id : '';
+      if (fillingGap && resp?.has_more === true) {
+        state.messageGapAnchorId = olderMessages[0]?.id || beforeID;
+        state.hasMoreMessages = true;
+        state.loadedAllEarlierMessages = false;
+      } else {
+        state.messageGapAnchorId = '';
+        state.hasMoreMessages = resp?.has_more === true;
+        state.loadedAllEarlierMessages = resp?.has_more !== true;
+      }
       mergeMessageTimelineEntries(state.sessionDetail);
       state.preserveScrollAfterRender = beforeScrollHeight;
     } else {
       state.hasMoreMessages = false;
       state.loadedAllEarlierMessages = true;
+      state.messageGapAnchorId = '';
     }
     state.loadingEarlier = false;
     renderCurrentSession();
@@ -2005,12 +2029,18 @@ function mergeLoadedMessagesIntoDetail(detail) {
   if (!detail || !currentMessages.length) {
     return;
   }
-  const seen = new Set(nextMessages.map((message) => message?.id).filter(Boolean));
-  const preserved = currentMessages.filter((message) => message?.id && !seen.has(message.id));
-  if (!preserved.length) {
+  const merged = mergeMessageWindows(currentMessages, nextMessages);
+  detail.messages = merged.messages;
+  if (merged.hasGap) {
+    state.messageGapAnchorId = merged.gapAnchorId;
+    state.loadedAllEarlierMessages = false;
     return;
   }
-  detail.messages = preserved.concat(nextMessages);
+  if (state.messageGapAnchorId && merged.messages.some((message) => message?.id === state.messageGapAnchorId)) {
+    state.loadedAllEarlierMessages = false;
+    return;
+  }
+  state.messageGapAnchorId = '';
 }
 
 function mergeMessageTimelineEntries(detail) {
@@ -2069,6 +2099,7 @@ async function openSession(sessionID, options = {}) {
   state.oldestMessageId = '';
   state.loadingEarlier = false;
   state.loadedAllEarlierMessages = false;
+  state.messageGapAnchorId = '';
   state.preserveScrollAfterRender = null;
   state.nextSendInterrupt = false;
   state.liveEvents = [];

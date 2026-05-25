@@ -29,6 +29,59 @@ function collectPlanInputAnswers(request, selections) {
   return answers;
 }
 
+function mergeMessageWindows(currentMessages, nextMessages) {
+  const current = maybeArray(currentMessages);
+  const next = maybeArray(nextMessages);
+  if (!current.length) {
+    return {
+      messages: next.slice(),
+      hasGap: false,
+      gapAnchorId: ''
+    };
+  }
+  if (!next.length) {
+    return {
+      messages: current.slice(),
+      hasGap: false,
+      gapAnchorId: ''
+    };
+  }
+  const nextIds = new Set(next.map((message) => message?.id).filter(Boolean));
+  const firstOverlap = current.findIndex((message) => message?.id && nextIds.has(message.id));
+  if (firstOverlap >= 0) {
+    return {
+      messages: current.slice(0, firstOverlap).filter((message) => !message?.id || !nextIds.has(message.id)).concat(next),
+      hasGap: false,
+      gapAnchorId: ''
+    };
+  }
+  const preserved = current.filter((message) => !message?.id || !nextIds.has(message.id));
+  return {
+    messages: preserved.concat(next),
+    hasGap: preserved.length > 0,
+    gapAnchorId: preserved.length > 0 ? String(next[0]?.id || '') : ''
+  };
+}
+
+function mergeMessagesBeforeAnchor(currentMessages, olderMessages, anchorId) {
+  const current = maybeArray(currentMessages);
+  const older = maybeArray(olderMessages);
+  if (!older.length) {
+    return current.slice();
+  }
+  const existingIds = new Set(current.map((message) => message?.id).filter(Boolean));
+  const uniqueOlder = older.filter((message) => !message?.id || !existingIds.has(message.id));
+  if (!uniqueOlder.length) {
+    return current.slice();
+  }
+  const anchor = String(anchorId || '').trim();
+  const anchorIndex = anchor ? current.findIndex((message) => message?.id === anchor) : -1;
+  if (anchorIndex < 0) {
+    return uniqueOlder.concat(current);
+  }
+  return current.slice(0, anchorIndex).concat(uniqueOlder, current.slice(anchorIndex));
+}
+
 function normalizeText(value) {
   return String(value || '')
     .trim()

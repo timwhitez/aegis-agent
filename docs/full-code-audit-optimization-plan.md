@@ -642,6 +642,36 @@ Validation:
 - Focused provider adapter non-object argument regressions.
 - Full provider package test before commit.
 
+### FCA-20260525-023: Web message history can hide a middle paging gap
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires the Session workspace to load earlier messages through `GET /api/sessions/{id}/messages?before_id=...&limit=...` when session detail returns only a tail window, and says frontend-loaded history must not be lost during polling.
+- `internal/webconsole/service.go` correctly returns bounded tail windows in `sessionDetail` and older pages from `handleSessionMessages`.
+- `internal/webconsole/assets/app.js` preserved previously loaded messages by prepending messages not present in the newest server tail.
+- The same frontend set `state.hasMoreMessages = state.loadedAllEarlierMessages ? false : detail?.has_more_messages === true` after polling.
+- If the user loaded all earlier history, then the session appended more than one tail window of new messages before the next poll, the newest detail tail no longer overlapped the preserved old messages. The frontend produced an old-history + new-tail stream with a missing middle page, but still hid the "Load earlier messages" control because `loadedAllEarlierMessages` remained true.
+
+Impact:
+
+Long-running Web sessions can silently omit a middle range of messages after the user has previously loaded all history. That violates the documented WebConsole pagination contract, weakens auditability of durable `messages.jsonl`, and can make the UI present a discontinuous conversation without a way to fetch the missing page.
+
+Minimal fix:
+
+- Move message-window merge logic into pure frontend helpers.
+- Detect when the refreshed server tail no longer overlaps preserved loaded history and keep a `messageGapAnchorId`.
+- Show the load-earlier control for known gaps even if all earlier history had previously been loaded.
+- Insert fetched gap pages immediately before their anchor, deduping already loaded messages.
+- Add Node unit coverage for overlapping tails, non-overlap gap detection, and anchor-based middle-page insertion.
+
+Validation:
+
+- Frontend syntax checks for changed assets.
+- Node utility regression tests for message merge helpers.
+- Focused WebConsole service/session message paging tests.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1248,6 +1278,36 @@ Validation:
 - `gofmt -l internal/provider/tool_args.go internal/provider/openai.go internal/provider/anthropic.go internal/provider/google.go internal/provider/provider_test.go`: no output.
 - `go test ./internal/provider -count=1`: passed.
 - `go test ./internal/runtime -run 'TestEngineProviderParseErrorFailsBeforeAssistantPersist|TestEngineProviderStopReasonFailuresAreResumable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-023
+
+Slice: `fix(webconsole): preserve message paging gaps`
+
+Changes:
+
+- Added pure frontend message-window merge helpers for overlapping tail refreshes and anchor-based older-page insertion.
+- Tracked `messageGapAnchorId` when polling receives a new tail window that no longer overlaps already loaded older history.
+- Kept the load-earlier control visible for known middle gaps and fetched missing pages before the tail anchor.
+- Reset paging/gap state when switching or resetting sessions.
+- Added Node unit coverage for overlapping tails, non-overlap gap detection, and middle-page insertion.
+
+Validation:
+
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 9/9 tests.
+- `go test ./internal/webconsole -run 'TestServiceServesEmbeddedShellAndAssets|TestServiceSessionMessagePaging' -count=1`: passed.
+- `go test ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

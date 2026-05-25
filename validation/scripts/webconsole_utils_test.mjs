@@ -81,3 +81,34 @@ test('collectPlanInputAnswers preserves selected multi-question answers', () => 
     { question_id: 'validation', label: 'Other', value: 'Browser smoke', is_other: true }
   ]);
 });
+
+test('mergeMessageWindows preserves older loaded messages when server tail overlaps', () => {
+  const current = ['m1', 'm2', 'm3', 'm4'].map((id) => ({ id }));
+  const next = ['m3', 'm4', 'm5'].map((id) => ({ id }));
+
+  const merged = context.mergeMessageWindows(current, next);
+
+  assert.deepEqual(sameRealm(merged.messages.map((message) => message.id)), ['m1', 'm2', 'm3', 'm4', 'm5']);
+  assert.equal(merged.hasGap, false);
+  assert.equal(merged.gapAnchorId, '');
+});
+
+test('mergeMessageWindows exposes a paging gap when server tail no longer overlaps loaded history', () => {
+  const current = ['m1', 'm2', 'm3'].map((id) => ({ id }));
+  const next = ['m8', 'm9'].map((id) => ({ id }));
+
+  const merged = context.mergeMessageWindows(current, next);
+
+  assert.deepEqual(sameRealm(merged.messages.map((message) => message.id)), ['m1', 'm2', 'm3', 'm8', 'm9']);
+  assert.equal(merged.hasGap, true);
+  assert.equal(merged.gapAnchorId, 'm8');
+});
+
+test('mergeMessagesBeforeAnchor fills middle pages before the server tail anchor', () => {
+  const current = ['m1', 'm2', 'm8', 'm9'].map((id) => ({ id }));
+  const older = ['m2', 'm3', 'm4', 'm5'].map((id) => ({ id }));
+
+  const merged = context.mergeMessagesBeforeAnchor(current, older, 'm8');
+
+  assert.deepEqual(sameRealm(merged.map((message) => message.id)), ['m1', 'm2', 'm3', 'm4', 'm5', 'm8', 'm9']);
+});
