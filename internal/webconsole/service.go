@@ -1748,10 +1748,10 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
 	s.addHandle(handle)
-	go func() {
+	s.trackLaunch(func() {
 		result, err := runner.Continue(runCtx, req)
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
-	}()
+	})
 	return nil
 }
 

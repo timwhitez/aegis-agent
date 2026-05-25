@@ -194,3 +194,20 @@ Validation:
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets`: passed.
 - `go test ./internal/webconsole/`: passed.
+
+### FCA-20260522-002
+
+Slice: `fix(webconsole): track plan mode continue lifecycle`
+
+Changes:
+
+- Replaced the bare `launchPlanModeContinue` goroutine with `s.trackLaunch`.
+- Added a regression test that blocks a Plan Mode continue provider request and verifies `launchWG.Wait()` remains blocked until that continue path is released.
+
+Validation:
+
+- `go test ./internal/webconsole/ -run TestServicePlanModeContinueIsTrackedByLaunchWaitGroup -count=1`: passed.
+- `go test ./internal/webconsole/ -run PlanMode -count=1`: passed.
+- `go test ./internal/webconsole/ -run TestServicePlanModeReviseInputAndCancelControls -count=1`: passed.
+- `go test ./internal/webconsole/ -count=1`: passed.
+- `go vet ./internal/webconsole/`: passed.

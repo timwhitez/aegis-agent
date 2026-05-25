@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1115,6 +1116,91 @@ func TestServicePlanModeReviseInputAndCancelControls(t *testing.T) {
 	}
 	if !foundCancelResult {
 		t.Fatalf("expected cancellation tool result, got %#v", cancelMessages)
+	}
+}
+
+func TestServicePlanModeContinueIsTrackedByLaunchWaitGroup(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	releaseProvider := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() {
+			close(started)
+		})
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_tracked_continue",
+			"status":"completed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},
+				{"type":"function_call","call_id":"call_finish_tracked","name":"finish","arguments":"{\"message\":\"done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	defer releaseProvider()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_planmode_tracked_continue")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Track continue", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Tracked continue",
+		Summary:      "Keep the launch wait group active.",
+		PlanMarkdown: "# Tracked continue",
+		Verification: []string{"go test ./internal/webconsole"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+
+	var launch LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusAccepted, &launch)
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for blocked provider request")
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		svc.launchWG.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		t.Fatal("launch wait group returned while Plan Mode continue was still blocked in the provider request")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	releaseProvider()
+	select {
+	case <-waitDone:
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for tracked Plan Mode continue to finish")
 	}
 }
 
