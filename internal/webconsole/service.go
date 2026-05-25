@@ -1018,38 +1018,35 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	goal, err := s.store.LoadGoal(sessionID)
+	current, err := s.store.LoadGoal(sessionID)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
 		return
 	}
-	if req.SuccessCriteria != nil {
-		goal.SuccessCriteria = append([]session.GoalCriterion(nil), req.SuccessCriteria...)
-	}
-	if req.ValidationPlan != nil {
-		goal.ValidationPlan = append([]session.GoalValidation(nil), req.ValidationPlan...)
-	}
-	if req.Control != nil {
-		goal.Control = *req.Control
-	}
+	var mission *session.MissionPlan
 	if req.Mission != nil {
-		goal.Mode = session.GoalModeMission
-		wasApproved := goal.Mission != nil && session.NormalizeMissionPlanStatus(goal.Mission.PlanStatus) == session.MissionPlanStatusApproved
-		mission := *req.Mission
-		if err := rejectMissionPlanApprovalByPatch(mission.PlanStatus); err != nil {
+		wasApproved := current.Mission != nil && session.NormalizeMissionPlanStatus(current.Mission.PlanStatus) == session.MissionPlanStatusApproved
+		missionCopy := *req.Mission
+		if err := rejectMissionPlanApprovalByPatch(missionCopy.PlanStatus); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		mission.PlanStatus = session.NormalizeMissionPlanStatus(mission.PlanStatus)
-		if wasApproved && mission.PlanStatus != session.MissionPlanStatusNeedsApproval {
-			mission.PlanStatus = session.MissionPlanStatusNeedsApproval
+		missionCopy.PlanStatus = session.NormalizeMissionPlanStatus(missionCopy.PlanStatus)
+		if wasApproved && missionCopy.PlanStatus != session.MissionPlanStatusNeedsApproval {
+			missionCopy.PlanStatus = session.MissionPlanStatusNeedsApproval
 		}
-		if mission.PlanStatus != session.MissionPlanStatusApproved {
-			mission.ApprovedAt = ""
+		if missionCopy.PlanStatus != session.MissionPlanStatusApproved {
+			missionCopy.ApprovedAt = ""
 		}
-		goal.Mission = &mission
+		mission = &missionCopy
 	}
-	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+	goal, err := s.store.PatchGoal(sessionID, session.GoalPatchInput{
+		SuccessCriteria: optionalGoalCriteria(req.SuccessCriteria),
+		ValidationPlan:  optionalGoalValidations(req.ValidationPlan),
+		Control:         req.Control,
+		Mission:         mission,
+	})
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -1134,13 +1131,12 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	goal, err := s.store.LoadGoal(sessionID)
+	current, err := s.store.LoadGoal(sessionID)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
 		return
 	}
-	goal.Mode = session.GoalModeMission
-	mission := ensureMissionPlan(goal.Mission)
+	mission := ensureMissionPlan(current.Mission)
 	approvalScopedPatch := missionPlanPatchTouchesApprovalScopedContent(req)
 	if req.Requirements != nil {
 		mission.Requirements = append([]session.MissionRequirement(nil), req.Requirements...)
@@ -1178,8 +1174,8 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	if req.CreateTasksFromPlan != nil {
 		mission.CreateTasksFromPlan = *req.CreateTasksFromPlan
 	}
-	goal.Mission = mission
-	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+	goal, err := s.store.PatchGoal(sessionID, session.GoalPatchInput{Mission: mission})
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -3857,6 +3853,22 @@ func ensureWebMissionCoverage(goal session.SessionGoal, override bool) error {
 		return nil
 	}
 	return fmt.Errorf("mission validation coverage blocks approval: %s", coverage.BlockingSummary())
+}
+
+func optionalGoalCriteria(items []session.GoalCriterion) *[]session.GoalCriterion {
+	if items == nil {
+		return nil
+	}
+	copyItems := append([]session.GoalCriterion(nil), items...)
+	return &copyItems
+}
+
+func optionalGoalValidations(items []session.GoalValidation) *[]session.GoalValidation {
+	if items == nil {
+		return nil
+	}
+	copyItems := append([]session.GoalValidation(nil), items...)
+	return &copyItems
 }
 
 func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {

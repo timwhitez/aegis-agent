@@ -287,6 +287,13 @@ type MissionPlanApprovalInput struct {
 	ApprovedVersion  int
 }
 
+type GoalPatchInput struct {
+	SuccessCriteria *[]GoalCriterion
+	ValidationPlan  *[]GoalValidation
+	Control         *GoalControl
+	Mission         *MissionPlan
+}
+
 type GoalHistoryEntry struct {
 	SchemaVersion int            `json:"schema_version"`
 	ID            string         `json:"id"`
@@ -701,6 +708,35 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 	return goal, nil
 }
 
+func (s *Store) PatchGoal(sessionID string, input GoalPatchInput) (SessionGoal, error) {
+	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
+		if goal.GoalID == "" {
+			return errors.New("session has no current goal")
+		}
+		if input.SuccessCriteria != nil {
+			goal.SuccessCriteria = append([]GoalCriterion(nil), (*input.SuccessCriteria)...)
+		}
+		if input.ValidationPlan != nil {
+			goal.ValidationPlan = append([]GoalValidation(nil), (*input.ValidationPlan)...)
+		}
+		if input.Control != nil {
+			goal.Control = *input.Control
+		}
+		if input.Mission != nil {
+			goal.Mode = GoalModeMission
+			goal.Mission = input.Mission
+		}
+		return nil
+	})
+	if err != nil {
+		return SessionGoal{}, err
+	}
+	if !mutated {
+		return SessionGoal{}, errors.New("session has no current goal")
+	}
+	return goal, nil
+}
+
 func (s *Store) SyncMissionPlanTasks(sessionID string) (SessionGoal, []Task, bool, error) {
 	goal, err := s.LoadGoal(sessionID)
 	if err != nil {
@@ -711,11 +747,51 @@ func (s *Store) SyncMissionPlanTasks(sessionID string) (SessionGoal, []Task, boo
 		return SessionGoal{}, nil, false, err
 	}
 	if changed {
-		if err := s.SaveGoal(sessionID, goal); err != nil {
+		goalWithTaskIDs := goal
+		goal, err = s.mergeMissionTaskIDs(sessionID, goalWithTaskIDs)
+		if err != nil {
 			return SessionGoal{}, nil, false, err
 		}
 	}
 	return goal, createdTasks, changed, nil
+}
+
+func (s *Store) mergeMissionTaskIDs(sessionID string, source SessionGoal) (SessionGoal, error) {
+	if source.Mission == nil {
+		return source, nil
+	}
+	featureTaskIDs := make(map[string][]string, len(source.Mission.Features))
+	for _, feature := range source.Mission.Features {
+		if strings.TrimSpace(feature.ID) == "" || len(feature.TaskIDs) == 0 {
+			continue
+		}
+		featureTaskIDs[feature.ID] = append([]string(nil), feature.TaskIDs...)
+	}
+	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
+		if goal.GoalID == "" {
+			return errors.New("session has no current goal")
+		}
+		if goal.Mission == nil {
+			return nil
+		}
+		for i := range goal.Mission.Features {
+			feature := &goal.Mission.Features[i]
+			if strings.TrimSpace(feature.ID) == "" && i < len(source.Mission.Features) && strings.TrimSpace(source.Mission.Features[i].ID) != "" {
+				feature.ID = source.Mission.Features[i].ID
+			}
+			if ids, ok := featureTaskIDs[feature.ID]; ok {
+				feature.TaskIDs = mergeStringLists(feature.TaskIDs, ids)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return SessionGoal{}, err
+	}
+	if !mutated {
+		return SessionGoal{}, errors.New("session has no current goal")
+	}
+	return goal, nil
 }
 
 func syncMissionPlanTasks(store *Store, sessionID string, goal *SessionGoal) ([]Task, bool, error) {

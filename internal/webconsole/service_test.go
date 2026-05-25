@@ -261,6 +261,141 @@ func TestServiceGoalStatusPreservesAccountingAndProgressFacts(t *testing.T) {
 	}
 }
 
+func TestServiceGoalPatchPreservesRuntimeProgressFacts(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_patch_preserves_runtime_facts",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_patch_preserves_runtime_facts",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	tokenBudget := int64(5)
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Objective:    "Patch goal safely",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, limited, err := svc.store.UpdateGoalAccounting(meta.ID, session.GoalUsageDelta{TokensUsedDelta: 6, SourceTurn: 1}); err != nil || !limited {
+		t.Fatalf("update accounting limited=%v err=%v", limited, err)
+	}
+	_, progress, err := svc.store.RecordGoalProgress(meta.ID, session.GoalProgressInput{
+		Source:   session.GoalSourceTool,
+		Kind:     "budget_wrapup",
+		Summary:  "runtime progress",
+		Evidence: []string{"progress evidence"},
+	})
+	if err != nil {
+		t.Fatalf("record progress: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+	var patched session.SessionGoal
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"success_criteria": []map[string]any{{
+			"id":       "criterion_web",
+			"text":     "Updated criterion",
+			"status":   "pending",
+			"required": true,
+		}},
+	}, http.StatusOK, &patched)
+	if len(patched.SuccessCriteria) != 1 || patched.SuccessCriteria[0].ID != "criterion_web" {
+		t.Fatalf("expected patched criteria, got %#v", patched.SuccessCriteria)
+	}
+	if patched.TokensUsed != 6 || patched.BudgetLimitedAt == "" || patched.BudgetWrapUpRequestedAt == "" {
+		t.Fatalf("expected accounting facts to survive goal patch, got %#v", patched)
+	}
+	if len(patched.Progress) != 1 || patched.Progress[0].ID != progress.ID {
+		t.Fatalf("expected progress facts to survive goal patch, got %#v", patched.Progress)
+	}
+}
+
+func TestServiceMissionPlanPatchTaskSyncPreservesRuntimeProgressFacts(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_mission_patch_sync_preserves_facts",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_mission_patch_sync_preserves_facts",
+	}
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	tokenBudget := int64(5)
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Mode:         session.GoalModeMission,
+		Objective:    "Patch mission safely",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, limited, err := svc.store.UpdateGoalAccounting(meta.ID, session.GoalUsageDelta{TokensUsedDelta: 6, SourceTurn: 1}); err != nil || !limited {
+		t.Fatalf("update accounting limited=%v err=%v", limited, err)
+	}
+	_, progress, err := svc.store.RecordGoalProgress(meta.ID, session.GoalProgressInput{
+		Source:   session.GoalSourceTool,
+		Kind:     "budget_wrapup",
+		Summary:  "runtime progress",
+		Evidence: []string{"progress evidence"},
+	})
+	if err != nil {
+		t.Fatalf("record progress: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+	var patched session.SessionGoal
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"create_tasks_from_plan": true,
+		"features": []map[string]any{{
+			"id":     "feature_web",
+			"title":  "Web mission feature",
+			"status": "pending",
+		}},
+	}, http.StatusOK, &patched)
+	if patched.Mission == nil || len(patched.Mission.Features) != 1 || len(patched.Mission.Features[0].TaskIDs) != 1 {
+		t.Fatalf("expected task-linked mission feature, got %#v", patched.Mission)
+	}
+	if patched.TokensUsed != 6 || patched.BudgetLimitedAt == "" || patched.BudgetWrapUpRequestedAt == "" {
+		t.Fatalf("expected accounting facts to survive mission patch, got %#v", patched)
+	}
+	if len(patched.Progress) != 1 || patched.Progress[0].ID != progress.ID {
+		t.Fatalf("expected progress facts to survive mission patch, got %#v", patched.Progress)
+	}
+}
+
 func TestServiceMissionPatchCannotApproveWithoutApprovalEndpoint(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

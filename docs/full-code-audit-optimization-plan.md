@@ -864,6 +864,42 @@ Validation:
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 - Note: a multi-package command including `internal/runtime` was stopped after the top-level Go command stayed quiet with no visible package test child; `internal/runtime` and the same surrounding package set passed when split as shown above.
 
+### FCA-20260525-030: Mission plan patching can overwrite current runtime facts
+
+Severity: Medium
+
+Evidence:
+
+- `internal/webconsole/service.go` `handleGoalPatch` and `handleMissionPlanPatch` loaded `goal.json`, changed goal criteria / validation / mission fields, and saved the whole snapshot.
+- `handleMissionPlanPatch` optionally called `SyncMissionPlanTasks` when `create_tasks_from_plan` was enabled.
+- `internal/session/goal.go` `SyncMissionPlanTasks` created task files, inserted generated feature IDs / task IDs into the previously loaded goal value, then called full `SaveGoal`.
+- After FCA-20260525-028 and FCA-20260525-029, runtime/tool/operator fields are serialized through `MutateGoal`, but these Web mission editing paths could still re-save stale `goal.json` snapshots.
+
+Impact:
+
+Editing a goal or mission plan from WebConsole could remove concurrent provider accounting, budget wrap-up fields, progress records, validation evidence, or other current runtime facts. The `create_tasks_from_plan` branch was especially risky because it wrote task IDs back to an older goal value after separate task graph writes.
+
+Minimal fix:
+
+- Add a store-owned `PatchGoal` helper for Web patch semantics so partial goal/mission edits merge into the latest goal snapshot.
+- Change `SyncMissionPlanTasks` to merge only generated feature IDs and task IDs back into the latest mission snapshot instead of full-saving the older goal value.
+- Keep task creation outside the goal lock to avoid lock reentrancy with task graph writes.
+- Add focused WebConsole regressions for goal patching and mission patch task sync preserving accounting/progress facts.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceGoalPatchPreservesRuntimeProgressFacts|TestServiceMissionPlanPatchTaskSyncPreservesRuntimeProgressFacts|TestServiceMissionPlanPatchResetsApprovedPlanToPendingGate|TestServiceGoalPatchMissionResetsApprovedPlanToPendingGate|TestServiceGoalEndpointsMutateDurableGoal' -count=1`: passed.
+- `go test ./internal/session -run 'TestStoreGoalLifecycleAccountingAndSummary|TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist' -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/webconsole/service.go internal/webconsole/service_test.go`: no output.
+- `go test ./internal/webconsole ./internal/session -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1079,6 +1115,12 @@ Evidence gates:
 - Confirmed FCA-20260525-029 against Web goal status / mission approval handlers, CLI goal status / direct approval paths, and linked Plan Mode mission approval.
 - Confirmed these paths mutate only operator-control fields, so they should use narrow transactional store helpers rather than re-saving stale whole-goal snapshots.
 - Kept Web/CLI mission plan patch and task-sync paths as a separate review area because `create_tasks_from_plan` interacts with the task graph and should not be mixed into this status/approval slice.
+
+### Review 28
+
+- Confirmed FCA-20260525-030 against Web goal patch, Web mission plan patch, and `SyncMissionPlanTasks`.
+- Confirmed the `create_tasks_from_plan` branch has to keep task graph writes outside the goal lock, then merge only generated feature/task IDs into the latest goal snapshot.
+- Confirmed the fix remains in the session store / Web adapter boundary and does not move task orchestration decisions into runtime.
 
 ## Update Log
 
@@ -1671,6 +1713,31 @@ Validation:
 - `go test ./internal/webconsole -run 'TestServiceGoalStatusPreservesAccountingAndProgressFacts|TestServiceGoalEndpointsMutateDurableGoal|TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact' -count=1`: passed.
 - `go test ./internal/app -run 'TestGoalStatusCommandPreservesAccountingAndProgressFacts|TestGoalMissionPlanAndValidationCommands' -count=1`: passed.
 - `go test ./internal/session ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-030
+
+Slice: `fix(goal): merge mission patch task links`
+
+Changes:
+
+- Added a store-owned `PatchGoal` helper for partial Web goal/mission edits.
+- Routed Web goal patch and mission plan patch through the transactional patch helper.
+- Changed mission plan task sync to merge generated feature IDs and task IDs into the latest goal snapshot instead of full-saving the pre-sync goal.
+- Kept task creation outside the goal lock to avoid task graph lock reentrancy.
+- Added Web regressions for goal patch and mission patch task sync preserving accounting/progress facts.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceGoalPatchPreservesRuntimeProgressFacts|TestServiceMissionPlanPatchTaskSyncPreservesRuntimeProgressFacts|TestServiceMissionPlanPatchResetsApprovedPlanToPendingGate|TestServiceGoalPatchMissionResetsApprovedPlanToPendingGate|TestServiceGoalEndpointsMutateDurableGoal' -count=1`: passed.
+- `go test ./internal/session -run 'TestStoreGoalLifecycleAccountingAndSummary|TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist' -count=1`: passed.
+- `go test ./internal/webconsole ./internal/session -count=1`: passed.
+- `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/runtime -count=1`: passed.
