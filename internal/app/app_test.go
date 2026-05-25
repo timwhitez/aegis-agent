@@ -472,6 +472,71 @@ func TestGoalMissionPlanAndValidationCommands(t *testing.T) {
 	}
 }
 
+func TestGoalStatusCommandPreservesAccountingAndProgressFacts(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_status_cli_preserves_facts",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_status_cli_preserves_facts",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	tokenBudget := int64(5)
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Objective:    "Pause through CLI",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, limited, err := store.UpdateGoalAccounting(meta.ID, session.GoalUsageDelta{TokensUsedDelta: 6, SourceTurn: 1}); err != nil || !limited {
+		t.Fatalf("update accounting limited=%v err=%v", limited, err)
+	}
+	_, progress, err := store.RecordGoalProgress(meta.ID, session.GoalProgressInput{
+		Source:   session.GoalSourceTool,
+		Kind:     "budget_wrapup",
+		Summary:  "facts recorded",
+		Evidence: []string{"progress evidence"},
+	})
+	if err != nil {
+		t.Fatalf("record progress: %v", err)
+	}
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"goal", "pause", meta.ID, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("goal pause: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	paused, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load paused goal: %v", err)
+	}
+	if paused.Status != session.GoalStatusPaused || paused.TokensUsed != 6 || paused.BudgetLimitedAt == "" || paused.BudgetWrapUpRequestedAt == "" {
+		t.Fatalf("expected accounting facts to survive CLI status change, got %#v", paused)
+	}
+	if len(paused.Progress) != 1 || paused.Progress[0].ID != progress.ID {
+		t.Fatalf("expected progress facts to survive CLI status change, got %#v", paused.Progress)
+	}
+}
+
 func TestRunCommandSupportsInitFlag(t *testing.T) {
 	fake := newFakeRunner()
 	fake.startResult = runtime.RunResult{

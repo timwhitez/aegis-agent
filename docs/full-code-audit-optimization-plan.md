@@ -824,6 +824,46 @@ Validation:
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 - Note: aggregate `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` and `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` were stopped after the top-level Go command stayed quiet with no visible package test child; the same package set was then validated through focused and grouped commands above.
 
+### FCA-20260525-029: Goal operator controls can overwrite current runtime facts
+
+Severity: Medium
+
+Evidence:
+
+- FCA-20260525-028 serialized runtime/tool goal accounting and progress mutations through `Store.MutateGoal`, but `SaveGoal` intentionally remains a full-snapshot replacement for callers that already own the whole snapshot.
+- `internal/webconsole/service.go` `handleGoalStatus` loaded `goal.json`, changed only status/completion fields, and saved the whole stale snapshot.
+- `internal/webconsole/service.go` `handleMissionPlanApprove` loaded `goal.json`, changed only mission approval fields, and saved the whole stale snapshot.
+- `internal/app/app.go` `mutateGoalStatus` and the direct CLI `goal plan approve` path used the same load / small mutation / full-save shape.
+- `internal/runtime/runner.go` `approveLinkedMissionPlan` used the same shape after linked Plan Mode approval.
+
+Impact:
+
+An operator pause/resume/complete or mission-plan approval could race with provider accounting or `record_goal_progress` and re-save an older goal snapshot. That could remove budget fields, token usage, budget wrap-up records, progress evidence, or validation facts from `goal.json`, even after the runtime/tool mutation paths were made transactional.
+
+Minimal fix:
+
+- Add narrow store-owned transactional helpers for goal status changes and mission plan approval.
+- Route Web, CLI, and linked Plan Mode mission approval through those helpers instead of stale full-snapshot replacement.
+- Keep `SaveGoal` as full replacement for callers that intentionally replace an entire snapshot.
+- Add focused Web and CLI regressions proving operator status changes preserve accounting and progress facts.
+
+Validation:
+
+- `go test ./internal/session -run 'TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist|TestStoreGoalLifecycleAccountingAndSummary|TestStoreCompleteGoalPersistsAuditAndItemEvidence' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServiceGoalStatusPreservesAccountingAndProgressFacts|TestServiceGoalEndpointsMutateDurableGoal|TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact' -count=1`: passed.
+- `go test ./internal/app -run 'TestGoalStatusCommandPreservesAccountingAndProgressFacts|TestGoalMissionPlanAndValidationCommands' -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/runtime/runner.go internal/webconsole/service.go internal/webconsole/service_test.go internal/app/app.go internal/app/app_test.go`: no output.
+- `git diff --check`: passed.
+- `go test ./internal/session ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+- Note: a multi-package command including `internal/runtime` was stopped after the top-level Go command stayed quiet with no visible package test child; `internal/runtime` and the same surrounding package set passed when split as shown above.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1033,6 +1073,12 @@ Evidence gates:
 - Confirmed FCA-20260525-028 against the goal store mutation paths: `UpdateGoalAccounting`, `CompleteGoal`, and `RecordGoalProgress`.
 - Confirmed runtime accounting and model progress can be written through separate `Store` instances, so `Store.mu` alone is not a cross-runner or cross-process transaction boundary.
 - Confirmed the fix belongs in `internal/session`, preserving `goal.json` as the durable current snapshot and avoiding provider-, Web-, or tool-layer merge logic.
+
+### Review 27
+
+- Confirmed FCA-20260525-029 against Web goal status / mission approval handlers, CLI goal status / direct approval paths, and linked Plan Mode mission approval.
+- Confirmed these paths mutate only operator-control fields, so they should use narrow transactional store helpers rather than re-saving stale whole-goal snapshots.
+- Kept Web/CLI mission plan patch and task-sync paths as a separate review area because `create_tasks_from_plan` interacts with the task graph and should not be mixed into this status/approval slice.
 
 ## Update Log
 
@@ -1603,5 +1649,31 @@ Validation:
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-029
+
+Slice: `fix(goal): preserve runtime facts during operator controls`
+
+Changes:
+
+- Added store-owned transactional helpers for goal status changes and mission plan approval.
+- Routed Web goal pause/resume/complete and Web mission approval through those helpers.
+- Routed CLI goal pause/resume/complete and direct mission approval through the same helpers.
+- Routed linked Plan Mode mission approval through the mission approval helper while preserving approval source metadata.
+- Added Web and CLI regressions proving operator status changes preserve accounting and progress facts.
+
+Validation:
+
+- `go test ./internal/session -run 'TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist|TestStoreGoalLifecycleAccountingAndSummary|TestStoreCompleteGoalPersistsAuditAndItemEvidence' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServiceGoalStatusPreservesAccountingAndProgressFacts|TestServiceGoalEndpointsMutateDurableGoal|TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact' -count=1`: passed.
+- `go test ./internal/app -run 'TestGoalStatusCommandPreservesAccountingAndProgressFacts|TestGoalMissionPlanAndValidationCommands' -count=1`: passed.
+- `go test ./internal/session ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

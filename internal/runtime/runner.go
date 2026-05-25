@@ -779,23 +779,17 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 		return err
 	}
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	goal.Mission.PlanStatus = "approved"
-	goal.Mission.ApprovedAt = approvedAt
-	if err := r.store.SaveGoal(sessionID, goal); err != nil {
+	goal, err = r.store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
+		Source:           session.GoalSourceSystem,
+		ApprovedSource:   source,
+		ApprovedAt:       approvedAt,
+		CoverageOverride: overrideCoverage,
+		PlanModeID:       planMode.PlanModeID,
+		ApprovedVersion:  planMode.ApprovedVersion,
+	})
+	if err != nil {
 		return err
 	}
-	_ = r.store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
-		Type:   "mission.plan.approved",
-		Source: session.GoalSourceSystem,
-		Status: goal.Status,
-		Data: map[string]any{
-			"approved_at":       approvedAt,
-			"approved_source":   source,
-			"plan_mode_id":      planMode.PlanModeID,
-			"approved_version":  planMode.ApprovedVersion,
-			"coverage_override": overrideCoverage,
-		},
-	})
 	r.emit(sessionID, "mission.plan.approved", "planmode", map[string]any{
 		"goal_id":           goal.GoalID,
 		"plan_mode_id":      planMode.PlanModeID,

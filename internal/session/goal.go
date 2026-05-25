@@ -278,6 +278,15 @@ type GoalUsageDelta struct {
 	SourceTurn           int
 }
 
+type MissionPlanApprovalInput struct {
+	Source           string
+	ApprovedSource   string
+	ApprovedAt       string
+	CoverageOverride bool
+	PlanModeID       string
+	ApprovedVersion  int
+}
+
 type GoalHistoryEntry struct {
 	SchemaVersion int            `json:"schema_version"`
 	ID            string         `json:"id"`
@@ -615,6 +624,78 @@ func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (Sessi
 			"evidence":            append([]string(nil), goal.CompletionAudit.Evidence...),
 			"criteria_statuses":   append([]GoalItemStatusUpdate(nil), input.CriteriaStatuses...),
 			"validation_statuses": append([]GoalItemStatusUpdate(nil), input.ValidationStatuses...),
+		},
+	})
+	return goal, nil
+}
+
+func (s *Store) SetGoalStatus(sessionID, status, source string) (SessionGoal, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
+		if goal.GoalID == "" {
+			return errors.New("session has no current goal")
+		}
+		goal.Status = status
+		if status == GoalStatusComplete {
+			goal.CompletedAt = now
+			goal.CompletionAudit = &GoalCompletion{
+				Status:      GoalStatusComplete,
+				CompletedBy: normalizeGoalSource(source),
+				CompletedAt: now,
+			}
+		} else {
+			goal.CompletedAt = ""
+			goal.CompletionAudit = nil
+		}
+		return nil
+	})
+	if err != nil {
+		return SessionGoal{}, err
+	}
+	if !mutated {
+		return SessionGoal{}, errors.New("session has no current goal")
+	}
+	return goal, nil
+}
+
+func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalInput) (SessionGoal, error) {
+	approvedAt := strings.TrimSpace(input.ApprovedAt)
+	if approvedAt == "" {
+		approvedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
+		if goal.GoalID == "" {
+			return errors.New("session has no current goal")
+		}
+		if goal.Mission == nil {
+			goal.Mode = GoalModeMission
+			goal.Mission = &MissionPlan{PlanStatus: MissionPlanStatusDraft}
+		}
+		goal.Mission.PlanStatus = MissionPlanStatusApproved
+		goal.Mission.ApprovedAt = approvedAt
+		return nil
+	})
+	if err != nil {
+		return SessionGoal{}, err
+	}
+	if !mutated {
+		return SessionGoal{}, errors.New("session has no current goal")
+	}
+	source := normalizeGoalSource(input.Source)
+	approvedSource := normalizeGoalSource(input.ApprovedSource)
+	if strings.TrimSpace(input.ApprovedSource) == "" {
+		approvedSource = source
+	}
+	_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+		Type:   "mission.plan.approved",
+		Source: source,
+		Status: goal.Status,
+		Data: map[string]any{
+			"approved_at":       approvedAt,
+			"approved_source":   approvedSource,
+			"plan_mode_id":      input.PlanModeID,
+			"approved_version":  input.ApprovedVersion,
+			"coverage_override": input.CoverageOverride,
 		},
 	})
 	return goal, nil

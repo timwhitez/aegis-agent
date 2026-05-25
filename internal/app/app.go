@@ -783,31 +783,19 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, j
 		}
 		return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
 	}
-	if goal.Mission == nil {
-		goal.Mode = session.GoalModeMission
-		goal.Mission = &session.MissionPlan{PlanStatus: "draft"}
-	}
-	goal.Mission.PlanStatus = "approved"
-	if goal.Mission.ApprovedAt == "" {
-		goal.Mission.ApprovedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	}
-	if err := store.SaveGoal(sessionID, goal); err != nil {
+	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	goal, err = store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
+		Source:           session.GoalSourceCLI,
+		ApprovedAt:       approvedAt,
+		CoverageOverride: overrideCoverage,
+	})
+	if err != nil {
 		return err
 	}
-	_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
-		GoalID: goal.GoalID,
-		Type:   "mission.plan.approved",
-		Source: session.GoalSourceCLI,
-		Status: goal.Status,
-		Data: map[string]any{
-			"approved_at":       goal.Mission.ApprovedAt,
-			"coverage_override": overrideCoverage,
-		},
-	})
 	_ = store.AppendEvent(sessionID, events.New(sessionID, "mission.plan.approved", "goal", map[string]any{
 		"goal_id":           goal.GoalID,
 		"plan_status":       goal.Mission.PlanStatus,
-		"approved_at":       goal.Mission.ApprovedAt,
+		"approved_at":       approvedAt,
 		"coverage_override": overrideCoverage,
 	}))
 	if jsonMode {
@@ -866,18 +854,8 @@ func approveMissionCoverage(goal session.SessionGoal, override bool) error {
 }
 
 func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status, eventType, label string, jsonMode bool) error {
-	goal, err := store.LoadGoal(sessionID)
+	goal, err := store.SetGoalStatus(sessionID, status, session.GoalSourceCLI)
 	if err != nil {
-		return err
-	}
-	goal.Status = status
-	if status == session.GoalStatusComplete && goal.CompletedAt == "" {
-		goal.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	}
-	if status != session.GoalStatusComplete {
-		goal.CompletedAt = ""
-	}
-	if err := store.SaveGoal(sessionID, goal); err != nil {
 		return err
 	}
 	_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{

@@ -1116,26 +1116,9 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
 }
 
 func (s *Service) handleGoalStatus(w http.ResponseWriter, sessionID, status, eventType string) {
-	goal, err := s.store.LoadGoal(sessionID)
+	goal, err := s.store.SetGoalStatus(sessionID, status, session.GoalSourceWeb)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
-		return
-	}
-	goal.Status = status
-	if status == session.GoalStatusComplete {
-		completedAt := nowString()
-		goal.CompletedAt = completedAt
-		goal.CompletionAudit = &session.GoalCompletion{
-			Status:      session.GoalStatusComplete,
-			CompletedBy: session.GoalSourceWeb,
-			CompletedAt: completedAt,
-		}
-	} else {
-		goal.CompletedAt = ""
-		goal.CompletionAudit = nil
-	}
-	if err := s.store.SaveGoal(sessionID, goal); err != nil {
-		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if err := s.appendGoalMutation(sessionID, goal, eventType, nil); err != nil {
@@ -1276,17 +1259,23 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusConflict, errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan"))
 			return
 		case session.PlanModeStatusExecuting:
-			mission.PlanStatus = "approved"
-			if mission.ApprovedAt == "" {
-				mission.ApprovedAt = nowString()
+			approvedAt := mission.ApprovedAt
+			if approvedAt == "" {
+				approvedAt = nowString()
 			}
-			goal.Mission = mission
-			if err := s.store.SaveGoal(sessionID, goal); err != nil {
+			goal, err = s.store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
+				Source:           session.GoalSourceWeb,
+				ApprovedAt:       approvedAt,
+				CoverageOverride: req.OverrideCoverage,
+				PlanModeID:       planMode.PlanModeID,
+				ApprovedVersion:  planMode.ApprovedVersion,
+			})
+			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			if err := s.appendGoalMutation(sessionID, goal, "mission.plan.approved", map[string]any{
-				"approved_at":       mission.ApprovedAt,
+			if err := s.appendGoalEvent(sessionID, goal, "mission.plan.approved", map[string]any{
+				"approved_at":       approvedAt,
 				"plan_mode_id":      planMode.PlanModeID,
 				"approved_version":  planMode.ApprovedVersion,
 				"coverage_override": req.OverrideCoverage,
@@ -1317,15 +1306,18 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusConflict, errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan"))
 		return
 	}
-	mission.PlanStatus = "approved"
-	mission.ApprovedAt = nowString()
-	goal.Mission = mission
-	if err := s.store.SaveGoal(sessionID, goal); err != nil {
+	approvedAt := nowString()
+	goal, err = s.store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
+		Source:           session.GoalSourceWeb,
+		ApprovedAt:       approvedAt,
+		CoverageOverride: req.OverrideCoverage,
+	})
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.appendGoalMutation(sessionID, goal, "mission.plan.approved", map[string]any{
-		"approved_at":       mission.ApprovedAt,
+	if err := s.appendGoalEvent(sessionID, goal, "mission.plan.approved", map[string]any{
+		"approved_at":       approvedAt,
 		"coverage_override": req.OverrideCoverage,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -3880,6 +3872,14 @@ func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal,
 		Data:   data,
 	}); err != nil {
 		return err
+	}
+	return s.store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", data))
+}
+
+func (s *Service) appendGoalEvent(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {
+	data := webGoalEventData(goal)
+	for key, value := range extra {
+		data[key] = value
 	}
 	return s.store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", data))
 }
