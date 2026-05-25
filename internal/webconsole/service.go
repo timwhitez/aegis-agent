@@ -217,6 +217,7 @@ type GoalFactsResponse struct {
 type ActiveHandleOwner struct {
 	State                 string `json:"state"`
 	OwnedByCurrentProcess bool   `json:"owned_by_current_process"`
+	EventType             string `json:"-"`
 	ProcessStartID        string `json:"process_start_id,omitempty"`
 	PID                   int    `json:"pid,omitempty"`
 	StartedAt             string `json:"started_at,omitempty"`
@@ -3596,6 +3597,12 @@ func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList 
 
 	owner := latestActiveOwnerFromEvents(eventsList)
 	if sessionStatus == session.StatusRunning {
+		if owner.EventType == "webconsole.handle.released" {
+			owner.State = "settled"
+			owner.OwnedByCurrentProcess = false
+			owner.Action = "refresh the session or continue it if the current state is resumable"
+			return owner
+		}
 		owner.State = "running_not_owned"
 		owner.OwnedByCurrentProcess = false
 		owner.Action = "send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles"
@@ -3614,6 +3621,7 @@ func latestActiveOwnerFromEvents(eventsList []events.Event) ActiveHandleOwner {
 			continue
 		}
 		owner := ActiveHandleOwner{
+			EventType:      evt.Type,
 			ProcessStartID: eventString(evt.Data, "process_start_id"),
 			PID:            eventInt(evt.Data, "pid"),
 			StartedAt:      eventString(evt.Data, "started_at"),

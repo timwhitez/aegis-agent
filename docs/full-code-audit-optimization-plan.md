@@ -1627,6 +1627,33 @@ Validation:
 - Focused Web deletion regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-055: Released Web handle events still appear as running owners
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` says WebConsole active handles are in-memory only; durable `webconsole.handle.acquired/released` events are owner/process clues for recovery diagnostics, `session.md`, and checkpoints, not a second authority.
+- `internal/webconsole/service.go` `activeHandleOwner` uses the current in-memory handle first, then falls back to `latestActiveOwnerFromEvents`.
+- Before this slice, `latestActiveOwnerFromEvents` copied process owner fields from the latest `webconsole.handle.acquired` or `webconsole.handle.released` event but did not record which event type it saw.
+- `activeHandleOwner` unconditionally converted any owner clue on a durable `running` session into `state=running_not_owned`.
+- Therefore a session whose latest owner event was `webconsole.handle.released` could still show the old `process_start_id` as if another Web process might currently own the handle, even though the durable clue explicitly says the handle was released.
+
+Impact:
+
+Session detail could mislead the Web UI/operator into treating a stale released handle clue as an external owner for a still-running durable state. This weakens recovery diagnostics and the stop/interrupt guidance around sessions whose Web runner already settled or released ownership.
+
+Minimal fix:
+
+- Preserve the latest handle event type as internal-only owner metadata.
+- If the latest event is `webconsole.handle.released` and no current-process handle exists, report the owner state as `settled` rather than `running_not_owned`.
+- Add a focused Web service regression that appends acquired then released owner events on a durable running session and verifies session detail reports a settled owner clue.
+
+Validation:
+
+- Focused Web owner reporting regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1992,6 +2019,12 @@ Evidence gates:
 - Confirmed FCA-20260526-054 against `spec/17-web-console.md`, `handleDeleteSession`, `hasActiveDescendantHandle`, `ensureSessionTreeNotLive`, `DeleteSessionTree`, and Web delete/clear regressions.
 - Confirmed the previous direct-parent/root check protected root deletion and direct children, but missed active handles below an intermediate child when the deeper session was non-running and therefore not blocked by durable running-state checks.
 - Confirmed the fix belongs in the Web service delete preflight, not in `DeleteSessionTree`, because the store cannot know which current-process Web handles are still live.
+
+### Review 53
+
+- Confirmed FCA-20260526-055 against `spec/17-web-console.md`, `activeHandleOwner`, `latestActiveOwnerFromEvents`, `sessionDetail`, and existing active-owner tests.
+- Confirmed the issue is diagnostic/state-mapping drift, not provider/runtime ownership: current-process handles still win, but durable released clues were mapped as running external ownership when the session state remained `running`.
+- Confirmed the fix belongs in Web owner clue mapping and should not change persisted event shape or make handle events authoritative.
 
 ## Update Log
 
@@ -3177,6 +3210,30 @@ Changes:
 Validation:
 
 - `go test ./internal/webconsole -run 'TestServiceDeleteSessionRejectsActiveDeepDescendantHandle|TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs|TestServiceDeleteSessionRejectsRunningSessionWithoutLiveOwner|TestServiceClearSessionsRejectsRunningSessionsWithoutLiveOwners|TestServiceClearSessionsRejectsRunningQueueJobs' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-055
+
+Slice: `fix(webconsole): treat released handle clues as settled`
+
+Changes:
+
+- Preserved the latest Web handle event type as internal-only owner metadata in the session detail owner mapping.
+- Changed session detail owner mapping so a latest `webconsole.handle.released` clue reports `settled` instead of `running_not_owned` when there is no current-process handle.
+- Added a regression proving acquired owner clues still report `running_not_owned`, while a later released clue on the same durable running session reports a settled owner with release metadata.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestSessionDetailReportsActiveHandleOwner|TestInterruptNonOwnedSessionReturnsStructuredError|TestStopNonOwnedSessionReturnsStructuredError' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

@@ -2292,6 +2292,20 @@ func TestSessionDetailReportsActiveHandleOwner(t *testing.T) {
 	if externalDetail.ActiveHandle || externalDetail.ActiveHandleOwner.State != "running_not_owned" || externalDetail.ActiveHandleOwner.ProcessStartID != "external-process" || externalDetail.ActiveHandleOwner.Action == "" {
 		t.Fatalf("expected running-not-owned owner detail, got %#v", externalDetail.ActiveHandleOwner)
 	}
+	if err := svc.store.AppendEvent(external.ID, events.New(external.ID, "webconsole.handle.released", "webconsole", map[string]any{
+		"source":           "webconsole",
+		"process_start_id": "external-process",
+		"pid":              31337,
+		"started_at":       "2026-05-08T00:01:00Z",
+		"released_at":      "2026-05-08T00:02:00Z",
+	})); err != nil {
+		t.Fatalf("append external owner release event: %v", err)
+	}
+	var releasedDetail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+external.ID, &releasedDetail)
+	if releasedDetail.ActiveHandle || releasedDetail.ActiveHandleOwner.State != "settled" || releasedDetail.ActiveHandleOwner.ProcessStartID != "external-process" || releasedDetail.ActiveHandleOwner.ReleasedAt == "" {
+		t.Fatalf("expected released owner detail to be settled, got %#v", releasedDetail.ActiveHandleOwner)
+	}
 
 	settled := testSessionMetadata(t, "session_settled_owner")
 	if err := svc.store.Create(settled, testSessionState(session.StatusCompleted)); err != nil {
