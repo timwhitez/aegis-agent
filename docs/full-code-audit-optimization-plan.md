@@ -758,6 +758,34 @@ Validation:
 - Focused runtime tool-dispatch regressions.
 - Full Go vet and test gate before commit.
 
+### FCA-20260525-027: Web duplicate handle release can drop the active owner
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` describes the Web service adapter as owning asynchronous start / continue handles, and `Service.Close` cancels current handles before waiting for launch goroutines.
+- `internal/webconsole/service.go` `handleContinueSession` and Plan Mode continue paths checked `hasActiveHandle` before creating a handle, but `addHandle` itself overwrote any existing map entry for the same session.
+- `internal/webconsole/service.go` `finishHandle` unconditionally deleted `s.handles[sessionID]` when any handle for that session finished.
+- If two Web actions for the same session raced, the duplicate runner could be rejected by durable session state, call `finishHandle`, and delete the original active handle from the map.
+
+Impact:
+
+A still-running Web-owned session could lose its current-process handle after a duplicate continue / Plan Mode action raced and failed. The browser would then lose same-process interrupt/stop ownership, and `Service.Close` would no longer cancel that active runner through the handle map.
+
+Minimal fix:
+
+- Make handle acquisition reject an already-active session at insertion time, not only through the earlier preflight check.
+- Preserve a clear conflict status for duplicate Web continue / Plan Mode launch attempts.
+- Make `finishHandle` remove the map entry only when the finishing handle is still the current owner for that session.
+- Add focused lifecycle coverage that a duplicate handle is rejected and a stale release cannot remove the original owner.
+
+Validation:
+
+- Focused WebConsole duplicate-handle and adjacent lifecycle regressions.
+- Full WebConsole package test before commit.
+- Full Go vet and test gate before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1483,6 +1511,27 @@ Validation:
 - `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: no output.
 - `go test ./internal/tools -count=1`: passed.
 - `go test ./internal/runtime -run 'TestEngineWritesInterruptedToolResultOnPause|TestEngineStopsAfterReplayCompleteToolResultsWhenRunContextCancelsTool|TestEngineMarksInterruptSteerDeferredWhenToolIgnoresCancel|TestEnginePreservesDeadlineToolResultMetadata' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-027
+
+Slice: `fix(webconsole): preserve active handle owner`
+
+Changes:
+
+- Made `addHandle` and pending-start promotion reject duplicate current-process handles for the same session.
+- Preserved HTTP conflict behavior for duplicate continue / Plan Mode launch attempts while keeping service-close errors as unavailable.
+- Made `finishHandle` release the map entry only if that exact handle still owns the session slot.
+- Added a focused lifecycle regression proving a duplicate/stale handle release cannot remove the original active owner.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceRejectsDuplicateHandleAndPreservesOwner|TestServiceCloseCancelsPendingStartBeforeSessionID|TestServicePlanModeContinueIsTrackedByLaunchWaitGroup|TestSessionDetailReportsActiveHandleOwner|TestServiceInterruptUsesManualPauseReason|TestServiceStopSessionPausesWithManualStopReason' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: no output.
+- `go test ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

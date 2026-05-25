@@ -1654,6 +1654,55 @@ func TestServiceCloseCancelsPendingStartBeforeSessionID(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsDuplicateHandleAndPreservesOwner(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_duplicate_handle")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	var firstCancelled bool
+	first := &launchHandle{
+		sessionID:      meta.ID,
+		cancel:         func() { firstCancelled = true },
+		startedAt:      "2026-05-08T00:00:00Z",
+		processStartID: "first-process",
+		pid:            111,
+	}
+	if err := svc.addHandle(first); err != nil {
+		t.Fatalf("add first handle: %v", err)
+	}
+	second := &launchHandle{
+		sessionID:      meta.ID,
+		cancel:         func() {},
+		startedAt:      "2026-05-08T00:00:01Z",
+		processStartID: "second-process",
+		pid:            222,
+	}
+	if err := svc.addHandle(second); !errors.Is(err, errSessionAlreadyActive) {
+		t.Fatalf("expected duplicate handle rejection, got %v", err)
+	}
+
+	svc.finishHandle(second, launchOutcome{err: errors.New("duplicate continue rejected")})
+	current, ok := svc.handleForSession(meta.ID)
+	if !ok || current != first {
+		t.Fatalf("expected original handle to remain active, got handle=%#v ok=%v", current, ok)
+	}
+
+	svc.finishHandle(first, launchOutcome{})
+	if !firstCancelled {
+		t.Fatal("expected original handle cancel to run on finish")
+	}
+	if _, ok := svc.handleForSession(meta.ID); ok {
+		t.Fatal("expected original handle release to remove active handle")
+	}
+}
+
 func TestContinueRESTCarriesRuntimeFields(t *testing.T) {
 	captured := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1903,14 +1952,14 @@ func TestSessionDetailReportsActiveHandleOwner(t *testing.T) {
 	if err := svc.store.Create(current, testSessionState(session.StatusRunning)); err != nil {
 		t.Fatalf("create current session: %v", err)
 	}
-	if !svc.addHandle(&launchHandle{
+	if err := svc.addHandle(&launchHandle{
 		sessionID:      current.ID,
 		cancel:         func() {},
 		startedAt:      "2026-05-08T00:00:00Z",
 		processStartID: "current-process",
 		pid:            4242,
-	}) {
-		t.Fatal("expected active handle to be accepted")
+	}); err != nil {
+		t.Fatalf("expected active handle to be accepted: %v", err)
 	}
 	var currentDetail SessionDetailResponse
 	postGetJSON(t, ts.URL+"/api/sessions/"+current.ID, &currentDetail)

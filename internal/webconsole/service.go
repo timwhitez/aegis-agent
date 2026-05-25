@@ -64,6 +64,11 @@ const (
 	sessionStartObservationTimeout  = 15 * time.Second
 )
 
+var (
+	errWebServiceClosing    = errors.New("web service is closing")
+	errSessionAlreadyActive = errors.New("session is already active in this web console")
+)
+
 type processOwner struct {
 	pid            int
 	processStartID string
@@ -1544,9 +1549,9 @@ func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error)
 		return LaunchResponse{}, err
 	}
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	if !s.promotePendingStart(pendingStartID, handle) {
+	if err := s.promotePendingStart(pendingStartID, handle); err != nil {
 		cancel()
-		return LaunchResponse{}, errors.New("web service is closing")
+		return LaunchResponse{}, err
 	}
 	if early != nil {
 		s.trackLaunch(func() {
@@ -1602,9 +1607,13 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	if !s.addHandle(handle) {
+	if err := s.addHandle(handle); err != nil {
 		cancel()
-		writeError(w, http.StatusServiceUnavailable, errors.New("web service is closing"))
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, errSessionAlreadyActive) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
 		return
 	}
 	s.trackLaunch(func() {
@@ -1796,9 +1805,9 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	if !s.addHandle(handle) {
+	if err := s.addHandle(handle); err != nil {
 		cancel()
-		return errors.New("web service is closing")
+		return err
 	}
 	s.trackLaunch(func() {
 		result, err := runner.Continue(runCtx, req)
@@ -1834,6 +1843,9 @@ func planModeActionStatus(err error) int {
 	}
 	if errors.Is(err, fs.ErrNotExist) {
 		return http.StatusNotFound
+	}
+	if errors.Is(err, errSessionAlreadyActive) {
+		return http.StatusConflict
 	}
 	var webErr webError
 	if errors.As(err, &webErr) {
@@ -2013,7 +2025,7 @@ func (s *Service) handleScaleWorkers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, s.workers.Snapshot())
 }
 
-func (s *Service) addHandle(handle *launchHandle) bool {
+func (s *Service) addHandle(handle *launchHandle) error {
 	if handle.startedAt == "" {
 		handle.startedAt = nowString()
 	}
@@ -2026,12 +2038,16 @@ func (s *Service) addHandle(handle *launchHandle) bool {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return false
+		return errWebServiceClosing
+	}
+	if _, exists := s.handles[handle.sessionID]; exists {
+		s.mu.Unlock()
+		return errSessionAlreadyActive
 	}
 	s.handles[handle.sessionID] = handle
 	s.mu.Unlock()
 	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil)
-	return true
+	return nil
 }
 
 func (s *Service) registerPendingStart(cancel context.CancelFunc) (int, error) {
@@ -2052,7 +2068,7 @@ func (s *Service) removePendingStart(id int) {
 	delete(s.pendingStarts, id)
 }
 
-func (s *Service) promotePendingStart(id int, handle *launchHandle) bool {
+func (s *Service) promotePendingStart(id int, handle *launchHandle) error {
 	if handle.startedAt == "" {
 		handle.startedAt = nowString()
 	}
@@ -2066,13 +2082,18 @@ func (s *Service) promotePendingStart(id int, handle *launchHandle) bool {
 	if s.closed {
 		delete(s.pendingStarts, id)
 		s.mu.Unlock()
-		return false
+		return errWebServiceClosing
+	}
+	if _, exists := s.handles[handle.sessionID]; exists {
+		delete(s.pendingStarts, id)
+		s.mu.Unlock()
+		return errSessionAlreadyActive
 	}
 	delete(s.pendingStarts, id)
 	s.handles[handle.sessionID] = handle
 	s.mu.Unlock()
 	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil)
-	return true
+	return nil
 }
 
 func (s *Service) finishHandle(handle *launchHandle, outcome launchOutcome) {
@@ -2087,7 +2108,9 @@ func (s *Service) finishHandle(handle *launchHandle, outcome launchOutcome) {
 	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", data)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.handles, handle.sessionID)
+	if current, ok := s.handles[handle.sessionID]; ok && current == handle {
+		delete(s.handles, handle.sessionID)
+	}
 }
 
 func newLaunchHandle(sessionID string, runner *runtime.Runner, cancel context.CancelFunc) *launchHandle {
