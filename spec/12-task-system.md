@@ -45,7 +45,7 @@ task graph 是当前 session 的“持久化任务板”。
 - durable
 - 有依赖边
 - 可从磁盘恢复
-- 可计算 ready / blocked / completed
+- 可计算 ready / blocked / completed / cancelled / done
 
 说明：
 
@@ -259,7 +259,7 @@ task 满足以下条件时视为 blocked：
 返回：
 
 - task 数组
-- ready / blocked / completed 统计
+- ready / blocked / completed / cancelled / done 统计
 
 ### 9.6 `task_get`
 

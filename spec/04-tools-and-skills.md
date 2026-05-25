@@ -213,7 +213,7 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 ### 4.14 `task_list`
 
 - 列出当前 session 的全部 tasks
-- 返回 ready / blocked / completed 的派生视图
+- 返回 ready / blocked / completed / cancelled / done 的派生视图
 
 ### 4.15 `task_get`
 

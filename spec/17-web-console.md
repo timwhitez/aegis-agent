@@ -159,7 +159,7 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 展示：
 
 - todo 列表
-- ready / blocked / completed task 统计
+- ready / blocked / completed / cancelled / done task 统计
 - task board 分组
 
 #### Children

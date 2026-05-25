@@ -150,7 +150,7 @@ type Runner interface {
 响应：
 
 - 当前 session task graph
-- ready / blocked / completed 派生状态
+- ready / blocked / completed / cancelled / done 派生状态
 
 ### 5.6 `GET /sessions/{id}`
 

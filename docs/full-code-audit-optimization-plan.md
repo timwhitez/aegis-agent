@@ -1491,6 +1491,32 @@ Validation:
 - Focused Web config regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-050: Task derived-view specs still omit cancelled and done facts
+
+Severity: Low
+
+Evidence:
+
+- `spec/12-task-system.md` now defines `completed` and `cancelled` as done states, with only `completed` unlocking dependents.
+- FCA-20260525-041, FCA-20260526-045, and FCA-20260526-048 updated session task boards, model tool metadata, runtime recovery artifacts, Web, and CLI fallback paths to expose separate `completed`, `cancelled`, and combined `done` facts.
+- `internal/session/taskboard.go` `BuildTaskBoard` now emits `Counters` and `Groups` for `completed`, `cancelled`, and `done`.
+- `internal/tools/registry.go` `task_list` metadata now emits `completed_count`, `cancelled_count`, and `done_count`.
+- `spec/04-tools-and-skills.md`, `spec/08-sdk-and-api-evolution.md`, `spec/12-task-system.md`, and `spec/17-web-console.md` still describe task derived views or task statistics as only `ready / blocked / completed`.
+
+Impact:
+
+The implementation and authoritative task-system semantics are more precise than several consumer-facing specs. Future implementation or validation work could regress cancelled-task visibility by following the stale completed-only descriptions.
+
+Minimal fix:
+
+- Update the stale spec lines to name `ready`, `blocked`, `completed`, `cancelled`, and combined `done` where derived task views or task statistics are described.
+- Do not change runtime behavior.
+
+Validation:
+
+- Text search proving no stale `ready / blocked / completed` task-derived descriptions remain in the touched specs.
+- Standard lightweight formatting/diff checks before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1826,6 +1852,12 @@ Evidence gates:
 - Confirmed FCA-20260526-049 against `spec/17-web-console.md`, `handleUpdateConfig`, `config.WriteFile`, `config.UpsertEnvFile`, and Web config audit-event ordering.
 - Confirmed the prior FCA-20260526-043 fix delayed API-key persistence until after config writes, but did not preflight env-file failures that occur after the config write.
 - Confirmed the fix belongs in Web config mutation preflight/order only; `config.UpsertEnvFile` should remain the final path-safe writer.
+
+### Review 48
+
+- Confirmed FCA-20260526-050 against `spec/12-task-system.md`, `spec/04-tools-and-skills.md`, `spec/08-sdk-and-api-evolution.md`, `spec/17-web-console.md`, `BuildTaskBoard`, and `task_list` metadata.
+- Confirmed this is spec drift only: current runtime, Web, CLI, and model-visible task facts already expose separate cancelled and combined done facts.
+- Confirmed the fix belongs in the stale spec descriptions, not in code.
 
 ## Update Log
 
@@ -2906,3 +2938,21 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-050
+
+Slice: `docs(spec): align task derived views`
+
+Changes:
+
+- Updated stale task derived-view descriptions in `spec/04-tools-and-skills.md`, `spec/08-sdk-and-api-evolution.md`, `spec/12-task-system.md`, and `spec/17-web-console.md`.
+- The specs now name separate `completed`, `cancelled`, and combined `done` task facts wherever task derived views or task statistics are described.
+- No runtime behavior changed.
+
+Validation:
+
+- `rg -n "ready / blocked / completed|completed 统计|completed 的派生|completed 派生" spec/04-tools-and-skills.md spec/08-sdk-and-api-evolution.md spec/12-task-system.md spec/17-web-console.md`: only updated `ready / blocked / completed / cancelled / done` lines remain.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools ./internal/webconsole -count=1`: passed.
