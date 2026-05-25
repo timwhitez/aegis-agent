@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"os"
 	"strings"
 	"time"
 
@@ -27,13 +26,18 @@ func addParentChildSession(store *session.Store, parentSessionID, childSessionID
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(childSessionID) == "" {
 		return nil
 	}
-	coordination := loadOrNewParentCoordination(store, parentSessionID)
-	wasParked := coordination.Parked
-	coordination.WaitMode = mergeWaitMode(coordination.WaitMode, waitMode)
-	coordination.UnresolvedChildSessions = appendUnique(coordination.UnresolvedChildSessions, childSessionID)
-	coordination.Parked = shouldParkParent(coordination)
-	coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := store.SaveParentCoordination(parentSessionID, coordination); err != nil {
+	var wasParked bool
+	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
+		if coordination.ParentSessionID == "" {
+			*coordination = newParentCoordination(parentSessionID)
+		}
+		wasParked = coordination.Parked
+		coordination.WaitMode = mergeWaitMode(coordination.WaitMode, waitMode)
+		coordination.UnresolvedChildSessions = appendUnique(coordination.UnresolvedChildSessions, childSessionID)
+		coordination.Parked = shouldParkParent(*coordination)
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	emitParentCoordinationTransition(store, coordination, wasParked, "child_session", childSessionID)
@@ -44,13 +48,18 @@ func addParentQueueJob(store *session.Store, parentSessionID, jobID, waitMode st
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(jobID) == "" {
 		return nil
 	}
-	coordination := loadOrNewParentCoordination(store, parentSessionID)
-	wasParked := coordination.Parked
-	coordination.WaitMode = mergeWaitMode(coordination.WaitMode, waitMode)
-	coordination.UnresolvedQueueJobs = appendUnique(coordination.UnresolvedQueueJobs, jobID)
-	coordination.Parked = shouldParkParent(coordination)
-	coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := store.SaveParentCoordination(parentSessionID, coordination); err != nil {
+	var wasParked bool
+	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
+		if coordination.ParentSessionID == "" {
+			*coordination = newParentCoordination(parentSessionID)
+		}
+		wasParked = coordination.Parked
+		coordination.WaitMode = mergeWaitMode(coordination.WaitMode, waitMode)
+		coordination.UnresolvedQueueJobs = appendUnique(coordination.UnresolvedQueueJobs, jobID)
+		coordination.Parked = shouldParkParent(*coordination)
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	emitParentCoordinationTransition(store, coordination, wasParked, "queue_job", jobID)
@@ -64,17 +73,22 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 	if !isTerminalSessionStatus(status) {
 		return nil
 	}
-	coordination := loadOrNewParentCoordination(store, parentSessionID)
-	wasParked := coordination.Parked
-	coordination.UnresolvedChildSessions = removeString(coordination.UnresolvedChildSessions, childSessionID)
-	if status == session.StatusFailed {
-		coordination.FailedChildSessions = appendUnique(coordination.FailedChildSessions, childSessionID)
-	} else {
-		coordination.CompletedChildSessions = appendUnique(coordination.CompletedChildSessions, childSessionID)
-	}
-	coordination.Parked = shouldParkParent(coordination)
-	coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := store.SaveParentCoordination(parentSessionID, coordination); err != nil {
+	var wasParked bool
+	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
+		if coordination.ParentSessionID == "" {
+			*coordination = newParentCoordination(parentSessionID)
+		}
+		wasParked = coordination.Parked
+		coordination.UnresolvedChildSessions = removeString(coordination.UnresolvedChildSessions, childSessionID)
+		if status == session.StatusFailed {
+			coordination.FailedChildSessions = appendUnique(coordination.FailedChildSessions, childSessionID)
+		} else {
+			coordination.CompletedChildSessions = appendUnique(coordination.CompletedChildSessions, childSessionID)
+		}
+		coordination.Parked = shouldParkParent(*coordination)
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	emitParentCoordinationTransition(store, coordination, wasParked, "child_session", childSessionID)
@@ -89,31 +103,29 @@ func resolveParentQueueJob(store *session.Store, parentSessionID, jobID, status 
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(jobID) == "" {
 		return nil
 	}
-	coordination := loadOrNewParentCoordination(store, parentSessionID)
-	wasParked := coordination.Parked
-	coordination.UnresolvedQueueJobs = removeString(coordination.UnresolvedQueueJobs, jobID)
-	if status == session.QueueStatusFailed {
-		coordination.FailedQueueJobs = appendUnique(coordination.FailedQueueJobs, jobID)
-	} else {
-		coordination.CompletedQueueJobs = appendUnique(coordination.CompletedQueueJobs, jobID)
-	}
-	coordination.Parked = shouldParkParent(coordination)
-	coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := store.SaveParentCoordination(parentSessionID, coordination); err != nil {
+	var wasParked bool
+	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
+		if coordination.ParentSessionID == "" {
+			*coordination = newParentCoordination(parentSessionID)
+		}
+		wasParked = coordination.Parked
+		coordination.UnresolvedQueueJobs = removeString(coordination.UnresolvedQueueJobs, jobID)
+		if status == session.QueueStatusFailed {
+			coordination.FailedQueueJobs = appendUnique(coordination.FailedQueueJobs, jobID)
+		} else {
+			coordination.CompletedQueueJobs = appendUnique(coordination.CompletedQueueJobs, jobID)
+		}
+		coordination.Parked = shouldParkParent(*coordination)
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	emitParentCoordinationTransition(store, coordination, wasParked, "queue_job", jobID)
 	return nil
 }
 
-func loadOrNewParentCoordination(store *session.Store, parentSessionID string) session.ParentCoordination {
-	coordination, err := store.LoadParentCoordination(parentSessionID)
-	if err == nil && coordination.ParentSessionID != "" {
-		return coordination
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return session.ParentCoordination{}
-	}
+func newParentCoordination(parentSessionID string) session.ParentCoordination {
 	return session.ParentCoordination{
 		SchemaVersion:   1,
 		ParentSessionID: parentSessionID,

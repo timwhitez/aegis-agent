@@ -387,6 +387,45 @@ func (s *Store) SaveParentCoordination(sessionID string, coordination ParentCoor
 	return s.writeJSONFile(path, coordination)
 }
 
+func (s *Store) MutateParentCoordination(sessionID string, mutate func(*ParentCoordination) error) (ParentCoordination, bool, error) {
+	path, err := s.sessionPath(sessionID, "parent-coordination.json")
+	if err != nil {
+		return ParentCoordination{}, false, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "parent-coordination.lock")
+	if err != nil {
+		return ParentCoordination{}, false, err
+	}
+	var coordination ParentCoordination
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.withFileLock(lockPath, func() error {
+		if err := readJSONFile(path, &coordination); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if mutate != nil {
+			if err := mutate(&coordination); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(coordination.ParentSessionID) == "" {
+			return nil
+		}
+		if coordination.SchemaVersion == 0 {
+			coordination.SchemaVersion = 1
+		}
+		coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		return s.writeJSONFile(path, coordination)
+	})
+	if err != nil {
+		return ParentCoordination{}, false, err
+	}
+	if strings.TrimSpace(coordination.ParentSessionID) == "" {
+		return coordination, false, nil
+	}
+	return coordination, true, nil
+}
+
 func (s *Store) WriteSessionMarkdown(sessionID string, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1549,23 +1588,23 @@ func (s *Store) reconcileParentQueueJobStatus(job QueueJob) {
 	if strings.TrimSpace(job.ParentSessionID) == "" || strings.TrimSpace(job.ID) == "" {
 		return
 	}
-	coordination, err := s.LoadParentCoordination(job.ParentSessionID)
-	if err != nil || coordination.ParentSessionID == "" {
-		return
-	}
-	coordination.UnresolvedQueueJobs = removeStringValue(coordination.UnresolvedQueueJobs, job.ID)
-	coordination.CompletedQueueJobs = removeStringValue(coordination.CompletedQueueJobs, job.ID)
-	coordination.FailedQueueJobs = removeStringValue(coordination.FailedQueueJobs, job.ID)
-	switch job.Status {
-	case QueueStatusCompleted:
-		coordination.CompletedQueueJobs = appendUniqueString(coordination.CompletedQueueJobs, job.ID)
-	case QueueStatusFailed:
-		coordination.FailedQueueJobs = appendUniqueString(coordination.FailedQueueJobs, job.ID)
-	default:
-		coordination.UnresolvedQueueJobs = appendUniqueString(coordination.UnresolvedQueueJobs, job.ID)
-	}
-	coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = s.SaveParentCoordination(job.ParentSessionID, coordination)
+	_, _, _ = s.MutateParentCoordination(job.ParentSessionID, func(coordination *ParentCoordination) error {
+		if coordination.ParentSessionID == "" {
+			return nil
+		}
+		coordination.UnresolvedQueueJobs = removeStringValue(coordination.UnresolvedQueueJobs, job.ID)
+		coordination.CompletedQueueJobs = removeStringValue(coordination.CompletedQueueJobs, job.ID)
+		coordination.FailedQueueJobs = removeStringValue(coordination.FailedQueueJobs, job.ID)
+		switch job.Status {
+		case QueueStatusCompleted:
+			coordination.CompletedQueueJobs = appendUniqueString(coordination.CompletedQueueJobs, job.ID)
+		case QueueStatusFailed:
+			coordination.FailedQueueJobs = appendUniqueString(coordination.FailedQueueJobs, job.ID)
+		default:
+			coordination.UnresolvedQueueJobs = appendUniqueString(coordination.UnresolvedQueueJobs, job.ID)
+		}
+		return nil
+	})
 }
 
 func appendUniqueString(items []string, value string) []string {

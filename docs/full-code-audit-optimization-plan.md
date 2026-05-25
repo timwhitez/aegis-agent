@@ -256,6 +256,34 @@ Validation:
 - Focused completion-controller and engine budget-wrap-up tests.
 - Full runtime package tests before commit.
 
+### FCA-20260522-009: Parent coordination updates can lose concurrent terminal jobs
+
+Severity: Medium
+
+Evidence:
+
+- Parent coordination add/resolve helpers loaded `parent-coordination.json`, mutated in memory, then saved the full snapshot.
+- `LoadParentCoordination` was an unlocked read and `SaveParentCoordination` only serialized the final write.
+- Queue workers can complete terminal jobs for the same parent concurrently and each call `resolveParentQueueJob`.
+- The completion controller trusts `unresolved_*`, `completed_*`, and `failed_*` lists when deciding whether a parent can finish.
+
+Impact:
+
+Two concurrent child/queue completions could read the same old coordination snapshot and then overwrite each other's terminal updates. A parent could remain blocked on work that completed, lose completed/failed evidence, or report inaccurate coordination facts.
+
+Minimal fix:
+
+- Add a store-level `MutateParentCoordination` helper that locks a session-scoped coordination lock across load, merge, and atomic write.
+- Use the mutation helper in parent child/job add and resolve paths.
+- Use the same helper in queue reconciliation so persisted queue status repairs do not use a stale coordination snapshot.
+- Add a concurrent queue-resolution regression that verifies all completed job IDs are retained and unresolved jobs are cleared.
+
+Validation:
+
+- Focused parent coordination concurrency regression.
+- Existing parent coordination gate/event tests.
+- Full runtime and session package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -359,6 +387,12 @@ Evidence gates:
 - Confirmed FCA-20260522-008 against `goalCompletionGate`, `goalBudgetWrapUpPrompt`, `Engine.complete`, and `spec/18-durable-contract-and-completion.md`.
 - Confirmed the existing engine budget-wrap-up boundary already returns to `awaiting_input` when `finish` is not allowed.
 - Confirmed `GoalStatusComplete` remains the only path that allows a budget-exhausted goal to finish as completed.
+
+### Review 9
+
+- Confirmed FCA-20260522-009 against `addParentQueueJob`, `resolveParentQueueJob`, `resolveParentChildSession`, `LoadParentCoordination`, and `SaveParentCoordination`.
+- Confirmed queue status reconciliation had the same load/mutate/save shape and should share the transactional mutation helper.
+- Confirmed the fix keeps `parent-coordination.json` as the durable authority and only changes how updates are merged.
 
 ## Update Log
 
@@ -508,3 +542,20 @@ Validation:
 - `go test ./internal/runtime/ -run 'TestGoalBudgetLimitedRequiresWrapUpBeforeFinish|TestEngineBudgetWrapUpThenFinishAwaitsInput' -count=1`: passed.
 - `go test ./internal/runtime/ -count=1`: passed.
 - `go vet ./internal/runtime/`: passed.
+
+### FCA-20260522-009
+
+Slice: `fix(runtime): serialize parent coordination updates`
+
+Changes:
+
+- Added `Store.MutateParentCoordination` to lock, load, mutate, normalize, and write the coordination snapshot in one transaction.
+- Changed parent child/session and queue job add/resolve helpers to use the mutation helper.
+- Changed queue status reconciliation to use the same transactional coordination update path.
+- Added a concurrent queue-resolution regression that verifies all completed queue job IDs survive parallel terminal updates.
+
+Validation:
+
+- `go test ./internal/runtime/ -run 'TestParentCoordinationConcurrentQueueResolutionsPreserveAllResults|TestParentCoordinationWritesParkedAndResumedEvents|TestParentCoordinationGate' -count=1`: passed.
+- `go test ./internal/runtime/ ./internal/session/ -count=1`: passed.
+- `go vet ./internal/runtime/ ./internal/session/`: passed.

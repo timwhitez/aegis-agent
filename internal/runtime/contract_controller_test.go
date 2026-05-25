@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -501,6 +502,57 @@ func TestParentCoordinationWritesParkedAndResumedEvents(t *testing.T) {
 	}
 	if !foundParked || !foundResumed {
 		t.Fatalf("expected parked/resumed events, got %#v", events)
+	}
+}
+
+func TestParentCoordinationConcurrentQueueResolutionsPreserveAllResults(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	jobIDs := []string{
+		"job-concurrent-01",
+		"job-concurrent-02",
+		"job-concurrent-03",
+		"job-concurrent-04",
+		"job-concurrent-05",
+		"job-concurrent-06",
+		"job-concurrent-07",
+		"job-concurrent-08",
+	}
+	for _, jobID := range jobIDs {
+		if err := addParentQueueJob(store, meta.ID, jobID, "wait-all"); err != nil {
+			t.Fatalf("add queue job %s: %v", jobID, err)
+		}
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(jobIDs))
+	var wg sync.WaitGroup
+	for _, jobID := range jobIDs {
+		jobID := jobID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- resolveParentQueueJob(store, meta.ID, jobID, session.QueueStatusCompleted)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("resolve queue job: %v", err)
+		}
+	}
+	coordination, err := store.LoadParentCoordination(meta.ID)
+	if err != nil {
+		t.Fatalf("load coordination: %v", err)
+	}
+	if len(coordination.UnresolvedQueueJobs) != 0 {
+		t.Fatalf("expected no unresolved jobs, got %#v", coordination.UnresolvedQueueJobs)
+	}
+	for _, jobID := range jobIDs {
+		if !containsString(coordination.CompletedQueueJobs, jobID) {
+			t.Fatalf("missing completed job %s in coordination %#v", jobID, coordination)
+		}
 	}
 }
 
