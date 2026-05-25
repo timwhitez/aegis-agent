@@ -2929,7 +2929,7 @@ func suffixAtRuneBoundary(text string, limit int) string {
 }
 
 func relativeOrAbsolute(base, path string) string {
-	if rel, err := filepath.Rel(base, path); err == nil && !strings.HasPrefix(rel, "..") {
+	if rel, err := filepath.Rel(base, path); err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return rel
 	}
 	return path

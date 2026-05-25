@@ -2411,6 +2411,19 @@ func TestTruncateOutputKeepsUTF8Boundaries(t *testing.T) {
 	}
 }
 
+func TestRelativeOrAbsoluteAllowsDotPrefixedChildPath(t *testing.T) {
+	base := t.TempDir()
+	child := filepath.Join(base, "..reports", "output.md")
+	if got, want := relativeOrAbsolute(base, child), filepath.Join("..reports", "output.md"); got != want {
+		t.Fatalf("expected relative dot-prefixed child path %q, got %q", want, got)
+	}
+
+	outside := filepath.Join(filepath.Dir(base), "outside.md")
+	if got := relativeOrAbsolute(base, outside); got != outside {
+		t.Fatalf("expected outside path to stay absolute, got %q", got)
+	}
+}
+
 func TestTodoWriteNoopDoesNotLookLikeProgress(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()

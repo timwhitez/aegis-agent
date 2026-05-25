@@ -448,6 +448,32 @@ Validation:
 - Frontend JS syntax check for `workspace-view.js`.
 - Full WebConsole package test before commit.
 
+### FCA-20260525-016: Relative path helpers reject legitimate dot-prefixed child paths
+
+Severity: Low
+
+Evidence:
+
+- `internal/session/store.go` `relativePathWithinRoot` rejected any relative path with `strings.HasPrefix(rel, "..")`.
+- `internal/tools/registry.go` `relativeOrAbsolute` used the same prefix check for tool display paths.
+- A legitimate child path such as `..reports/child-two.md` is inside the workspace but starts with two dots, so it was treated like `../outside`.
+
+Impact:
+
+Queue visible output collection could drop legitimate write/edit artifacts under dot-prefixed directories, which weakens child/queue handoff visibility and parent output sync. Tool display output could also show unnecessarily absolute paths for the same valid in-workspace path shape.
+
+Minimal fix:
+
+- Use separator-aware traversal checks: reject only `..`, `../...`, platform-equivalent parent traversal, or absolute relative results.
+- Add focused session and tools regressions for `..reports/output.md`.
+- Preserve existing outside-root rejection behavior.
+
+Validation:
+
+- Focused session queue visible-path regression.
+- Focused tools relative-display regression.
+- Full session/tools package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -590,6 +616,12 @@ Evidence gates:
 - Confirmed FCA-20260525-015 against `spec/17-web-console.md`, `/api/meta`, the Workspace view copy, and `TestServiceMetaReportsDefaultWorkspaceSubdirOnly`.
 - Confirmed the fix is a Web service/UI contract correction only; it does not change runtime session workdir selection, file browser path safety, or server-side workspace facts.
 - Confirmed the default Web page remains a local read-only workspace browser, not a browser-side IDE or root-switching authority.
+
+### Review 16
+
+- Confirmed FCA-20260525-016 with a static scan for `strings.HasPrefix(rel, "..")`; only the session visible-path helper and tools display helper used the unsafe prefix shape.
+- Confirmed adjacent helpers such as `pathWithinRoot` and `resolveQueueVisiblePath` already use separator-aware traversal checks, so the fix should align these two outliers rather than change broader path policy.
+- Confirmed this is a false-negative visibility/display bug, not a workspace escape; outside paths still remain rejected.
 
 ## Update Log
 
@@ -867,3 +899,22 @@ Validation:
 - `node --check internal/webconsole/assets/*.js` equivalent explicit asset list: passed.
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-016
+
+Slice: `fix(paths): allow dot-prefixed child paths`
+
+Changes:
+
+- Made queue visible-path collection reject only true parent traversal, not every relative path beginning with two dots.
+- Made tool display path shortening use the same separator-aware inside-root check.
+- Added regressions for legitimate `..reports/output.md` paths while preserving outside-root rejection.
+
+Validation:
+
+- `go test ./internal/session -run TestCollectQueueVisiblePathsAllowsDotPrefixedDirectory -count=1`: passed.
+- `go test ./internal/tools -run TestRelativeOrAbsoluteAllowsDotPrefixedChildPath -count=1`: passed.
+- `go test ./internal/session ./internal/tools -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/tools/registry.go internal/tools/registry_test.go`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

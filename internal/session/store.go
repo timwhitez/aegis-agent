@@ -1935,7 +1935,7 @@ func relativePathWithinRoot(root, target string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+	if rel == "." || rel == "" || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", false
 	}
 	return rel, true

@@ -2192,6 +2192,19 @@ func TestSyncQueueVisiblePathsRejectsRequestedSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestCollectQueueVisiblePathsAllowsDotPrefixedDirectory(t *testing.T) {
+	workdir := t.TempDir()
+	outputPath := filepath.Join(workdir, "..reports", "child-two.md")
+	visible := collectQueueVisiblePaths(workdir, []Message{NewToolMessage([]ToolResult{{
+		Name:     "write_file",
+		Metadata: map[string]any{"path": outputPath},
+	}})})
+
+	if len(visible) != 1 || visible[0] != filepath.ToSlash(filepath.Join("..reports", "child-two.md")) {
+		t.Fatalf("expected dot-prefixed child path to stay visible, got %#v", visible)
+	}
+}
+
 func TestLoadJobPreservesResumableChildAsBlocked(t *testing.T) {
 	store := NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)
