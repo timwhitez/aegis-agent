@@ -2727,6 +2727,24 @@ func TestServiceRejectsForeignOriginMutation(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsJSONMutationSubtypeContentType(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":0}`))
+	request.Header.Set(webMutationHeader, "1")
+	request.Header.Set("Content-Type", "application/json-patch+json")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden JSON subtype mutation, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestServiceRejectsOversizedJSONMutationBody(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

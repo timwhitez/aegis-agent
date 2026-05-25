@@ -4480,8 +4480,8 @@ func guardUnsafeAPIRequest(r *http.Request) error {
 		return nil
 	}
 	if expectsJSONBody(r.URL.Path) {
-		contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
-		if contentType == "" || !strings.HasPrefix(contentType, "application/json") {
+		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(r.Header.Get("Content-Type")))
+		if err != nil || !strings.EqualFold(mediaType, "application/json") {
 			return errors.New("JSON API mutation requires Content-Type: application/json")
 		}
 	}

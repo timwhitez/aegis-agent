@@ -672,6 +672,33 @@ Validation:
 - Node utility regression tests for message merge helpers.
 - Focused WebConsole service/session message paging tests.
 
+### FCA-20260525-024: Web JSON mutation guard accepts non-JSON media subtypes
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires unsafe JSON mutation endpoints to use `Content-Type: application/json`.
+- `internal/webconsole/service.go` routes all `/api/` requests through `guardUnsafeAPIRequest` before dispatch.
+- `guardUnsafeAPIRequest` checked JSON mutation content types with `strings.HasPrefix(contentType, "application/json")`.
+- That prefix check accepts distinct media types such as `application/json-patch+json` even though WebConsole JSON mutation handlers all decode the same strict JSON request object contract.
+- Existing guard regressions covered foreign origins and oversized JSON bodies, but not a JSON-looking subtype content type.
+
+Impact:
+
+The local console mutation guard was looser than the documented API contract. A malformed or wrong client could send a different JSON-family media type and still reach mutation handlers, weakening boundary diagnostics for Web-first control APIs.
+
+Minimal fix:
+
+- Parse the media type with `mime.ParseMediaType`.
+- Accept only an exact, case-insensitive `application/json` media type, while still allowing valid parameters such as `charset=utf-8`.
+- Add a focused WebConsole regression that rejects `application/json-patch+json` for a JSON mutation route.
+
+Validation:
+
+- Focused WebConsole mutation guard regression.
+- Full WebConsole package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -851,6 +878,24 @@ Evidence gates:
 - Confirmed FCA-20260525-021 against the Anthropic stop-reason contract, adapter stop-reason mapping, and runtime provider stop failure handling.
 - Confirmed `stop_reason=end_turn` is the normal done-candidate case; non-empty unrecognized stop reasons should not inherit the default normal-candidate path.
 - Confirmed the fix belongs in the Anthropic adapter, preserving provider-specific stop-reason interpretation inside the provider layer.
+
+### Review 22
+
+- Confirmed FCA-20260525-022 against the provider tool schema contract, OpenAI / Anthropic / Google adapter response parsing, and runtime assistant-message persistence before tool dispatch.
+- Confirmed the fix belongs in provider adapters because provider response shape normalization is adapter-owned and should fail before runtime records provider success.
+- Confirmed command tool argument decoding already rejects non-object JSON, so this slice only needed to normalize provider-emitted tool-call arguments before they become durable tool calls.
+
+### Review 23
+
+- Confirmed FCA-20260525-023 against `spec/17-web-console.md`, backend message paging handlers, and frontend polling merge state.
+- Confirmed the backend already returned correct tail and older-page windows; the gap was a frontend merge-state issue after a non-overlapping tail refresh.
+- Confirmed the fix keeps `messages.jsonl` and the Web service API as the durable facts and changes only presentation-layer merge behavior.
+
+### Review 24
+
+- Confirmed FCA-20260525-024 against the WebConsole unsafe mutation guard and `spec/17-web-console.md`'s exact `Content-Type: application/json` requirement.
+- Confirmed every unsafe `/api/` route still passes through `guardUnsafeAPIRequest`, so the fix belongs at that shared boundary rather than in individual mutation handlers.
+- Confirmed `mime.ParseMediaType` preserves valid `application/json` parameters while rejecting different JSON-family media types.
 
 ## Update Log
 
@@ -1307,6 +1352,26 @@ Validation:
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 9/9 tests.
 - `go test ./internal/webconsole -run 'TestServiceServesEmbeddedShellAndAssets|TestServiceSessionMessagePaging' -count=1`: passed.
+- `go test ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-024
+
+Slice: `fix(webconsole): require exact json content type`
+
+Changes:
+
+- Replaced the JSON mutation guard's prefix content-type check with `mime.ParseMediaType` plus exact `application/json` matching.
+- Preserved support for valid parameters such as `application/json; charset=utf-8`.
+- Added a focused WebConsole regression proving `application/json-patch+json` is rejected before the mutation handler runs.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceRejectsJSONMutationSubtypeContentType|TestServiceRejectsForeignOriginMutation|TestServiceRejectsOversizedJSONMutationBody|TestServiceWorkerScaling' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: no output.
 - `go test ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
