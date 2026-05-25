@@ -1951,6 +1951,36 @@ func TestSkillCommandToolClosesSchemaByDefault(t *testing.T) {
 	}
 }
 
+func TestSkillCommandToolRejectsTrailingJSONValue(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: echo_args\ncommand: [\"/bin/sh\", \"-lc\", \"cat\"]\ninput_schema:\n  type: object\n  additionalProperties: true\n  properties:\n    message:\n      type: string\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "echo_args", ExecContext{Workdir: root, Config: cfg}, json.RawMessage(`{"message":"ok"} {"message":"ignored"}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "single JSON value") {
+		t.Fatalf("expected trailing JSON rejection, got %#v", result)
+	}
+}
+
 func TestSkillCommandToolPreservesExplicitAdditionalPropertiesTrue(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()

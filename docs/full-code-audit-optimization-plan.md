@@ -123,6 +123,30 @@ Validation:
 - Existing unknown-field decoder regression test.
 - Full `go test ./internal/webconsole/` before commit.
 
+### FCA-20260522-004: Skill command tool argument decoder accepts trailing JSON values
+
+Severity: Medium
+
+Evidence:
+
+- `internal/tools/registry.go` `decodeCommandToolArgs` uses `json.Decoder` with `UseNumber`, but returns after the first successful `Decode` without checking for additional JSON values.
+- Skill command tools receive provider-emitted raw arguments through this decoder before schema validation and command execution.
+
+Impact:
+
+A command tool call can include a valid first JSON object followed by hidden trailing JSON. The command runs with the first object while the trailing value is ignored, which weakens provider/tool protocol integrity and can mask malformed tool-call arguments.
+
+Minimal fix:
+
+- After decoding command-tool arguments, perform a second decode and require `io.EOF`.
+- Add a focused skill command tool regression test with a valid first object followed by a second object.
+
+Validation:
+
+- Focused skill command trailing-JSON regression test.
+- Existing closed-schema command-tool regression test.
+- Full `go test ./internal/tools/` before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -197,6 +221,12 @@ Evidence gates:
 - Confirmed `decodeJSON` is shared by Web mutation endpoints such as session start, continue, Plan Mode, Goal/Mission, config, and skill uninstall handlers.
 - Confirmed existing tests covered unknown fields but not trailing concatenated JSON values.
 
+### Review 4
+
+- Confirmed FCA-20260522-004 against the current `decodeCommandToolArgs` implementation.
+- Confirmed ordinary built-in tool handlers use `json.Unmarshal`, which already rejects trailing non-whitespace bytes; the gap is specific to skill command tools using the custom `UseNumber` decoder.
+- Confirmed existing skill command tests covered missing required fields, closed schemas, and `additionalProperties: true`, but not trailing concatenated JSON values.
+
 ## Update Log
 
 ### FCA-20260522-001
@@ -257,3 +287,19 @@ Validation:
 - `go test ./internal/webconsole/ -run TestStartSessionRejectsUnknownField -count=1`: passed.
 - `go test ./internal/webconsole/ -count=1`: passed.
 - `go vet ./internal/webconsole/`: passed.
+
+### FCA-20260522-004
+
+Slice: `fix(tools): reject trailing skill command json`
+
+Changes:
+
+- Hardened `decodeCommandToolArgs` to reject raw command-tool arguments containing more than one JSON value.
+- Added a focused regression test for a skill command tool call with a valid first object followed by a second object.
+
+Validation:
+
+- `go test ./internal/tools/ -run TestSkillCommandToolRejectsTrailingJSONValue -count=1`: passed.
+- `go test ./internal/tools/ -run TestSkillCommandToolClosesSchemaByDefault -count=1`: passed.
+- `go test ./internal/tools/ -count=1`: passed.
+- `go vet ./internal/tools/`: passed.
