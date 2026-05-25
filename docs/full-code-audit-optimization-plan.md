@@ -201,6 +201,34 @@ Validation:
 - Adjacent Plan Mode service tests.
 - Full `go test ./internal/webconsole/` before commit.
 
+### FCA-20260522-007: Same-session continue can race before durable running state
+
+Severity: High
+
+Evidence:
+
+- `Continue` loaded a resumable `state.json` and appended continuation messages before it durably wrote `status=running`.
+- `acquireRunSlot` allowed same-session nested acquisition so internal auto-continue can re-enter the same runner.
+- That runner-local slot does not cover another `Runner` or process using the same session store.
+- The first durable `running` write happened later in the engine loop, after preparation work such as hooks and message append.
+
+Impact:
+
+Two same-session `continue` calls in the pre-engine window could both observe `awaiting_input`, append separate user messages, call the provider, execute tools, and race final `state.json`. This violates the session/messages/events file-fact contract and can make Web/CLI overlap or fast double-submit corrupt a single session timeline.
+
+Minimal fix:
+
+- Add a store-level run claim that uses the existing session file-lock pattern to atomically verify a resumable status and write `status=running`.
+- Call the claim in `Continue` before metadata save, Plan Mode mutation, checkpoint injection, user-message append, or provider execution.
+- Keep runner-local same-session nested acquisition available for internal auto-continue, but rely on the durable state transition to reject separate concurrent continues.
+- Add a regression with two runners sharing one store root where the first blocks in a user-message hook and the second same-session continue must be rejected without appending a message or calling the provider.
+
+Validation:
+
+- Focused same-session continue race regression.
+- Adjacent runner continue/auto-continue tests.
+- Full runtime and session package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -292,6 +320,12 @@ Evidence gates:
 - Confirmed FCA-20260522-006 against `handlePlanModeInput`, `AnswerActivePlanInput`, and `ValidatePlanModeAnswers`.
 - Confirmed the validation belongs in the Web service adapter before selecting the live-handle or fallback-continue execution path.
 - Confirmed the fix still preserves the runtime/store Plan Mode authority by validating against `planmode.json` rather than introducing browser-side state as authority.
+
+### Review 7
+
+- Confirmed FCA-20260522-007 against `Continue`, `acquireRunSlot`, `SaveState`, and the engine's first durable `running` write.
+- Confirmed the fix belongs in the session store transition path because runner-local locks do not cover separate runners or processes.
+- Confirmed the implementation keeps auto-continue compatibility by preserving same-session runner slot re-entry while moving cross-run exclusion to durable state.
 
 ## Update Log
 
@@ -405,3 +439,22 @@ Validation:
 - `go test ./internal/webconsole/ -run TestServicePlanModeReviseInputAndCancelControls -count=1`: passed.
 - `go test ./internal/webconsole/ -count=1`: passed.
 - `go vet ./internal/webconsole/`: passed.
+
+### FCA-20260522-007
+
+Slice: `fix(runtime): claim session before continue`
+
+Changes:
+
+- Added `Store.ClaimSessionRun`, which locks `control/run.lock`, verifies the current durable status is resumable, and atomically writes `status=running`.
+- Changed `Runner.Continue` to claim the session before continuation metadata saves, Plan Mode mutations, checkpoint injection, user-message append, and provider execution.
+- Converted post-claim preparation errors to fail the session instead of leaving a durable `running` state behind.
+- Added a two-runner regression that blocks the first continue in a user-message hook and proves a concurrent same-session continue is rejected without a second message or provider request.
+
+Validation:
+
+- `go test ./internal/runtime/ -run TestRunnerContinueClaimsSessionBeforeUserMessageHook -count=1`: passed.
+- `go test ./internal/runtime/ -run 'TestRunnerRejectsDifferentConcurrentActiveSessionSlot|TestRunnerContinue|TestRunnerAutoContinue' -count=1`: passed.
+- `go test ./internal/session/ -count=1`: passed.
+- `go test ./internal/runtime/ -count=1`: passed.
+- `go vet ./internal/runtime/ ./internal/session/`: passed.

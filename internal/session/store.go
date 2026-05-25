@@ -171,6 +171,43 @@ func (s *Store) SaveState(sessionID string, state State) error {
 	return s.writeJSONFile(path, state)
 }
 
+func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (State, error) {
+	allowed := make(map[string]struct{}, len(allowedStatuses))
+	for _, status := range allowedStatuses {
+		allowed[status] = struct{}{}
+	}
+	path, err := s.sessionPath(sessionID, "state.json")
+	if err != nil {
+		return State{}, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "run.lock")
+	if err != nil {
+		return State{}, err
+	}
+	var claimed State
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.withFileLock(lockPath, func() error {
+		if err := readJSONFile(path, &claimed); err != nil {
+			return err
+		}
+		if _, ok := allowed[claimed.Status]; !ok {
+			return errors.New("session is not resumable")
+		}
+		claimed.Status = StatusRunning
+		claimed.Phase = "prepare"
+		claimed.PendingSteerCount = 0
+		claimed.PauseReason = ""
+		claimed.ProviderAutoResumeCount = 0
+		claimed.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		return s.writeJSONFile(path, claimed)
+	})
+	if err != nil {
+		return State{}, err
+	}
+	return claimed, nil
+}
+
 func (s *Store) AppendMessage(sessionID string, message Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

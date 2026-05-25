@@ -621,8 +621,12 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if req.Model != "" {
 		meta.Model = req.Model
 	}
-	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
+	state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed)
+	if err != nil {
 		return RunResult{}, err
+	}
+	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
@@ -639,7 +643,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		}
 		planMode, err := r.store.CancelPlanMode(meta.ID, source)
 		if err != nil {
-			return RunResult{}, err
+			return r.failBeforeRun(meta.ID, state, "plan_input", err)
 		}
 		r.emit(meta.ID, "planmode.cancelled", "planmode", planModeEventData(planMode))
 		state.Status = session.StatusAwaitingInput
@@ -653,20 +657,20 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	var extraUserMeta map[string]any
 	if req.ApprovePlan {
 		if err := r.checkPlanModeGoalCoverage(meta.ID, req.OverrideGoalCoverage); err != nil {
-			return RunResult{}, err
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		approved, err := r.store.ApprovePlanMode(meta.ID, source)
 		if err != nil {
-			return RunResult{}, err
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		r.emit(meta.ID, "planmode.plan_approved", "planmode", planModeEventData(approved))
 		executing, err := r.store.MarkPlanModeExecuting(meta.ID, source)
 		if err != nil {
-			return RunResult{}, err
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		r.emit(meta.ID, "planmode.execution_started", "planmode", planModeEventData(executing))
 		if err := r.approveLinkedMissionPlan(meta.ID, executing, source, req.OverrideGoalCoverage); err != nil {
-			return RunResult{}, err
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		req.Message = fmt.Sprintf("Implement the approved Plan Mode plan version %d.", executing.ApprovedVersion)
 		extraUserMeta = map[string]any{
@@ -704,7 +708,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	}
 	checkpointHint, checkpointWarnings, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
 	if checkpointErr != nil {
-		return RunResult{}, checkpointErr
+		return r.failBeforeRun(meta.ID, state, "prepare", checkpointErr)
 	}
 	if checkpointHint {
 		r.emit(meta.ID, "checkpoint.resume_hint.injected", "prepare", map[string]any{
@@ -721,11 +725,11 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
-	state.PendingSteerCount = 0
-	state.PauseReason = ""
-	state.ProviderAutoResumeCount = 0
-	state.Status = session.StatusRunning
-	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+	result, err := r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+	if err != nil && result.SessionID == "" {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
+	return result, err
 }
 
 func (r *Runner) checkPlanModeGoalCoverage(sessionID string, override bool) error {

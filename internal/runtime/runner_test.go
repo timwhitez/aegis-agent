@@ -704,6 +704,129 @@ func TestRunnerContinueUsesDurableRetryPolicyFromSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestRunnerContinueClaimsSessionBeforeUserMessageHook(t *testing.T) {
+	root := t.TempDir()
+	hookStarted := filepath.Join(root, "hook-started")
+	hookRelease := filepath.Join(root, "hook-release")
+	defer func() { _ = os.WriteFile(hookRelease, []byte("1"), 0o600) }()
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"continued\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	newConfig := func() *config.Config {
+		cfg := config.Default()
+		cfg.Session.Dir = root
+		cfg.DefaultProvider = "openai-compatible"
+		cfg.Providers["openai-compatible"] = config.Provider{
+			APIKeyEnv:  "OPENAI_API_KEY",
+			BaseURL:    server.URL + "/v1",
+			Model:      "gpt-5.4",
+			TimeoutSec: 30,
+			WireAPI:    "responses",
+		}
+		return cfg
+	}
+	cfg1 := newConfig()
+	cfg1.Hooks.UserMessage = []config.HookDefinition{{
+		Name:    "block-user-message",
+		Command: []string{"/bin/sh", "-c", "touch \"$1\"; while [ ! -f \"$2\" ]; do sleep 0.01; done", "block-user-message", hookStarted, hookRelease},
+	}}
+	cfg2 := newConfig()
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner1 := NewRunner(cfg1)
+	runner2 := NewRunner(cfg2)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg1.Providers["openai-compatible"]),
+	}
+	state := session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner1.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	type continueOutcome struct {
+		result RunResult
+		err    error
+	}
+	firstDone := make(chan continueOutcome, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		result, err := runner1.Continue(ctx, ContinueRequest{SessionID: meta.ID, Message: "first continuation"})
+		firstDone <- continueOutcome{result: result, err: err}
+	}()
+
+	waitForPath(t, hookStarted, 2*time.Second)
+	secondResult, secondErr := runner2.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Message: "second continuation"})
+	if secondErr == nil || !strings.Contains(secondErr.Error(), "session is not resumable") {
+		t.Fatalf("expected concurrent same-session continue rejection, result=%#v err=%v", secondResult, secondErr)
+	}
+	if err := os.WriteFile(hookRelease, []byte("1"), 0o600); err != nil {
+		t.Fatalf("release hook: %v", err)
+	}
+	select {
+	case outcome := <-firstDone:
+		if outcome.err != nil {
+			t.Fatalf("first continue: %v", outcome.err)
+		}
+		if outcome.result.Status != session.StatusCompleted {
+			t.Fatalf("expected first continue to complete, got %#v", outcome.result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first continue")
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("expected one provider request after rejecting concurrent continue, got %d", requests.Load())
+	}
+	messages, err := runner1.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var firstMessages, secondMessages int
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		if msg.Text == "first continuation" {
+			firstMessages++
+		}
+		if msg.Text == "second continuation" {
+			secondMessages++
+		}
+	}
+	if firstMessages != 1 || secondMessages != 0 {
+		t.Fatalf("expected only the claimed continuation message, first=%d second=%d messages=%#v", firstMessages, secondMessages, messages)
+	}
+}
+
 func TestResolveRequestedWorkdirDefaultsToWorkspaceSubdirAndCreatesIt(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
@@ -1207,4 +1330,18 @@ func waitForSteerInterrupt(t *testing.T, control *runControl) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+func waitForPath(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
