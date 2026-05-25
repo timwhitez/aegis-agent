@@ -169,4 +169,28 @@ Evidence gates:
 
 ## Update Log
 
-No code updates have been committed yet in this audit cycle.
+### FCA-20260522-001
+
+Slice: `fix(webconsole): require explicit plan input answers`
+
+Changes:
+
+- Moved Plan Mode input answer collection into a pure frontend helper that returns no answers until every question has an explicit selection.
+- Added per-request/per-question selection state in the Web Console.
+- Changed pending input option buttons from immediate submit controls into selection controls.
+- Added a single disabled-until-complete submit control for each pending Plan Mode input request.
+- Added focused Node coverage for multi-question answer collection and updated the embedded asset contract check.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 6/6 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test ./internal/webconsole/ -run TestServiceServesEmbeddedShellAndAssets`: passed.
+- `go test ./internal/webconsole/`: passed.

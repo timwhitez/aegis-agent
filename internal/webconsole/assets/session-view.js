@@ -1625,18 +1625,31 @@ function renderPlanInputRequest(request) {
   if (!questions.length) {
     return '';
   }
+  const selections = typeof getPlanInputSelections === 'function' ? getPlanInputSelections(request) : {};
+  const answers = typeof collectPlanInputAnswers === 'function' ? collectPlanInputAnswers(request, selections) : [];
+  const canSubmit = answers.length === questions.length;
   return `
     <div class="goal-section">
       <div class="goal-section-title">Input requested</div>
       <div class="goal-item-list">
-        ${questions.map((question) => renderPlanInputQuestion(request.request_id, question)).join('')}
+        ${questions.map((question) => renderPlanInputQuestion(request.request_id, question, selections[question.id])).join('')}
+      </div>
+      <div class="goal-actions">
+        <button class="mini-link-btn" type="button"
+          data-plan-input-action="submit"
+          data-request-id="${escapeAttr(request.request_id || '')}"
+          ${canSubmit ? '' : 'disabled'}>
+          Submit answers
+        </button>
       </div>
     </div>
   `;
 }
 
-function renderPlanInputQuestion(requestID, question) {
+function renderPlanInputQuestion(requestID, question, selected) {
   const options = maybeArray(question?.options);
+  const selectedValue = String(selected?.value || '');
+  const selectedIsOther = Boolean(selected?.is_other);
   return `
     <div class="goal-item plan-question">
       <div class="goal-item-top">
@@ -1646,21 +1659,23 @@ function renderPlanInputQuestion(requestID, question) {
       <div class="goal-meta-line">${escapeHTML(question.question || '')}</div>
       <div class="goal-actions plan-option-row">
         ${options.map((option) => `
-          <button class="mini-link-btn" type="button"
-            data-plan-input-action="answer"
+          <button class="mini-link-btn${!selectedIsOther && selectedValue === String(option.label || '') ? ' is-selected' : ''}" type="button"
+            data-plan-input-action="select"
             data-request-id="${escapeAttr(requestID || '')}"
             data-question-id="${escapeAttr(question.id || '')}"
             data-label="${escapeAttr(option.label || '')}"
-            data-value="${escapeAttr(option.label || '')}">
+            data-value="${escapeAttr(option.label || '')}"
+            aria-pressed="${!selectedIsOther && selectedValue === String(option.label || '') ? 'true' : 'false'}">
             ${escapeHTML(option.label || 'Option')}
           </button>
         `).join('')}
-        <button class="mini-link-btn" type="button"
-          data-plan-input-action="answer"
+        <button class="mini-link-btn${selectedIsOther ? ' is-selected' : ''}" type="button"
+          data-plan-input-action="select"
           data-request-id="${escapeAttr(requestID || '')}"
           data-question-id="${escapeAttr(question.id || '')}"
           data-label="Other"
-          data-other="1">Other</button>
+          data-other="1"
+          aria-pressed="${selectedIsOther ? 'true' : 'false'}">Other</button>
       </div>
       ${options.length ? `<div class="goal-meta-line">${escapeHTML(options.map((option) => option.description).filter(Boolean).join(' · '))}</div>` : ''}
     </div>

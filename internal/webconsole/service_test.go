@@ -1959,7 +1959,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
 		t.Fatalf("unexpected session-view.js body: %s", sessionBody)
 	}
-	if !strings.Contains(sessionBody, "renderPlanPanel") || !strings.Contains(sessionBody, "renderPlanInputRequest") || !strings.Contains(sessionBody, "data-plan-action=\"approve\"") || !strings.Contains(sessionBody, "data-plan-input-action=\"answer\"") {
+	if !strings.Contains(sessionBody, "renderPlanPanel") || !strings.Contains(sessionBody, "renderPlanInputRequest") || !strings.Contains(sessionBody, "data-plan-action=\"approve\"") || !strings.Contains(sessionBody, "data-plan-input-action=\"select\"") || !strings.Contains(sessionBody, "data-plan-input-action=\"submit\"") {
 		t.Fatalf("expected session-view.js to render Plan Mode inspector and pending input controls, got session-view.js body: %s", sessionBody)
 	}
 	if !strings.Contains(sessionBody, "renderSessionStopButton") || !strings.Contains(sessionBody, "data-stop-session-id") {

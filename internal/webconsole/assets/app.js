@@ -75,6 +75,7 @@ const state = {
   subAgentExpanded: true,
   expandedHistoryParents: new Set(),
   stoppingSessionIds: new Set(),
+  planInputSelections: {},
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
@@ -1190,6 +1191,7 @@ function adoptSession(sessionID, backed) {
   if (sessionID !== state.sessionId) {
     state.selectedQueueJobId = '';
     state.selectedQueueJobDetail = null;
+    state.planInputSelections = {};
     if (typeof clearMarkdownCache === 'function') {
       clearMarkdownCache();
     }
@@ -1209,6 +1211,7 @@ function resetChatSession() {
   state.nextSendInterrupt = false;
   state.selectedQueueJobId = '';
   state.selectedQueueJobDetail = null;
+  state.planInputSelections = {};
   state.goalEnabled = false;
   state.planModeEnabled = false;
   if (typeof clearMarkdownCache === 'function') {
@@ -1438,6 +1441,45 @@ function currentPlanMode() {
   return state.sessionDetail?.plan_mode || null;
 }
 
+function getPlanInputSelections(request) {
+  const requestID = String(request?.request_id || '').trim();
+  if (!requestID) {
+    return {};
+  }
+  if (!state.planInputSelections || typeof state.planInputSelections !== 'object') {
+    state.planInputSelections = {};
+  }
+  Object.keys(state.planInputSelections).forEach((key) => {
+    if (key !== requestID) {
+      delete state.planInputSelections[key];
+    }
+  });
+  const selections = state.planInputSelections[requestID] || {};
+  const validQuestionIDs = new Set(maybeArray(request?.questions).map((question) => String(question?.id || '').trim()).filter(Boolean));
+  Object.keys(selections).forEach((questionID) => {
+    if (!validQuestionIDs.has(questionID)) {
+      delete selections[questionID];
+    }
+  });
+  state.planInputSelections[requestID] = selections;
+  return selections;
+}
+
+function setPlanInputSelection(request, answer) {
+  const requestID = String(request?.request_id || '').trim();
+  const questionID = String(answer?.question_id || '').trim();
+  if (!requestID || !questionID) {
+    return;
+  }
+  const selections = getPlanInputSelections(request);
+  selections[questionID] = {
+    question_id: questionID,
+    label: String(answer.label || '').trim(),
+    value: String(answer.value || '').trim(),
+    is_other: Boolean(answer.is_other)
+  };
+}
+
 function isPendingPlanMode(status) {
   return ['planning', 'awaiting_user_input', 'awaiting_approval'].includes(status || '');
 }
@@ -1512,36 +1554,50 @@ async function handlePlanInputAction(button) {
     showToast('No durable session is loaded.', 'info');
     return;
   }
+  const action = button.getAttribute('data-plan-input-action') || 'select';
   const requestID = button.getAttribute('data-request-id') || '';
-  const questionID = button.getAttribute('data-question-id') || '';
-  const label = button.getAttribute('data-label') || '';
-  const isOther = button.getAttribute('data-other') === '1';
-  let value = button.getAttribute('data-value') || label;
-  if (isOther) {
-    value = window.prompt('Enter a custom answer for this Plan Mode question:', '') || '';
-    if (!value.trim()) {
-      return;
-    }
-  }
   const planMode = currentPlanMode();
   const request = planMode?.pending_request;
   if (!request || !requestID || request.request_id !== requestID) {
     showToast('Plan input request is no longer pending.', 'error');
     return;
   }
-  const answers = collectPlanInputAnswers(request, {
-    question_id: questionID,
-    label,
-    value,
-    is_other: isOther
-  });
-  if (!answers.length) {
-    showToast('Choose an answer before submitting.', 'error');
+
+  if (action === 'select') {
+    const questionID = button.getAttribute('data-question-id') || '';
+    const label = button.getAttribute('data-label') || '';
+    const isOther = button.getAttribute('data-other') === '1';
+    let value = button.getAttribute('data-value') || label;
+    if (isOther) {
+      value = window.prompt('Enter a custom answer for this Plan Mode question:', '') || '';
+      if (!value.trim()) {
+        return;
+      }
+    }
+    setPlanInputSelection(request, {
+      question_id: questionID,
+      label,
+      value,
+      is_other: isOther
+    });
+    renderCurrentSession();
+    return;
+  }
+
+  if (action !== 'submit') {
+    return;
+  }
+
+  const answers = collectPlanInputAnswers(request, getPlanInputSelections(request));
+  if (answers.length !== maybeArray(request.questions).length) {
+    showToast('Answer every Plan Mode question before submitting.', 'error');
+    renderCurrentSession();
     return;
   }
   button.disabled = true;
   try {
     await answerPlanModeInput(state.sessionId, { requestID, answers });
+    delete state.planInputSelections[requestID];
     showToast('Plan input answered.', 'success');
     queueSessionRefresh(80);
     queueOverviewRefresh(180);
@@ -1553,29 +1609,6 @@ async function handlePlanInputAction(button) {
     }
     renderCurrentSession();
   }
-}
-
-function collectPlanInputAnswers(request, selected) {
-  const questions = maybeArray(request?.questions);
-  if (!questions.length || !selected?.question_id) {
-    return [];
-  }
-  return questions.map((question) => {
-    if (question.id === selected.question_id) {
-      return {
-        question_id: question.id,
-        label: selected.label,
-        value: selected.value,
-        is_other: selected.is_other
-      };
-    }
-    const first = maybeArray(question.options)[0] || {};
-    return {
-      question_id: question.id,
-      label: first.label || 'Default',
-      value: first.label || 'Default'
-    };
-  });
 }
 
 async function handleGoalAction(button) {

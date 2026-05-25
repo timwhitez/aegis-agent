@@ -2,6 +2,33 @@ function maybeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function collectPlanInputAnswers(request, selections) {
+  const questions = maybeArray(request?.questions);
+  if (!questions.length || !selections || typeof selections !== 'object') {
+    return [];
+  }
+  const answers = [];
+  for (const question of questions) {
+    const questionID = String(question?.id || '').trim();
+    const selected = questionID ? selections[questionID] : null;
+    if (!questionID || !selected || typeof selected !== 'object') {
+      return [];
+    }
+    const label = String(selected.label || '').trim();
+    const value = String(selected.value || '').trim();
+    if (!label && !value) {
+      return [];
+    }
+    answers.push({
+      question_id: questionID,
+      label,
+      value: value || label,
+      is_other: Boolean(selected.is_other)
+    });
+  }
+  return answers;
+}
+
 function normalizeText(value) {
   return String(value || '')
     .trim()

@@ -13,6 +13,10 @@ const context = {
 vm.createContext(context);
 vm.runInContext(utilsSource, context, { filename: 'utils.js' });
 
+function sameRealm(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 test('safeMarkdown keeps language-tagged fences inside an open code block', () => {
   const html = context.safeMarkdown(['```markdown', '```go', 'fmt.Println("x")', '```'].join('\n'));
 
@@ -42,4 +46,38 @@ test('renderMarkdownCached invalidates by content hash', () => {
 
   assert.notEqual(first, second);
   assert.match(second, /<strong>second<\/strong>/);
+});
+
+test('collectPlanInputAnswers requires explicit answers for every question', () => {
+  const request = {
+    questions: [
+      { id: 'scope', options: [{ label: 'Small' }] },
+      { id: 'validation', options: [{ label: 'Unit' }] }
+    ]
+  };
+
+  const answers = context.collectPlanInputAnswers(request, {
+    scope: { label: 'Small', value: 'Small' }
+  });
+
+  assert.deepEqual(sameRealm(answers), []);
+});
+
+test('collectPlanInputAnswers preserves selected multi-question answers', () => {
+  const request = {
+    questions: [
+      { id: 'scope', options: [{ label: 'Small' }] },
+      { id: 'validation', options: [{ label: 'Unit' }] }
+    ]
+  };
+
+  const answers = context.collectPlanInputAnswers(request, {
+    scope: { label: 'Small', value: 'Small' },
+    validation: { label: 'Other', value: 'Browser smoke', is_other: true }
+  });
+
+  assert.deepEqual(sameRealm(answers), [
+    { question_id: 'scope', label: 'Small', value: 'Small', is_other: false },
+    { question_id: 'validation', label: 'Other', value: 'Browser smoke', is_other: true }
+  ]);
 });
