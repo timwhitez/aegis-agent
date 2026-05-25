@@ -1356,6 +1356,34 @@ Validation:
 - Full WebConsole package tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-045: Runtime recovery summaries still count cancelled tasks as completed
+
+Severity: Low
+
+Evidence:
+
+- `spec/12-task-system.md` says `completed` and `cancelled` are both done states, but only `completed` unlocks dependents.
+- FCA-20260525-041 fixed `BuildTaskBoard` and `task_list` metadata to expose separate `completed`, `cancelled`, and combined `done` facts.
+- `internal/runtime/engine.go` `taskCounts` still counted `completed` and `cancelled` together and returned that value as `completed`.
+- `internal/runtime/session_summary.go` used that helper for `session.md` and `checkpoints/longrun-latest.json`, so recovery artifacts could still say `completed=2` when one task was cancelled.
+- `internal/runtime/compaction.go` used the same helper in compaction summary artifacts and lifecycle event metadata, causing provider-facing recovery context to inherit the same conflation.
+
+Impact:
+
+Long-running session recovery facts, checkpoints, and compaction summaries could still overstate completed work after a task was cancelled. This weakens handoff accuracy even after the Web task board and model `task_list` facts were corrected.
+
+Minimal fix:
+
+- Change the shared runtime task-count helper to return `completed`, `cancelled`, and combined `done` counts separately.
+- Update session summary, long-run checkpoint task summary, context-loaded events, and compaction summaries/events to expose the separated facts.
+- Add focused runtime regressions for `session.md`, long-run checkpoint, and compaction event/artifact metadata.
+
+Validation:
+
+- Focused runtime summary/checkpoint regression.
+- Focused compaction regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1661,6 +1689,12 @@ Evidence gates:
 - Confirmed FCA-20260526-044 against `spec/17-web-console.md`, `handleDeleteSession`, `handleClearSessions`, `handleUploadSkill`, `handleUninstallSkill`, and `appendAuditEvent` ordering.
 - Confirmed this is the same sensitive-action auditability class as FCA-043, but covers non-config mutations that delete local state or change installed skills.
 - Confirmed the fix belongs in Web service handlers as an audit-log preflight, not in session store or skill extraction internals, because the audit requirement is a Web local-console contract.
+
+### Review 43
+
+- Confirmed FCA-20260526-045 against `spec/12-task-system.md`, `taskCounts`, `writeSessionSummary`, `writeLongRunCheckpoint`, `contextLoadedEventData`, and compaction summary/event generation.
+- Confirmed this is a recovery-artifact drift from FCA-20260525-041: Web/task-list derived facts were fixed, but runtime summaries and compaction metadata still used the old conflated helper.
+- Confirmed the fix belongs in the shared runtime helper and derived artifact writers, preserving compatibility by keeping existing `completed_task_count` while adding `cancelled_task_count` and `done_task_count`.
 
 ## Update Log
 
@@ -2612,6 +2646,30 @@ Validation:
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-045
+
+Slice: `fix(runtime): separate cancelled task recovery facts`
+
+Changes:
+
+- Replaced runtime's conflated task counter with separated `completed`, `cancelled`, and combined `done` task counts.
+- Updated `session.context.loaded`, compaction lifecycle events, compaction summary artifacts, `session.md`, and `checkpoints/longrun-latest.json` to preserve separate cancelled-task facts.
+- Added runtime regressions proving session summary, checkpoint, compaction events, and compaction artifacts distinguish completed and cancelled tasks.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestSessionSummaryAndCheckpointSeparateCancelledTasks|TestCompactorWritesDurableSummaryArtifact' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.

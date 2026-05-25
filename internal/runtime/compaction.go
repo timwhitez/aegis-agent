@@ -62,7 +62,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	projectMemory := loadProjectMemoryStack(workdir)
 	readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
 	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
-	_, _, completedTaskCount := taskCounts(tasks)
+	taskSummary := taskCounts(tasks)
 	proofBudget := proofReadBudget()
 	goal, _ := loadGoalOptional(c.store, sessionID)
 
@@ -75,7 +75,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"todo_count":             len(todo),
 		"ready_task_count":       len(readyTasks),
 		"blocked_task_count":     len(blockedTasks),
-		"completed_task_count":   completedTaskCount,
+		"completed_task_count":   taskSummary.Completed,
+		"cancelled_task_count":   taskSummary.Cancelled,
+		"done_task_count":        taskSummary.Done,
 		"proof_read_budget":      proofBudget,
 		"goal_present":           goal != nil,
 	}))
@@ -110,6 +112,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"todo":                     todo,
 		"ready_tasks":              readyTasks,
 		"blocked_tasks":            blockedTasks,
+		"completed_task_count":     taskSummary.Completed,
+		"cancelled_task_count":     taskSummary.Cancelled,
+		"done_task_count":          taskSummary.Done,
 		"unresolved_issues":        collectUnresolvedIssues(sourceMessages, state),
 		"recent_failure_or_pause":  recentFailureOrPause(state),
 		"transcript":               transcriptPath,
@@ -135,7 +140,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"todo_count":             len(todo),
 		"ready_task_count":       len(readyTasks),
 		"blocked_task_count":     len(blockedTasks),
-		"completed_task_count":   completedTaskCount,
+		"completed_task_count":   taskSummary.Completed,
+		"cancelled_task_count":   taskSummary.Cancelled,
+		"done_task_count":        taskSummary.Done,
 		"artifact_memory_count":  len(artifactMemory),
 		"high_value_proof_count": len(highValueProofs),
 		"proof_read_budget":      proofBudget,
@@ -164,7 +171,7 @@ func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, st
 	projectMemory := loadProjectMemoryStack(workdir)
 	readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
 	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
-	_, _, completedTaskCount := taskCounts(tasks)
+	taskSummary := taskCounts(tasks)
 	proofBudget := proofReadBudget()
 	goal, _ := loadGoalOptional(c.store, sessionID)
 	summary := map[string]any{
@@ -186,7 +193,9 @@ func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, st
 		"todo":                     todo,
 		"ready_tasks":              readyTasks,
 		"blocked_tasks":            blockedTasks,
-		"completed_task_count":     completedTaskCount,
+		"completed_task_count":     taskSummary.Completed,
+		"cancelled_task_count":     taskSummary.Cancelled,
+		"done_task_count":          taskSummary.Done,
 		"unresolved_issues":        collectUnresolvedIssues(messages, state),
 		"recent_failure_or_pause":  recentFailureOrPause(state),
 		"transcript":               "[previous compaction transcript reused; no prior summary artifact was available]",
@@ -201,7 +210,7 @@ func (c *compactor) compactReusedEventData(sessionID, workdir string, size, last
 	projectMemory := loadProjectMemoryStack(workdir)
 	readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
 	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
-	_, _, completedTaskCount := taskCounts(tasks)
+	taskSummary := taskCounts(tasks)
 	proofBudget := proofReadBudget()
 	goal, _ := loadGoalOptional(c.store, sessionID)
 	return map[string]any{
@@ -216,7 +225,9 @@ func (c *compactor) compactReusedEventData(sessionID, workdir string, size, last
 		"todo_count":                  len(todo),
 		"ready_task_count":            len(readyTasks),
 		"blocked_task_count":          len(blockedTasks),
-		"completed_task_count":        completedTaskCount,
+		"completed_task_count":        taskSummary.Completed,
+		"cancelled_task_count":        taskSummary.Cancelled,
+		"done_task_count":             taskSummary.Done,
 		"proof_read_budget":           proofBudget,
 		"goal_present":                goal != nil,
 	}

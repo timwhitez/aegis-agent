@@ -1350,16 +1350,18 @@ func providerRawSidecarEnvelope(meta session.SessionMetadata, turn int, result p
 }
 
 func contextLoadedEventData(meta session.SessionMetadata, turn int, stack projectMemoryStack, todo []session.TodoItem, tasks []session.Task) map[string]any {
-	readyCount, blockedCount, completedCount := taskCounts(tasks)
+	taskSummary := taskCounts(tasks)
 	data := map[string]any{
 		"turn":                   turn,
 		"project_memory_present": stack.PresentPaths(),
 		"project_memory_missing": stack.MissingPaths(),
 		"todo_count":             len(todo),
 		"task_count":             len(tasks),
-		"ready_task_count":       readyCount,
-		"blocked_task_count":     blockedCount,
-		"completed_task_count":   completedCount,
+		"ready_task_count":       taskSummary.Ready,
+		"blocked_task_count":     taskSummary.Blocked,
+		"completed_task_count":   taskSummary.Completed,
+		"cancelled_task_count":   taskSummary.Cancelled,
+		"done_task_count":        taskSummary.Done,
 	}
 	if item := currentInProgressTodo(todo); item != nil {
 		data["current_in_progress_todo"] = item
@@ -1396,18 +1398,31 @@ func sessionIdentityEventData(meta session.SessionMetadata) map[string]any {
 	return data
 }
 
-func taskCounts(tasks []session.Task) (ready, blocked, completed int) {
+type taskCountSummary struct {
+	Ready     int
+	Blocked   int
+	Completed int
+	Cancelled int
+	Done      int
+}
+
+func taskCounts(tasks []session.Task) taskCountSummary {
+	var summary taskCountSummary
 	for _, task := range tasks {
 		switch {
-		case task.Status == "completed" || task.Status == "cancelled":
-			completed++
+		case task.Status == "completed":
+			summary.Completed++
+			summary.Done++
+		case task.Status == "cancelled":
+			summary.Cancelled++
+			summary.Done++
 		case task.Status == "pending" && len(task.BlockedBy) == 0:
-			ready++
+			summary.Ready++
 		case task.Status == "pending" && len(task.BlockedBy) > 0:
-			blocked++
+			summary.Blocked++
 		}
 	}
-	return ready, blocked, completed
+	return summary
 }
 
 func prettyJSON(value any) string {

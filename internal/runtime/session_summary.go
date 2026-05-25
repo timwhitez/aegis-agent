@@ -192,8 +192,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 			}
 		}
 		if len(tasks) > 0 {
-			ready, blocked, completed := taskCounts(tasks)
-			b.WriteString(fmt.Sprintf("- tasks: ready=%d blocked=%d completed=%d total=%d\n", ready, blocked, completed, len(tasks)))
+			taskSummary := taskCounts(tasks)
+			b.WriteString(fmt.Sprintf("- tasks: ready=%d blocked=%d completed=%d cancelled=%d done=%d total=%d\n", taskSummary.Ready, taskSummary.Blocked, taskSummary.Completed, taskSummary.Cancelled, taskSummary.Done, len(tasks)))
 		}
 	}
 
@@ -332,13 +332,13 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	if rootSessionID == "" {
 		rootSessionID = meta.ID
 	}
-	ready, blocked, completed := taskCounts(tasks)
+	taskSummary := taskCounts(tasks)
 	checkpoint := session.LongRunCheckpoint{
 		SchemaVersion:            1,
 		SessionID:                meta.ID,
 		RootSessionID:            rootSessionID,
 		TodoSummary:              todo,
-		TaskSummary:              map[string]int{"ready": ready, "blocked": blocked, "completed": completed, "total": len(tasks)},
+		TaskSummary:              map[string]int{"ready": taskSummary.Ready, "blocked": taskSummary.Blocked, "completed": taskSummary.Completed, "cancelled": taskSummary.Cancelled, "done": taskSummary.Done, "total": len(tasks)},
 		RequiredArtifactStatus:   artifacts,
 		LatestCompactionArtifact: latestCompactionArtifact(store, sessionID),
 		Provider:                 meta.Provider,

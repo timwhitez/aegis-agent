@@ -270,6 +270,47 @@ func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 	}
 }
 
+func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	meta.ParentSessionID = "parent-session"
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if _, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "ship completed task"}); err != nil {
+		t.Fatalf("create completed task: %v", err)
+	}
+	if _, err := session.UpdateTask(store, meta.ID, session.TaskUpdateInput{TaskID: "task_0001", Status: "completed"}); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+	if _, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "drop cancelled task"}); err != nil {
+		t.Fatalf("create cancelled task: %v", err)
+	}
+	if _, err := session.UpdateTask(store, meta.ID, session.TaskUpdateInput{TaskID: "task_0002", Status: "cancelled"}); err != nil {
+		t.Fatalf("cancel task: %v", err)
+	}
+	if err := writeSessionSummary(store, meta.ID); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+
+	summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if !strings.Contains(string(summary), "completed=1 cancelled=1 done=2 total=2") {
+		t.Fatalf("expected summary to separate cancelled tasks, got:\n%s", string(summary))
+	}
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if checkpoint.TaskSummary["completed"] != 1 || checkpoint.TaskSummary["cancelled"] != 1 || checkpoint.TaskSummary["done"] != 2 || checkpoint.TaskSummary["total"] != 2 {
+		t.Fatalf("expected checkpoint to separate cancelled tasks, got %#v", checkpoint.TaskSummary)
+	}
+}
+
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

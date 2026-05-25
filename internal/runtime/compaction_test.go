@@ -89,6 +89,14 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 			CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 			UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		},
+		{
+			ID:        "task_0004",
+			Subject:   "Drop stale approach",
+			Status:    "cancelled",
+			Priority:  "low",
+			CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		},
 	}
 
 	var emitted []events.Event
@@ -151,6 +159,9 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	if summary["project_memory_stack"] == nil {
 		t.Fatalf("expected project_memory_stack, got %#v", summary)
 	}
+	if summary["completed_task_count"] != float64(1) || summary["cancelled_task_count"] != float64(1) || summary["done_task_count"] != float64(2) {
+		t.Fatalf("expected compaction summary to separate completed/cancelled tasks, got %#v", summary)
+	}
 	keyPaths, _ := summary["key_paths"].([]any)
 	if len(keyPaths) == 0 || keyPaths[0] != filepath.Join("docs", "plan.md") {
 		t.Fatalf("expected relative key path, got %#v", summary["key_paths"])
@@ -192,6 +203,11 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 
 	if len(emitted) != 2 || emitted[0].Type != "compact.started" || emitted[1].Type != "compact.finished" {
 		t.Fatalf("expected compact lifecycle events, got %#v", emitted)
+	}
+	for _, evt := range emitted {
+		if evt.Data["completed_task_count"] != 1 || evt.Data["cancelled_task_count"] != 1 || evt.Data["done_task_count"] != 2 {
+			t.Fatalf("expected compaction event to separate completed/cancelled tasks, got %#v", evt.Data)
+		}
 	}
 	if emitted[1].Data["reason"] != "input_char_threshold_exceeded" {
 		t.Fatalf("expected compact reason metadata, got %#v", emitted[1].Data)
