@@ -1326,6 +1326,36 @@ Validation:
 - Full WebConsole package tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-044: Sensitive Web mutations can complete before audit failure
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires session delete/clear and skill install/uninstall to write searchable audit events.
+- `internal/webconsole/service.go` `handleDeleteSession` called `DeleteSessionTree` before appending `web.session.delete`.
+- `handleClearSessions` called `ClearHistory` before appending `web.sessions.clear`.
+- `handleUploadSkill` extracted the uploaded skill zip into the managed skills directory before appending `web.skill.install`.
+- `handleUninstallSkill` removed the skill directory before appending `web.skill.uninstall`.
+- If the audit log path was unavailable, these handlers returned `500` after the local destructive/install mutation had already happened, leaving no matching audit event.
+
+Impact:
+
+The browser could report a failed sensitive action even though sessions were deleted, history was cleared, or skills were installed/uninstalled. That weakens operator recovery and violates the Web-first auditability contract for risky local-console actions.
+
+Minimal fix:
+
+- Preflight audit-log writability before session delete, session clear, skill upload extraction, and skill uninstall removal.
+- Reuse the shared no-symlink audit log opener so the preflight enforces the same path safety as real audit writes.
+- Add a regression proving session delete and skill uninstall do not mutate disk when audit-log preflight fails.
+
+Validation:
+
+- Focused WebConsole sensitive-action audit preflight regression.
+- Existing sensitive-action audit event regression.
+- Full WebConsole package tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1625,6 +1655,12 @@ Evidence gates:
 - Confirmed FCA-20260526-043 against `spec/17-web-console.md`, `handleUpdateConfig`, `config.UpsertEnvFile`, `config.WriteFile`, and Web audit event ordering.
 - Confirmed this is a sensitive mutation ordering bug: the key can be durably written before the request's config/audit side succeeds.
 - Confirmed the fix should only reorder Web Settings persistence and preflight audit-log writability; `POST /api/config/test` already uses a temporary env var and does not persist config or `.env`.
+
+### Review 42
+
+- Confirmed FCA-20260526-044 against `spec/17-web-console.md`, `handleDeleteSession`, `handleClearSessions`, `handleUploadSkill`, `handleUninstallSkill`, and `appendAuditEvent` ordering.
+- Confirmed this is the same sensitive-action auditability class as FCA-043, but covers non-config mutations that delete local state or change installed skills.
+- Confirmed the fix belongs in Web service handlers as an audit-log preflight, not in session store or skill extraction internals, because the audit requirement is a Web local-console contract.
 
 ## Update Log
 
@@ -2547,6 +2583,30 @@ Changes:
 Validation:
 
 - `go test ./internal/webconsole -run 'TestAPIKeyWriteDoesNotLogSecretValue|TestAPIKeyWriteWaitsForConfigWriteSuccess|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-044
+
+Slice: `fix(webconsole): preflight audit for sensitive actions`
+
+Changes:
+
+- Added audit-log writability preflight before session delete, session history clear, skill upload extraction, and skill uninstall removal.
+- Reused the shared no-symlink audit log opener so preflight and real audit writes enforce the same path safety.
+- Added a regression proving session delete and skill uninstall do not mutate disk when audit-log preflight fails.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestSensitiveActionsPreflightAuditBeforeMutating|TestSensitiveWebActionsEmitAuditEvents|TestAppendAuditEventRejectsSymlinkedAuditLog' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

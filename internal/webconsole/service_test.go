@@ -2333,6 +2333,62 @@ func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
 	}
 }
 
+func TestSensitiveActionsPreflightAuditBeforeMutating(t *testing.T) {
+	cfg := testConfig(t, "")
+	base := t.TempDir()
+	skillsDir := filepath.Join(base, "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_audit_preflight")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(skillsDir, "demo-skill"), 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "demo-skill", "SKILL.md"), []byte("---\nname: demo-skill\n---\n"), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if err := os.MkdirAll(auditPath, 0o700); err != nil {
+		t.Fatalf("create audit path directory: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	deleteReq, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/sessions/"+meta.ID, nil)
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	deleteReq.Header.Set(webMutationHeader, "1")
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("delete request: %v", err)
+	}
+	deleteBody, _ := io.ReadAll(deleteResp.Body)
+	deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected delete audit preflight failure, got %d body=%s", deleteResp.StatusCode, string(deleteBody))
+	}
+	if _, err := svc.store.LoadMetadata(meta.ID); err != nil {
+		t.Fatalf("session should remain after audit preflight failure: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/skills/demo-skill/uninstall", map[string]any{}, http.StatusInternalServerError)
+	if errResp.Error == "" {
+		t.Fatalf("expected uninstall audit preflight error, got %#v", errResp)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "demo-skill", "SKILL.md")); err != nil {
+		t.Fatalf("skill should remain after audit preflight failure: %v", err)
+	}
+}
+
 func TestSensitiveWebActionsEmitAuditEvents(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")

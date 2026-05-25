@@ -755,6 +755,10 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := s.store.DeleteSessionTree(sessionID); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, fs.ErrNotExist) {
@@ -793,6 +797,10 @@ func (s *Service) handleClearSessions(w http.ResponseWriter) {
 	}
 	if hasRunningSessions {
 		writeError(w, http.StatusConflict, errors.New("cannot clear history while sessions are still running"))
+		return
+	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if err := s.store.ClearHistory(); err != nil {
@@ -3289,6 +3297,10 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	count, err := processSkillZip(tmpFile.Name(), dest)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -3349,6 +3361,10 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := fileutil.RemoveDirAllNoSymlink(targetDir); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
