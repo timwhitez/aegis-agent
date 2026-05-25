@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -33,102 +34,87 @@ func CreateTask(store *Store, sessionID string, input TaskCreateInput) (Task, er
 	if input.Subject == "" {
 		return Task{}, errors.New("subject is required")
 	}
-	taskID, err := store.NextTaskID(sessionID)
-	if err != nil {
+	var created Task
+	if err := store.MutateTasks(sessionID, func(tasks []Task) ([]Task, error) {
+		taskID := nextTaskID(tasks)
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		task := Task{
+			ID:          taskID,
+			Subject:     input.Subject,
+			Description: input.Description,
+			Status:      "pending",
+			Priority:    defaultPriority(input.Priority),
+			BlockedBy:   uniqueStrings(input.BlockedBy),
+			Blocks:      []string{},
+			Labels:      uniqueStrings(input.Labels),
+			Notes:       []string{},
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		tasks = append(tasks, task)
+		syncTaskEdges(tasks, task.ID, nil, nil, task.BlockedBy, task.Blocks)
+		created = task
+		return tasks, nil
+	}); err != nil {
 		return Task{}, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	task := Task{
-		ID:          taskID,
-		Subject:     input.Subject,
-		Description: input.Description,
-		Status:      "pending",
-		Priority:    defaultPriority(input.Priority),
-		BlockedBy:   uniqueStrings(input.BlockedBy),
-		Blocks:      []string{},
-		Labels:      uniqueStrings(input.Labels),
-		Notes:       []string{},
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	tasks, err := store.ListTasks(sessionID)
-	if err != nil {
-		return Task{}, err
-	}
-	tasks = append(tasks, task)
-	syncTaskEdges(tasks, task.ID, nil, nil, task.BlockedBy, task.Blocks)
-	if err := ensureTaskReferences(tasks); err != nil {
-		return Task{}, err
-	}
-	if err := ensureAcyclic(tasks); err != nil {
-		return Task{}, err
-	}
-	if err := store.SaveTasks(sessionID, tasks); err != nil {
-		return Task{}, err
-	}
-	return findTask(tasks, taskID)
+	return created, nil
 }
 
 func UpdateTask(store *Store, sessionID string, input TaskUpdateInput) (Task, error) {
-	tasks, err := store.ListTasks(sessionID)
-	if err != nil {
-		return Task{}, err
-	}
-	index := -1
-	for i, task := range tasks {
-		if task.ID == input.TaskID {
-			index = i
-			break
+	var updated Task
+	if err := store.MutateTasks(sessionID, func(tasks []Task) ([]Task, error) {
+		index := -1
+		for i, task := range tasks {
+			if task.ID == input.TaskID {
+				index = i
+				break
+			}
 		}
-	}
-	if index < 0 {
-		return Task{}, fmt.Errorf("task not found: %s", input.TaskID)
-	}
-	task := tasks[index]
-	previousBlockedBy := append([]string{}, task.BlockedBy...)
-	previousBlocks := append([]string{}, task.Blocks...)
-	prevStatus := task.Status
-	if input.Status != "" {
-		switch input.Status {
-		case "pending", "in_progress", "completed", "cancelled":
-			task.Status = input.Status
-		default:
-			return Task{}, fmt.Errorf("invalid status: %s", input.Status)
+		if index < 0 {
+			return nil, fmt.Errorf("task not found: %s", input.TaskID)
 		}
-	}
-	if input.Subject != "" {
-		task.Subject = input.Subject
-	}
-	if input.Description != "" {
-		task.Description = input.Description
-	}
-	if input.Priority != "" {
-		task.Priority = defaultPriority(input.Priority)
-	}
-	if input.Owner != "" {
-		task.Owner = input.Owner
-	}
-	task.BlockedBy = uniqueStrings(removeStrings(append(task.BlockedBy, input.AddBlockedBy...), input.RemoveBlockedBy...))
-	task.Blocks = uniqueStrings(removeStrings(append(task.Blocks, input.AddBlocks...), input.RemoveBlocks...))
-	if input.AppendNote != "" {
-		task.Notes = append(task.Notes, input.AppendNote)
-	}
-	task.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	tasks[index] = task
-	syncTaskEdges(tasks, task.ID, previousBlockedBy, previousBlocks, task.BlockedBy, task.Blocks)
-	if err := ensureTaskReferences(tasks); err != nil {
+		task := tasks[index]
+		previousBlockedBy := append([]string{}, task.BlockedBy...)
+		previousBlocks := append([]string{}, task.Blocks...)
+		prevStatus := task.Status
+		if input.Status != "" {
+			switch input.Status {
+			case "pending", "in_progress", "completed", "cancelled":
+				task.Status = input.Status
+			default:
+				return nil, fmt.Errorf("invalid status: %s", input.Status)
+			}
+		}
+		if input.Subject != "" {
+			task.Subject = input.Subject
+		}
+		if input.Description != "" {
+			task.Description = input.Description
+		}
+		if input.Priority != "" {
+			task.Priority = defaultPriority(input.Priority)
+		}
+		if input.Owner != "" {
+			task.Owner = input.Owner
+		}
+		task.BlockedBy = uniqueStrings(removeStrings(append(task.BlockedBy, input.AddBlockedBy...), input.RemoveBlockedBy...))
+		task.Blocks = uniqueStrings(removeStrings(append(task.Blocks, input.AddBlocks...), input.RemoveBlocks...))
+		if input.AppendNote != "" {
+			task.Notes = append(task.Notes, input.AppendNote)
+		}
+		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		tasks[index] = task
+		syncTaskEdges(tasks, task.ID, previousBlockedBy, previousBlocks, task.BlockedBy, task.Blocks)
+		if prevStatus != "completed" && task.Status == "completed" {
+			unlockDependents(tasks, task.ID)
+		}
+		updated, _ = findTask(tasks, task.ID)
+		return tasks, nil
+	}); err != nil {
 		return Task{}, err
 	}
-	if err := ensureAcyclic(tasks); err != nil {
-		return Task{}, err
-	}
-	if prevStatus != "completed" && task.Status == "completed" {
-		unlockDependents(tasks, task.ID)
-	}
-	if err := store.SaveTasks(sessionID, tasks); err != nil {
-		return Task{}, err
-	}
-	return findTask(tasks, task.ID)
+	return updated, nil
 }
 
 func BuildTaskBoard(todo []TodoItem, tasks []Task) TaskBoard {
@@ -185,6 +171,25 @@ func findTask(tasks []Task, taskID string) (Task, error) {
 		}
 	}
 	return Task{}, fmt.Errorf("task not found: %s", taskID)
+}
+
+func nextTaskID(tasks []Task) string {
+	maxID := 0
+	for _, task := range tasks {
+		var value int
+		if _, err := fmt.Sscanf(task.ID, "task_%04d", &value); err == nil && value > maxID {
+			maxID = value
+		}
+	}
+	return fmt.Sprintf("task_%04d", maxID+1)
+}
+
+func normalizeTaskGraph(tasks []Task) []Task {
+	out := append([]Task(nil), tasks...)
+	sort.Slice(out, func(i, j int) bool {
+		return strings.TrimSpace(out[i].ID) < strings.TrimSpace(out[j].ID)
+	})
+	return out
 }
 
 func syncTaskEdges(tasks []Task, taskID string, previousBlockedBy, previousBlocks, currentBlockedBy, currentBlocks []string) {

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -134,6 +135,82 @@ func TestTaskUpdateRemovesReverseEdges(t *testing.T) {
 	}
 	if len(updatedSecond.BlockedBy) != 0 {
 		t.Fatalf("expected blocked_by edge to be removed, got %#v", updatedSecond.BlockedBy)
+	}
+}
+
+func TestTaskMutationsReadLatestGraphUnderLock(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var heldErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		heldErr = store.MutateTasks(meta.ID, func(tasks []Task) ([]Task, error) {
+			close(entered)
+			<-release
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			tasks = append(tasks, Task{
+				ID:        "task_0001",
+				Subject:   "held mutation",
+				Status:    "pending",
+				Priority:  "medium",
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+			return tasks, nil
+		})
+	}()
+	<-entered
+
+	otherStore := NewStore(root)
+	resultCh := make(chan struct {
+		task Task
+		err  error
+	}, 1)
+	go func() {
+		task, err := CreateTask(otherStore, meta.ID, TaskCreateInput{Subject: "concurrent create"})
+		resultCh <- struct {
+			task Task
+			err  error
+		}{task: task, err: err}
+	}()
+
+	close(release)
+	wg.Wait()
+	if heldErr != nil {
+		t.Fatalf("held mutation: %v", heldErr)
+	}
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatalf("concurrent create: %v", result.err)
+	}
+	if result.task.ID != "task_0002" {
+		t.Fatalf("expected concurrent create to allocate after held mutation, got %#v", result.task)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 2 || tasks[0].ID != "task_0001" || tasks[1].ID != "task_0002" {
+		t.Fatalf("expected both task mutations to persist in order, got %#v", tasks)
 	}
 }
 

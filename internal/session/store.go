@@ -917,14 +917,7 @@ func (s *Store) NextTaskID(sessionID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	maxID := 0
-	for _, task := range tasks {
-		var value int
-		if _, err := fmt.Sscanf(task.ID, "task_%04d", &value); err == nil && value > maxID {
-			maxID = value
-		}
-	}
-	return fmt.Sprintf("task_%04d", maxID+1), nil
+	return nextTaskID(tasks), nil
 }
 
 func (s *Store) SaveTask(sessionID string, task Task) error {
@@ -984,6 +977,68 @@ func (s *Store) ListTasks(sessionID string) ([]Task, error) {
 func (s *Store) SaveTasks(sessionID string, tasks []Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveTasksLocked(sessionID, tasks)
+}
+
+func (s *Store) MutateTasks(sessionID string, mutate func([]Task) ([]Task, error)) error {
+	if mutate == nil {
+		return nil
+	}
+	lockPath, err := s.sessionPath(sessionID, "tasks", "taskboard.lock")
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.withFileLock(lockPath, func() error {
+		tasks, err := s.listTasksLocked(sessionID)
+		if err != nil {
+			return err
+		}
+		tasks, err = mutate(tasks)
+		if err != nil {
+			return err
+		}
+		tasks = normalizeTaskGraph(tasks)
+		if err := ensureTaskReferences(tasks); err != nil {
+			return err
+		}
+		if err := ensureAcyclic(tasks); err != nil {
+			return err
+		}
+		return s.saveTasksLocked(sessionID, tasks)
+	})
+}
+
+func (s *Store) listTasksLocked(sessionID string) ([]Task, error) {
+	dir, err := s.sessionPath(sessionID, "tasks")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Task{}, nil
+		}
+		return nil, err
+	}
+	var tasks []Task
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var task Task
+		if err := readJSONFile(filepath.Join(dir, entry.Name()), &task); err == nil {
+			tasks = append(tasks, task)
+		}
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].ID < tasks[j].ID
+	})
+	return tasks, nil
+}
+
+func (s *Store) saveTasksLocked(sessionID string, tasks []Task) error {
 	dir, err := s.sessionPath(sessionID, "tasks")
 	if err != nil {
 		return err

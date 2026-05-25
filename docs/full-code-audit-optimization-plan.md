@@ -1029,6 +1029,41 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-035: Task graph mutations can allocate duplicate IDs and overwrite concurrent tasks
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines the persistent task graph as durable, recoverable session state with consistent dependency edges.
+- `internal/session/taskboard.go` `CreateTask` calls `NextTaskID`, then `ListTasks`, appends a new task, and writes the whole graph via `SaveTasks`.
+- `UpdateTask` similarly loads the whole graph, mutates dependency/status fields, and saves all task files.
+- `SaveTasks` serializes only the final write through one `Store` instance; Web, runtime tools, mission task sync, and CLI/API code can construct separate `Store` instances for the same session root.
+- If two `task_create` paths run from stale snapshots, both can allocate `task_0002`; the later full graph write can either overwrite the first task with a duplicate ID or drop another concurrently created task file from the current graph.
+
+Impact:
+
+Long-running sessions can lose or corrupt durable task graph progress when task creation/update and mission task sync overlap. That weakens resume, compaction, Web task board, checkpoint, and session summary facts for the exact class of large tasks the task graph is meant to support.
+
+Minimal fix:
+
+- Add a session-scoped task graph mutation helper that locks `tasks/taskboard.lock`, reads the latest tasks, applies create/update logic, validates references and cycles, and writes the latest graph.
+- Route `CreateTask` and `UpdateTask` through that helper so ID allocation and dependency synchronization happen under one cross-store lock.
+- Add focused cross-store regression coverage for concurrent task creation reading the latest graph under the lock.
+
+Validation:
+
+- `go test ./internal/session -run 'TestTaskMutationsReadLatestGraphUnderLock|TestTask' -count=1`: passed.
+- `go test ./internal/tools -run 'TestTodoAndTaskToolsEmitStructuredEvents|TestFeatureListToolsPersistUpdateAndReadSnapshot' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineEmitsContextLoadedEventWithDurableState|TestEngineRunModeStopsAtAwaitingInput' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1274,6 +1309,12 @@ Evidence gates:
 - Confirmed FCA-20260525-034 against `refreshContractForSession`, `contractsEquivalent`, `TrackToolResult`, and `requiredArtifactGate`.
 - Confirmed the contract source is the latest external user message, so a later same-path artifact instruction is a new completion contract even when the extracted artifact path is unchanged.
 - Confirmed the fix belongs in the runtime/session contract snapshot, not in Web or CLI adapters, because all accepted user inputs share the same artifact completion gate.
+
+### Review 33
+
+- Confirmed FCA-20260525-035 against `CreateTask`, `UpdateTask`, `NextTaskID`, `ListTasks`, `SaveTasks`, model `task_create` / `task_update`, and mission `SyncMissionPlanTasks`.
+- Confirmed the problem is durable task graph state loss/corruption, not only presentation drift: task files are the source for Web task board, compaction, checkpoint, and session summary.
+- Confirmed the fix belongs in `internal/session` so tool, Web, runtime, mission-sync, and CLI/API paths share the same cross-store task graph transaction behavior.
 
 ## Update Log
 
@@ -1985,6 +2026,30 @@ Changes:
 Validation:
 
 - `go test ./internal/runtime -run 'TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction|TestCompletionControllerRequiresSessionTouchedArtifact|TestSessionContractTracksRequiredArtifactAndCompletionGate' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-035
+
+Slice: `fix(session): serialize task graph mutations`
+
+Changes:
+
+- Added `Store.MutateTasks` with a session-scoped `tasks/taskboard.lock`.
+- Routed `CreateTask` and `UpdateTask` through the transactional helper so ID allocation, dependency synchronization, validation, and graph writes use the latest durable task snapshot.
+- Kept `SaveTasks` as a full replacement helper for callers that own the complete graph.
+- Added a cross-store regression proving a concurrent task create waits for an in-flight mutation and allocates the next task ID from the latest graph.
+
+Validation:
+
+- `go test ./internal/session -run 'TestTaskMutationsReadLatestGraphUnderLock|TestTask' -count=1`: passed.
+- `go test ./internal/tools -run 'TestTodoAndTaskToolsEmitStructuredEvents|TestFeatureListToolsPersistUpdateAndReadSnapshot' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineEmitsContextLoadedEventWithDurableState|TestEngineRunModeStopsAtAwaitingInput' -count=1`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
