@@ -3741,3 +3741,33 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-066
+
+Slice: `fix(runtime): report contract history failures`
+
+Finding:
+
+- Runtime contract refresh saved `contract.json` and `artifact-tracker.json`, then ignored failures appending `artifacts/contract-history.jsonl`.
+- A blocked `artifacts/contract-history.jsonl` path reproduced a false-success refresh: callers saw no error even though the durable contract history source fact was missing.
+
+Changes:
+
+- Changed `refreshContractForSession` to return `AppendContractHistory` failures.
+- Added file-path context to contract history append errors, matching Goal and Plan Mode history diagnostics.
+- Added a regression that blocks `artifacts/contract-history.jsonl` and proves contract refresh reports the failed durable fact write.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestContractRefreshReportsHistoryAppendError' -count=1`: failed before the fix with nil error.
+- `go test ./internal/runtime -run 'TestContractRefreshReportsHistoryAppendError|TestSessionContractTracksRequiredArtifactAndCompletionGate|TestContractRefreshEmitsArtifactRequiredEvent|TestEngineSteerAcceptanceReportsGoalHistoryError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

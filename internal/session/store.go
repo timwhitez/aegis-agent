@@ -341,7 +341,10 @@ func (s *Store) AppendContractHistory(sessionID string, contract SessionContract
 	if err != nil {
 		return err
 	}
-	return s.appendJSONL(path, contract)
+	if err := s.appendJSONL(path, contract); err != nil {
+		return fmt.Errorf("append contract history %s: %w", path, err)
+	}
+	return nil
 }
 
 func (s *Store) LoadArtifactTracker(sessionID string) ([]RequiredArtifact, error) {

@@ -77,6 +77,19 @@ func TestContractRefreshEmitsArtifactRequiredEvent(t *testing.T) {
 	}
 }
 
+func TestContractRefreshReportsHistoryAppendError(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	blockRuntimeContractHistoryPath(t, store, meta.ID)
+
+	err := refreshContractForSession(store, nil, meta)
+	if err == nil || !strings.Contains(err.Error(), "contract-history.jsonl") {
+		t.Fatalf("expected contract history append error, got %v", err)
+	}
+}
+
 func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
@@ -673,6 +686,17 @@ func newRuntimeTestSession(t *testing.T) (*session.Store, session.SessionMetadat
 		t.Fatalf("create session: %v", err)
 	}
 	return store, meta
+}
+
+func blockRuntimeContractHistoryPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "contract-history.jsonl")
+	if err := os.Remove(historyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove contract history: %v", err)
+	}
+	if err := os.Mkdir(historyPath, 0o700); err != nil {
+		t.Fatalf("block contract history path: %v", err)
+	}
 }
 
 func containsString(items []string, target string) bool {

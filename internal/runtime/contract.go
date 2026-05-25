@@ -216,7 +216,9 @@ func refreshContractForSession(store *session.Store, emit func(string, map[strin
 	if err := store.SaveArtifactTracker(meta.ID, next.RequiredArtifacts); err != nil {
 		return err
 	}
-	_ = store.AppendContractHistory(meta.ID, next)
+	if err := store.AppendContractHistory(meta.ID, next); err != nil {
+		return err
+	}
 	eventType := "contract.created"
 	if existing.ContractID != "" {
 		eventType = "contract.updated"
