@@ -1428,6 +1428,28 @@ func TestEngineAcceptsPendingSteerBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestEngineSteerAcceptanceReportsGoalHistoryError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Track steer in goal history",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	blockRuntimeGoalHistoryPath(t, engine.store, meta.ID)
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatalf("provider should not be called after goal history append failure")
+		return provider.TurnResult{}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v", err)
+	}
+}
+
 func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
 	engine, meta, state, registry, _, catalog := newTestEngine(t, session.ModeRun)
 	_ = state
@@ -2433,6 +2455,17 @@ func findEventByType(evts []events.Event, eventType string) (events.Event, bool)
 		}
 	}
 	return events.Event{}, false
+}
+
+func blockRuntimeGoalHistoryPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "goal-history.jsonl")
+	if err := os.Remove(historyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove goal history: %v", err)
+	}
+	if err := os.Mkdir(historyPath, 0o700); err != nil {
+		t.Fatalf("block goal history path: %v", err)
+	}
 }
 
 func bytesSplitNonEmpty(data []byte, sep byte) [][]byte {

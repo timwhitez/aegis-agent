@@ -159,12 +159,12 @@ func loadGoalOptional(store *session.Store, sessionID string) (*session.SessionG
 	return &goal, nil
 }
 
-func appendGoalHistoryForSteer(store *session.Store, sessionID string, text string, interrupt bool) {
+func appendGoalHistoryForSteer(store *session.Store, sessionID string, text string, interrupt bool) error {
 	goal, err := store.LoadGoal(sessionID)
 	if err != nil || goal.GoalID == "" {
-		return
+		return nil
 	}
-	_ = store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+	return store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
 		Type:   "goal.updated",
 		Source: session.GoalSourceSystem,
 		Status: goal.Status,

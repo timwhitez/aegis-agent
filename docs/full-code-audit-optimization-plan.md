@@ -3711,3 +3711,33 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-065
+
+Slice: `fix(runtime): report steer goal history failures`
+
+Finding:
+
+- Runtime accepted pending steer input for sessions with a current goal, appended the steer user message, emitted accepted events, and then ignored `goal.updated` history append failures.
+- A blocked `artifacts/goal-history.jsonl` path reproduced a false-success control drain: the engine continued to the provider after accepting steer even though the spec-required goal history fact for accepted steer was missing.
+
+Changes:
+
+- Changed accepted-steer goal history recording to return `AppendGoalHistory` errors.
+- Changed engine steer drain to stop and report that error before continuing to the provider.
+- Added a regression proving blocked goal history prevents provider execution during steer acceptance.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestEngineSteerAcceptanceReportsGoalHistoryError' -count=1`: failed before the fix by reaching the provider.
+- `go test ./internal/runtime -run 'TestEngineSteerAcceptanceReportsGoalHistoryError|TestEngineAcceptsPendingSteerBeforeProviderCall|TestEngineInterruptSteerCancelsProviderAndContinuesWithAcceptedMessage' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

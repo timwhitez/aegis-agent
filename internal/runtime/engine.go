@@ -989,7 +989,9 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 			"id":        requests[i].ID,
 			"interrupt": requests[i].Interrupt,
 		})
-		appendGoalHistoryForSteer(e.store, sessionID, text, requests[i].Interrupt)
+		if err := appendGoalHistoryForSteer(e.store, sessionID, text, requests[i].Interrupt); err != nil {
+			return accepted, err
+		}
 		if goal, goalErr := e.store.LoadGoal(sessionID); goalErr == nil && goal.GoalID != "" {
 			e.emit(sessionID, "goal.updated", "control_drain", map[string]any{
 				"goal_id":   goal.GoalID,
