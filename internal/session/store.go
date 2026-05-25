@@ -172,6 +172,11 @@ func (s *Store) SaveState(sessionID string, state State) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if count, ok, err := s.pendingSteerCountLocked(sessionID); err != nil {
+		return err
+	} else if ok {
+		state.PendingSteerCount = count
+	}
 	return s.withFileLock(lockPath, func() error {
 		var current State
 		if err := readJSONFile(path, &current); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -180,6 +185,32 @@ func (s *Store) SaveState(sessionID string, state State) error {
 		state.LoadedSkills = mergeLoadedSkills(current.LoadedSkills, state.LoadedSkills)
 		return s.writeJSONFile(path, state)
 	})
+}
+
+func (s *Store) pendingSteerCountLocked(sessionID string) (int, bool, error) {
+	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
+	if err != nil {
+		return 0, false, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "steer.lock")
+	if err != nil {
+		return 0, false, err
+	}
+	var requests []SteerRequest
+	err = s.withFileLock(lockPath, func() error {
+		err := readJSONL(path, &requests)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	if requests == nil {
+		return 0, false, nil
+	}
+	return CountOpenSteerRequests(requests), true, nil
 }
 
 func mergeLoadedSkills(current, next []string) []string {
@@ -585,6 +616,22 @@ func (s *Store) UpdateSteerRequests(sessionID string, requests []SteerRequest) e
 		}
 		return s.writeJSONL(path, requests)
 	})
+}
+
+func (s *Store) RefreshPendingSteerCount(sessionID string) (State, error) {
+	requests, err := s.LoadSteerRequests(sessionID)
+	if err != nil {
+		return State{}, err
+	}
+	state, err := s.LoadState(sessionID)
+	if err != nil {
+		return State{}, err
+	}
+	state.PendingSteerCount = CountOpenSteerRequests(requests)
+	if err := s.SaveState(sessionID, state); err != nil {
+		return State{}, err
+	}
+	return state, nil
 }
 
 func (s *Store) AppendBackgroundNotification(sessionID string, notification BackgroundNotification) error {
@@ -2087,6 +2134,16 @@ func mergeSteerRequests(updated, current []SteerRequest) []SteerRequest {
 		merged = append(merged, request)
 	}
 	return merged
+}
+
+func CountOpenSteerRequests(requests []SteerRequest) int {
+	pending := 0
+	for _, request := range requests {
+		if request.Status == SteerStatusPending || request.Status == SteerStatusDeferred {
+			pending++
+		}
+	}
+	return pending
 }
 
 func mergeBackgroundNotifications(updated, current []BackgroundNotification) []BackgroundNotification {

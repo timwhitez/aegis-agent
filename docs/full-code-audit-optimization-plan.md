@@ -970,6 +970,33 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-033: Pending steer count can diverge from merged durable queue
+
+Severity: Low
+
+Evidence:
+
+- `spec/05-session-interrupt-resume.md` lists `pending_steer_count` as part of `state.json`, while `control/steer.jsonl` is the durable steer queue.
+- `internal/session/store.go` `UpdateSteerRequests` correctly merges a stale updated snapshot with concurrent appended steer requests under `control/steer.lock`.
+- `internal/runtime/engine.go` computed `State.PendingSteerCount` from the stale pre-merge request slice before or around `UpdateSteerRequests`, and later engine `SaveState` calls could write that stale count again.
+- A focused `drainSteer` regression reproduced the drift: one steer was accepted, a second steer was appended during the drain window, `UpdateSteerRequests` preserved both records, but the state counter could report zero pending requests.
+
+Impact:
+
+Session detail, summaries, Web status chips, and recovery hints can under-report pending steer work even though `control/steer.jsonl` still contains a pending request. Runtime eventually reads the queue itself, so this is primarily an observability and operator-steering accuracy issue rather than loss of the queued input.
+
+Minimal fix:
+
+- Add a store helper that refreshes `PendingSteerCount` from the durable steer queue.
+- Route Runner steer and Engine steer drain/defer counter writes through that helper.
+- Make `SaveState` derive `PendingSteerCount` from `control/steer.jsonl` whenever the steer queue exists, preventing later stale state saves from overwriting the queue-derived count.
+- Add store and runtime regressions covering a concurrent append during steer update/drain.
+
+Validation:
+
+- Focused steer store/runtime regressions before commit.
+- Full Go vet and grouped package validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1203,6 +1230,12 @@ Evidence gates:
 - Confirmed FCA-20260525-032 against `load_skill`, `markSkillLoaded`, `Engine.Run` state persistence, session summary, and compaction loaded-skill consumers.
 - Confirmed `loaded_skills` is a monotonic session fact used for idempotency and operator context; no current user/runtime API intentionally clears loaded skills.
 - Confirmed the fix belongs in `SaveState`, because the stale overwrite can come from multiple engine state-save boundaries after any tool-owned loaded-skill update.
+
+### Review 31
+
+- Confirmed FCA-20260525-033 against `UpdateSteerRequests`, Runner `Steer`, Engine `deferPendingInterrupts`, Engine `drainSteer`, and the session detail consumers of `pending_steer_count`.
+- Confirmed `control/steer.jsonl` already remains authoritative and merge-safe; the bug is the derived `state.json` counter drifting after a stale snapshot or later engine state save.
+- Confirmed the fix belongs in the session store/runner/runtime boundary, with no change to steer queue acceptance semantics or provider/tool control flow.
 
 ## Update Log
 
@@ -1872,6 +1905,29 @@ Validation:
 - `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/engine_test.go`: no output.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-033
+
+Slice: `fix(session): refresh pending steer count`
+
+Changes:
+
+- Added `Store.RefreshPendingSteerCount` and shared `CountOpenSteerRequests`.
+- Routed Runner steer and Engine steer drain/defer paths through the store refresh helper.
+- Made `SaveState` derive `pending_steer_count` from `control/steer.jsonl` when the steer queue exists, so later state saves cannot erase queue-derived counts.
+- Added store and runtime regressions for concurrent steer append during stale steer update/drain.
+
+Validation:
+
+- `go test ./internal/session -run 'TestUpdateSteerRequestsMergesConcurrentAppend|TestRefreshPendingSteerCountUsesMergedDurableRequests|TestStoreSaveStateRefreshesUpdatedAt|TestStoreSaveStatePreservesCurrentLoadedSkills' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineAcceptsPendingSteerBeforeProviderCall|TestEngineRefreshesPendingSteerCountAfterConcurrentAppend|TestRunnerSteerQueuesRequestAndUpdatesPendingCount' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.

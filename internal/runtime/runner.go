@@ -969,8 +969,7 @@ func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error)
 	if err := r.store.AppendSteerRequest(req.SessionID, request); err != nil {
 		return SteerResult{}, err
 	}
-	state.PendingSteerCount++
-	if err := r.store.SaveState(req.SessionID, state); err != nil {
+	if _, err := r.store.RefreshPendingSteerCount(req.SessionID); err != nil {
 		return SteerResult{}, err
 	}
 	r.emit(req.SessionID, "session.steer.requested", "control", map[string]any{

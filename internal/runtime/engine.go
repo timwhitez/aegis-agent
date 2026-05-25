@@ -926,10 +926,7 @@ func (e *Engine) deferPendingInterrupts(sessionID string) error {
 	if err := e.store.UpdateSteerRequests(sessionID, requests); err != nil {
 		return err
 	}
-	if state, err := e.store.LoadState(sessionID); err == nil {
-		state.PendingSteerCount = countOpenSteerRequests(requests)
-		_ = e.store.SaveState(sessionID, state)
-	}
+	_, _ = e.store.RefreshPendingSteerCount(sessionID)
 	return nil
 }
 
@@ -989,13 +986,10 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 		}
 	}
 	if changed {
-		if state, err := e.store.LoadState(sessionID); err == nil {
-			state.PendingSteerCount = countOpenSteerRequests(requests)
-			_ = e.store.SaveState(sessionID, state)
-		}
 		if err := e.store.UpdateSteerRequests(sessionID, requests); err != nil {
 			return accepted, err
 		}
+		_, _ = e.store.RefreshPendingSteerCount(sessionID)
 		if err := refreshContractForSession(e.store, func(eventType string, data map[string]any) {
 			e.emit(sessionID, eventType, "control_drain", data)
 		}, meta); err != nil {
@@ -1086,13 +1080,7 @@ func backgroundPayload(notifications []session.BackgroundNotification) []map[str
 }
 
 func countOpenSteerRequests(requests []session.SteerRequest) int {
-	pending := 0
-	for _, request := range requests {
-		if request.Status == session.SteerStatusPending || request.Status == session.SteerStatusDeferred {
-			pending++
-		}
-	}
-	return pending
+	return session.CountOpenSteerRequests(requests)
 }
 
 func sessionHookPayload(meta session.SessionMetadata, status string) map[string]any {

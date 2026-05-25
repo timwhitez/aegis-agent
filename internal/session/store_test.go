@@ -1307,6 +1307,51 @@ func TestUpdateSteerRequestsMergesConcurrentAppend(t *testing.T) {
 	}
 }
 
+func TestRefreshPendingSteerCountUsesMergedDurableRequests(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := storeA.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first := NewSteerRequest("first", false)
+	if err := storeA.AppendSteerRequest(meta.ID, first); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	snapshot, err := storeA.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	snapshot[0].Status = SteerStatusAccepted
+	second := NewSteerRequest("second", false)
+	if err := storeB.AppendSteerRequest(meta.ID, second); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if err := storeA.UpdateSteerRequests(meta.ID, snapshot); err != nil {
+		t.Fatalf("update snapshot: %v", err)
+	}
+
+	state, err := storeA.RefreshPendingSteerCount(meta.ID)
+	if err != nil {
+		t.Fatalf("refresh pending count: %v", err)
+	}
+	if state.PendingSteerCount != 1 {
+		t.Fatalf("expected pending count from merged durable queue, got %#v", state)
+	}
+}
+
 func TestUpdateBackgroundNotificationsMergesConcurrentAppend(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)

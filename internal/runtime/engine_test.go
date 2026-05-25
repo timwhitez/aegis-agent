@@ -1428,6 +1428,60 @@ func TestEngineAcceptsPendingSteerBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
+	engine, meta, state, registry, _, catalog := newTestEngine(t, session.ModeRun)
+	_ = state
+	_ = registry
+	_ = catalog
+	first := session.NewSteerRequest("first", false)
+	if err := engine.store.AppendSteerRequest(meta.ID, first); err != nil {
+		t.Fatalf("append first steer: %v", err)
+	}
+	hookManager := hooks.New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{{
+			Name: "append-concurrent-steer",
+			Inject: &config.HookInject{
+				Field: "text",
+				Set:   "first",
+			},
+		}},
+	}, meta.Workdir)
+	hookManager.SetEmitter(func(string, map[string]any) {
+		requests, err := engine.store.LoadSteerRequests(meta.ID)
+		if err != nil || len(requests) != 1 {
+			return
+		}
+		if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("second", false)); err != nil {
+			t.Errorf("append concurrent steer: %v", err)
+		}
+	})
+	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	if err != nil {
+		t.Fatalf("drain steer: %v", err)
+	}
+	if accepted != 1 {
+		t.Fatalf("expected one accepted steer from initial snapshot, got %d", accepted)
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.PendingSteerCount != 1 {
+		t.Fatalf("expected pending steer count to reflect concurrent append, got %#v", loadedState)
+	}
+	requests, err := engine.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	statusByText := map[string]string{}
+	for _, request := range requests {
+		statusByText[request.Text] = request.Status
+	}
+	if statusByText["first"] != session.SteerStatusAccepted || statusByText["second"] != session.SteerStatusPending {
+		t.Fatalf("unexpected steer statuses: %#v", requests)
+	}
+}
+
 func TestEngineInterruptSteerCancelsProviderAndContinuesWithAcceptedMessage(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "initial")); err != nil {
