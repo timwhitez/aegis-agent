@@ -1064,6 +1064,39 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-036: Duplicate queue status files can hide terminal job facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires queue job status, linked child session result, parent notification, and worker liveness to be explainable from durable files.
+- `internal/session/store.go` stores queue jobs under `_queue/<status>/<job_id>.json`, and `saveJobLocked` writes the new status file before removing stale copies in other status directories.
+- `LoadJob` scans `queueStatuses()` in `queued`, `running`, `blocked`, `completed`, `failed` order and returns the first readable job, while `listJobs` appends every readable status-file copy.
+- A crash or interrupted process between the terminal write and stale running-file cleanup can therefore leave `_queue/running/<job>.json` and `_queue/completed/<job>.json` for the same job. The current load order can report the stale running copy before the completed copy, and list views can show duplicate jobs.
+
+Impact:
+
+A completed or failed background child can remain visible as running/blocked until the stale duplicate is manually removed or later reconciliation happens to repair the exact copy being read. That weakens Web queue/children status, parent background visibility, session summaries, and recovery decisions for queue jobs after interrupted status transitions.
+
+Minimal fix:
+
+- Add a queue job loader that gathers all status-file copies for a job, prefers the highest-precedence durable fact with terminal status first, and removes stale duplicates.
+- Route `LoadJob` and `listJobs` through the same canonicalization path so object detail and list views agree.
+- Add a store regression that creates duplicate running/completed files and verifies `LoadJob` and `ListJobs` return one completed job while cleaning the stale running file.
+
+Validation:
+
+- `go test ./internal/session -run 'TestLoadAndListJobsPreferTerminalDuplicateStatusFile|TestReconcileCompletedSessionCompletesJob|TestStoreClaimNextQueuedJobIsAtomicAcrossStores' -count=1`: passed.
+- `go test ./internal/session -run 'TestLoadAndListJobsPreferTerminalDuplicateStatusFile|TestClaimNextQueuedJobWritesLease|TestClaimNextQueuedJobSkipsMismatchedQueueFilename|TestReconcileCompletedSessionCompletesJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1315,6 +1348,12 @@ Evidence gates:
 - Confirmed FCA-20260525-035 against `CreateTask`, `UpdateTask`, `NextTaskID`, `ListTasks`, `SaveTasks`, model `task_create` / `task_update`, and mission `SyncMissionPlanTasks`.
 - Confirmed the problem is durable task graph state loss/corruption, not only presentation drift: task files are the source for Web task board, compaction, checkpoint, and session summary.
 - Confirmed the fix belongs in `internal/session` so tool, Web, runtime, mission-sync, and CLI/API paths share the same cross-store task graph transaction behavior.
+
+### Review 34
+
+- Confirmed FCA-20260525-036 against `saveJobLocked`, `LoadJob`, `listJobs`, `ClaimNextQueuedJob`, `RefreshQueueJobHeartbeat`, `ProcessNextJob`, and queue reconciliation repair paths.
+- Confirmed the issue is not duplicate claim; `ClaimNextQueuedJob` already uses atomic rename and has regression coverage. The confirmed failure is stale duplicate status files after a partial status move/cleanup.
+- Confirmed the fix belongs in `internal/session` so WebConsole, CLI queue commands, runtime worker, session summaries, and reconciliation all use the same canonical queue job fact.
 
 ## Update Log
 
@@ -2054,6 +2093,29 @@ Validation:
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-036
+
+Slice: `fix(session): canonicalize queue job status files`
+
+Changes:
+
+- Added queue job canonicalization for durable status-file reads, grouping duplicate `_queue/<status>/<job_id>.json` copies by job id.
+- Made terminal queue facts win over stale running/queued copies, with status-time tie breakers for non-terminal duplicates.
+- Routed both `LoadJob` and `ListJobs` through the same canonical copy selection and stale duplicate cleanup.
+- Added a store regression that recreates duplicate running/completed files, verifies terminal detail/list output, and checks stale running cleanup.
+
+Validation:
+
+- `go test ./internal/session -run 'TestLoadAndListJobsPreferTerminalDuplicateStatusFile|TestReconcileCompletedSessionCompletesJob|TestStoreClaimNextQueuedJobIsAtomicAcrossStores' -count=1`: passed.
+- `go test ./internal/session -run 'TestLoadAndListJobsPreferTerminalDuplicateStatusFile|TestClaimNextQueuedJobWritesLease|TestClaimNextQueuedJobSkipsMismatchedQueueFilename|TestReconcileCompletedSessionCompletesJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

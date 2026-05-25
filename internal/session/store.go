@@ -1111,20 +1111,20 @@ func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 	if err := validateStoreID("queue job", jobID); err != nil {
 		return job, err
 	}
-	for _, status := range queueStatuses() {
-		path := s.queueJobPath(status, jobID)
-		err := readJSONFile(path, &job)
-		if err == nil {
-			if repaired, changed := s.reconcileQueueJobSession(job); changed {
-				job = repaired
-			}
-			return job, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return QueueJob{}, err
-		}
+	copies, err := s.loadQueueJobCopies(jobID)
+	if err != nil {
+		return QueueJob{}, err
 	}
-	return QueueJob{}, os.ErrNotExist
+	if len(copies) == 0 {
+		return QueueJob{}, os.ErrNotExist
+	}
+	canonical := canonicalQueueJobCopy(copies)
+	_ = s.removeDuplicateQueueJobCopies(copies, canonical.path)
+	job = canonical.job
+	if repaired, changed := s.reconcileQueueJobSession(job); changed {
+		job = repaired
+	}
+	return job, nil
 }
 
 func (s *Store) ListJobs(limit int) ([]QueueJob, error) {
@@ -1161,32 +1161,26 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 	if limit <= 0 {
 		limit = 100
 	}
-	var out []QueueJob
-	for _, status := range queueStatuses() {
-		dir := s.queueStatusDir(status)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
+	copies, err := s.listQueueJobCopies()
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string][]queueJobCopy)
+	for _, copy := range copies {
+		byID[copy.job.ID] = append(byID[copy.job.ID], copy)
+	}
+	out := make([]QueueJob, 0, len(byID))
+	for _, group := range byID {
+		canonical := canonicalQueueJobCopy(group)
+		_ = s.removeDuplicateQueueJobCopies(group, canonical.path)
+		job := canonical.job
+		if parentSessionID != "" && job.ParentSessionID != parentSessionID {
+			continue
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			var job QueueJob
-			if err := readJSONFile(filepath.Join(dir, entry.Name()), &job); err != nil {
-				continue
-			}
-			if parentSessionID != "" && job.ParentSessionID != parentSessionID {
-				continue
-			}
-			if repaired, changed := s.reconcileQueueJobSession(job); changed {
-				job = repaired
-			}
-			out = append(out, job)
+		if repaired, changed := s.reconcileQueueJobSession(job); changed {
+			job = repaired
 		}
+		out = append(out, job)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if parentSessionID != "" {
@@ -1204,6 +1198,147 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+type queueJobCopy struct {
+	status string
+	path   string
+	job    QueueJob
+}
+
+func (s *Store) loadQueueJobCopies(jobID string) ([]queueJobCopy, error) {
+	var copies []queueJobCopy
+	for _, status := range queueStatuses() {
+		path := s.queueJobPath(status, jobID)
+		var job QueueJob
+		err := readJSONFile(path, &job)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if job.ID != jobID || !isQueueStatus(job.Status) {
+			continue
+		}
+		copies = append(copies, queueJobCopy{status: status, path: path, job: job})
+	}
+	return copies, nil
+}
+
+func (s *Store) listQueueJobCopies() ([]queueJobCopy, error) {
+	var out []queueJobCopy
+	for _, status := range queueStatuses() {
+		dir := s.queueStatusDir(status)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			var job QueueJob
+			path := filepath.Join(dir, entry.Name())
+			if err := readJSONFile(path, &job); err != nil {
+				continue
+			}
+			if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" || !isQueueStatus(job.Status) {
+				continue
+			}
+			out = append(out, queueJobCopy{status: status, path: path, job: job})
+		}
+	}
+	return out, nil
+}
+
+func canonicalQueueJobCopy(copies []queueJobCopy) queueJobCopy {
+	if len(copies) == 0 {
+		return queueJobCopy{}
+	}
+	best := copies[0]
+	for _, candidate := range copies[1:] {
+		if compareQueueJobCopies(candidate, best) > 0 {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func compareQueueJobCopies(a, b queueJobCopy) int {
+	if rankA, rankB := queueStatusPrecedence(a.job.Status), queueStatusPrecedence(b.job.Status); rankA != rankB {
+		if rankA > rankB {
+			return 1
+		}
+		return -1
+	}
+	if timeA, timeB := queueJobFactTime(a.job), queueJobFactTime(b.job); !timeA.Equal(timeB) {
+		if timeA.After(timeB) {
+			return 1
+		}
+		return -1
+	}
+	if orderA, orderB := queueStatusOrder(a.status), queueStatusOrder(b.status); orderA != orderB {
+		if orderA > orderB {
+			return 1
+		}
+		return -1
+	}
+	if a.path > b.path {
+		return 1
+	}
+	if a.path < b.path {
+		return -1
+	}
+	return 0
+}
+
+func queueStatusPrecedence(status string) int {
+	switch status {
+	case QueueStatusCompleted, QueueStatusFailed:
+		return 4
+	case QueueStatusBlocked:
+		return 3
+	case QueueStatusRunning:
+		return 2
+	case QueueStatusQueued:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func queueStatusOrder(status string) int {
+	for index, allowed := range queueStatuses() {
+		if allowed == status {
+			return index
+		}
+	}
+	return -1
+}
+
+func queueJobFactTime(job QueueJob) time.Time {
+	for _, value := range []string{job.UpdatedAt, job.HeartbeatAt, job.ClaimedAt, job.CreatedAt} {
+		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
+func (s *Store) removeDuplicateQueueJobCopies(copies []queueJobCopy, keepPath string) error {
+	for _, copy := range copies {
+		if copy.path == keepPath {
+			continue
+		}
+		if err := os.Remove(copy.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) DeleteSessionTree(sessionID string) error {

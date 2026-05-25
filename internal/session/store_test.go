@@ -2288,6 +2288,68 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
+func TestLoadAndListJobsPreferTerminalDuplicateStatusFile(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	if err := store.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	base := time.Now().UTC()
+	running := QueueJob{
+		SchemaVersion:  1,
+		ID:             "job_duplicate_status",
+		CreatedAt:      base.Format(time.RFC3339Nano),
+		UpdatedAt:      base.Format(time.RFC3339Nano),
+		Status:         QueueStatusRunning,
+		ClaimedAt:      base.Format(time.RFC3339Nano),
+		HeartbeatAt:    base.Format(time.RFC3339Nano),
+		Prompt:         "do work",
+		Mode:           ModeExec,
+		Background:     true,
+		SessionStatus:  StatusRunning,
+		ProcessStartID: "stale-process",
+	}
+	completed := running
+	completed.Status = QueueStatusCompleted
+	completed.UpdatedAt = base.Add(time.Second).Format(time.RFC3339Nano)
+	completed.HeartbeatAt = base.Add(time.Second).Format(time.RFC3339Nano)
+	completed.SessionStatus = StatusCompleted
+	completed.FinalText = "done"
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusRunning, running.ID), running); err != nil {
+		t.Fatalf("write running duplicate: %v", err)
+	}
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusCompleted, completed.ID), completed); err != nil {
+		t.Fatalf("write completed duplicate: %v", err)
+	}
+
+	loaded, err := store.LoadJob(running.ID)
+	if err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	if loaded.Status != QueueStatusCompleted || loaded.FinalText != "done" {
+		t.Fatalf("expected completed duplicate to win, got %#v", loaded)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, running.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale running duplicate removed, got %v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusCompleted, running.ID)); err != nil {
+		t.Fatalf("expected completed queue file to remain, got %v", err)
+	}
+
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusRunning, running.ID), running); err != nil {
+		t.Fatalf("restore running duplicate: %v", err)
+	}
+	jobs, err := store.ListJobs(10)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != running.ID || jobs[0].Status != QueueStatusCompleted {
+		t.Fatalf("expected one completed canonical job, got %#v", jobs)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, running.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected list to remove stale running duplicate, got %v", err)
+	}
+}
+
 func TestLoadJobRepairsMissingTerminalBackgroundNotification(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)
