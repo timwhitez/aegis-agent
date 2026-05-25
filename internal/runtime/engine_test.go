@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,42 @@ func TestEngineRunModeStopsAtAwaitingInput(t *testing.T) {
 	}
 	if result.Status != session.StatusAwaitingInput {
 		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	}
+}
+
+func TestEnginePreservesLoadedSkillStateAcrossNextTurn(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithSkill(t, session.ModeRun, "helpers", "helper skill", "FULL SKILL BODY")
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "load helper")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	turns := 0
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		turns++
+		if turns == 1 {
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_load_skill",
+					Name:      "load_skill",
+					Arguments: json.RawMessage(`{"name":"helpers"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		}
+		return provider.TurnResult{Text: "ready", StopReason: "done_candidate"}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %#v", result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if fmt.Sprint(loaded.LoadedSkills) != "[helpers]" {
+		t.Fatalf("expected loaded skill state to survive next turn, got %#v", loaded.LoadedSkills)
 	}
 }
 
@@ -2154,6 +2191,23 @@ func newTestEngine(t *testing.T, mode string) (*Engine, session.SessionMetadata,
 	return newTestEngineWithConfig(t, cfg, mode)
 }
 
+func newTestEngineWithSkill(t *testing.T, mode, skillName, skillDescription, skillBody string) (*Engine, session.SessionMetadata, session.State, *tools.Registry, *hooks.Manager, *skills.Catalog) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", skillName)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	content := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n%s\n", skillName, skillDescription, skillBody)
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	cfg.Skills.Dirs = []string{filepath.Join(root, "skills")}
+	return newTestEngineWithConfig(t, cfg, mode)
+}
+
 func newTestEngineWithConfig(t *testing.T, cfg *config.Config, mode string) (*Engine, session.SessionMetadata, session.State, *tools.Registry, *hooks.Manager, *skills.Catalog) {
 	t.Helper()
 	switch strings.ToLower(strings.TrimSpace(cfg.Runtime.GuardrailsMode)) {
@@ -2188,7 +2242,7 @@ func newTestEngineWithConfig(t *testing.T, cfg *config.Config, mode string) (*En
 	if err := store.Create(meta, state); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	catalog, err := skills.Scan(nil)
+	catalog, err := skills.Scan(cfg.Skills.Dirs)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("catalog: %v", err)
 	}

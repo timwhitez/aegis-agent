@@ -161,14 +161,56 @@ func (s *Store) LoadState(sessionID string) (State, error) {
 }
 
 func (s *Store) SaveState(sessionID string, state State) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "state.json")
 	if err != nil {
 		return err
 	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	return s.writeJSONFile(path, state)
+	lockPath, err := s.sessionPath(sessionID, "state.lock")
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.withFileLock(lockPath, func() error {
+		var current State
+		if err := readJSONFile(path, &current); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		state.LoadedSkills = mergeLoadedSkills(current.LoadedSkills, state.LoadedSkills)
+		return s.writeJSONFile(path, state)
+	})
+}
+
+func mergeLoadedSkills(current, next []string) []string {
+	if len(current) == 0 && len(next) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(current)+len(next))
+	merged := make([]string, 0, len(current)+len(next))
+	for _, value := range current {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		merged = append(merged, name)
+	}
+	for _, value := range next {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		merged = append(merged, name)
+	}
+	return merged
 }
 
 func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (State, error) {

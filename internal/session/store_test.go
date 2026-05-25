@@ -1114,6 +1114,48 @@ func TestStoreSaveStateRefreshesUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestStoreSaveStatePreservesCurrentLoadedSkills(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{
+		Status:       StatusRunning,
+		Phase:        "prepare",
+		UpdatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		LoadedSkills: []string{"helpers"},
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	stale := State{
+		Status:    StatusAwaitingInput,
+		Phase:     "turn_decide",
+		Turn:      2,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.SaveState(meta.ID, stale); err != nil {
+		t.Fatalf("save stale state: %v", err)
+	}
+
+	loaded, err := store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if strings.Join(loaded.LoadedSkills, ",") != "helpers" {
+		t.Fatalf("expected loaded skill to be preserved, got %#v", loaded.LoadedSkills)
+	}
+}
+
 func TestStoreRejectsPathLikeRecordIDs(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)

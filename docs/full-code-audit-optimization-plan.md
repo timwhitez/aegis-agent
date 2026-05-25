@@ -935,6 +935,41 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-032: Loaded skill facts can be erased by stale state saves
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/04-tools-and-skills.md` define `load_skill` as a durable, idempotent session capability: once a skill is loaded, later `load_skill` calls should return the compact `already_loaded` result unless forced.
+- `internal/tools/registry.go` `markSkillLoaded` loaded `state.json`, appended the skill name to `State.LoadedSkills`, and saved it during tool execution.
+- `internal/runtime/engine.go` keeps an in-memory `state` value for the current run and saves that value at the next turn boundary, provider call, awaiting-input transition, completion, pause, and failure paths.
+- A focused engine regression reproduced the loss: a first provider turn calls `load_skill`, the next provider turn naturally stops, and the final `state.json` has an empty `loaded_skills` list.
+
+Impact:
+
+The same skill body can be injected repeatedly in a session because the idempotency fact is lost immediately after normal engine progress. Web session summaries, compaction summaries, and provider prompt context can also under-report loaded skills even though the skill body was already delivered in `messages.jsonl`.
+
+Minimal fix:
+
+- Make `SaveState` serialize through a session-scoped `state.lock` and merge the latest durable `LoadedSkills` set into the state being saved.
+- Treat `LoadedSkills` as a monotonic session fact; there is no current API path that intentionally clears it mid-session.
+- Add store and engine regressions proving stale state saves preserve already loaded skill names.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestEnginePreservesLoadedSkillStateAcrossNextTurn|TestEngineEmitsContextLoadedEventWithDurableState|TestEngineRunModeStopsAtAwaitingInput' -count=1`: passed.
+- `go test ./internal/session -run 'TestStoreSaveStatePreservesCurrentLoadedSkills|TestStoreSaveStateRefreshesUpdatedAt|TestStoreSaveStateIgnoresPredictableTempSymlink|TestStoreLoadStateRejectsSymlinkJSON' -count=1`: passed.
+- `go test ./internal/tools -run 'TestLoadSkillReturnsAlreadyLoadedOnRepeatAndForceReload|TestLoadSkillIncludesShellWorkdirHint' -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/engine_test.go`: no output.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1162,6 +1197,12 @@ Evidence gates:
 - Confirmed FCA-20260525-031 against `planmode.json` store transition methods and Web/CLI/runtime Plan Mode control paths.
 - Confirmed `planmode.json` is the current durable fact and `planmode-history.jsonl` cannot substitute for lost current pending request, approval, or execution fields.
 - Confirmed the fix belongs in `internal/session` so Web, CLI, runtime, tools, and recovery paths share the same serialized transition behavior.
+
+### Review 30
+
+- Confirmed FCA-20260525-032 against `load_skill`, `markSkillLoaded`, `Engine.Run` state persistence, session summary, and compaction loaded-skill consumers.
+- Confirmed `loaded_skills` is a monotonic session fact used for idempotency and operator context; no current user/runtime API intentionally clears loaded skills.
+- Confirmed the fix belongs in `SaveState`, because the stale overwrite can come from multiple engine state-save boundaries after any tool-owned loaded-skill update.
 
 ## Update Log
 
@@ -1803,6 +1844,32 @@ Validation:
 - `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult|TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults' -count=1`: passed.
 - `go test ./internal/webconsole -run 'TestServicePlanModeReviseInputAndCancelControls|TestServicePlanModeApproveAppendsReplayableUserMessage|TestServicePlanModeInputDetailKeepsLiveHandle' -count=1`: passed.
 - `gofmt -l internal/session/planmode.go internal/session/planmode_test.go`: no output.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-032
+
+Slice: `fix(session): preserve loaded skill state`
+
+Changes:
+
+- Made `SaveState` write through a session-scoped `state.lock`.
+- Merged the latest durable `loaded_skills` set into stale state snapshots before writing.
+- Added a store regression for stale state saves preserving loaded skill names.
+- Added an engine regression proving a `load_skill` tool call remains durable after the next provider turn.
+- Updated the runtime test helper to scan configured skill directories so skill-aware engine tests exercise the real registry path.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestEnginePreservesLoadedSkillStateAcrossNextTurn|TestEngineEmitsContextLoadedEventWithDurableState|TestEngineRunModeStopsAtAwaitingInput' -count=1`: passed.
+- `go test ./internal/session -run 'TestStoreSaveStatePreservesCurrentLoadedSkills|TestStoreSaveStateRefreshesUpdatedAt|TestStoreSaveStateIgnoresPredictableTempSymlink|TestStoreLoadStateRejectsSymlinkJSON' -count=1`: passed.
+- `go test ./internal/tools -run 'TestLoadSkillReturnsAlreadyLoadedOnRepeatAndForceReload|TestLoadSkillIncludesShellWorkdirHint' -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/engine_test.go`: no output.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
