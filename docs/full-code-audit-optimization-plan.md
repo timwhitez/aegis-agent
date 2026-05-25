@@ -501,6 +501,34 @@ Validation:
 - Focused Google adapter prompt-block regression.
 - Full provider package test before commit.
 
+### FCA-20260525-018: OpenAI malformed tool arguments can break session persistence
+
+Severity: Medium
+
+Evidence:
+
+- OpenAI Responses returns `function_call.arguments` as a JSON-encoded string.
+- `internal/provider/openai.go` stored that string directly as `json.RawMessage` without checking whether it was valid JSON.
+- `internal/runtime/engine.go` persists returned tool calls into assistant `messages.jsonl` before dispatching tools.
+- `encoding/json` rejects invalid `json.RawMessage` during message encoding, so a malformed provider `arguments` string fails at session append time instead of being classified as a provider response parse error.
+
+Impact:
+
+An upstream or compatible OpenAI Responses gateway that returns malformed function-call arguments can turn a provider response-shape problem into a session-store append failure after the runtime has already recorded provider success. That weakens provider error classification, provider-attempt diagnostics, and durable replay consistency for a known provider-specific response field.
+
+Minimal fix:
+
+- Validate OpenAI `function_call.arguments` in the OpenAI adapter before constructing `ToolCall`.
+- Return a `response_parse_error` provider error when arguments are empty or invalid JSON.
+- Preserve normal valid argument behavior, including trimming surrounding whitespace before persistence/replay.
+- Add focused adapter coverage and a runtime regression proving provider parse errors fail before assistant-message persistence.
+
+Validation:
+
+- Focused OpenAI invalid function-call argument regression.
+- Focused runtime provider parse-error persistence regression.
+- Full provider/runtime package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -655,6 +683,12 @@ Evidence gates:
 - Confirmed FCA-20260525-017 against `spec/03-provider-contracts.md` and the owning Google adapter response path.
 - Confirmed existing candidate-level `finishReason == "SAFETY"` handling is correct but does not cover prompt-level safety blocks that arrive without candidates.
 - Confirmed the fix belongs in `internal/provider/google.go`, keeping Google response-shape logic inside the provider adapter and letting runtime consume the normalized `blocked` stop reason.
+
+### Review 18
+
+- Confirmed FCA-20260525-018 against `spec/03-provider-contracts.md`, OpenAI Responses response parsing, runtime assistant-message persistence, and provider-attempt recording.
+- Confirmed the issue is provider-adapter owned because OpenAI returns tool arguments as a string, while runtime/session expects `ToolCall.Arguments` to be valid JSON for durable message encoding and later replay.
+- Confirmed the fix should classify malformed OpenAI tool arguments as `response_parse_error` before runtime records provider success or persists an assistant message.
 
 ## Update Log
 
@@ -970,5 +1004,28 @@ Validation:
 - `go test ./internal/provider -count=1`: passed.
 - `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
 - `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-018
+
+Slice: `fix(provider): reject invalid openai tool arguments`
+
+Changes:
+
+- Validated OpenAI Responses `function_call.arguments` before constructing internal tool calls.
+- Returned a provider `response_parse_error` for empty or malformed OpenAI function-call argument strings.
+- Added adapter coverage for malformed OpenAI function-call arguments.
+- Added runtime coverage proving provider parse errors fail before assistant-message persistence and are recorded in the provider-attempt ledger.
+
+Validation:
+
+- `go test ./internal/provider -run TestOpenAIAdapterRejectsInvalidFunctionCallArguments -count=1`: passed.
+- `go test ./internal/runtime -run TestEngineProviderParseErrorFailsBeforeAssistantPersist -count=1`: passed.
+- `gofmt -l internal/provider/openai.go internal/provider/provider_test.go internal/runtime/engine_test.go`: no output.
+- `go test ./internal/provider -count=1`: passed.
+- `go test ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

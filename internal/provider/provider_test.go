@@ -150,6 +150,42 @@ func TestOpenAIResponsesReasoningSummaryEncryptedAndReplay(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapterRejectsInvalidFunctionCallArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_bad_args",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"command\":"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err == nil {
+		t.Fatal("expected invalid function-call arguments error")
+	}
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected HTTPError, got %T", err)
+	}
+	if httpErr.Provider != "openai" || httpErr.Class != "response_parse_error" {
+		t.Fatalf("unexpected provider error: %#v", httpErr)
+	}
+	if !strings.Contains(httpErr.Message, "function_call arguments") {
+		t.Fatalf("expected function-call argument parse detail, got %q", httpErr.Message)
+	}
+}
+
 func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
 	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	assistant.ProviderContentBlocks = []session.ProviderContentBlock{

@@ -105,6 +105,43 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 }
 
+func TestEngineProviderParseErrorFailsBeforeAssistantPersist(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{}, &provider.HTTPError{
+			Provider: "openai",
+			Class:    "response_parse_error",
+			Message:  "function_call arguments for \"shell\" are not valid JSON",
+		}
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatal("expected provider parse failure")
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed session, got %#v", result)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			t.Fatalf("provider parse failure should not persist assistant message: %#v", messages)
+		}
+	}
+	attempts, err := engine.store.LoadProviderAttempts(meta.ID)
+	if err != nil {
+		t.Fatalf("provider attempts: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].Outcome != "failure" || attempts[0].ErrorClass != "response_parse_error" {
+		t.Fatalf("expected parse error provider attempt, got %#v", attempts)
+	}
+}
+
 func TestEngineWritesReplayCompleteToolResultsWhenBeforeHookFails(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"

@@ -123,10 +123,18 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				}
 			}
 		case "function_call":
+			arguments := strings.TrimSpace(item.Arguments)
+			if arguments == "" || !json.Valid([]byte(arguments)) {
+				return TurnResult{}, &HTTPError{
+					Provider: "openai",
+					Class:    "response_parse_error",
+					Message:  fmt.Sprintf("function_call arguments for %q are not valid JSON", item.Name),
+				}
+			}
 			calls = append(calls, ToolCall{
 				ID:             item.CallID,
 				Name:           item.Name,
-				Arguments:      json.RawMessage(item.Arguments),
+				Arguments:      json.RawMessage(arguments),
 				ProviderCallID: item.CallID,
 			})
 		case "reasoning":
