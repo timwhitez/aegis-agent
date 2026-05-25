@@ -302,6 +302,23 @@ func TestOpenAIInputReplaysEmptyReasoningSummaryArray(t *testing.T) {
 	}
 }
 
+func TestOpenAIInputRejectsMalformedPersistedToolArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args json.RawMessage
+		want string
+	}{
+		{name: "invalid json", args: json.RawMessage(`not-json`), want: "valid JSON"},
+		{name: "non object", args: json.RawMessage(`[]`), want: "JSON object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_bad", Name: "shell", Arguments: tc.args}})
+			_, err := openAIInput([]session.Message{assistant}, "gpt-5.5")
+			assertProviderParseError(t, err, "openai", tc.want)
+		})
+	}
+}
+
 func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

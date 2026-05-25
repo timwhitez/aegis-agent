@@ -1683,6 +1683,32 @@ Validation:
 - Focused provider replay regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-057: OpenAI replay trusts persisted function-call arguments
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` says OpenAI Responses replay and tool-format differences belong in the OpenAI adapter, and tool-call arguments are part of the provider/tool protocol boundary.
+- Prior provider fixes normalized OpenAI Responses `function_call.arguments` on ingress and rejected malformed or non-object JSON before constructing internal `ToolCall` values.
+- Before this slice, `internal/provider/openai.go` `openAIInput` reconstructed persisted assistant `function_call` replay items with `"arguments": string(call.Arguments)` and did not revalidate the persisted `session.ToolCall.Arguments`.
+- Therefore a corrupted or manually edited `messages.jsonl` assistant tool call could be replayed to Responses with invalid JSON text or a non-object JSON value, while Anthropic and Google replay paths already returned adapter parse errors for the same persisted-state corruption class.
+
+Impact:
+
+Malformed persisted OpenAI replay facts could be sent to the provider as invalid Responses history instead of failing locally as a `response_parse_error`. This weakens provider replay diagnostics and makes the behavior inconsistent across adapter families after FCA-20260526-056.
+
+Minimal fix:
+
+- Validate persisted OpenAI replay `session.ToolCall.Arguments` with the same JSON object contract used for provider-emitted tool calls.
+- Return an OpenAI `response_parse_error` from `openAIInput` before the HTTP request if persisted function-call arguments are empty, invalid, or non-object JSON.
+- Add focused OpenAI replay regressions for invalid JSON and non-object persisted arguments.
+
+Validation:
+
+- Focused OpenAI replay regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2060,6 +2086,12 @@ Evidence gates:
 - Confirmed FCA-20260526-056 against `spec/03-provider-contracts.md`, `normalizeToolCallArguments`, `anthropicMessages`, `anthropicProviderContent`, `googleContents`, `googleProviderParts`, and provider replay regressions.
 - Confirmed provider ingress already rejects malformed live tool-call arguments, but adapter outbound replay reconstruction trusted persisted provider-native blocks and fallback tool calls.
 - Confirmed the fix belongs in provider adapters so Web, CLI, runtime, and tool layers continue to treat provider-native replay facts as adapter-owned opaque facts.
+
+### Review 55
+
+- Confirmed FCA-20260526-057 against `spec/03-provider-contracts.md`, `openAIInput`, `normalizeToolCallArguments`, prior OpenAI ingress argument tests, and focused OpenAI replay regressions.
+- Confirmed this is not a provider-native reasoning-block issue: OpenAI reasoning replay still filters by provider/profile/API/model, but the ordinary persisted `session.ToolCall.Arguments` fallback path was not revalidated on outbound replay.
+- Confirmed the fix belongs in the OpenAI adapter replay builder, not in Web, CLI, runtime, or session storage, because provider-specific replay shape construction remains adapter-owned.
 
 ## Update Log
 
@@ -3299,6 +3331,31 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-057
+
+Slice: `fix(provider): validate openai replay arguments`
+
+Changes:
+
+- Changed OpenAI Responses replay reconstruction to validate persisted `session.ToolCall.Arguments` before serializing `function_call.arguments`.
+- Reused the existing OpenAI tool-call argument JSON object contract so corrupted replay facts fail locally as `response_parse_error`.
+- Added focused OpenAI replay regressions for invalid JSON and non-object persisted function-call arguments.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestOpenAIInputReplaysEncryptedReasoningBlockSafely|TestOpenAIInputReplaysEmptyReasoningSummaryArray|TestOpenAIInputRejectsMalformedPersistedToolArguments' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.

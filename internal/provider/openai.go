@@ -309,11 +309,15 @@ func openAIInput(messages []session.Message, model string, scope ...string) ([]a
 				})
 			}
 			for _, call := range msg.ToolCalls {
+				arguments, err := normalizeToolCallArguments("openai", call.Name, call.Arguments)
+				if err != nil {
+					return nil, err
+				}
 				input = append(input, map[string]any{
 					"type":      "function_call",
 					"call_id":   call.ID,
 					"name":      call.Name,
-					"arguments": string(call.Arguments),
+					"arguments": string(arguments),
 				})
 			}
 		case "tool":
