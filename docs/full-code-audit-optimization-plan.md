@@ -585,6 +585,34 @@ Validation:
 - Focused runtime provider stop-reason regression.
 - Full provider/runtime package tests before commit.
 
+### FCA-20260525-021: Anthropic unknown stop reasons are treated as normal done candidates
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` maps Anthropic `end_turn` to internal `done_candidate`, `max_tokens` to `max_tokens`, and `pause_turn` to `error`.
+- `internal/provider/anthropic.go` initialized `stopReason := "done_candidate"` and only changed it for `tool_use`, `max_tokens`, or `pause_turn`.
+- Therefore a non-tool response with a different non-empty `stop_reason`, such as `refusal`, returned `StopReason: "done_candidate"`.
+- `internal/runtime/engine.go` treats `done_candidate` as a normal assistant turn, while provider stop failures are driven by `max_tokens`, `blocked`, and `error`.
+
+Impact:
+
+Anthropic-compatible gateways can return an unexpected terminal stop reason while the harness treats the turn as ordinary completion. That loses provider stop facts at the runtime boundary and can leave a session awaiting input or finish instead of being marked as a resumable provider failure with the raw stop reason preserved.
+
+Minimal fix:
+
+- Map Anthropic `stop_reason=end_turn` explicitly to `done_candidate`.
+- Map non-empty unrecognized Anthropic stop reasons to internal `StopReason: "error"`.
+- Preserve raw Anthropic stop reason metadata for diagnostics.
+- Add a focused Anthropic adapter regression for an unknown stop reason.
+
+Validation:
+
+- Focused Anthropic unknown-stop regression.
+- Focused runtime provider stop-reason regression.
+- Full provider/runtime package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -757,6 +785,12 @@ Evidence gates:
 - Confirmed FCA-20260525-020 against the Google stop-reason contract, adapter finish-reason mapping, and runtime provider stop failure handling.
 - Confirmed `finishReason=STOP` is the normal done-candidate case; non-empty unrecognized finish reasons should not inherit the default normal-candidate path.
 - Confirmed the fix belongs in the Google adapter, preserving provider-specific finish-reason interpretation inside the provider layer.
+
+### Review 21
+
+- Confirmed FCA-20260525-021 against the Anthropic stop-reason contract, adapter stop-reason mapping, and runtime provider stop failure handling.
+- Confirmed `stop_reason=end_turn` is the normal done-candidate case; non-empty unrecognized stop reasons should not inherit the default normal-candidate path.
+- Confirmed the fix belongs in the Anthropic adapter, preserving provider-specific stop-reason interpretation inside the provider layer.
 
 ## Update Log
 
@@ -1136,6 +1170,29 @@ Validation:
 - `go test ./internal/provider -run 'TestGoogleAdapterMapsUnknownFinishReasonToErrorStop|TestGoogleAdapterSerializesAndParses|TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates' -count=1`: passed.
 - `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
 - `gofmt -l internal/provider/google.go internal/provider/provider_test.go`: no output.
+- `go test ./internal/provider -count=1`: passed.
+- `go test ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-021
+
+Slice: `fix(provider): map anthropic unknown stops`
+
+Changes:
+
+- Made Anthropic `stop_reason=end_turn` the explicit normal done-candidate mapping.
+- Mapped other non-empty Anthropic stop reasons to internal `error`.
+- Preserved raw Anthropic stop reason metadata for diagnostics.
+- Added an Anthropic adapter regression for an unknown stop reason.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestAnthropicAdapterMapsUnknownStopReasonToErrorStop|TestAnthropicAdapterSerializesAndParses|TestAnthropicAdapterAppliesPromptCacheMarkersAndTelemetry' -count=1`: passed.
+- `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
+- `gofmt -l internal/provider/anthropic.go internal/provider/provider_test.go`: no output.
 - `go test ./internal/provider -count=1`: passed.
 - `go test ./internal/runtime -count=1`: passed.
 - `git diff --check`: passed.

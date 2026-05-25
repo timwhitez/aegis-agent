@@ -145,10 +145,16 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	switch resp.StopReason {
 	case "tool_use":
 		stopReason = "tool_use"
+	case "end_turn":
+		stopReason = "done_candidate"
 	case "max_tokens":
 		stopReason = "max_tokens"
 	case "pause_turn":
 		stopReason = "error"
+	default:
+		if strings.TrimSpace(resp.StopReason) != "" {
+			stopReason = "error"
+		}
 	}
 	return TurnResult{
 		Text:                  text,

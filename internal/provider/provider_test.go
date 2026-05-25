@@ -338,6 +338,36 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	}
 }
 
+func TestAnthropicAdapterMapsUnknownStopReasonToErrorStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_unknown_stop",
+			"stop_reason":"refusal",
+			"content":[{"type":"text","text":"partial"}],
+			"usage":{"input_tokens":8,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected error stop reason, got %#v", result)
+	}
+	if result.RawProvider["provider_stop_reason"] != "refusal" || result.RawProvider["stop_reason"] != "refusal" {
+		t.Fatalf("expected raw stop reason to be preserved, got %#v", result.RawProvider)
+	}
+}
+
 func TestAnthropicAdapterAppliesPromptCacheMarkersAndTelemetry(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
