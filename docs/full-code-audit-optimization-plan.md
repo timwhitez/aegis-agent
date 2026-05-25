@@ -699,6 +699,35 @@ Validation:
 - Focused WebConsole mutation guard regression.
 - Full WebConsole package test before commit.
 
+### FCA-20260525-025: Web start lifecycle has an untracked pre-session window
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` describes the Web service adapter as owning asynchronous start / continue handles, and `Service.Close` cancels active handles then waits on `launchWG`.
+- `internal/webconsole/service.go` `handleContinueSession` and `launchPlanModeContinue` create a handle before starting their tracked goroutine.
+- `internal/webconsole/service.go` `startSession` started `runner.Start` in a bare goroutine, then waited for `session.created` / `session.started` before adding a handle and before attaching the goroutine to `launchWG`.
+- If the Web service closed while `runner.Start` was still before a session id becoming observable, `Service.Close` had no handle to cancel and no wait-group entry to wait for.
+- The prior lifecycle regression covered Plan Mode continue tracking but not this pre-session-id start window.
+
+Impact:
+
+`Service.Close` could return while an initial Web start goroutine was still running before the session id was known to the Web adapter. That weakened the local Web service lifecycle contract and could leave provider/session work racing after the service was considered closed.
+
+Minimal fix:
+
+- Add a small pending-start registry for starts that have a cancellation function but not yet a session id.
+- Track the initial `runner.Start` goroutine in `launchWG` immediately.
+- Make `Close` mark the service closed, cancel pending starts, cancel visible handles, and wait for all tracked launches.
+- Promote a pending start to a normal session handle once the session id is observed, rejecting promotion if the service is already closing.
+- Add focused lifecycle coverage for pending-start close behavior and keep adjacent handle-owner / Plan Mode continue lifecycle tests passing.
+
+Validation:
+
+- Focused WebConsole lifecycle regressions.
+- Full WebConsole package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -896,6 +925,12 @@ Evidence gates:
 - Confirmed FCA-20260525-024 against the WebConsole unsafe mutation guard and `spec/17-web-console.md`'s exact `Content-Type: application/json` requirement.
 - Confirmed every unsafe `/api/` route still passes through `guardUnsafeAPIRequest`, so the fix belongs at that shared boundary rather than in individual mutation handlers.
 - Confirmed `mime.ParseMediaType` preserves valid `application/json` parameters while rejecting different JSON-family media types.
+
+### Review 25
+
+- Confirmed FCA-20260525-025 against `Service.Close`, `startSession`, `trackLaunch`, `handleContinueSession`, and `launchPlanModeContinue`.
+- Confirmed continue and Plan Mode continue already create handles before tracked goroutines, while initial start had a pre-session-id goroutine that was neither handle-owned nor wait-group tracked.
+- Confirmed the fix stays inside the Web service adapter lifecycle and does not introduce browser-side or in-memory session state authority; durable session facts remain owned by runtime/session store.
 
 ## Update Log
 
@@ -1371,6 +1406,28 @@ Changes:
 Validation:
 
 - `go test ./internal/webconsole -run 'TestServiceRejectsJSONMutationSubtypeContentType|TestServiceRejectsForeignOriginMutation|TestServiceRejectsOversizedJSONMutationBody|TestServiceWorkerScaling' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: no output.
+- `go test ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-025
+
+Slice: `fix(webconsole): track pending starts on close`
+
+Changes:
+
+- Added Web service pending-start tracking for starts that have a cancel function but no observed session id yet.
+- Made initial `runner.Start` use `trackLaunch` immediately, before waiting for `session.created`.
+- Made `Service.Close` mark the service closed, cancel pending starts and active handles, and then wait for tracked launch goroutines.
+- Guarded handle addition/promotion after close so late starts cannot re-enter the active handle map.
+- Added focused lifecycle coverage for pending-start cancellation during close.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceCloseCancelsPendingStartBeforeSessionID|TestServicePlanModeContinueIsTrackedByLaunchWaitGroup|TestSessionDetailReportsActiveHandleOwner|TestServiceInterruptUsesManualPauseReason|TestServiceStopSessionPausesWithManualStopReason' -count=1`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: no output.
 - `go test ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.

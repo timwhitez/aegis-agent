@@ -93,6 +93,10 @@ type Service struct {
 
 	mu      sync.RWMutex
 	handles map[string]*launchHandle
+	closed  bool
+
+	pendingStartSeq int
+	pendingStarts   map[int]context.CancelFunc
 
 	launchWG sync.WaitGroup
 }
@@ -266,11 +270,12 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	}
 	store := runtime.NewStoreView(serviceCfg).Store()
 	svc := &Service{
-		cfg:        serviceCfg,
-		configPath: opts.ConfigPath,
-		store:      store,
-		staticFS:   staticFS,
-		handles:    map[string]*launchHandle{},
+		cfg:           serviceCfg,
+		configPath:    opts.ConfigPath,
+		store:         store,
+		staticFS:      staticFS,
+		handles:       map[string]*launchHandle{},
+		pendingStarts: map[int]context.CancelFunc{},
 	}
 	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount)
 	return svc, nil
@@ -283,8 +288,17 @@ func (s *Service) Close() {
 	for _, handle := range s.handles {
 		handles = append(handles, handle)
 	}
+	pendingCancels := make([]context.CancelFunc, 0, len(s.pendingStarts))
+	for _, cancel := range s.pendingStarts {
+		pendingCancels = append(pendingCancels, cancel)
+	}
+	s.closed = true
 	s.handles = map[string]*launchHandle{}
+	s.pendingStarts = map[int]context.CancelFunc{}
 	s.mu.Unlock()
+	for _, cancel := range pendingCancels {
+		cancel()
+	}
 	for _, handle := range handles {
 		handle.cancel()
 		_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "service_close"})
@@ -1512,19 +1526,28 @@ func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error)
 	runner := runtime.NewRunner(cfg)
 	sub := runner.Bus().Subscribe(32)
 	runCtx, cancel := context.WithCancel(context.Background())
-	outcomeCh := make(chan launchOutcome, 1)
-	go func() {
-		result, err := runner.Start(runCtx, req)
-		outcomeCh <- launchOutcome{result: result, err: err}
-	}()
-
-	sessionID, early, err := waitForSessionID(sub, outcomeCh)
+	pendingStartID, err := s.registerPendingStart(cancel)
 	if err != nil {
 		cancel()
 		return LaunchResponse{}, err
 	}
+	outcomeCh := make(chan launchOutcome, 1)
+	s.trackLaunch(func() {
+		result, err := runner.Start(runCtx, req)
+		outcomeCh <- launchOutcome{result: result, err: err}
+	})
+
+	sessionID, early, err := waitForSessionID(sub, outcomeCh)
+	if err != nil {
+		s.removePendingStart(pendingStartID)
+		cancel()
+		return LaunchResponse{}, err
+	}
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	s.addHandle(handle)
+	if !s.promotePendingStart(pendingStartID, handle) {
+		cancel()
+		return LaunchResponse{}, errors.New("web service is closing")
+	}
 	if early != nil {
 		s.trackLaunch(func() {
 			s.finishHandle(handle, *early)
@@ -1579,7 +1602,11 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	s.addHandle(handle)
+	if !s.addHandle(handle) {
+		cancel()
+		writeError(w, http.StatusServiceUnavailable, errors.New("web service is closing"))
+		return
+	}
 	s.trackLaunch(func() {
 		result, err := runner.Continue(runCtx, runtime.ContinueRequest{
 			SessionID:      sessionID,
@@ -1769,7 +1796,10 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	s.addHandle(handle)
+	if !s.addHandle(handle) {
+		cancel()
+		return errors.New("web service is closing")
+	}
 	s.trackLaunch(func() {
 		result, err := runner.Continue(runCtx, req)
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
@@ -1983,7 +2013,7 @@ func (s *Service) handleScaleWorkers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, s.workers.Snapshot())
 }
 
-func (s *Service) addHandle(handle *launchHandle) {
+func (s *Service) addHandle(handle *launchHandle) bool {
 	if handle.startedAt == "" {
 		handle.startedAt = nowString()
 	}
@@ -1994,9 +2024,55 @@ func (s *Service) addHandle(handle *launchHandle) {
 		handle.pid = webconsoleProcessOwner.pid
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return false
+	}
 	s.handles[handle.sessionID] = handle
 	s.mu.Unlock()
 	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil)
+	return true
+}
+
+func (s *Service) registerPendingStart(cancel context.CancelFunc) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return 0, errors.New("web service is closing")
+	}
+	s.pendingStartSeq++
+	id := s.pendingStartSeq
+	s.pendingStarts[id] = cancel
+	return id, nil
+}
+
+func (s *Service) removePendingStart(id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pendingStarts, id)
+}
+
+func (s *Service) promotePendingStart(id int, handle *launchHandle) bool {
+	if handle.startedAt == "" {
+		handle.startedAt = nowString()
+	}
+	if handle.processStartID == "" {
+		handle.processStartID = webconsoleProcessOwner.processStartID
+	}
+	if handle.pid == 0 {
+		handle.pid = webconsoleProcessOwner.pid
+	}
+	s.mu.Lock()
+	if s.closed {
+		delete(s.pendingStarts, id)
+		s.mu.Unlock()
+		return false
+	}
+	delete(s.pendingStarts, id)
+	s.handles[handle.sessionID] = handle
+	s.mu.Unlock()
+	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil)
+	return true
 }
 
 func (s *Service) finishHandle(handle *launchHandle, outcome launchOutcome) {

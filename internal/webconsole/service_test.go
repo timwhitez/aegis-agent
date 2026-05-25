@@ -1613,6 +1613,47 @@ func TestServiceStartSessionPersistsAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestServiceCloseCancelsPendingStartBeforeSessionID(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	cancelled := make(chan struct{})
+	pendingID, err := svc.registerPendingStart(func() {
+		close(cancelled)
+	})
+	if err != nil {
+		t.Fatalf("register pending start: %v", err)
+	}
+	if pendingID == 0 {
+		t.Fatal("expected non-zero pending start id")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		svc.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return while start was pending before session id observation")
+	}
+
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("expected pending start cancel function to run during Close")
+	}
+
+	if _, err := svc.registerPendingStart(func() {}); err == nil {
+		t.Fatal("expected pending start registration to fail after Close")
+	}
+}
+
 func TestContinueRESTCarriesRuntimeFields(t *testing.T) {
 	captured := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1862,13 +1903,15 @@ func TestSessionDetailReportsActiveHandleOwner(t *testing.T) {
 	if err := svc.store.Create(current, testSessionState(session.StatusRunning)); err != nil {
 		t.Fatalf("create current session: %v", err)
 	}
-	svc.addHandle(&launchHandle{
+	if !svc.addHandle(&launchHandle{
 		sessionID:      current.ID,
 		cancel:         func() {},
 		startedAt:      "2026-05-08T00:00:00Z",
 		processStartID: "current-process",
 		pid:            4242,
-	})
+	}) {
+		t.Fatal("expected active handle to be accepted")
+	}
 	var currentDetail SessionDetailResponse
 	postGetJSON(t, ts.URL+"/api/sessions/"+current.ID, &currentDetail)
 	if !currentDetail.ActiveHandle || currentDetail.ActiveHandleOwner.State != "current_process" || currentDetail.ActiveHandleOwner.ProcessStartID != "current-process" || currentDetail.ActiveHandleOwner.PID != 4242 {
