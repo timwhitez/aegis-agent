@@ -529,6 +529,34 @@ Validation:
 - Focused runtime provider parse-error persistence regression.
 - Full provider/runtime package tests before commit.
 
+### FCA-20260525-019: OpenAI non-completed statuses are treated as normal done candidates
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` maps OpenAI `status=completed` with no tools to internal `done_candidate`, `incomplete_details.reason=max_output_tokens` to `max_tokens`, and provider/adapter errors to `error`.
+- `internal/provider/openai.go` initialized `stopReason := "done_candidate"` and only changed it for tool calls, max-token incomplete details, or `status == "completed"`.
+- Therefore a response such as `status="failed"` with no tool calls and no max-token incomplete reason returned `StopReason: "done_candidate"`.
+- `internal/runtime/engine.go` only treats `max_tokens`, `blocked`, and `error` as provider stop failures; `done_candidate` in run mode becomes `awaiting_input`, and in exec/init mode can enter the normal finish-required loop.
+
+Impact:
+
+OpenAI Responses or compatible gateways can report a non-completed terminal status while the harness treats the turn as a normal assistant candidate. That hides provider failure facts from the runtime's provider stop handling, weakens recovery diagnostics, and can leave a session awaiting input or finish instead of being marked as a resumable provider failure.
+
+Minimal fix:
+
+- Map non-empty OpenAI statuses other than `completed` and recognized max-token incomplete responses to internal `StopReason: "error"` when no tool calls are present.
+- Preserve the raw provider `status` in `RawProvider` for diagnostics.
+- Add a focused OpenAI adapter regression for `status="failed"`.
+- Reuse the runtime provider stop-reason regression to verify `error` remains resumable.
+
+Validation:
+
+- Focused OpenAI non-completed status regression.
+- Focused runtime provider stop-reason regression.
+- Full provider/runtime package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -689,6 +717,12 @@ Evidence gates:
 - Confirmed FCA-20260525-018 against `spec/03-provider-contracts.md`, OpenAI Responses response parsing, runtime assistant-message persistence, and provider-attempt recording.
 - Confirmed the issue is provider-adapter owned because OpenAI returns tool arguments as a string, while runtime/session expects `ToolCall.Arguments` to be valid JSON for durable message encoding and later replay.
 - Confirmed the fix should classify malformed OpenAI tool arguments as `response_parse_error` before runtime records provider success or persists an assistant message.
+
+### Review 19
+
+- Confirmed FCA-20260525-019 against the OpenAI stop-reason contract, adapter status mapping, and runtime provider stop failure handling.
+- Confirmed `status=completed` remains the only OpenAI status that should map to `done_candidate`; unrecognized non-empty statuses should not inherit the default normal-candidate path.
+- Confirmed the fix belongs in the OpenAI adapter, keeping provider status interpretation out of Web, CLI, tools, and generic runtime code.
 
 ## Update Log
 
@@ -1023,6 +1057,28 @@ Validation:
 - `go test ./internal/provider -run TestOpenAIAdapterRejectsInvalidFunctionCallArguments -count=1`: passed.
 - `go test ./internal/runtime -run TestEngineProviderParseErrorFailsBeforeAssistantPersist -count=1`: passed.
 - `gofmt -l internal/provider/openai.go internal/provider/provider_test.go internal/runtime/engine_test.go`: no output.
+- `go test ./internal/provider -count=1`: passed.
+- `go test ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-019
+
+Slice: `fix(provider): map openai failed statuses`
+
+Changes:
+
+- Changed OpenAI stop-reason mapping so non-empty non-`completed` statuses fall through to internal `error` when no tool call or max-token incomplete reason applies.
+- Preserved raw OpenAI status facts in `RawProvider`.
+- Added an OpenAI adapter regression for `status="failed"` with no tool calls.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestOpenAIAdapterMapsNonCompletedStatusToErrorStop|TestOpenAIAdapterSerializesAndParses' -count=1`: passed.
+- `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
+- `gofmt -l internal/provider/openai.go internal/provider/provider_test.go`: no output.
 - `go test ./internal/provider -count=1`: passed.
 - `go test ./internal/runtime -count=1`: passed.
 - `git diff --check`: passed.

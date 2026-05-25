@@ -186,6 +186,38 @@ func TestOpenAIAdapterRejectsInvalidFunctionCallArguments(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapterMapsNonCompletedStatusToErrorStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_failed",
+			"status":"failed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}
+			],
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected error stop reason, got %#v", result)
+	}
+	if result.RawProvider["provider_stop_reason"] != "failed" || result.RawProvider["status"] != "failed" {
+		t.Fatalf("expected raw failed status to be preserved, got %#v", result.RawProvider)
+	}
+}
+
 func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
 	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	assistant.ProviderContentBlocks = []session.ProviderContentBlock{

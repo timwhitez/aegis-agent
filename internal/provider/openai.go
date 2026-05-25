@@ -175,6 +175,8 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		stopReason = "max_tokens"
 	case resp.Status == "completed":
 		stopReason = "done_candidate"
+	case strings.TrimSpace(resp.Status) != "":
+		stopReason = "error"
 	}
 	return TurnResult{
 		Text:                  text,
