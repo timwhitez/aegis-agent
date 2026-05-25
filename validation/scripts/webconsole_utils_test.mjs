@@ -163,6 +163,14 @@ test('collectPlanInputAnswers preserves selected multi-question answers', () => 
   ]);
 });
 
+test('isAcceptedLaunchResponse recognizes async launch responses only', () => {
+  assert.equal(context.isAcceptedLaunchResponse({ session_id: 'session_123', status: 'accepted' }), true);
+  assert.equal(context.isAcceptedLaunchResponse({ session_id: 'session_123', status: 'ACCEPTED' }), true);
+  assert.equal(context.isAcceptedLaunchResponse({ session_id: 'session_123', status: 'completed' }), false);
+  assert.equal(context.isAcceptedLaunchResponse({ goal_id: 'goal_123', status: 'active' }), false);
+  assert.equal(context.isAcceptedLaunchResponse(null), false);
+});
+
 test('mergeMessageWindows preserves older loaded messages when server tail overlaps', () => {
   const current = ['m1', 'm2', 'm3', 'm4'].map((id) => ({ id }));
   const next = ['m3', 'm4', 'm5'].map((id) => ({ id }));

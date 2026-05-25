@@ -1411,6 +1411,34 @@ Validation:
 - JavaScript syntax validation.
 - Standard grouped validation before commit.
 
+### FCA-20260526-047: Goal plan approval does not enter running UI state for linked Plan Mode
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` says approving a goal plan with linked pending Plan Mode must go through Plan Mode approval / continue, and Plan Mode approval resumes execution as the next durable turn.
+- `internal/webconsole/service.go` `handleMissionPlanApprove` returns `202 Accepted` with `LaunchResponse{status:"accepted"}` when a linked Plan Mode is `awaiting_approval` or `approved`, because it launches `runtime.ContinueRequest{ApprovePlan:true}` asynchronously.
+- `internal/webconsole/assets/app.js` `handlePlanModeAction("approve")` calls `setGenerating(true, ...)` immediately after Plan Mode approval.
+- `internal/webconsole/assets/app.js` `handleGoalAction("approve-plan")` did not inspect the response from `approveMissionPlan`; it always showed success and waited for a refresh while `state.isGenerating` stayed false until polling saw `state.status=running`.
+- The polling loop only continues automatically while `state.isGenerating` is true, while session detail is missing, or while active descendants exist. The Goal approval path queued a single refresh, but did not enter the same running/polling UI state as direct Plan Mode approval.
+
+Impact:
+
+After approving a linked Goal plan from the Goal inspector, the default Web console could briefly present stale composer/actions instead of the running-state controls used by direct Plan Mode approval. This weakens Web-first action consistency for the same backend execution path.
+
+Minimal fix:
+
+- Detect accepted asynchronous launch responses from `approveMissionPlan`.
+- When Goal plan approval returns an accepted launch, set the same running activity state used by Plan Mode approval.
+- Add a focused frontend utility regression for accepted-launch response detection.
+
+Validation:
+
+- Focused frontend utility regression.
+- JavaScript syntax validation.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1728,6 +1756,12 @@ Evidence gates:
 - Confirmed FCA-20260526-046 against `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, `SessionDetailResponse.ProviderAttempts`, `sessionDetail`, and the session summary renderer.
 - Confirmed the backend API already returned tailed provider-attempt facts, so the drift was confined to the frontend Web operator surface rather than provider ledger persistence.
 - Confirmed the minimal fix belongs in `session-view.js` with renderer coverage, not in runtime/provider code.
+
+### Review 45
+
+- Confirmed FCA-20260526-047 against `spec/17-web-console.md`, `handleMissionPlanApprove`, `handlePlanModeAction`, `handleGoalAction`, `refreshCurrentSession`, and polling predicates.
+- Confirmed the backend correctly launches linked Plan Mode approval and returns `202 Accepted`; the bug is frontend state handling for the Goal inspector path only.
+- Confirmed the fix belongs in the shared frontend launch-response handling, not in runtime or store Plan Mode state transitions.
 
 ## Update Log
 
@@ -2723,6 +2757,31 @@ Validation:
 
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: initially failed because the existing VM harness lacked app-level stubs for `collectRecentToolEntries` and `phaseHeadline`; added narrow stubs, reran, and passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-047
+
+Slice: `fix(webconsole): mark linked goal plan launches running`
+
+Changes:
+
+- Added a shared frontend helper to recognize accepted asynchronous session launch responses.
+- Updated Goal inspector plan approval so a linked Plan Mode approval response immediately enters the same running UI state used by direct Plan Mode approval.
+- Added frontend utility coverage proving accepted launch responses are recognized without misclassifying ordinary goal snapshots.
+
+Validation:
+
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.

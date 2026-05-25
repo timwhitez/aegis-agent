@@ -29,6 +29,10 @@ function collectPlanInputAnswers(request, selections) {
   return answers;
 }
 
+function isAcceptedLaunchResponse(value) {
+  return String(value?.status || '').toLowerCase() === 'accepted' && Boolean(value?.session_id);
+}
+
 function mergeMessageWindows(currentMessages, nextMessages) {
   const current = maybeArray(currentMessages);
   const next = maybeArray(nextMessages);

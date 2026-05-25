@@ -1667,8 +1667,9 @@ async function handleGoalAction(button) {
       await deleteGoal(state.sessionId);
       showToast('Goal cleared.', 'success');
     } else if (action === 'approve-plan') {
+      let response = null;
       try {
-        await approveMissionPlan(state.sessionId);
+        response = await approveMissionPlan(state.sessionId);
       } catch (err) {
         if (!isCoverageApprovalBlock(err)) {
           throw err;
@@ -1677,7 +1678,14 @@ async function handleGoalAction(button) {
           showToast('Goal plan approval was not overridden.', 'info');
           return;
         }
-        await approveMissionPlan(state.sessionId, { override_coverage: true });
+        response = await approveMissionPlan(state.sessionId, { override_coverage: true });
+      }
+      if (isAcceptedLaunchResponse(response)) {
+        setGenerating(true, {
+          title: 'Executing approved plan',
+          copy: 'The linked Plan Mode plan is now running as the next durable turn.',
+          tone: 'live'
+        });
       }
       showToast('Goal plan approved.', 'success');
     }
