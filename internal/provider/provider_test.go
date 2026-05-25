@@ -833,10 +833,13 @@ func TestProviderReplaySerializesCompactedProviderBlockToolCalls(t *testing.T) {
 		{Provider: "anthropic", Type: "thinking", Thinking: "reasoning", Signature: "sig_thinking_1"},
 		{Provider: "anthropic", Type: "tool_use", ID: "toolu_old", Name: "shell", Input: compactedArgs},
 	}
-	anthropicReplay := anthropicMessages([]session.Message{
+	anthropicReplay, err := anthropicMessages([]session.Message{
 		anthropicAssistant,
 		session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_old", Name: "shell", LLMOutput: "ok"}}),
 	}, "claude-sonnet-4-6", "", "", false)
+	if err != nil {
+		t.Fatalf("anthropic replay: %v", err)
+	}
 	anthropicData, _ := json.Marshal(anthropicReplay)
 	anthropicBody := string(anthropicData)
 	for _, want := range []string{
@@ -854,10 +857,13 @@ func TestProviderReplaySerializesCompactedProviderBlockToolCalls(t *testing.T) {
 	googleAssistant.ProviderContentBlocks = []session.ProviderContentBlock{
 		{Provider: "google", Type: "function_call", ID: "gcall_old", Name: "shell", Args: compactedArgs, ThoughtSignature: "sig_call_1"},
 	}
-	googleReplay := googleContents([]session.Message{
+	googleReplay, err := googleContents([]session.Message{
 		googleAssistant,
 		session.NewToolMessage([]session.ToolResult{{ToolCallID: "gcall_old", Name: "shell", LLMOutput: `{"output":"ok"}`}}),
 	}, "gemini-2.5-flash", "", "")
+	if err != nil {
+		t.Fatalf("google replay: %v", err)
+	}
 	googleData, _ := json.Marshal(googleReplay)
 	googleBody := string(googleData)
 	for _, want := range []string{
@@ -870,6 +876,61 @@ func TestProviderReplaySerializesCompactedProviderBlockToolCalls(t *testing.T) {
 		if !strings.Contains(googleBody, want) {
 			t.Fatalf("expected %s in compacted google replay body: %s", want, googleBody)
 		}
+	}
+}
+
+func TestProviderReplayRejectsMalformedPersistedToolArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		providerName string
+		run          func() error
+	}{
+		{
+			name:         "anthropic provider block",
+			providerName: "anthropic",
+			run: func() error {
+				assistant := session.NewAssistantMessage("", "", nil)
+				assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "anthropic", Type: "tool_use", ID: "toolu_bad", Name: "shell", Input: json.RawMessage(`[]`)},
+				}
+				_, err := anthropicMessages([]session.Message{assistant}, "claude-sonnet-4-6", "", "", false)
+				return err
+			},
+		},
+		{
+			name:         "anthropic fallback tool call",
+			providerName: "anthropic",
+			run: func() error {
+				assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "toolu_bad", Name: "shell", Arguments: json.RawMessage(`not-json`)}})
+				_, err := anthropicMessages([]session.Message{assistant}, "claude-sonnet-4-6", "", "", false)
+				return err
+			},
+		},
+		{
+			name:         "google provider block",
+			providerName: "google",
+			run: func() error {
+				assistant := session.NewAssistantMessage("", "", nil)
+				assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "google", Type: "function_call", ID: "gcall_bad", Name: "shell", Args: json.RawMessage(`[]`)},
+				}
+				_, err := googleContents([]session.Message{assistant}, "gemini-2.5-flash", "", "")
+				return err
+			},
+		},
+		{
+			name:         "google fallback tool call",
+			providerName: "google",
+			run: func() error {
+				assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "gcall_bad", Name: "shell", Arguments: json.RawMessage(`not-json`)}})
+				_, err := googleContents([]session.Message{assistant}, "gemini-2.5-flash", "", "")
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertProviderParseError(t, tc.run(), tc.providerName, "tool-call arguments")
+		})
 	}
 }
 

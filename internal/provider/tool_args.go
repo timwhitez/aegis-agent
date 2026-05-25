@@ -24,6 +24,18 @@ func normalizeToolCallArguments(providerName, toolName string, raw json.RawMessa
 	return json.RawMessage(trimmed), nil
 }
 
+func toolCallArgumentsObject(providerName, toolName string, raw json.RawMessage) (map[string]any, error) {
+	normalized, err := normalizeToolCallArguments(providerName, toolName, raw)
+	if err != nil {
+		return nil, err
+	}
+	var value map[string]any
+	if err := json.Unmarshal(normalized, &value); err != nil {
+		return nil, toolCallArgumentsError(providerName, toolName, "are not valid JSON")
+	}
+	return value, nil
+}
+
 func toolCallArgumentsError(providerName, toolName, detail string) error {
 	return &HTTPError{
 		Provider: providerName,

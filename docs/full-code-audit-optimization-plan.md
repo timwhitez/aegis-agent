@@ -1654,6 +1654,35 @@ Validation:
 - Focused Web owner reporting regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-056: Persisted provider replay can serialize malformed tool arguments
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` says provider-native replay facts belong to provider adapters, and Anthropic / Google replay must preserve native `tool_use` / `functionCall` shapes while maintaining provider/tool protocol integrity.
+- `internal/provider/tool_args.go` already normalizes provider-emitted tool-call arguments on ingress and rejects empty, invalid, or non-object JSON.
+- Before this slice, `internal/provider/anthropic.go` `anthropicProviderContent` ignored `json.Unmarshal(block.Input, &input)` errors when reconstructing persisted provider `tool_use` replay blocks.
+- Before this slice, `internal/provider/google.go` `googleProviderParts` ignored `json.Unmarshal(block.Args, &args)` errors when reconstructing persisted provider `functionCall` replay parts.
+- The fallback replay paths for persisted `session.ToolCall.Arguments` in `anthropicMessages` and `googleContents` used the same unchecked unmarshal pattern.
+- Therefore a malformed or corrupted persisted replay block could be serialized back to Anthropic or Gemini with `input:null` / `args:null`, or with a non-object value, instead of failing as a provider parse/protocol error before the outbound request.
+
+Impact:
+
+Corrupted or manually edited session facts could weaken adapter-owned replay integrity and send malformed tool-call history to providers. That can produce confusing upstream request failures, lose the local error class, or hide the exact corrupted replay fact behind a provider rejection.
+
+Minimal fix:
+
+- Reuse the existing provider tool-argument normalization for outbound replay reconstruction.
+- Have Anthropic and Google replay helpers return `response_parse_error` failures when persisted provider blocks or fallback tool calls contain empty, invalid, or non-object JSON arguments.
+- Stop before the provider HTTP request when replay history is malformed.
+- Add focused provider regressions for malformed persisted provider-native blocks and fallback tool-call arguments.
+
+Validation:
+
+- Focused provider replay regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2025,6 +2054,12 @@ Evidence gates:
 - Confirmed FCA-20260526-055 against `spec/17-web-console.md`, `activeHandleOwner`, `latestActiveOwnerFromEvents`, `sessionDetail`, and existing active-owner tests.
 - Confirmed the issue is diagnostic/state-mapping drift, not provider/runtime ownership: current-process handles still win, but durable released clues were mapped as running external ownership when the session state remained `running`.
 - Confirmed the fix belongs in Web owner clue mapping and should not change persisted event shape or make handle events authoritative.
+
+### Review 54
+
+- Confirmed FCA-20260526-056 against `spec/03-provider-contracts.md`, `normalizeToolCallArguments`, `anthropicMessages`, `anthropicProviderContent`, `googleContents`, `googleProviderParts`, and provider replay regressions.
+- Confirmed provider ingress already rejects malformed live tool-call arguments, but adapter outbound replay reconstruction trusted persisted provider-native blocks and fallback tool calls.
+- Confirmed the fix belongs in provider adapters so Web, CLI, runtime, and tool layers continue to treat provider-native replay facts as adapter-owned opaque facts.
 
 ## Update Log
 
@@ -3241,6 +3276,32 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-056
+
+Slice: `fix(provider): reject malformed replay tool arguments`
+
+Changes:
+
+- Added a shared helper that validates persisted replay tool-call arguments with the same JSON object contract used for provider-emitted tool calls.
+- Changed Anthropic replay reconstruction to return `response_parse_error` before the HTTP request when persisted provider `tool_use` blocks or fallback tool calls contain malformed arguments.
+- Changed Google replay reconstruction to return `response_parse_error` before the HTTP request when persisted provider `function_call` blocks or fallback tool calls contain malformed arguments.
+- Added provider regressions for malformed persisted provider-native blocks and fallback `session.ToolCall.Arguments`, while preserving compacted valid replay serialization.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestProviderReplaySerializesCompactedProviderBlockToolCalls|TestProviderReplayRejectsMalformedPersistedToolArguments|TestAnthropicAdapterReplaysThinkingBlocks|TestGoogleAdapterReplaysThoughtSignatures' -count=1`: passed.
+- `go test ./internal/provider -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

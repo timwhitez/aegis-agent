@@ -29,11 +29,15 @@ func NewGoogleWithRetry(baseURL, apiKey string, httpClient *http.Client, retry R
 func (a *GoogleAdapter) Name() string { return "google" }
 
 func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+	contents, err := googleContents(req.Messages, req.Model, req.ProviderProfile, req.APIProvider)
+	if err != nil {
+		return TurnResult{}, err
+	}
 	body := map[string]any{
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{{"text": req.SystemPrompt}},
 		},
-		"contents": googleContents(req.Messages, req.Model, req.ProviderProfile, req.APIProvider),
+		"contents": contents,
 		"tools": []map[string]any{
 			{"functionDeclarations": googleTools(req.Tools)},
 		},
@@ -69,7 +73,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		} `json:"promptFeedback"`
 	}
 	path := fmt.Sprintf("/v1beta/models/%s:generateContent", req.Model)
-	err := a.client.DoJSON(ctx, http.MethodPost, path, map[string]string{
+	err = a.client.DoJSON(ctx, http.MethodPost, path, map[string]string{
 		"x-goog-api-key": a.apiKey,
 	}, body, &resp, emit)
 	if err != nil {
@@ -261,7 +265,7 @@ func googleTools(tools []ToolSchema) []map[string]any {
 	return out
 }
 
-func googleContents(messages []session.Message, model, providerProfile, apiProvider string) []map[string]any {
+func googleContents(messages []session.Message, model, providerProfile, apiProvider string) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -272,13 +276,19 @@ func googleContents(messages []session.Message, model, providerProfile, apiProvi
 			})
 		case "assistant":
 			parts := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if googleBlocks := googleProviderParts(msg.ProviderContentBlocks, model, providerProfile, apiProvider); len(googleBlocks) > 0 {
+			googleBlocks, err := googleProviderParts(msg.ProviderContentBlocks, model, providerProfile, apiProvider)
+			if err != nil {
+				return nil, err
+			}
+			if len(googleBlocks) > 0 {
 				parts = googleBlocks
 			} else if msg.Text != "" {
 				parts = append(parts, map[string]any{"text": msg.Text})
 				for _, call := range msg.ToolCalls {
-					var args any
-					_ = json.Unmarshal(call.Arguments, &args)
+					args, err := toolCallArgumentsObject("google", call.Name, call.Arguments)
+					if err != nil {
+						return nil, err
+					}
 					parts = append(parts, map[string]any{
 						"functionCall": map[string]any{
 							"name": call.Name,
@@ -289,8 +299,10 @@ func googleContents(messages []session.Message, model, providerProfile, apiProvi
 				}
 			} else {
 				for _, call := range msg.ToolCalls {
-					var args any
-					_ = json.Unmarshal(call.Arguments, &args)
+					args, err := toolCallArgumentsObject("google", call.Name, call.Arguments)
+					if err != nil {
+						return nil, err
+					}
 					parts = append(parts, map[string]any{
 						"functionCall": map[string]any{
 							"name": call.Name,
@@ -332,10 +344,10 @@ func googleContents(messages []session.Message, model, providerProfile, apiProvi
 			})
 		}
 	}
-	return out
+	return out, nil
 }
 
-func googleProviderParts(blocks []session.ProviderContentBlock, model, providerProfile, apiProvider string) []map[string]any {
+func googleProviderParts(blocks []session.ProviderContentBlock, model, providerProfile, apiProvider string) ([]map[string]any, error) {
 	var parts []map[string]any
 	hasAnchor := false
 	for _, block := range blocks {
@@ -365,8 +377,10 @@ func googleProviderParts(blocks []session.ProviderContentBlock, model, providerP
 			part["thoughtSignature"] = block.ThoughtSignature
 		}
 		if block.Type == "function_call" && block.Name != "" {
-			var args any
-			_ = json.Unmarshal(block.Args, &args)
+			args, err := toolCallArgumentsObject("google", block.Name, block.Args)
+			if err != nil {
+				return nil, err
+			}
 			part["functionCall"] = map[string]any{
 				"name": block.Name,
 				"id":   block.ID,
@@ -379,9 +393,9 @@ func googleProviderParts(blocks []session.ProviderContentBlock, model, providerP
 		}
 	}
 	if !hasAnchor {
-		return nil
+		return nil, nil
 	}
-	return parts
+	return parts, nil
 }
 
 func isJSON(input string) bool {

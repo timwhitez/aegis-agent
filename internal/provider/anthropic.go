@@ -30,10 +30,14 @@ func NewAnthropicWithRetry(baseURL, apiKey, version string, httpClient *http.Cli
 func (a *AnthropicAdapter) Name() string { return "anthropic" }
 
 func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+	messages, err := anthropicMessages(req.Messages, req.Model, req.ProviderProfile, req.APIProvider, promptCacheEnabled(req.PromptCache))
+	if err != nil {
+		return TurnResult{}, err
+	}
 	systemBlocks := anthropicSystemBlocks(req.SystemPrompt, promptCacheEnabled(req.PromptCache))
 	body := map[string]any{
 		"model":      req.Model,
-		"messages":   anthropicMessages(req.Messages, req.Model, req.ProviderProfile, req.APIProvider, promptCacheEnabled(req.PromptCache)),
+		"messages":   messages,
 		"tools":      anthropicTools(req.Tools, promptCacheEnabled(req.PromptCache)),
 		"max_tokens": anthropicMaxTokens(req.MaxOutputTokens),
 	}
@@ -70,7 +74,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
-	err := a.client.DoJSON(ctx, http.MethodPost, "/v1/messages", map[string]string{
+	err = a.client.DoJSON(ctx, http.MethodPost, "/v1/messages", map[string]string{
 		"x-api-key":         a.apiKey,
 		"anthropic-version": a.anthropicVersion,
 	}, body, &resp, emit)
@@ -247,7 +251,7 @@ func anthropicTools(tools []ToolSchema, enableCache bool) []map[string]any {
 	return out
 }
 
-func anthropicMessages(messages []session.Message, model, providerProfile, apiProvider string, enableCache bool) []map[string]any {
+func anthropicMessages(messages []session.Message, model, providerProfile, apiProvider string, enableCache bool) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, msg := range messages {
 		switch msg.Role {
@@ -263,15 +267,21 @@ func anthropicMessages(messages []session.Message, model, providerProfile, apiPr
 			})
 		case "assistant":
 			content := make([]map[string]any, 0, len(msg.ToolCalls)+1)
-			if anthropicBlocks := anthropicProviderContent(msg.ProviderContentBlocks, model, providerProfile, apiProvider); len(anthropicBlocks) > 0 {
+			anthropicBlocks, err := anthropicProviderContent(msg.ProviderContentBlocks, model, providerProfile, apiProvider)
+			if err != nil {
+				return nil, err
+			}
+			if len(anthropicBlocks) > 0 {
 				content = anthropicBlocks
 			} else {
 				if msg.Text != "" {
 					content = append(content, map[string]any{"type": "text", "text": msg.Text})
 				}
 				for _, call := range msg.ToolCalls {
-					var input any
-					_ = json.Unmarshal(call.Arguments, &input)
+					input, err := toolCallArgumentsObject("anthropic", call.Name, call.Arguments)
+					if err != nil {
+						return nil, err
+					}
 					content = append(content, map[string]any{
 						"type":  "tool_use",
 						"id":    call.ID,
@@ -309,7 +319,7 @@ func anthropicMessages(messages []session.Message, model, providerProfile, apiPr
 	if enableCache {
 		applyAnthropicMessageCache(out)
 	}
-	return out
+	return out, nil
 }
 
 func applyAnthropicMessageCache(messages []map[string]any) {
@@ -344,7 +354,7 @@ func anthropicBlockCacheable(block map[string]any) bool {
 	}
 }
 
-func anthropicProviderContent(blocks []session.ProviderContentBlock, model, providerProfile, apiProvider string) []map[string]any {
+func anthropicProviderContent(blocks []session.ProviderContentBlock, model, providerProfile, apiProvider string) ([]map[string]any, error) {
 	var content []map[string]any
 	hasAnchor := false
 	for _, block := range blocks {
@@ -382,8 +392,10 @@ func anthropicProviderContent(blocks []session.ProviderContentBlock, model, prov
 				hasAnchor = true
 			}
 		case "tool_use":
-			var input any
-			_ = json.Unmarshal(block.Input, &input)
+			input, err := toolCallArgumentsObject("anthropic", block.Name, block.Input)
+			if err != nil {
+				return nil, err
+			}
 			content = append(content, map[string]any{
 				"type":  "tool_use",
 				"id":    block.ID,
@@ -394,7 +406,7 @@ func anthropicProviderContent(blocks []session.ProviderContentBlock, model, prov
 		}
 	}
 	if !hasAnchor {
-		return nil
+		return nil, nil
 	}
-	return content
+	return content, nil
 }
