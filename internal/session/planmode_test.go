@@ -132,3 +132,106 @@ func TestPlanModeInputValidationAndAnswer(t *testing.T) {
 		t.Fatalf("expected answered request copy, got %#v", answeredRequest)
 	}
 }
+
+func TestPlanModeConcurrentMutationsReadLatestSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	meta := SessionMetadata{
+		SchemaVersion: 1,
+		ID:            NewSessionID(),
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:       t.TempDir(),
+		Mode:          ModeExec,
+		Provider:      "fake",
+		Model:         "fake",
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := storeA.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := storeA.CreatePlanMode(meta.ID, PlanModeDraft{Enabled: true, Objective: "Serialize plan mode"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	submitDone := make(chan error, 1)
+	go func() {
+		_, _, err := storeA.MutatePlanMode(meta.ID, func(state *PlanModeState) error {
+			if state.PlanID == "" {
+				state.PlanID = NewPlanID()
+			}
+			state.PlanVersion++
+			state.Status = PlanModeStatusAwaitingApproval
+			state.PlanMarkdown = "# Plan\n\nSerialized."
+			state.Summary = "Serialized."
+			state.Verification = []string{"go test ./internal/session"}
+			close(started)
+			<-release
+			return nil
+		})
+		submitDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for submit mutation to hold the plan mode lock")
+	}
+
+	approveDone := make(chan error, 1)
+	go func() {
+		_, err := storeB.ApprovePlanMode(meta.ID, PlanModeSourceWeb)
+		approveDone <- err
+	}()
+
+	released := false
+	releasePlanLock := func() {
+		if released {
+			return
+		}
+		released = true
+		close(release)
+	}
+	defer releasePlanLock()
+
+	select {
+	case err := <-approveDone:
+		releasePlanLock()
+		if err != nil {
+			t.Fatalf("approval returned early with error: %v", err)
+		}
+		t.Fatal("approval completed before submit released the plan mode lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releasePlanLock()
+	select {
+	case err := <-submitDone:
+		if err != nil {
+			t.Fatalf("submit mutation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for submit mutation")
+	}
+	select {
+	case err := <-approveDone:
+		if err != nil {
+			t.Fatalf("approve plan: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for approval mutation")
+	}
+
+	loaded, err := storeA.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if loaded.Status != PlanModeStatusApproved || loaded.PlanVersion != 1 || loaded.ApprovedVersion != 1 {
+		t.Fatalf("expected approved latest submitted plan, got %#v", loaded)
+	}
+	if len(loaded.Approvals) != 1 || loaded.Approvals[0].Version != 1 {
+		t.Fatalf("expected approval for submitted version, got %#v", loaded.Approvals)
+	}
+}

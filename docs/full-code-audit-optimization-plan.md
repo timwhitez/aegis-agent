@@ -900,6 +900,41 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-031: Plan Mode transitions can race on stale snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `planmode.json` as the session file fact source for Plan Mode, with `artifacts/planmode-history.jsonl` as state history.
+- `internal/session/planmode.go` `SubmitPlanMode`, `SetPlanModePendingRequest`, `AnswerPlanModeInput`, `ApprovePlanMode`, `MarkPlanModeExecuting`, `RevisePlanMode`, and `CancelPlanMode` loaded `planmode.json`, mutated selected fields, and saved the whole snapshot.
+- `SavePlanMode` serialized only the final write under `Store.mu`; separate Web, CLI, runtime, and recovery paths can construct separate `Store` instances for the same session root.
+- Web active input answering, fallback continue, CLI approval/cancel, and runtime Plan Mode tools can target the same durable Plan Mode state around the same time.
+
+Impact:
+
+A Plan Mode submit, approval, input answer, revision, cancel, or execution transition could overwrite a concurrent transition with an older snapshot. That could lose submitted plan versions, approvals, pending request cancellation / answers, or execution status from `planmode.json`, leaving Web, recovery, and provider replay facts inconsistent with history.
+
+Minimal fix:
+
+- Add `Store.MutatePlanMode` with a session-scoped `planmode.lock` around read / mutate / validate / write.
+- Keep `SavePlanMode` as a validated full replacement, but route store-owned Plan Mode transitions through `MutatePlanMode`.
+- Add a focused cross-store regression that holds a submitted-plan mutation open while another store approves Plan Mode, proving approval waits and applies to the latest submitted version.
+
+Validation:
+
+- `go test ./internal/session -run 'TestPlanModeConcurrentMutationsReadLatestSnapshot|TestPlanModeSubmitApproveAndHistory|TestPlanModeInputValidationAndAnswer' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult|TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServicePlanModeReviseInputAndCancelControls|TestServicePlanModeApproveAppendsReplayableUserMessage|TestServicePlanModeInputDetailKeepsLiveHandle' -count=1`: passed.
+- `gofmt -l internal/session/planmode.go internal/session/planmode_test.go`: no output.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1121,6 +1156,12 @@ Evidence gates:
 - Confirmed FCA-20260525-030 against Web goal patch, Web mission plan patch, and `SyncMissionPlanTasks`.
 - Confirmed the `create_tasks_from_plan` branch has to keep task graph writes outside the goal lock, then merge only generated feature/task IDs into the latest goal snapshot.
 - Confirmed the fix remains in the session store / Web adapter boundary and does not move task orchestration decisions into runtime.
+
+### Review 29
+
+- Confirmed FCA-20260525-031 against `planmode.json` store transition methods and Web/CLI/runtime Plan Mode control paths.
+- Confirmed `planmode.json` is the current durable fact and `planmode-history.jsonl` cannot substitute for lost current pending request, approval, or execution fields.
+- Confirmed the fix belongs in `internal/session` so Web, CLI, runtime, tools, and recovery paths share the same serialized transition behavior.
 
 ## Update Log
 
@@ -1737,6 +1778,31 @@ Validation:
 - `go test ./internal/webconsole -run 'TestServiceGoalPatchPreservesRuntimeProgressFacts|TestServiceMissionPlanPatchTaskSyncPreservesRuntimeProgressFacts|TestServiceMissionPlanPatchResetsApprovedPlanToPendingGate|TestServiceGoalPatchMissionResetsApprovedPlanToPendingGate|TestServiceGoalEndpointsMutateDurableGoal' -count=1`: passed.
 - `go test ./internal/session -run 'TestStoreGoalLifecycleAccountingAndSummary|TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist' -count=1`: passed.
 - `go test ./internal/webconsole ./internal/session -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-031
+
+Slice: `fix(planmode): serialize state transitions`
+
+Changes:
+
+- Added `Store.MutatePlanMode` with a session-scoped `planmode.lock`.
+- Routed Plan Mode submit/input/answer/approve/executing/revise/cancel transitions through the transactional helper.
+- Kept `SavePlanMode` as a validated full replacement path for callers that own the whole snapshot.
+- Added a cross-store regression proving approval waits for an in-flight submit mutation and applies to the latest submitted plan version.
+
+Validation:
+
+- `go test ./internal/session -run 'TestPlanModeConcurrentMutationsReadLatestSnapshot|TestPlanModeSubmitApproveAndHistory|TestPlanModeInputValidationAndAnswer' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult|TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServicePlanModeReviseInputAndCancelControls|TestServicePlanModeApproveAppendsReplayableUserMessage|TestServicePlanModeInputDetailKeepsLiveHandle' -count=1`: passed.
+- `gofmt -l internal/session/planmode.go internal/session/planmode_test.go`: no output.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

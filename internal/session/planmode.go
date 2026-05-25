@@ -296,6 +296,62 @@ func (s *Store) LoadPlanMode(sessionID string) (PlanModeState, error) {
 }
 
 func (s *Store) SavePlanMode(sessionID string, state PlanModeState) error {
+	preparePlanModeForSave(sessionID, &state)
+	if err := ValidatePlanMode(state); err != nil {
+		return err
+	}
+	if _, _, err := s.MutatePlanMode(sessionID, func(current *PlanModeState) error {
+		*current = state
+		return nil
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) MutatePlanMode(sessionID string, mutate func(*PlanModeState) error) (PlanModeState, bool, error) {
+	path, err := s.sessionPath(sessionID, "planmode.json")
+	if err != nil {
+		return PlanModeState{}, false, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "planmode.lock")
+	if err != nil {
+		return PlanModeState{}, false, err
+	}
+	var state PlanModeState
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.withFileLock(lockPath, func() error {
+		if err := readJSONFile(path, &state); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if mutate != nil {
+			if err := mutate(&state); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(state.PlanModeID) == "" {
+			return nil
+		}
+		preparePlanModeForSave(sessionID, &state)
+		if err := ValidatePlanMode(state); err != nil {
+			return err
+		}
+		return s.writeJSONFile(path, state)
+	})
+	if err != nil {
+		return PlanModeState{}, false, err
+	}
+	if strings.TrimSpace(state.PlanModeID) == "" {
+		return state, false, nil
+	}
+	return state, true, nil
+}
+
+func preparePlanModeForSave(sessionID string, state *PlanModeState) {
+	if state == nil {
+		return
+	}
 	if strings.TrimSpace(state.SessionID) == "" {
 		state.SessionID = sessionID
 	}
@@ -309,16 +365,6 @@ func (s *Store) SavePlanMode(sessionID string, state PlanModeState) error {
 		state.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := ValidatePlanMode(state); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	path, err := s.sessionPath(sessionID, "planmode.json")
-	if err != nil {
-		return err
-	}
-	return s.writeJSONFile(path, state)
 }
 
 func (s *Store) AppendPlanModeHistory(sessionID string, entry PlanModeHistoryEntry) error {
@@ -365,13 +411,6 @@ func (s *Store) LoadPlanModeHistory(sessionID string) ([]PlanModeHistoryEntry, e
 }
 
 func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (PlanModeState, error) {
-	state, err := s.LoadPlanMode(sessionID)
-	if err != nil {
-		return PlanModeState{}, err
-	}
-	if state.Status != PlanModeStatusPlanning {
-		return PlanModeState{}, fmt.Errorf("plan mode is not planning: %s", state.Status)
-	}
 	planMarkdown := strings.TrimSpace(input.PlanMarkdown)
 	if planMarkdown == "" {
 		return PlanModeState{}, errors.New("plan_markdown is required")
@@ -386,20 +425,32 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 	if len(input.Verification) == 0 {
 		return PlanModeState{}, errors.New("verification is required")
 	}
-	if state.PlanID == "" {
-		state.PlanID = NewPlanID()
-	}
-	state.PlanVersion++
-	state.ApprovedVersion = 0
-	state.Status = PlanModeStatusAwaitingApproval
-	state.PendingRequest = nil
-	state.PlanMarkdown = planMarkdown
-	state.Summary = summary
-	state.Assumptions = cleanStringSlice(input.Assumptions)
-	state.Risks = cleanStringSlice(input.Risks)
-	state.Verification = cleanStringSlice(input.Verification)
-	if err := s.SavePlanMode(sessionID, state); err != nil {
+	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
+		if state.PlanModeID == "" {
+			return errors.New("session has no current plan mode")
+		}
+		if state.Status != PlanModeStatusPlanning {
+			return fmt.Errorf("plan mode is not planning: %s", state.Status)
+		}
+		if state.PlanID == "" {
+			state.PlanID = NewPlanID()
+		}
+		state.PlanVersion++
+		state.ApprovedVersion = 0
+		state.Status = PlanModeStatusAwaitingApproval
+		state.PendingRequest = nil
+		state.PlanMarkdown = planMarkdown
+		state.Summary = summary
+		state.Assumptions = cleanStringSlice(input.Assumptions)
+		state.Risks = cleanStringSlice(input.Risks)
+		state.Verification = cleanStringSlice(input.Verification)
+		return nil
+	})
+	if err != nil {
 		return PlanModeState{}, err
+	}
+	if !mutated {
+		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
 	if err := s.WritePlanModeMarkdown(sessionID, state); err != nil {
 		return PlanModeState{}, err
@@ -444,17 +495,22 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 	if err := ValidatePlanModeInputRequest(request); err != nil {
 		return PlanModeState{}, err
 	}
-	state, err := s.LoadPlanMode(sessionID)
+	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
+		if state.PlanModeID == "" {
+			return errors.New("session has no current plan mode")
+		}
+		if state.Status != PlanModeStatusPlanning {
+			return fmt.Errorf("plan mode is not planning: %s", state.Status)
+		}
+		state.Status = PlanModeStatusAwaitingUserInput
+		state.PendingRequest = &request
+		return nil
+	})
 	if err != nil {
 		return PlanModeState{}, err
 	}
-	if state.Status != PlanModeStatusPlanning {
-		return PlanModeState{}, fmt.Errorf("plan mode is not planning: %s", state.Status)
-	}
-	state.Status = PlanModeStatusAwaitingUserInput
-	state.PendingRequest = &request
-	if err := s.SavePlanMode(sessionID, state); err != nil {
-		return PlanModeState{}, err
+	if !mutated {
+		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
 	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID: state.PlanModeID,
@@ -471,27 +527,33 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 }
 
 func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers []PlanModeInputAnswer) (PlanModeState, PlanModeInputRequest, error) {
-	state, err := s.LoadPlanMode(sessionID)
+	var request PlanModeInputRequest
+	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
+		if state.PlanModeID == "" {
+			return errors.New("session has no current plan mode")
+		}
+		if state.PendingRequest == nil {
+			return errors.New("plan mode has no pending input request")
+		}
+		request = *state.PendingRequest
+		if strings.TrimSpace(requestID) != "" && request.RequestID != requestID {
+			return fmt.Errorf("plan input request mismatch: %s", requestID)
+		}
+		if err := ValidatePlanModeAnswers(request, answers); err != nil {
+			return err
+		}
+		request.Status = "answered"
+		request.Answers = append([]PlanModeInputAnswer(nil), answers...)
+		request.AnsweredAt = time.Now().UTC().Format(time.RFC3339Nano)
+		state.Status = PlanModeStatusPlanning
+		state.PendingRequest = nil
+		return nil
+	})
 	if err != nil {
 		return PlanModeState{}, PlanModeInputRequest{}, err
 	}
-	if state.PendingRequest == nil {
-		return PlanModeState{}, PlanModeInputRequest{}, errors.New("plan mode has no pending input request")
-	}
-	request := *state.PendingRequest
-	if strings.TrimSpace(requestID) != "" && request.RequestID != requestID {
-		return PlanModeState{}, PlanModeInputRequest{}, fmt.Errorf("plan input request mismatch: %s", requestID)
-	}
-	if err := ValidatePlanModeAnswers(request, answers); err != nil {
-		return PlanModeState{}, PlanModeInputRequest{}, err
-	}
-	request.Status = "answered"
-	request.Answers = append([]PlanModeInputAnswer(nil), answers...)
-	request.AnsweredAt = time.Now().UTC().Format(time.RFC3339Nano)
-	state.Status = PlanModeStatusPlanning
-	state.PendingRequest = nil
-	if err := s.SavePlanMode(sessionID, state); err != nil {
-		return PlanModeState{}, PlanModeInputRequest{}, err
+	if !mutated {
+		return PlanModeState{}, PlanModeInputRequest{}, errors.New("session has no current plan mode")
 	}
 	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID: state.PlanModeID,
@@ -507,27 +569,32 @@ func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers
 }
 
 func (s *Store) ApprovePlanMode(sessionID string, source string) (PlanModeState, error) {
-	state, err := s.LoadPlanMode(sessionID)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
+		if state.PlanModeID == "" {
+			return errors.New("session has no current plan mode")
+		}
+		if state.Status != PlanModeStatusAwaitingApproval && state.Status != PlanModeStatusApproved {
+			return fmt.Errorf("plan mode is not awaiting approval: %s", state.Status)
+		}
+		if state.PlanVersion <= 0 || strings.TrimSpace(state.PlanMarkdown) == "" {
+			return errors.New("plan mode has no submitted plan")
+		}
+		state.Status = PlanModeStatusApproved
+		state.ApprovedVersion = state.PlanVersion
+		state.Approvals = append(state.Approvals, PlanModeApproval{
+			Version:    state.PlanVersion,
+			Source:     normalizePlanModeSource(source),
+			ApprovedBy: "operator",
+			ApprovedAt: now,
+		})
+		return nil
+	})
 	if err != nil {
 		return PlanModeState{}, err
 	}
-	if state.Status != PlanModeStatusAwaitingApproval && state.Status != PlanModeStatusApproved {
-		return PlanModeState{}, fmt.Errorf("plan mode is not awaiting approval: %s", state.Status)
-	}
-	if state.PlanVersion <= 0 || strings.TrimSpace(state.PlanMarkdown) == "" {
-		return PlanModeState{}, errors.New("plan mode has no submitted plan")
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	state.Status = PlanModeStatusApproved
-	state.ApprovedVersion = state.PlanVersion
-	state.Approvals = append(state.Approvals, PlanModeApproval{
-		Version:    state.PlanVersion,
-		Source:     normalizePlanModeSource(source),
-		ApprovedBy: "operator",
-		ApprovedAt: now,
-	})
-	if err := s.SavePlanMode(sessionID, state); err != nil {
-		return PlanModeState{}, err
+	if !mutated {
+		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
 	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
@@ -540,19 +607,24 @@ func (s *Store) ApprovePlanMode(sessionID string, source string) (PlanModeState,
 }
 
 func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanModeState, error) {
-	state, err := s.LoadPlanMode(sessionID)
+	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
+		if state.PlanModeID == "" {
+			return errors.New("session has no current plan mode")
+		}
+		if state.Status != PlanModeStatusApproved && state.Status != PlanModeStatusExecuting {
+			return fmt.Errorf("plan mode is not approved: %s", state.Status)
+		}
+		state.Status = PlanModeStatusExecuting
+		if state.ApprovedVersion == 0 {
+			state.ApprovedVersion = state.PlanVersion
+		}
+		return nil
+	})
 	if err != nil {
 		return PlanModeState{}, err
 	}
-	if state.Status != PlanModeStatusApproved && state.Status != PlanModeStatusExecuting {
-		return PlanModeState{}, fmt.Errorf("plan mode is not approved: %s", state.Status)
-	}
-	state.Status = PlanModeStatusExecuting
-	if state.ApprovedVersion == 0 {
-		state.ApprovedVersion = state.PlanVersion
-	}
-	if err := s.SavePlanMode(sessionID, state); err != nil {
-		return PlanModeState{}, err
+	if !mutated {
+		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
 	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
@@ -565,17 +637,22 @@ func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanMode
 }
 
 func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState, error) {
-	state, err := s.LoadPlanMode(sessionID)
+	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
+		if state.PlanModeID == "" {
+			return errors.New("session has no current plan mode")
+		}
+		if state.Status != PlanModeStatusAwaitingApproval && state.Status != PlanModeStatusRejected && state.Status != PlanModeStatusApproved {
+			return fmt.Errorf("plan mode cannot be revised from status: %s", state.Status)
+		}
+		state.Status = PlanModeStatusPlanning
+		state.PendingRequest = nil
+		return nil
+	})
 	if err != nil {
 		return PlanModeState{}, err
 	}
-	if state.Status != PlanModeStatusAwaitingApproval && state.Status != PlanModeStatusRejected && state.Status != PlanModeStatusApproved {
-		return PlanModeState{}, fmt.Errorf("plan mode cannot be revised from status: %s", state.Status)
-	}
-	state.Status = PlanModeStatusPlanning
-	state.PendingRequest = nil
-	if err := s.SavePlanMode(sessionID, state); err != nil {
-		return PlanModeState{}, err
+	if !mutated {
+		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
 	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
@@ -591,18 +668,23 @@ func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState
 }
 
 func (s *Store) CancelPlanMode(sessionID string, source string) (PlanModeState, error) {
-	state, err := s.LoadPlanMode(sessionID)
+	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
+		if state.PlanModeID == "" {
+			return errors.New("session has no current plan mode")
+		}
+		state.Status = PlanModeStatusCancelled
+		if state.PendingRequest != nil {
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			state.PendingRequest.Status = "cancelled"
+			state.PendingRequest.CancelledAt = now
+		}
+		return nil
+	})
 	if err != nil {
 		return PlanModeState{}, err
 	}
-	state.Status = PlanModeStatusCancelled
-	if state.PendingRequest != nil {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		state.PendingRequest.Status = "cancelled"
-		state.PendingRequest.CancelledAt = now
-	}
-	if err := s.SavePlanMode(sessionID, state); err != nil {
-		return PlanModeState{}, err
+	if !mutated {
+		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
 	_ = s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
 		PlanModeID:  state.PlanModeID,
