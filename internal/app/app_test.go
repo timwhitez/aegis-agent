@@ -1413,6 +1413,30 @@ func TestDoctorReportsQueueLeaseAndMissingSessionRef(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsBlockedQueueJobMissingSessionRef(t *testing.T) {
+	root := t.TempDir()
+	writeDoctorQueueJob(t, root, session.QueueStatusBlocked, session.QueueJob{
+		ID:            "job_blocked_missing_session",
+		Status:        session.QueueStatusBlocked,
+		Prompt:        "continue later",
+		Mode:          session.ModeRun,
+		SessionID:     "missing_child_session",
+		SessionStatus: session.StatusAwaitingInput,
+	})
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	missingRefs, ok := check.Details["queue_jobs_missing_session"].([]map[string]any)
+	if !ok || len(missingRefs) != 1 {
+		t.Fatalf("expected blocked missing session ref, got %#v", check.Details["queue_jobs_missing_session"])
+	}
+	if missingRefs[0]["job_id"] != "job_blocked_missing_session" || missingRefs[0]["status"] != session.QueueStatusBlocked {
+		t.Fatalf("unexpected missing session detail: %#v", missingRefs[0])
+	}
+}
+
 func TestCheckSessionDirModeWarnsOnPermissionDrift(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o777); err != nil {

@@ -1097,6 +1097,37 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-037: Doctor queue diagnostics skip blocked jobs
+
+Severity: Low
+
+Evidence:
+
+- `spec/15-background-queue.md` defines `_queue/blocked/` as a durable queue status directory and says resumable child sessions (`paused` / `awaiting_input`) must keep the queue job `blocked`.
+- `internal/runtime/delegation.go` maps non-terminal resumable child results to `QueueStatusBlocked`, and `internal/session/store.go` includes `blocked` in `queueStatuses()`.
+- `spec/02-cli-and-config.md` says `doctor` reports queue partial state, including duplicate status directories and queue jobs pointing at missing sessions.
+- `internal/app/doctor_helpers.go` `doctorQueueStatuses()` only scans `queued`, `running`, `completed`, and `failed`, so jobs under `_queue/blocked/` are invisible to duplicate-status and missing-session diagnostics.
+
+Impact:
+
+Operator recovery diagnostics can miss resumable background jobs, including blocked jobs that reference deleted child sessions or duplicate blocked/running status files. Runtime and Web queue views still see the jobs through the session store, so this is a CLI doctor observability gap rather than direct queue state loss.
+
+Minimal fix:
+
+- Include `session.QueueStatusBlocked` in `doctorQueueStatuses()`.
+- Add a doctor regression proving blocked queue jobs with missing child-session references are reported.
+
+Validation:
+
+- `go test ./internal/app -run 'TestDoctorReportsBlockedQueueJobMissingSessionRef|TestDoctorReportsQueueLeaseAndMissingSessionRef|TestDoctorReportsDuplicateQueueJobStatus' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1354,6 +1385,12 @@ Evidence gates:
 - Confirmed FCA-20260525-036 against `saveJobLocked`, `LoadJob`, `listJobs`, `ClaimNextQueuedJob`, `RefreshQueueJobHeartbeat`, `ProcessNextJob`, and queue reconciliation repair paths.
 - Confirmed the issue is not duplicate claim; `ClaimNextQueuedJob` already uses atomic rename and has regression coverage. The confirmed failure is stale duplicate status files after a partial status move/cleanup.
 - Confirmed the fix belongs in `internal/session` so WebConsole, CLI queue commands, runtime worker, session summaries, and reconciliation all use the same canonical queue job fact.
+
+### Review 35
+
+- Confirmed FCA-20260525-037 against `spec/15-background-queue.md`, `spec/02-cli-and-config.md`, runtime queue status mapping, session store `queueStatuses()`, and CLI doctor `doctorQueueStatuses()`.
+- Confirmed this does not affect runtime queue processing or WebConsole queue views; those use `internal/session` queue readers that include `blocked`.
+- Confirmed the fix belongs in `internal/app/doctor_helpers.go` because the bug is in the doctor diagnostic directory scan, not in the durable queue store.
 
 ## Update Log
 
@@ -2116,6 +2153,26 @@ Validation:
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-037
+
+Slice: `fix(app): include blocked jobs in doctor queue scan`
+
+Changes:
+
+- Added the durable `blocked` queue status directory to `doctorQueueStatuses`.
+- Added a doctor partial-state regression proving blocked queue jobs with missing linked child sessions are reported.
+
+Validation:
+
+- `go test ./internal/app -run 'TestDoctorReportsBlockedQueueJobMissingSessionRef|TestDoctorReportsQueueLeaseAndMissingSessionRef|TestDoctorReportsDuplicateQueueJobStatus' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
