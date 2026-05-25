@@ -500,6 +500,17 @@ func hasGoalHistoryType(items []GoalHistoryEntry, target string) bool {
 	return false
 }
 
+func blockGoalHistoryPath(t *testing.T, store *Store, sessionID string) {
+	t.Helper()
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "goal-history.jsonl")
+	if err := os.Remove(historyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove goal history: %v", err)
+	}
+	if err := os.Mkdir(historyPath, 0o700); err != nil {
+		t.Fatalf("block goal history path: %v", err)
+	}
+}
+
 func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -575,6 +586,35 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	}
 	if _, err := store.LoadGoal(meta.ID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing goal after clear, got %v", err)
+	}
+}
+
+func TestUpdateGoalAccountingReturnsHistoryAppendError(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Track accounting history",
+		Source:    GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockGoalHistoryPath(t, store, meta.ID)
+	_, _, err := store.UpdateGoalAccounting(meta.ID, GoalUsageDelta{TokensUsedDelta: 1, SourceTurn: 1})
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v", err)
 	}
 }
 
@@ -968,6 +1008,38 @@ func TestStoreCompleteGoalPersistsAuditAndItemEvidence(t *testing.T) {
 	}
 }
 
+func TestCompleteGoalReturnsHistoryAppendError(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Complete with history",
+		Source:    GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockGoalHistoryPath(t, store, meta.ID)
+	_, err := store.CompleteGoal(meta.ID, GoalCompletionInput{
+		Source:  GoalSourceTool,
+		Summary: "Complete despite blocked history",
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v", err)
+	}
+}
+
 func TestMissionPlanCoverageReportsUncoveredAndInvalidAssignments(t *testing.T) {
 	goal := SessionGoal{
 		SchemaVersion: 1,
@@ -1088,6 +1160,39 @@ func TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp(t *testi
 	}
 	if !hasGoalHistoryType(history, "goal.progress.recorded") || !hasGoalHistoryType(history, "mission.validation.updated") {
 		t.Fatalf("expected progress and validation history, got %#v", history)
+	}
+}
+
+func TestRecordGoalProgressReturnsHistoryAppendError(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Record progress with history",
+		Source:    GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockGoalHistoryPath(t, store, meta.ID)
+	_, _, err := store.RecordGoalProgress(meta.ID, GoalProgressInput{
+		Source:  GoalSourceTool,
+		Kind:    "handoff",
+		Summary: "Progress must report history failures.",
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v", err)
 	}
 }
 

@@ -1786,6 +1786,32 @@ Validation:
 - Focused Plan Mode store, runtime, and Web regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-061: Goal transitions hide history append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/11-spec-audit-and-traceability.md` define `goal.json` and `artifacts/goal-history.jsonl` as durable Goal facts, including completion evidence, usage accounting, mission approval, progress, validation, and budget wrap-up facts.
+- Before this slice, `internal/session/goal.go` ignored `AppendGoalHistory` errors in `CompleteGoal`, `ApproveMissionPlan`, and `UpdateGoalAccounting`; `internal/session/goal_progress.go` ignored the same errors in `RecordGoalProgress`.
+- Focused regressions reproduced the failure by replacing `artifacts/goal-history.jsonl` with a directory: accounting, completion, and progress helpers returned success after mutating `goal.json`, while their required history append failed.
+- Web and CLI already propagate errors returned by these store helpers on their normal control paths, so the missing invariant was at the session store boundary.
+
+Impact:
+
+Goal control surfaces and runtime budget/progress paths could report successful state changes while losing the corresponding durable history fact. This weakens recovery, `session.md`/checkpoint auditability, and Goal completion/progress traceability because the current goal snapshot and history stream can diverge silently.
+
+Minimal fix:
+
+- Propagate `AppendGoalHistory` errors from Goal store transitions for completion, mission plan approval, accounting, budget-limited/budget-wrap-up history, and structured progress/mission validation updates.
+- Add file-path context to `AppendGoalHistory` errors so callers can identify the failed durable history file.
+- Add focused store regressions for blocked history during accounting, completion, and progress recording.
+
+Validation:
+
+- Focused Goal store, CLI, Web, and runtime regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2187,6 +2213,12 @@ Evidence gates:
 - Confirmed FCA-20260526-060 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `CreatePlanMode`, `SubmitPlanMode`, `ApprovePlanMode`, other Plan Mode transition helpers, and focused blocked-history regressions.
 - Confirmed this is not only an operator-readable artifact issue: Plan Mode history is specified as a session file fact source for state transitions, while `artifacts/planmode-plan.md` remains the derived Markdown plan.
 - Confirmed the fix belongs in session storage transition helpers so CLI, Web, runtime, SDK, and future callers cannot report Plan Mode state changes as successful when their required history append failed.
+
+### Review 59
+
+- Confirmed FCA-20260526-061 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `CompleteGoal`, `ApproveMissionPlan`, `UpdateGoalAccounting`, `RecordGoalProgress`, and focused blocked-history regressions.
+- Confirmed this is not only a CLI/Web display issue: Goal history is a durable session fact source, and runtime budget/accounting/progress paths depend on the store helpers returning whether durable facts were actually written.
+- Confirmed the fix belongs in session storage transition helpers so CLI, Web, runtime, SDK, and future callers cannot report Goal state changes as successful when their required history append failed.
 
 ## Update Log
 
@@ -3525,6 +3557,34 @@ Validation:
 - `go test ./internal/session -run 'TestPlanModeSubmitApproveAndHistory|TestSubmitPlanModeReturnsHistoryAppendError|TestApprovePlanModeReturnsHistoryAppendError|TestPlanModeInputValidationAndAnswer|TestStoreGoalApprovalRelinksExistingPendingPlanMode' -count=1`: passed.
 - `go test ./internal/runtime -run 'TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation|TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult' -count=1`: passed.
 - `go test ./internal/webconsole -run 'TestServicePlanModeGetAndParentQueueGate|TestServicePlanModeApproveAppendsReplayableUserMessage|TestServicePlanModeReviseInputAndCancelControls' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-061
+
+Slice: `fix(session): report goal history failures`
+
+Changes:
+
+- Changed Goal store transitions to return `AppendGoalHistory` errors instead of silently succeeding after updating `goal.json`.
+- Added file-path context to Goal history append errors so failed durable facts are diagnosable from CLI/Web/runtime callers.
+- Propagated history errors for completion, mission plan approval, accounting, budget limit/budget wrap-up, and structured goal progress/mission validation updates.
+- Added regressions proving accounting, completion, and progress transitions report a blocked `artifacts/goal-history.jsonl` path.
+
+Validation:
+
+- `go test ./internal/session -run 'TestStoreGoalLifecycleAccountingAndSummary|TestUpdateGoalAccountingReturnsHistoryAppendError|TestStoreCompleteGoalPersistsAuditAndItemEvidence|TestCompleteGoalReturnsHistoryAppendError|TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp|TestRecordGoalProgressReturnsHistoryAppendError|TestApproveMissionPlanRejectsGoalWithoutMissionPlan' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestGoal|TestCompletion|TestBudget|TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
+- `go test ./internal/app -run 'TestGoalMissionPlanAndValidationCommands|TestGoalPlanApproveRejectsGoalWithoutMissionPlan|TestGoalStatusCommandPreservesAccountingAndProgressFacts' -count=1`: passed.
+- `go test ./internal/webconsole -run 'TestServiceGoal|TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact|TestServiceMissionPlanApproveRejectsGoalWithoutMissionPlan' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

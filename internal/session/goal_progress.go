@@ -181,17 +181,19 @@ func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (S
 		return SessionGoal{}, GoalProgressRecord{}, errors.New("session has no current goal")
 	}
 	if record.ID != "" {
-		_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+		if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 			Type:   "goal.progress.recorded",
 			Source: source,
 			Status: goal.Status,
 			Data: map[string]any{
 				"progress": record,
 			},
-		})
+		}); err != nil {
+			return SessionGoal{}, GoalProgressRecord{}, err
+		}
 	}
 	if planChanged {
-		_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+		if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 			Type:   "mission.plan.updated",
 			Source: source,
 			Status: goal.Status,
@@ -199,17 +201,21 @@ func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (S
 				"feature_updates":   input.FeatureUpdates,
 				"milestone_updates": input.MilestoneUpdates,
 			},
-		})
+		}); err != nil {
+			return SessionGoal{}, GoalProgressRecord{}, err
+		}
 	}
 	if validationChanged {
-		_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+		if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 			Type:   "mission.validation.updated",
 			Source: source,
 			Status: goal.Status,
 			Data: map[string]any{
 				"validation_updates": input.ValidationUpdates,
 			},
-		})
+		}); err != nil {
+			return SessionGoal{}, GoalProgressRecord{}, err
+		}
 	}
 	return goal, record, nil
 }

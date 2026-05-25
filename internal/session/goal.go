@@ -624,7 +624,7 @@ func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (Sessi
 		return SessionGoal{}, errors.New("session has no current goal")
 	}
 	source := normalizeGoalSource(input.Source)
-	_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+	if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 		Type:   "goal.completed",
 		Source: source,
 		Status: goal.Status,
@@ -634,7 +634,9 @@ func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (Sessi
 			"criteria_statuses":   append([]GoalItemStatusUpdate(nil), input.CriteriaStatuses...),
 			"validation_statuses": append([]GoalItemStatusUpdate(nil), input.ValidationStatuses...),
 		},
-	})
+	}); err != nil {
+		return SessionGoal{}, err
+	}
 	return goal, nil
 }
 
@@ -694,7 +696,7 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 	if strings.TrimSpace(input.ApprovedSource) == "" {
 		approvedSource = source
 	}
-	_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+	if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 		Type:   "mission.plan.approved",
 		Source: source,
 		Status: goal.Status,
@@ -705,7 +707,9 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 			"approved_version":  input.ApprovedVersion,
 			"coverage_override": input.CoverageOverride,
 		},
-	})
+	}); err != nil {
+		return SessionGoal{}, err
+	}
 	return goal, nil
 }
 
@@ -882,7 +886,10 @@ func (s *Store) AppendGoalHistory(sessionID string, entry GoalHistoryEntry) erro
 	if err != nil {
 		return err
 	}
-	return s.appendJSONL(path, entry)
+	if err := s.appendJSONL(path, entry); err != nil {
+		return fmt.Errorf("append goal history %s: %w", path, err)
+	}
+	return nil
 }
 
 func (s *Store) LoadGoalHistory(sessionID string) ([]GoalHistoryEntry, error) {
@@ -923,7 +930,7 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 	if !mutated {
 		return SessionGoal{}, false, nil
 	}
-	_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+	if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 		Type:   "goal.accounting.updated",
 		Source: GoalSourceSystem,
 		Status: goal.Status,
@@ -934,9 +941,11 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 			"tokens_used":             goal.TokensUsed,
 			"time_used_seconds":       goal.TimeUsedSeconds,
 		},
-	})
+	}); err != nil {
+		return SessionGoal{}, false, err
+	}
 	if budgetLimited {
-		_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+		if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 			Type:   "goal.budget_limited",
 			Source: GoalSourceSystem,
 			Status: goal.Status,
@@ -947,16 +956,20 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 				"time_budget":       goal.TimeBudgetSeconds,
 				"stop_on_budget":    goal.Control.StopOnBudget,
 			},
-		})
+		}); err != nil {
+			return SessionGoal{}, false, err
+		}
 		if goal.Control.StopOnBudget {
-			_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
+			if err := s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 				Type:   "goal.budget_wrapup_required",
 				Source: GoalSourceSystem,
 				Status: goal.Status,
 				Data: map[string]any{
 					"budget_wrapup_requested_at": goal.BudgetWrapUpRequestedAt,
 				},
-			})
+			}); err != nil {
+				return SessionGoal{}, false, err
+			}
 		}
 	}
 	return goal, budgetLimited, nil
