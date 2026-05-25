@@ -3418,15 +3418,42 @@ func webFileBrowserNameDenied(name string) bool {
 	}
 	switch name {
 	case ".git", ".go-cli-agent", ".ssh", ".aws", ".gnupg", ".kube", ".docker",
-		"id_rsa", "id_ed25519", "credentials":
+		"credentials":
 		return true
 	case ".env":
 		return true
 	case ".env.example", ".env.sample", ".env.template":
 		return false
 	default:
-		return strings.HasPrefix(name, ".env.")
+		return strings.HasPrefix(name, ".env.") ||
+			webFileBrowserPrivateKeyNameDenied(name) ||
+			webFileBrowserCredentialNameDenied(name)
 	}
+}
+
+func webFileBrowserPrivateKeyNameDenied(name string) bool {
+	if name == "identity" || strings.HasPrefix(name, "id_") {
+		return true
+	}
+	if strings.Contains(name, "private_key") || strings.Contains(name, "private-key") {
+		return true
+	}
+	switch {
+	case strings.HasSuffix(name, ".pem"),
+		strings.HasSuffix(name, ".key"),
+		strings.HasSuffix(name, ".p12"),
+		strings.HasSuffix(name, ".pfx"):
+		return true
+	default:
+		return false
+	}
+}
+
+func webFileBrowserCredentialNameDenied(name string) bool {
+	return strings.HasPrefix(name, "credentials.") ||
+		strings.HasSuffix(name, "_credentials.json") ||
+		strings.HasSuffix(name, "-credentials.json") ||
+		strings.HasSuffix(name, ".credentials")
 }
 
 func (s *Service) hasActiveHandle(sessionID string) bool {

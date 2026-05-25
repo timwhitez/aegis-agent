@@ -1271,13 +1271,40 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260526-042: Web workspace browser exposes common private-key and credential filenames
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires the read-only Workspace browser to hide and refuse `.env` variants, SSH/cloud/kube/docker credential directories, private-key filenames, and `credentials`-like paths.
+- `internal/webconsole/service.go` `webFileBrowserNameDenied` only denied exact `id_rsa`, exact `id_ed25519`, and exact `credentials` for private-key / credential file handling.
+- The same helper is used by `listDirectory` and by `webFileBrowserPathDenied` before `/api/file/read`, so names such as `id_ecdsa`, `deploy.pem`, and `credentials.json` were neither hidden from `/api/files` nor refused by `/api/file/read`.
+- Existing `TestServiceWorkspaceRoutesListReadAndRejectEscape` covered `.env` filtering and workspace escape rejection, but did not cover the broader private-key / credential-like names required by the Web Console spec.
+
+Impact:
+
+A local Web Console opened on a workspace containing common SSH key material, PEM key files, or JSON credential files could display and serve those files through the Workspace browser. This violates the browser-specific leakage guard in the Web-first contract, especially when the console is intentionally allowed to browse the workspace parent within the server cwd.
+
+Minimal fix:
+
+- Broaden `webFileBrowserNameDenied` to catch common private-key names and key material extensions such as `id_*`, `identity`, `private-key`, `private_key`, `.pem`, `.key`, `.p12`, and `.pfx`.
+- Treat common `credentials` variants such as `credentials.json` and `*_credentials.json` as credential-like browser-denied paths.
+- Extend the workspace route regression to verify these names are hidden from listings and rejected by direct reads in both workspace and parent browsing contexts.
+
+Validation:
+
+- Focused WebConsole workspace route regression.
+- Full WebConsole package tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
 
 - Embedded asset ETag/gzip handling in `internal/webconsole/service.go` has current tests for ETag, gzip, q-value negotiation, and 304 behavior.
 - Markdown link/image sanitizer currently uses `rel="noopener noreferrer"` and `.md-img`; previous inline-style/link-rel concerns are already fixed.
-- Workspace browser path resolution uses `tools.ResolveWorkspacePath` and denies `.git`, `.go-cli-agent`, credential directories, and `.env` variants.
+- Workspace browser path resolution uses `tools.ResolveWorkspacePath` and denies `.git`, `.go-cli-agent`, credential directories, `.env` variants, and common private-key / credential-like filenames.
 - Skill upload has multipart size, zip file count, per-entry size, total uncompressed size, traversal, absolute path, symlink destination, and direct-child uninstall checks.
 - Static frontend syntax parses with Node.
 - Provider cancellation during provider calls propagates `context.Canceled` through `JSONClient`, `classifyTransportError`, and `readAllWithIdleTimeout`; `Engine.Run` only maps it to pause or interrupt-steer behavior when the matching control flag exists, and pending interrupt steer requests are deferred or accepted at the next safe boundary.
@@ -1558,6 +1585,12 @@ Evidence gates:
 - Confirmed FCA-20260525-041 against `spec/12-task-system.md`, `BuildTaskBoard`, `renderTasksPanel`, and `task_list` metadata.
 - Confirmed this is not a cosmetic label issue: the shared task-board derived facts conflated cancelled and completed tasks before Web and tool consumers read them.
 - Confirmed the fix belongs in `internal/session` with compatible derived counters/groups, plus the Web renderer test to keep cancelled facts visible.
+
+### Review 40
+
+- Confirmed FCA-20260526-042 against `spec/17-web-console.md`, `handleListFiles`, `handleReadFile`, `webFileBrowserPathDenied`, `webFileBrowserNameDenied`, and `TestServiceWorkspaceRoutesListReadAndRejectEscape`.
+- Confirmed this is a Web workspace-browser leakage issue, not a runtime session redaction rule; reports, provider views, and session artifacts should not get default secret rewriting.
+- Confirmed the fix belongs in the browser deny helper used by both listing and read checks, without changing the workspace parent-navigation behavior or introducing a browser-side file editor.
 
 ## Update Log
 
@@ -2437,6 +2470,30 @@ Validation:
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-042
+
+Slice: `fix(webconsole): hide credential-like workspace files`
+
+Changes:
+
+- Broadened the Web workspace browser deny helper to cover common private-key names, key material extensions, and credential-like JSON filenames.
+- Kept `.env.example`, `.env.sample`, and `.env.template` visible while continuing to hide/refuse real `.env` variants.
+- Extended the workspace route regression to prove `id_ecdsa`, `credentials.json`, and parent-browsed `deploy.pem` are hidden from listings and rejected by direct reads.
+
+Validation:
+
+- `go test ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.

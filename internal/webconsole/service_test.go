@@ -4103,11 +4103,20 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceRoot, ".env"), []byte("WORKSPACE_SECRET=1"), 0o600); err != nil {
 		t.Fatalf("write workspace env file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "id_ecdsa"), []byte("WORKSPACE_PRIVATE_KEY=1"), 0o600); err != nil {
+		t.Fatalf("write workspace private key: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "credentials.json"), []byte(`{"token":"workspace"}`), 0o600); err != nil {
+		t.Fatalf("write workspace credentials file: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("server cwd file"), 0o644); err != nil {
 		t.Fatalf("write root-only file: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("ROOT_SECRET=1"), 0o600); err != nil {
 		t.Fatalf("write root env file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "deploy.pem"), []byte("ROOT_PRIVATE_KEY=1"), 0o600); err != nil {
+		t.Fatalf("write root private key: %v", err)
 	}
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
 	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
@@ -4135,6 +4144,9 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		}
 		if item["name"] == ".env" {
 			t.Fatalf("workspace listing leaked env file: %#v", tree)
+		}
+		if item["name"] == "id_ecdsa" || item["name"] == "credentials.json" {
+			t.Fatalf("workspace listing leaked credential-like file: %#v", tree)
 		}
 	}
 	if firstType, _ := tree[0]["type"].(string); firstType != "directory" {
@@ -4168,6 +4180,18 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		t.Fatalf("expected forbidden for workspace env read, got %d body=%s", resp.StatusCode, string(body))
 	}
 
+	for _, deniedPath := range []string{"id_ecdsa", "credentials.json"} {
+		resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(deniedPath))
+		if err != nil {
+			t.Fatalf("workspace credential read request %s: %v", deniedPath, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected forbidden for workspace credential read %s, got %d body=%s", deniedPath, resp.StatusCode, string(body))
+		}
+	}
+
 	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../.env"))
 	if err != nil {
 		t.Fatalf("root env read request: %v", err)
@@ -4184,6 +4208,19 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		if item["name"] == ".env" {
 			t.Fatalf("root listing leaked env file: %#v", rootTree)
 		}
+		if item["name"] == "deploy.pem" {
+			t.Fatalf("root listing leaked private key file: %#v", rootTree)
+		}
+	}
+
+	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../deploy.pem"))
+	if err != nil {
+		t.Fatalf("root private key read request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected forbidden for root private key read, got %d body=%s", resp.StatusCode, string(body))
 	}
 
 	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../../outside.txt"))
