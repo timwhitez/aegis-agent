@@ -208,3 +208,29 @@ test('background notification cards expose queue job detail actions', () => {
   assert.match(preview, /data-open-job="job_notification_open"/);
   assert.match(preview, />Open job<\/button>/);
 });
+
+test('task panel renders cancelled count separately from completed tasks', () => {
+  const html = context.renderTasksPanel({
+    task_board: {
+      todo: [],
+      tasks: [
+        { id: 'task_0001', subject: 'Done', status: 'completed' },
+        { id: 'task_0002', subject: 'Stopped', status: 'cancelled' }
+      ],
+      counters: {
+        completed: 1,
+        cancelled: 1,
+        done: 2,
+        in_progress: 0
+      },
+      groups: {
+        ready: [],
+        blocked: []
+      }
+    }
+  });
+
+  assert.match(html, /<span class="metric-label">Completed<\/span>/);
+  assert.match(html, /<div class="metric-card-value">1<\/div>/);
+  assert.match(html, /<div class="metric-card-copy">1 cancelled<\/div>/);
+});

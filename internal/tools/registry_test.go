@@ -187,12 +187,22 @@ func TestTodoAndTaskToolsEmitStructuredEvents(t *testing.T) {
 	if updateResult.Metadata["task_id"] != "task_0001" {
 		t.Fatalf("expected task_update task_id metadata, got %#v", updateResult.Metadata)
 	}
+	cancelled, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "Cancelled task"})
+	if err != nil {
+		t.Fatalf("create cancelled task: %v", err)
+	}
+	if _, err := session.UpdateTask(store, meta.ID, session.TaskUpdateInput{TaskID: cancelled.ID, Status: "cancelled"}); err != nil {
+		t.Fatalf("cancel task: %v", err)
+	}
 	listResult, err := registry.Execute(context.Background(), "task_list", execCtx, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("task_list: %v", err)
 	}
 	if listResult.Metadata["tasks_dir"] != filepath.Join(store.SessionDir(meta.ID), "tasks") {
 		t.Fatalf("expected task_list tasks_dir metadata, got %#v", listResult.Metadata)
+	}
+	if listResult.Metadata["completed_count"] != 1 || listResult.Metadata["cancelled_count"] != 1 || listResult.Metadata["done_count"] != 2 {
+		t.Fatalf("expected task_list to report completed/cancelled/done counts separately, got %#v", listResult.Metadata)
 	}
 	getResult, err := registry.Execute(context.Background(), "task_get", execCtx, json.RawMessage(`{"task_id":"task_0001"}`))
 	if err != nil {

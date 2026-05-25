@@ -127,22 +127,28 @@ func BuildTaskBoard(todo []TodoItem, tasks []Task) TaskBoard {
 	ready := []Task{}
 	blocked := []Task{}
 	inProgress := []Task{}
-	done := []Task{}
+	completed := []Task{}
+	cancelled := []Task{}
 	for _, task := range tasks {
 		switch {
 		case task.Status == "in_progress":
 			inProgress = append(inProgress, task)
-		case task.Status == "completed" || task.Status == "cancelled":
-			done = append(done, task)
+		case task.Status == "completed":
+			completed = append(completed, task)
+		case task.Status == "cancelled":
+			cancelled = append(cancelled, task)
 		case task.Status == "pending" && len(task.BlockedBy) == 0:
 			ready = append(ready, task)
 		case task.Status == "pending" && len(task.BlockedBy) > 0:
 			blocked = append(blocked, task)
 		}
 	}
+	done := append(append([]Task{}, completed...), cancelled...)
 	sort.Slice(ready, func(i, j int) bool { return ready[i].ID < ready[j].ID })
 	sort.Slice(blocked, func(i, j int) bool { return blocked[i].ID < blocked[j].ID })
 	sort.Slice(inProgress, func(i, j int) bool { return inProgress[i].ID < inProgress[j].ID })
+	sort.Slice(completed, func(i, j int) bool { return completed[i].ID < completed[j].ID })
+	sort.Slice(cancelled, func(i, j int) bool { return cancelled[i].ID < cancelled[j].ID })
 	sort.Slice(done, func(i, j int) bool { return done[i].ID < done[j].ID })
 	return TaskBoard{
 		Todo:  todo,
@@ -153,13 +159,17 @@ func BuildTaskBoard(todo []TodoItem, tasks []Task) TaskBoard {
 			"in_progress": len(inProgress),
 			"ready":       len(ready),
 			"blocked":     len(blocked),
-			"completed":   len(done),
+			"completed":   len(completed),
+			"cancelled":   len(cancelled),
+			"done":        len(done),
 		},
 		Groups: map[string][]Task{
 			"in_progress": inProgress,
 			"ready":       ready,
 			"blocked":     blocked,
-			"completed":   done,
+			"completed":   completed,
+			"cancelled":   cancelled,
+			"done":        done,
 		},
 	}
 }

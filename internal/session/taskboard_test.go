@@ -227,3 +227,22 @@ func TestBuildTaskBoardIncludesInProgressGroup(t *testing.T) {
 		t.Fatalf("expected active task group, got %#v", board.Groups)
 	}
 }
+
+func TestBuildTaskBoardSeparatesCompletedAndCancelled(t *testing.T) {
+	board := BuildTaskBoard(nil, []Task{
+		{ID: "task_0001", Subject: "done", Status: "completed"},
+		{ID: "task_0002", Subject: "stopped", Status: "cancelled"},
+	})
+	if board.Counters["completed"] != 1 || board.Counters["cancelled"] != 1 || board.Counters["done"] != 2 {
+		t.Fatalf("expected separate completed/cancelled counters, got %#v", board.Counters)
+	}
+	if len(board.Groups["completed"]) != 1 || board.Groups["completed"][0].ID != "task_0001" {
+		t.Fatalf("expected completed group to contain only completed tasks, got %#v", board.Groups["completed"])
+	}
+	if len(board.Groups["cancelled"]) != 1 || board.Groups["cancelled"][0].ID != "task_0002" {
+		t.Fatalf("expected cancelled group to contain cancelled tasks, got %#v", board.Groups["cancelled"])
+	}
+	if len(board.Groups["done"]) != 2 {
+		t.Fatalf("expected done group to include completed and cancelled tasks, got %#v", board.Groups["done"])
+	}
+}

@@ -2462,6 +2462,8 @@ func defTaskList() Definition {
 					"ready_count":     board.Counters["ready"],
 					"blocked_count":   board.Counters["blocked"],
 					"completed_count": board.Counters["completed"],
+					"cancelled_count": board.Counters["cancelled"],
+					"done_count":      board.Counters["done"],
 				},
 			}, nil
 		},

@@ -1234,6 +1234,43 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-041: Cancelled tasks are counted as completed in Web task facts
+
+Severity: Low
+
+Evidence:
+
+- `spec/12-task-system.md` separates task statuses `completed` and `cancelled`, and states that both are done states but only `completed` automatically unlocks dependents.
+- `internal/session/taskboard.go` `BuildTaskBoard` put both `completed` and `cancelled` tasks into a single `done` slice, then exposed that slice as `Counters["completed"]` and `Groups["completed"]`.
+- `internal/webconsole/assets/session-view.js` `renderTasksPanel` renders `Counters["completed"]` as the `Completed` metric and separately renders `${counters.cancelled || 0} cancelled`.
+- Because `BuildTaskBoard` never emitted `Counters["cancelled"]`, a cancelled durable task appeared as completed in the Web task metric while the cancelled subtitle stayed `0 cancelled`.
+- `internal/tools/registry.go` `task_list` also used `board.Counters["completed"]` for `completed_count`, so tool metadata had the same conflation.
+
+Impact:
+
+Operators and model-visible task-list metadata could misread cancelled durable task graph nodes as completed work. This weakens recovery and handoff accuracy for long-running sessions where cancelled tasks should remain distinct from successfully completed tasks.
+
+Minimal fix:
+
+- Split `completed`, `cancelled`, and combined `done` derived counters in `BuildTaskBoard`.
+- Expose separate `completed`, `cancelled`, and `done` task groups while preserving a combined done view for clients that need it.
+- Add `cancelled_count` and `done_count` to `task_list` metadata.
+- Add focused session task-board and frontend renderer regressions.
+
+Validation:
+
+- `go test ./internal/session -run 'TestBuildTaskBoardIncludesInProgressGroup|TestBuildTaskBoardSeparatesCompletedAndCancelled' -count=1`: passed.
+- `go test ./internal/tools -run 'TestTodoAndTaskToolsEmitStructuredEvents|TestTodoWriteNoopDoesNotLookLikeProgress' -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1515,6 +1552,12 @@ Evidence gates:
 - Confirmed FCA-20260525-040 against `spec/17-web-console.md`, `renderNotificationCard`, `renderBackgroundNotificationsPreview`, existing `data-open-job` action handling, and selected queue job detail refresh.
 - Confirmed this is a frontend navigation/traceability gap, not a backend queue fact loss; the API and selected job panel already exist.
 - Confirmed the fix should stay in the Web renderer and reuse `data-open-job`, without adding a standalone queue page or new browser-side authority.
+
+### Review 39
+
+- Confirmed FCA-20260525-041 against `spec/12-task-system.md`, `BuildTaskBoard`, `renderTasksPanel`, and `task_list` metadata.
+- Confirmed this is not a cosmetic label issue: the shared task-board derived facts conflated cancelled and completed tasks before Web and tool consumers read them.
+- Confirmed the fix belongs in `internal/session` with compatible derived counters/groups, plus the Web renderer test to keep cancelled facts visible.
 
 ## Update Log
 
@@ -2369,6 +2412,31 @@ Validation:
 - `go test ./internal/webconsole -run 'TestServiceEmbeddedAssetsExposeWebFirstConsole|TestServiceQueueWorkersProcessJob|TestServiceParallelQueueWorkersPersistAllJobs' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-041
+
+Slice: `fix(session): separate cancelled task board facts`
+
+Changes:
+
+- Split task-board derived facts into separate `completed`, `cancelled`, and combined `done` counters/groups.
+- Updated `task_list` metadata to report `cancelled_count` and `done_count` separately from `completed_count`.
+- Added session task-board regression coverage for completed vs cancelled counters/groups.
+- Added tool metadata coverage and frontend renderer coverage for the Web task metric's cancelled subtitle.
+
+Validation:
+
+- `go test ./internal/session -run 'TestBuildTaskBoardIncludesInProgressGroup|TestBuildTaskBoardSeparatesCompletedAndCancelled' -count=1`: passed.
+- `go test ./internal/tools -run 'TestTodoAndTaskToolsEmitStructuredEvents|TestTodoWriteNoopDoesNotLookLikeProgress' -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
