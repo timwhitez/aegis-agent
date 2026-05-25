@@ -147,6 +147,33 @@ Validation:
 - Existing closed-schema command-tool regression test.
 - Full `go test ./internal/tools/` before commit.
 
+### FCA-20260522-005: Plan Mode input detail polling drops live runner handles
+
+Severity: High
+
+Evidence:
+
+- `request_user_input` stores Plan Mode state as `awaiting_input` / `plan_input` while the live runner blocks on the Web responder.
+- `sessionDetail` calls `activeHandleOwner`, which calls `pruneInactiveHandles`.
+- `pruneInactiveHandles` deleted current-process handles whenever persisted session state was not `running`.
+- A normal `GET /api/sessions/{id}` while the browser is polling a pending Plan Mode input could therefore delete the only in-memory runner handle that owns the waiting `request_user_input` call.
+
+Impact:
+
+After the handle was pruned, `/planmode/input` no longer answered the live waiter. The handler could fall back to launching a continue path while the original runner remained blocked on the unanswered request, which weakened Web Console lifecycle tracking and could leave `Service.Close` waiting on a stale runner.
+
+Minimal fix:
+
+- Treat current-process handles as prunable only when the durable state is terminal or unreadable.
+- Keep `awaiting_input`, `paused`, and other non-terminal handles until `finishHandle` releases them.
+- Add a regression test that starts a Plan Mode session, waits for `request_user_input`, reads session detail, answers the pending input, and verifies the original runner advances to the normal plan approval gate.
+
+Validation:
+
+- Focused live Plan Mode input/detail regression test.
+- Adjacent Plan Mode service tests.
+- Full `go test ./internal/webconsole/` before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -227,6 +254,12 @@ Evidence gates:
 - Confirmed ordinary built-in tool handlers use `json.Unmarshal`, which already rejects trailing non-whitespace bytes; the gap is specific to skill command tools using the custom `UseNumber` decoder.
 - Confirmed existing skill command tests covered missing required fields, closed schemas, and `additionalProperties: true`, but not trailing concatenated JSON values.
 
+### Review 5
+
+- Confirmed FCA-20260522-005 against `request_user_input`, `AnswerActivePlanInput`, `sessionDetail`, `activeHandleOwner`, and `pruneInactiveHandles`.
+- Confirmed Plan Mode planning must resume through `submit_plan` after live input; a direct `finish` response is not a valid planning-stage completion path.
+- Confirmed the fix keeps current-process handles for non-terminal states without making Web Console handles durable or introducing a second state authority.
+
 ## Update Log
 
 ### FCA-20260522-001
@@ -303,3 +336,20 @@ Validation:
 - `go test ./internal/tools/ -run TestSkillCommandToolClosesSchemaByDefault -count=1`: passed.
 - `go test ./internal/tools/ -count=1`: passed.
 - `go vet ./internal/tools/`: passed.
+
+### FCA-20260522-005
+
+Slice: `fix(webconsole): retain live plan input handles`
+
+Changes:
+
+- Changed current-process handle pruning so handles are removed only when the durable state is terminal or cannot be loaded.
+- Added a regression that proves a session detail read during pending Plan Mode input keeps the live handle and lets `/planmode/input` answer the original blocked runner.
+
+Validation:
+
+- `go test ./internal/webconsole/ -run TestServicePlanModeInputDetailKeepsLiveHandle -count=1`: passed.
+- `go test ./internal/webconsole/ -run TestServicePlanMode -count=1`: passed.
+- `go test ./internal/webconsole/ -run TestSessionDetailReportsActiveHandleOwner -count=1`: passed.
+- `go test ./internal/webconsole/ -count=1`: passed.
+- `go vet ./internal/webconsole/`: passed.

@@ -825,6 +825,94 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 	}
 }
 
+func TestServicePlanModeInputDetailKeepsLiveHandle(t *testing.T) {
+	server := newPlanInputThenSubmitPlanServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var result LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt": "Ask for Plan Mode input before editing.",
+		"mode":   "exec",
+		"plan_mode": map[string]any{
+			"enabled": true,
+		},
+	}, http.StatusAccepted, &result)
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(result.SessionID)
+		if err != nil || state.Status != session.StatusAwaitingInput || state.Phase != "plan_input" {
+			return false
+		}
+		planMode, err := svc.store.LoadPlanMode(result.SessionID)
+		return err == nil && planMode.Status == session.PlanModeStatusAwaitingUserInput && planMode.PendingRequest != nil
+	}, func() string {
+		state, err := svc.store.LoadState(result.SessionID)
+		if err != nil {
+			return err.Error()
+		}
+		planMode, _ := svc.store.LoadPlanMode(result.SessionID)
+		data, marshalErr := json.Marshal(map[string]any{"state": state, "plan_mode": planMode})
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+
+	var detail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+result.SessionID, &detail)
+	if !detail.ActiveHandle || detail.ActiveHandleOwner.State != "current_process" {
+		t.Fatalf("expected Plan Mode input detail read to retain current-process handle, got %#v", detail.ActiveHandleOwner)
+	}
+	planMode, err := svc.store.LoadPlanMode(result.SessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.PendingRequest == nil {
+		t.Fatalf("expected pending request after detail read, got %#v", planMode)
+	}
+
+	var inputLaunch LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/"+result.SessionID+"/planmode/input", map[string]any{
+		"request_id": planMode.PendingRequest.RequestID,
+		"answers": []map[string]any{{
+			"question_id": "scope_choice",
+			"label":       "Narrow",
+			"value":       "Narrow",
+		}},
+	}, http.StatusAccepted, &inputLaunch)
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(result.SessionID)
+		return err == nil && state.Status == session.StatusAwaitingInput && state.Phase == "plan_approval"
+	}, func() string {
+		state, err := svc.store.LoadState(result.SessionID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+	planMode, err = svc.store.LoadPlanMode(result.SessionID)
+	if err != nil {
+		t.Fatalf("load submitted plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingApproval || !strings.Contains(planMode.PlanMarkdown, "Plan after input") {
+		t.Fatalf("expected submitted plan after live input, got %#v", planMode)
+	}
+}
+
 func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
 	server := newFinishServer()
 	defer server.Close()
@@ -4251,6 +4339,38 @@ func newSubmitPlanServer() *httptest.Server {
 			"status":"completed",
 			"output":[
 				{"type":"function_call","call_id":"call_submit_plan_1","name":"submit_plan","arguments":"{\"title\":\"Plan Mode test plan\",\"summary\":\"Submit a plan for approval.\",\"plan_markdown\":\"# Plan Mode test plan\\n\\n## Summary\\n\\nSubmit a plan for approval.\\n\\n## Verification\\n\\n- go test ./internal/webconsole\",\"verification\":[\"go test ./internal/webconsole\"],\"assumptions\":[\"service test\"],\"risks\":[\"none\"]}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+}
+
+func newPlanInputThenSubmitPlanServer() *httptest.Server {
+	var mu sync.Mutex
+	requests := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		requestNo := requests
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if requestNo == 1 {
+			_, _ = w.Write([]byte(`{
+				"id":"resp_plan_input_1",
+				"status":"completed",
+				"output":[
+					{"type":"function_call","call_id":"call_plan_input_1","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"scope_choice\",\"header\":\"Scope\",\"question\":\"Which scope?\",\"options\":[{\"label\":\"Narrow\",\"description\":\"Keep it focused.\"},{\"label\":\"Broad\",\"description\":\"Include more cleanup.\"}]}]}"}
+				],
+				"usage":{"input_tokens":10,"output_tokens":5}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"resp_plan_submit_2",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_submit_plan_after_input_1","name":"submit_plan","arguments":"{\"title\":\"Plan after input\",\"summary\":\"Use the selected narrow scope.\",\"plan_markdown\":\"# Plan after input\\n\\n## Summary\\n\\nUse the selected narrow scope.\\n\\n## Verification\\n\\n- go test ./internal/webconsole\",\"verification\":[\"go test ./internal/webconsole\"],\"assumptions\":[\"live input was answered\"],\"risks\":[\"none\"]}"}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))

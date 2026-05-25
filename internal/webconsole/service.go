@@ -3414,7 +3414,7 @@ func (s *Service) pruneInactiveHandles() {
 	stale := make([]string, 0, len(ids))
 	for _, id := range ids {
 		state, err := s.store.LoadState(id)
-		if err != nil || state.Status != session.StatusRunning {
+		if err != nil || currentProcessHandleCanBePruned(state.Status) {
 			stale = append(stale, id)
 		}
 	}
@@ -3426,6 +3426,10 @@ func (s *Service) pruneInactiveHandles() {
 	for _, id := range stale {
 		delete(s.handles, id)
 	}
+}
+
+func currentProcessHandleCanBePruned(status string) bool {
+	return status == session.StatusCompleted || status == session.StatusFailed
 }
 
 func (s *Service) ensureSessionTreeNotLive(sessionID string) error {
