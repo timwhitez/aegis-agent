@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -249,6 +250,85 @@ func TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected one recovered cancellation result for %s, got %d messages=%#v", request.ToolCallID, count, messages)
+	}
+}
+
+func TestActivePlanInputDeliveryClaimsWaiterBeforeSend(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	requestID := "pmq_duplicate"
+	key := planInputWaiterKey(sessionID, requestID)
+
+	t.Run("answer", func(t *testing.T) {
+		ch := make(chan planInputResponse, 1)
+		runner.planInputMu.Lock()
+		runner.planInputWaiters[key] = ch
+		runner.planInputMu.Unlock()
+		answers := []session.PlanModeInputAnswer{{
+			QuestionID: "scope_choice",
+			Label:      "Narrow (Recommended)",
+			Value:      "Narrow (Recommended)",
+		}}
+
+		if !runner.AnswerActivePlanInput(sessionID, requestID, answers) {
+			t.Fatal("expected first active plan input answer to be delivered")
+		}
+		assertPlanInputDuplicateReturnsFalse(t, func() bool {
+			return runner.AnswerActivePlanInput(sessionID, requestID, answers)
+		})
+
+		select {
+		case response := <-ch:
+			if response.err != nil {
+				t.Fatalf("unexpected response error: %v", response.err)
+			}
+			if len(response.answers) != 1 || response.answers[0].QuestionID != "scope_choice" {
+				t.Fatalf("unexpected delivered answers: %#v", response.answers)
+			}
+		default:
+			t.Fatal("expected first answer response to remain available")
+		}
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		ch := make(chan planInputResponse, 1)
+		runner.planInputMu.Lock()
+		runner.planInputWaiters[key] = ch
+		runner.planInputMu.Unlock()
+
+		if !runner.CancelActivePlanInput(sessionID, requestID) {
+			t.Fatal("expected first active plan input cancel to be delivered")
+		}
+		assertPlanInputDuplicateReturnsFalse(t, func() bool {
+			return runner.CancelActivePlanInput(sessionID, requestID)
+		})
+
+		select {
+		case response := <-ch:
+			if !errors.Is(response.err, tools.ErrPlanInputCancelled) {
+				t.Fatalf("expected cancel error, got %#v", response)
+			}
+		default:
+			t.Fatal("expected first cancel response to remain available")
+		}
+	})
+}
+
+func assertPlanInputDuplicateReturnsFalse(t *testing.T, call func() bool) {
+	t.Helper()
+	done := make(chan bool, 1)
+	go func() {
+		done <- call()
+	}()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("duplicate active plan input delivery should return false")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("duplicate active plan input delivery blocked on a full waiter channel")
 	}
 }
 

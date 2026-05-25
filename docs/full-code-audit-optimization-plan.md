@@ -1544,6 +1544,32 @@ Validation:
 - Focused Web Plan Mode service regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-052: Duplicate live Plan Mode input delivery can hang Web handlers
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires Web Plan Mode pending questions to be answered or cancelled through the Plan inspector controls, with malformed or failed actions surfaced as backend errors instead of silent failure.
+- `internal/webconsole/service.go` `handlePlanModeInput` and `handlePlanModeCancel` deliver active pending input through the in-memory runner helpers before falling back to a recovered continue path.
+- `internal/runtime/runner.go` `AnswerActivePlanInput` and `CancelActivePlanInput` looked up the one-slot waiter channel while holding `planInputMu`, left the waiter in `planInputWaiters`, and sent to the channel while still holding the mutex.
+- A second Web input/cancel request for the same active pending request could observe the still-registered waiter before the blocked runner consumed the first response. Because the channel buffer was already full, the second handler could block instead of returning a conflict.
+
+Impact:
+
+Duplicate browser submissions, retrying clients, or an input/cancel race can hang a Web mutation handler and hold the Plan Mode waiter mutex. That weakens the local Web Console control contract for active Plan Mode sessions and can prevent later input/cancel operations from resolving cleanly.
+
+Minimal fix:
+
+- Claim the active Plan Mode waiter by deleting it from `planInputWaiters` before delivering the answer or cancellation response.
+- Release `planInputMu` before sending to the waiter channel so duplicate delivery attempts return `false` rather than blocking on a full channel.
+- Add a focused runtime regression that fills an active waiter channel and proves duplicate answer/cancel delivery returns promptly with `false`.
+
+Validation:
+
+- Focused runtime Plan Mode duplicate-delivery regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1891,6 +1917,12 @@ Evidence gates:
 - Confirmed FCA-20260526-051 against `spec/17-web-console.md`, `handlePlanModeApprove`, `handlePlanModeRevise`, `launchPlanModeContinue`, `ApprovePlanMode`, and `RevisePlanMode`.
 - Confirmed the backend store already rejects invalid Plan Mode statuses, but Web approval/revision launches the async continue path before surfacing those status errors.
 - Confirmed the fix belongs in Web action preflight so invalid operator actions fail before session run claiming or message append.
+
+### Review 50
+
+- Confirmed FCA-20260526-052 against `spec/17-web-console.md`, `handlePlanModeInput`, `handlePlanModeCancel`, `AnswerActivePlanInput`, `CancelActivePlanInput`, and the active Plan Mode waiter channel lifecycle.
+- Confirmed the backend validation from FCA-20260522-006 rejects malformed answers before live delivery, but duplicate valid delivery could still block because active waiter ownership was not claimed before sending.
+- Confirmed the fix belongs in the runtime active input helper, not in frontend button throttling, because HTTP retries and races must be safe at the backend control boundary.
 
 ## Update Log
 
@@ -3010,6 +3042,30 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-052
+
+Slice: `fix(runtime): claim plan input waiters before delivery`
+
+Changes:
+
+- Changed active Plan Mode input answer/cancel delivery to delete the waiter from `planInputWaiters` before sending the response.
+- Released the Plan Mode input mutex before delivery so duplicate Web submissions or retries return `false` instead of blocking on a full one-slot waiter channel.
+- Added a runtime regression proving duplicate active answer and cancel deliveries return promptly while the first response remains available to the waiting runner.
+
+Validation:
+
+- `go test ./internal/runtime -run 'TestActivePlanInputDeliveryClaimsWaiterBeforeSend|TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

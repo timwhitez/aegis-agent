@@ -130,24 +130,28 @@ func (r *Runner) RequestPlanInput(ctx context.Context, sessionID string, request
 
 func (r *Runner) AnswerActivePlanInput(sessionID, requestID string, answers []session.PlanModeInputAnswer) bool {
 	r.planInputMu.Lock()
-	defer r.planInputMu.Unlock()
 	key := planInputWaiterKey(sessionID, requestID)
 	ch, ok := r.planInputWaiters[key]
 	if !ok {
+		r.planInputMu.Unlock()
 		return false
 	}
+	delete(r.planInputWaiters, key)
+	r.planInputMu.Unlock()
 	ch <- planInputResponse{answers: append([]session.PlanModeInputAnswer(nil), answers...)}
 	return true
 }
 
 func (r *Runner) CancelActivePlanInput(sessionID, requestID string) bool {
 	r.planInputMu.Lock()
-	defer r.planInputMu.Unlock()
 	key := planInputWaiterKey(sessionID, requestID)
 	ch, ok := r.planInputWaiters[key]
 	if !ok {
+		r.planInputMu.Unlock()
 		return false
 	}
+	delete(r.planInputWaiters, key)
+	r.planInputMu.Unlock()
 	ch <- planInputResponse{err: tools.ErrPlanInputCancelled}
 	return true
 }
