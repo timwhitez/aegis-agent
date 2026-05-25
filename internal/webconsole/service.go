@@ -3079,9 +3079,12 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		return 0, errors.New("no SKILL.md found in zip, not a valid skill package")
 	}
 
-	extractedCount := 0
-	extractedBytes := int64(0)
-
+	type skillZipPlan struct {
+		Root       string
+		TargetPath string
+	}
+	plans := make([]skillZipPlan, 0, len(skillRoots))
+	seenTargets := make(map[string]string, len(skillRoots))
 	for _, root := range skillRoots {
 		var targetDirName string
 		mdPath := "SKILL.md"
@@ -3095,7 +3098,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			if cleanNames[f] == path.Clean(mdPath) {
 				data, err := readZipFileLimited(f, maxSkillZipEntryBytes)
 				if err != nil {
-					return extractedCount, err
+					return 0, err
 				}
 				targetDirName = extractSkillNameFromMd(data)
 				break
@@ -3111,12 +3114,31 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		}
 
 		targetDirName = sanitizeDirName(targetDirName)
-		targetPath := filepath.Join(globalDest, targetDirName)
-		if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return extractedCount, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
-		} else if err != nil && !os.IsNotExist(err) {
-			return extractedCount, err
+		if targetDirName == "" {
+			return 0, fmt.Errorf("skill target directory name is empty for zip root %s", root)
 		}
+		targetPath := filepath.Join(globalDest, targetDirName)
+		if !pathWithinRoot(globalDest, targetPath) || filepath.Clean(targetPath) == filepath.Clean(globalDest) || filepath.Dir(targetPath) != globalDest {
+			return 0, fmt.Errorf("invalid skill target directory: %s", targetDirName)
+		}
+		if previousRoot, exists := seenTargets[targetDirName]; exists {
+			return 0, fmt.Errorf("duplicate skill target directory %s from zip roots %s and %s", targetDirName, previousRoot, root)
+		}
+		seenTargets[targetDirName] = root
+		if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return 0, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
+		} else if err != nil && !os.IsNotExist(err) {
+			return 0, err
+		}
+		plans = append(plans, skillZipPlan{Root: root, TargetPath: targetPath})
+	}
+
+	extractedCount := 0
+	extractedBytes := int64(0)
+
+	for _, plan := range plans {
+		root := plan.Root
+		targetPath := plan.TargetPath
 
 		if err := fileutil.RemoveDirAllNoSymlink(targetPath); err != nil {
 			return extractedCount, err

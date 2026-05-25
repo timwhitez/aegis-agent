@@ -1570,6 +1570,34 @@ Validation:
 - Focused runtime Plan Mode duplicate-delivery regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-053: Skill upload accepts duplicate sanitized target directories
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` says skill install/uninstall are unsafe local-console mutations and skill upload must enforce request, entry, and extraction limits instead of dragging the local console into malformed-package side effects.
+- `internal/webconsole/service.go` `processSkillZip` finds every `SKILL.md`, derives a target directory from frontmatter `name:` or the root directory, then calls `sanitizeDirName`.
+- `sanitizeDirName` maps every non-alphanumeric / non-hyphen / non-underscore rune to `_`, so distinct package names such as `demo!` and `demo?` both become `demo_`.
+- Before this slice, `processSkillZip` did not precompute or deduplicate target directories. It removed and recreated each target inside the per-root extraction loop.
+- A zip containing two skill roots that sanitize to the same target could therefore extract the first package, remove it while processing the second package, return `installed_count=2`, and leave only the second package on disk.
+
+Impact:
+
+A malformed uploaded multi-skill zip can silently overwrite one planned skill package with another and report an inflated install count. If the duplicate target matches an already installed skill, the existing skill can be replaced by whichever duplicate root is processed last instead of the upload being rejected as ambiguous.
+
+Minimal fix:
+
+- Build and validate a full extraction plan before any target directory is removed.
+- Reject duplicate sanitized target names inside the same zip so one package cannot overwrite another planned package.
+- Require each target path to be a direct child under the managed skills root.
+- Add a focused regression proving duplicate target names are rejected before mutation.
+
+Validation:
+
+- Focused skill zip regression tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1923,6 +1951,12 @@ Evidence gates:
 - Confirmed FCA-20260526-052 against `spec/17-web-console.md`, `handlePlanModeInput`, `handlePlanModeCancel`, `AnswerActivePlanInput`, `CancelActivePlanInput`, and the active Plan Mode waiter channel lifecycle.
 - Confirmed the backend validation from FCA-20260522-006 rejects malformed answers before live delivery, but duplicate valid delivery could still block because active waiter ownership was not claimed before sending.
 - Confirmed the fix belongs in the runtime active input helper, not in frontend button throttling, because HTTP retries and races must be safe at the backend control boundary.
+
+### Review 51
+
+- Confirmed FCA-20260526-053 against `spec/17-web-console.md`, `handleUploadSkill`, `processSkillZip`, `sanitizeDirName`, `pathWithinRoot`, and the existing skill upload zip-slip / size-limit regressions.
+- Confirmed this is not just a cosmetic duplicate-name issue: duplicate sanitized targets are processed sequentially, and each root removes/recreates the same target before extracting its files.
+- Confirmed the fix belongs in pre-mutation extraction planning so every target is known safe before any installed skill directory is removed.
 
 ## Update Log
 
@@ -3065,6 +3099,31 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-053
+
+Slice: `fix(webconsole): reject duplicate skill upload targets`
+
+Changes:
+
+- Planned skill zip extraction targets before removing or creating any managed skill directory.
+- Rejected duplicate sanitized target directories inside a single uploaded zip so one skill root cannot overwrite another root in the same package.
+- Kept target validation constrained to direct children of the managed skill root and retained symlink destination checks before mutation.
+- Added a regression proving duplicate sanitized target names are rejected before extracting files or touching unrelated installed skills.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestProcessSkillZipRejectsTraversalEntries|TestProcessSkillZipRejectsSymlinkDestination|TestProcessSkillZipRejectsOversizedEntry|TestProcessSkillZipRejectsDuplicateTargetNamesBeforeMutation|TestProcessSkillZipAllowsNestedSkillFiles|TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.

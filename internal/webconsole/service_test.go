@@ -4854,6 +4854,44 @@ func TestProcessSkillZipRejectsOversizedEntry(t *testing.T) {
 	}
 }
 
+func TestProcessSkillZipRejectsDuplicateTargetNamesBeforeMutation(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	existing := filepath.Join(dest, "existing-skill")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "SKILL.md"), []byte("---\nname: existing-skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+	zipPath := filepath.Join(base, "duplicate-name.zip")
+	createZipEntries(t, zipPath, map[string]string{
+		"one/SKILL.md": "---\nname: demo!\n---\none\n",
+		"one/a.txt":    "one\n",
+		"two/SKILL.md": "---\nname: demo?\n---\ntwo\n",
+		"two/b.txt":    "two\n",
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "duplicate skill target directory demo_") {
+		t.Fatalf("expected duplicate target name to be rejected, got %v", err)
+	}
+	for _, candidate := range []string{
+		filepath.Join(dest, "demo_", "a.txt"),
+		filepath.Join(dest, "demo_", "b.txt"),
+	} {
+		if _, err := os.Stat(candidate); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected %s not to be extracted, got %v", candidate, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(existing, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected existing skill to remain after rejected upload: %v", err)
+	}
+	if !strings.Contains(string(data), "existing-skill") {
+		t.Fatalf("existing skill was unexpectedly modified: %q", string(data))
+	}
+}
+
 func TestProcessSkillZipAllowsNestedSkillFiles(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")
