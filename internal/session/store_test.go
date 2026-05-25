@@ -1202,6 +1202,66 @@ func TestStoreRejectsPathLikeRecordIDs(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionTreeRemovesRootLinkedDescendants(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rootMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "root_linked_delete",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyInteractive,
+		RootSessionID:    "root_linked_delete",
+	}
+	if err := store.Create(rootMeta, State{Status: StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create root session: %v", err)
+	}
+	orphanedChildMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "root_linked_orphan_child",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    rootMeta.ID,
+		QueueJobID:       "job_root_linked_delete",
+	}
+	if err := store.Create(orphanedChildMeta, State{Status: StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create root-linked child session: %v", err)
+	}
+	if err := store.SaveJob(QueueJob{
+		SchemaVersion: 1,
+		ID:            orphanedChildMeta.QueueJobID,
+		CreatedAt:     now,
+		Status:        QueueStatusCompleted,
+		RootSessionID: rootMeta.ID,
+		SessionID:     orphanedChildMeta.ID,
+		Prompt:        "done",
+		Mode:          ModeExec,
+		Background:    true,
+	}); err != nil {
+		t.Fatalf("save root-linked job: %v", err)
+	}
+
+	if err := store.DeleteSessionTree(rootMeta.ID); err != nil {
+		t.Fatalf("delete session tree: %v", err)
+	}
+	if _, err := store.LoadMetadata(rootMeta.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected root session to be deleted, got %v", err)
+	}
+	if _, err := store.LoadMetadata(orphanedChildMeta.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected root-linked child session to be deleted, got %v", err)
+	}
+	if _, err := store.LoadJob(orphanedChildMeta.QueueJobID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected root-linked queue job to be deleted, got %v", err)
+	}
+}
+
 func TestStoreRejectsPathLikeArtifactPaths(t *testing.T) {
 	temp := t.TempDir()
 	root := filepath.Join(temp, "sessions")

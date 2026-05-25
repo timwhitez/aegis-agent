@@ -1362,6 +1362,11 @@ func (s *Store) DeleteSessionTree(sessionID string) error {
 			if _, ok := targets[item.ParentSessionID]; ok {
 				targets[item.ID] = struct{}{}
 				changed = true
+				continue
+			}
+			if _, ok := targets[item.RootSessionID]; ok {
+				targets[item.ID] = struct{}{}
+				changed = true
 			}
 		}
 	}

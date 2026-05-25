@@ -1709,6 +1709,31 @@ Validation:
 - Focused OpenAI replay regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-058: Session tree deletion skips root-linked descendants
+
+Severity: Medium
+
+Evidence:
+
+- `spec/14-multi-agent-and-isolation.md` requires every child session to record `root_session_id`, and `spec/15-background-queue.md` records the same root fact on queue jobs.
+- `internal/webconsole/service.go` computes Web delete preflight tree membership with both `ParentSessionID` and `RootSessionID` via `sessionTreeTargetIDs`, so the Web layer treats root-linked sessions as part of the affected tree.
+- Before this slice, `internal/session/store.go` `DeleteSessionTree` only expanded `targets` through `ParentSessionID`.
+- The same helper then deleted queue jobs whose `RootSessionID` matched the target tree, so a root-linked descendant with a missing or drifted parent chain could be left as an orphaned session while its related job was deleted.
+
+Impact:
+
+Deleting a root session tree could leave durable descendant session facts behind when the descendant still carried the correct root fact but lacked a traversable parent chain. That makes Web/session history inconsistent after a destructive cleanup and weakens recovery assumptions that session, child, and queue facts are removed together.
+
+Minimal fix:
+
+- Make `DeleteSessionTree` expand tree targets through both `ParentSessionID` and `RootSessionID`, matching the Web preflight helper and existing queue-job cleanup semantics.
+- Add a store regression for a root-linked descendant with no parent chain and a root-linked queue job.
+
+Validation:
+
+- Focused store deletion regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2092,6 +2117,12 @@ Evidence gates:
 - Confirmed FCA-20260526-057 against `spec/03-provider-contracts.md`, `openAIInput`, `normalizeToolCallArguments`, prior OpenAI ingress argument tests, and focused OpenAI replay regressions.
 - Confirmed this is not a provider-native reasoning-block issue: OpenAI reasoning replay still filters by provider/profile/API/model, but the ordinary persisted `session.ToolCall.Arguments` fallback path was not revalidated on outbound replay.
 - Confirmed the fix belongs in the OpenAI adapter replay builder, not in Web, CLI, runtime, or session storage, because provider-specific replay shape construction remains adapter-owned.
+
+### Review 56
+
+- Confirmed FCA-20260526-058 against `spec/14-multi-agent-and-isolation.md`, `spec/15-background-queue.md`, Web `sessionTreeTargetIDs`, store `DeleteSessionTree`, and delete/clear regressions.
+- Confirmed this is a store/Web consistency issue: Web preflight and running-job checks already treat root-linked sessions as part of a tree, but the durable store deletion helper only followed parent links.
+- Confirmed the fix belongs in session storage tree deletion so CLI, Web, SDK, and future cleanup callers share the same durable tree semantics.
 
 ## Update Log
 
@@ -3356,6 +3387,30 @@ Validation:
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-058
+
+Slice: `fix(session): delete root-linked descendants`
+
+Changes:
+
+- Changed durable session-tree deletion to include sessions whose `root_session_id` points into the deleted tree, matching Web delete preflight and queue-job cleanup semantics.
+- Preserved existing parent-link transitive deletion behavior while covering root-linked descendants with missing or drifted parent chains.
+- Added a store regression proving deleting the root removes a root-linked descendant session and its root-linked queue job.
+
+Validation:
+
+- `go test ./internal/session -run 'TestDeleteSessionTreeRemovesRootLinkedDescendants|TestDeleteSessionTreeDoesNotDeadlockWithReconcilableJob|TestStoreRejectsPathLikeRecordIDs' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
