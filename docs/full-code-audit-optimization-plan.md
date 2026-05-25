@@ -1298,6 +1298,34 @@ Validation:
 - Full WebConsole package tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-043: Failed Web config writes can still persist API keys
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats API key/config writes as sensitive local-console mutations and requires them to be auditable; it also states that `POST /api/config` saves provider defaults, API keys, and emits audit events.
+- `internal/webconsole/service.go` `handleUpdateConfig` previously called `os.Setenv` and `config.UpsertEnvFile` for `req.APIKey` before writing the config file with `config.WriteFile`.
+- The same handler appended `web.config.write` and `web.config.api_key_write` audit events only after the config write succeeded.
+- Therefore, if `config.WriteFile` failed after the env-file upsert, the HTTP request returned `500` but the process environment and `.env` file could already contain the new API key with no matching config or audit event.
+
+Impact:
+
+A failed Settings save could leave a newly submitted secret persisted even though the browser saw a failed request and no audit event was recorded. That violates the Web-first safety contract for sensitive API key writes and makes local recovery/audit misleading.
+
+Minimal fix:
+
+- Defer process and `.env` API-key mutation until audit-log writability and config persistence have succeeded.
+- Keep API key audit metadata secret-free.
+- Add a regression proving a config-write failure does not mutate `OPENAI_API_KEY`, does not persist the secret in `.env`, and does not append a config audit event.
+
+Validation:
+
+- Focused WebConsole config regression.
+- Existing API-key audit secrecy regression.
+- Full WebConsole package tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1591,6 +1619,12 @@ Evidence gates:
 - Confirmed FCA-20260526-042 against `spec/17-web-console.md`, `handleListFiles`, `handleReadFile`, `webFileBrowserPathDenied`, `webFileBrowserNameDenied`, and `TestServiceWorkspaceRoutesListReadAndRejectEscape`.
 - Confirmed this is a Web workspace-browser leakage issue, not a runtime session redaction rule; reports, provider views, and session artifacts should not get default secret rewriting.
 - Confirmed the fix belongs in the browser deny helper used by both listing and read checks, without changing the workspace parent-navigation behavior or introducing a browser-side file editor.
+
+### Review 41
+
+- Confirmed FCA-20260526-043 against `spec/17-web-console.md`, `handleUpdateConfig`, `config.UpsertEnvFile`, `config.WriteFile`, and Web audit event ordering.
+- Confirmed this is a sensitive mutation ordering bug: the key can be durably written before the request's config/audit side succeeds.
+- Confirmed the fix should only reorder Web Settings persistence and preflight audit-log writability; `POST /api/config/test` already uses a temporary env var and does not persist config or `.env`.
 
 ## Update Log
 
@@ -2489,6 +2523,30 @@ Changes:
 Validation:
 
 - `go test ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-043
+
+Slice: `fix(webconsole): delay api key persistence until config save`
+
+Changes:
+
+- Delayed Web Settings API-key process/env-file mutation until audit-log writability and config persistence have succeeded.
+- Added an audit-log writability preflight so sensitive config saves fail before mutating in-memory service config or `.env`.
+- Added a regression proving failed config writes do not mutate `OPENAI_API_KEY`, do not persist the submitted secret in `.env`, and do not append a config audit event.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestAPIKeyWriteDoesNotLogSecretValue|TestAPIKeyWriteWaitsForConfigWriteSuccess|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

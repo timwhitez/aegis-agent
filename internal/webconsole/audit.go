@@ -41,6 +41,17 @@ func (s *Service) appendAuditEvent(eventType string, data map[string]any) error 
 	return json.NewEncoder(file).Encode(event)
 }
 
+func (s *Service) ensureAuditLogWritable() error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	file, err := openAuditLogNoSymlink(webAuditLogPath(s.store.Root()))
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
 func openAuditLogNoSymlink(path string) (*os.File, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
 	if path == "" {

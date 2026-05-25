@@ -2392,6 +2392,11 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var apiKeyAudit map[string]any
+	var apiKeyUpdate *struct {
+		envKey  string
+		envFile string
+		value   string
+	}
 	if p, ok := updatedCfg.Providers[req.Provider]; ok {
 		if req.BaseURL != nil {
 			p.BaseURL = strings.TrimSpace(*req.BaseURL)
@@ -2419,15 +2424,16 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
-			if err := os.Setenv(p.APIKeyEnv, *req.APIKey); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
 			cwd, _ := os.Getwd()
 			envPath := config.DefaultEnvFilePath(cwd)
-			if err := config.UpsertEnvFile(envPath, p.APIKeyEnv, *req.APIKey); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
+			apiKeyUpdate = &struct {
+				envKey  string
+				envFile string
+				value   string
+			}{
+				envKey:  p.APIKeyEnv,
+				envFile: envPath,
+				value:   *req.APIKey,
 			}
 			apiKeyAudit = map[string]any{
 				"provider": req.Provider,
@@ -2443,9 +2449,23 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(configPath) == "" {
 		configPath = config.PersistPath("", cwd)
 	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := config.WriteFile(configPath, updatedCfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if apiKeyUpdate != nil {
+		if err := config.UpsertEnvFile(apiKeyUpdate.envFile, apiKeyUpdate.envKey, apiKeyUpdate.value); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if err := os.Setenv(apiKeyUpdate.envKey, apiKeyUpdate.value); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	s.cfg = updatedCfg
 	s.workers.UpdateConfig(updatedCfg)
