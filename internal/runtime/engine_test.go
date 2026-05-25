@@ -382,6 +382,78 @@ func TestEnginePassesSessionMetadataIntoProviderRequest(t *testing.T) {
 	}
 }
 
+func TestEngineBudgetWrapUpThenFinishAwaitsInput(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	tokenBudget := int64(1)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Mode:         session.GoalModeGoal,
+		Objective:    "Stop when budget is exhausted.",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, limited, err := engine.store.UpdateGoalAccounting(meta.ID, session.GoalUsageDelta{TokensUsedDelta: 2, SourceTurn: 1}); err != nil || !limited {
+		t.Fatalf("expected budget limit, limited=%v err=%v", limited, err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Record budget wrap-up, then stop.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:   "call_budget_wrapup",
+					Name: "record_goal_progress",
+					Arguments: json.RawMessage(`{
+						"kind":"budget_wrapup",
+						"summary":"Budget exhausted before completion.",
+						"evidence":["runtime test"],
+						"blockers":["needs more budget"]
+					}`),
+				},
+				{
+					ID:        "call_finish_after_wrapup",
+					Name:      "finish",
+					Arguments: json.RawMessage(`{"message":"budget wrap-up recorded"}`),
+				},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input after budget wrap-up, got %#v", result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.Status != session.StatusAwaitingInput || loaded.Phase != "goal_budget_limited" {
+		t.Fatalf("expected goal_budget_limited awaiting input, got %#v", loaded)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var blockedFinish bool
+	for _, msg := range messages {
+		for _, toolResult := range msg.ToolResults {
+			if toolResult.Name == "finish" && toolResult.IsError && toolResult.Metadata["guard"] == "goal_budget_limited" {
+				blockedFinish = true
+			}
+		}
+	}
+	if !blockedFinish {
+		t.Fatalf("expected finish to be blocked by goal_budget_limited guard, got %#v", messages)
+	}
+}
+
 func TestEngineYoloBypassesRetrievalGuards(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "yolo"

@@ -250,6 +250,9 @@ func (c *CompletionController) goalCompletionGate(toolName string) (string, stri
 		if goal.Control.StopOnBudget && !session.HasBudgetWrapUpRecord(goal) {
 			return "goal_budget_wrapup", "Goal budget gate: stop_on_budget is true and the goal is budget_limited. Before finish, call record_goal_progress with kind \"budget_wrapup\" and record progress, evidence, remaining work, commands, and blockers. Budget exhaustion is not completion; only call update_goal(status=\"complete\") if the completion audit actually passed."
 		}
+		if goal.Control.StopOnBudget {
+			return "goal_budget_limited", "Goal budget gate: stop_on_budget is true and the goal is budget_limited. Budget exhaustion is not completion, and finish would mark the session completed. After recording the budget wrap-up facts, stop and wait for user input unless a real completion audit supports update_goal(status=\"complete\")."
+		}
 		return "", ""
 	case session.GoalStatusPaused, session.GoalStatusComplete:
 		return "", ""

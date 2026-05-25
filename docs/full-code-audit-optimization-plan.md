@@ -229,6 +229,33 @@ Validation:
 - Adjacent runner continue/auto-continue tests.
 - Full runtime and session package tests before commit.
 
+### FCA-20260522-008: Budget-limited goal wrap-up can still complete the session
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` states that `budget_limited` with `stop_on_budget=true` must return to `awaiting_input` after the wrap-up opportunity unless the model legitimately completes the goal with `update_goal(status="complete")`.
+- `goalCompletionGate` blocked `finish` only until a `budget_wrapup` record existed.
+- After `record_goal_progress(kind="budget_wrapup")`, a same-turn `finish` could pass the controller and `Engine.complete` would write `state.status=completed`.
+- `goalBudgetWrapUpPrompt` also told the model to finish after recording wrap-up facts when the goal was not complete.
+
+Impact:
+
+A budget-exhausted incomplete goal could be rendered as a completed session. That makes Web/CLI summaries, parent coordination, and recovery prompts treat a budget stop as task completion even though the goal completion audit never passed.
+
+Minimal fix:
+
+- Keep blocking `finish` for `budget_limited + stop_on_budget` even after a wrap-up record exists.
+- Preserve the first gate that tells the model to record `budget_wrapup` when it has not done so yet.
+- Update runtime prompt text so the model records wrap-up facts and then stops instead of calling `finish`.
+- Add a controller regression and an engine regression for `record_goal_progress(kind="budget_wrapup")` followed by `finish` in the same turn.
+
+Validation:
+
+- Focused completion-controller and engine budget-wrap-up tests.
+- Full runtime package tests before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -326,6 +353,12 @@ Evidence gates:
 - Confirmed FCA-20260522-007 against `Continue`, `acquireRunSlot`, `SaveState`, and the engine's first durable `running` write.
 - Confirmed the fix belongs in the session store transition path because runner-local locks do not cover separate runners or processes.
 - Confirmed the implementation keeps auto-continue compatibility by preserving same-session runner slot re-entry while moving cross-run exclusion to durable state.
+
+### Review 8
+
+- Confirmed FCA-20260522-008 against `goalCompletionGate`, `goalBudgetWrapUpPrompt`, `Engine.complete`, and `spec/18-durable-contract-and-completion.md`.
+- Confirmed the existing engine budget-wrap-up boundary already returns to `awaiting_input` when `finish` is not allowed.
+- Confirmed `GoalStatusComplete` remains the only path that allows a budget-exhausted goal to finish as completed.
 
 ## Update Log
 
@@ -458,3 +491,20 @@ Validation:
 - `go test ./internal/session/ -count=1`: passed.
 - `go test ./internal/runtime/ -count=1`: passed.
 - `go vet ./internal/runtime/ ./internal/session/`: passed.
+
+### FCA-20260522-008
+
+Slice: `fix(runtime): block budget-limited finish`
+
+Changes:
+
+- Changed the goal completion gate so `budget_limited + stop_on_budget` keeps blocking `finish` after a budget-wrap-up record exists.
+- Kept the more specific missing-wrap-up gate for the first required `record_goal_progress(kind="budget_wrapup")`.
+- Updated goal prompt text to tell the model to stop after recording wrap-up facts unless it can legitimately call `update_goal(status="complete")`.
+- Added an engine regression proving a same-turn `budget_wrapup` plus `finish` returns the session to `awaiting_input` instead of `completed`.
+
+Validation:
+
+- `go test ./internal/runtime/ -run 'TestGoalBudgetLimitedRequiresWrapUpBeforeFinish|TestEngineBudgetWrapUpThenFinishAwaitsInput' -count=1`: passed.
+- `go test ./internal/runtime/ -count=1`: passed.
+- `go vet ./internal/runtime/`: passed.

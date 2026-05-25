@@ -79,7 +79,7 @@ func goalPromptContext(goal session.SessionGoal) string {
 	case session.GoalStatusActive:
 		b.WriteString("\nBefore marking the goal complete, perform a completion audit against concrete files, command results, events, or other session facts. If complete, call update_goal with status \"complete\" before finish.\n")
 	case session.GoalStatusBudgetLimited:
-		b.WriteString("\nThe goal is budget_limited. Budget exhaustion is not completion; wrap up current progress, evidence, remaining work, and blockers unless the actual completion audit proves the goal is complete. If stop_on_budget is active, call record_goal_progress with kind \"budget_wrapup\" before finish.\n")
+		b.WriteString("\nThe goal is budget_limited. Budget exhaustion is not completion; wrap up current progress, evidence, remaining work, and blockers unless the actual completion audit proves the goal is complete. If stop_on_budget is active, call record_goal_progress with kind \"budget_wrapup\", then stop and wait for user input unless you can legitimately call update_goal(status=\"complete\").\n")
 	case session.GoalStatusPaused:
 		b.WriteString("\nThe goal is paused by the user/operator. Do not assume you should keep advancing it unless the latest user message resumes or redirects the work.\n")
 	case session.GoalStatusComplete:
@@ -177,5 +177,5 @@ func appendGoalHistoryForSteer(store *session.Store, sessionID string, text stri
 }
 
 func goalBudgetWrapUpPrompt() string {
-	return "Harness reminder: the goal budget limit has been reached and stop_on_budget is true. Do not continue implementation. Use record_goal_progress with kind \"budget_wrapup\" to record current progress, evidence, commands, remaining work, and blockers. If a real completion audit proves the goal is done, call update_goal(status=\"complete\"); otherwise finish with an honest budget-limited wrap-up after recording the progress facts."
+	return "Harness reminder: the goal budget limit has been reached and stop_on_budget is true. Do not continue implementation. Use record_goal_progress with kind \"budget_wrapup\" to record current progress, evidence, commands, remaining work, and blockers. If a real completion audit proves the goal is done, call update_goal(status=\"complete\"); otherwise do not call finish. Stop after recording the progress facts so the session can return to awaiting input."
 }

@@ -404,8 +404,8 @@ func TestGoalCompletionGateRequiresBudgetWrapUpWhenStopOnBudget(t *testing.T) {
 		t.Fatalf("record budget wrap-up: %v", err)
 	}
 	decision = controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"stopped"}`))
-	if decision.Status != GateAllow {
-		t.Fatalf("expected finish after budget wrap-up record, got %#v", decision)
+	if decision.Status != GateBlock || decision.GateID != "goal_budget_limited" {
+		t.Fatalf("expected budget-limited finish to remain blocked after wrap-up record, got %#v", decision)
 	}
 }
 
