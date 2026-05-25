@@ -149,14 +149,16 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if err := e.store.SaveGoal(meta.ID, goalCopy); err != nil {
 					return RunResult{}, err
 				}
-				_ = e.store.AppendGoalHistory(meta.ID, session.GoalHistoryEntry{
+				if err := e.store.AppendGoalHistory(meta.ID, session.GoalHistoryEntry{
 					Type:   "goal.budget_wrapup_turn_started",
 					Source: session.GoalSourceSystem,
 					Status: goalCopy.Status,
 					Data: map[string]any{
 						"budget_wrapup_turn_started_at": goalCopy.BudgetWrapUpTurnStartedAt,
 					},
-				})
+				}); err != nil {
+					return e.fail(ctx, meta, state, err, hookManager)
+				}
 				e.emit(meta.ID, "goal.budget_wrapup_turn_started", "prepare", goalEventData(goalCopy))
 				goal = &goalCopy
 				budgetWrapUpTurn = true

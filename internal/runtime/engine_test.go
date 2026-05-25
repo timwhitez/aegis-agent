@@ -659,6 +659,40 @@ func TestEngineBudgetWrapUpThenFinishAwaitsInput(t *testing.T) {
 	}
 }
 
+func TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	tokenBudget := int64(1)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Mode:         session.GoalModeGoal,
+		Objective:    "Stop when budget is exhausted.",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, limited, err := engine.store.UpdateGoalAccounting(meta.ID, session.GoalUsageDelta{TokensUsedDelta: 2, SourceTurn: 1}); err != nil || !limited {
+		t.Fatalf("expected budget limit, limited=%v err=%v", limited, err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Record budget wrap-up, then stop.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	blockRuntimeGoalHistoryPath(t, engine.store, meta.ID)
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatalf("provider should not be called after budget wrap-up history append failure")
+		return provider.TurnResult{}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal-history append error, result=%#v err=%v", result, err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed result after goal-history append error, got %#v", result)
+	}
+}
+
 func TestEngineYoloBypassesRetrievalGuards(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "yolo"

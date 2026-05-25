@@ -1865,6 +1865,33 @@ Validation:
 - Adjacent provider metadata, parse-error, auto-resume, and summary/checkpoint regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-068: Budget wrap-up turn start hides goal history failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md` make `goal.json` plus `artifacts/goal-history.jsonl` the durable goal fact source, and budget-limited goals require durable wrap-up facts before recovery or finish.
+- After `UpdateGoalAccounting` marks a stop-on-budget goal as `budget_limited`, the engine marks `BudgetWrapUpTurnStartedAt` in `goal.json` before the provider turn that may record the budget wrap-up.
+- Before this slice, that engine path ignored the corresponding `goal.budget_wrapup_turn_started` history append failure and still called the provider.
+- A focused regression reproduced the inconsistency by replacing `artifacts/goal-history.jsonl` with a directory after budget exhaustion: the engine reached the provider with `goal.json` mutated but the required turn-start history fact missing.
+
+Impact:
+
+Recovery and operators could see a goal snapshot that says the budget wrap-up turn had started without the matching append-only history fact that explains when and why runtime entered the wrap-up turn. That weakens budget handoff traceability and can make later recovery prompts depend on a snapshot/history split.
+
+Minimal fix:
+
+- Return the `AppendGoalHistory` error from the budget wrap-up turn-start path.
+- Stop through the existing session failure path before emitting the turn-start event or calling the provider.
+- Add a focused runtime regression for blocked `goal-history.jsonl` during budget wrap-up turn start.
+
+Validation:
+
+- Focused budget wrap-up turn-start failure regression.
+- Adjacent budget wrap-up and completion-gate regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2284,6 +2311,12 @@ Evidence gates:
 - Confirmed FCA-20260526-067 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `recordProviderRetry`, `recordProviderAutoResumeAttempt`, `recordProviderFailure`, `recordProviderSuccess`, and focused blocked-ledger regressions.
 - Confirmed this is not a retry-policy control issue: the provider-attempt ledger does not drive adapter retry decisions, but it is still the durable recovery/diagnostic/Web fact for runtime-observed retry, auto-resume, final failure, success, response id, and cache telemetry.
 - Confirmed the fix should stop before the next durable step when the ledger write fails: retry callbacks cancel the in-flight provider context, auto-resume does not recall the provider, and success fails before assistant-message persistence.
+
+### Review 62
+
+- Confirmed FCA-20260526-068 against `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, engine budget wrap-up preparation, `UpdateGoalAccounting`, and focused blocked-history regression.
+- Confirmed this is distinct from the previous Goal store transition fixes: the ignored history append is in runtime prepare logic after accounting already requested a stop-on-budget wrap-up and before provider execution.
+- Confirmed the fix should report the durable fact failure before emitting `goal.budget_wrapup_turn_started` or sending the model a wrap-up turn.
 
 ## Update Log
 
@@ -3828,6 +3861,36 @@ Validation:
 - `go test -timeout 120s ./internal/runtime -run 'TestEngineProvider(Retry|Failure|AutoResume|Success)ReportsProviderAttemptAppendError' -count=1`: failed before the fix with false-progress behavior.
 - `go test -timeout 120s ./internal/runtime -run 'TestEngineProvider(Retry|Failure|AutoResume|Success)ReportsProviderAttemptAppendError' -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'TestEnginePersistsProviderTurnMetadata|TestEngineProviderParseErrorFailsBeforeAssistantPersist|TestEngineProvider(Retry|Failure|AutoResume|Success)ReportsProviderAttemptAppendError|TestEngineAutoResumesProviderTimeoutBeforeFailing|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-068
+
+Slice: `fix(runtime): report budget wrap-up history failures`
+
+Finding:
+
+- Runtime marked `BudgetWrapUpTurnStartedAt` in `goal.json` and then ignored failures appending `goal.budget_wrapup_turn_started` to `artifacts/goal-history.jsonl`.
+- A blocked `artifacts/goal-history.jsonl` path reproduced false progress: the engine called the provider after mutating the goal snapshot even though the durable turn-start history fact was missing.
+
+Changes:
+
+- Changed the budget wrap-up turn-start path to return `AppendGoalHistory` failures.
+- Stops through the existing session failure path before emitting `goal.budget_wrapup_turn_started` or calling the provider.
+- Added a focused runtime regression for blocked goal history at budget wrap-up turn start.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError' -count=1`: failed before the fix by reaching the provider.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError|TestEngineBudgetWrapUpThenFinishAwaitsInput|TestGoalCompletionGateRequiresBudgetWrapUpWhenStopOnBudget' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
