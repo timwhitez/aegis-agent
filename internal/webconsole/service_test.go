@@ -1194,6 +1194,49 @@ func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
 	}
 }
 
+func TestServicePlanModeApproveRejectsPlanningBeforeLaunch(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_planmode_approve_planning")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Approve too early", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusConflict)
+	if !strings.Contains(errResp.Error, "not awaiting approval") {
+		t.Fatalf("expected plan status conflict, got %#v", errResp)
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != session.StatusAwaitingInput || state.Phase != "plan_input" {
+		t.Fatalf("invalid approve should not claim or fail session, got %#v", state)
+	}
+	planMode, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusPlanning || planMode.PlanVersion != 0 {
+		t.Fatalf("invalid approve should not mutate plan mode, got %#v", planMode)
+	}
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatalf("invalid approve should not launch background continue")
+	}
+}
+
 func TestServicePlanModeApproveReturnsConflictWhenLinkedMissionCoverageBlocks(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -1252,6 +1295,76 @@ func TestServicePlanModeApproveReturnsConflictWhenLinkedMissionCoverageBlocks(t 
 	}
 	if svc.hasActiveHandle(meta.ID) {
 		t.Fatalf("coverage conflict should not launch background continue")
+	}
+}
+
+func TestServicePlanModeReviseRejectsPendingInputBeforeLaunch(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_planmode_revise_input")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Revise while input pending", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	pendingRequest := session.PlanModeInputRequest{
+		RequestID:  "pmq_revise_input",
+		ToolCallID: "call_revise_input",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := svc.store.SetPlanModePendingRequest(meta.ID, pendingRequest, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/revise", map[string]any{
+		"message": "Revise before answering input.",
+	}, http.StatusConflict)
+	if !strings.Contains(errResp.Error, "cannot be revised") {
+		t.Fatalf("expected revise status conflict, got %#v", errResp)
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != session.StatusAwaitingInput || state.Phase != "plan_input" {
+		t.Fatalf("invalid revise should not claim or fail session, got %#v", state)
+	}
+	planMode, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil || planMode.PendingRequest.RequestID != pendingRequest.RequestID {
+		t.Fatalf("invalid revise should keep pending input, got %#v", planMode)
+	}
+	messages, err := svc.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("invalid revise should not append continuation messages, got %#v", messages)
+	}
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatalf("invalid revise should not launch background continue")
 	}
 }
 

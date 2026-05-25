@@ -1687,6 +1687,10 @@ func (s *Service) handlePlanModeRevise(w http.ResponseWriter, r *http.Request, s
 		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
 		return
 	}
+	if err := s.ensurePlanModeRevisionPreflight(sessionID); err != nil {
+		writeError(w, planModeActionStatus(err), err)
+		return
+	}
 	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
 		SessionID: sessionID,
 		Message:   strings.TrimSpace(req.Message),
@@ -1817,6 +1821,12 @@ func (s *Service) ensurePlanModeApprovalPreflight(sessionID string, overrideCove
 	if err != nil {
 		return err
 	}
+	if planMode.Status != session.PlanModeStatusAwaitingApproval && planMode.Status != session.PlanModeStatusApproved {
+		return fmt.Errorf("plan mode is not awaiting approval: %s", planMode.Status)
+	}
+	if planMode.PlanVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
+		return errors.New("plan mode has no submitted plan")
+	}
 	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
 		return nil
 	}
@@ -1831,6 +1841,19 @@ func (s *Service) ensurePlanModeApprovalPreflight(sessionID string, overrideCove
 		return nil
 	}
 	return ensureWebMissionCoverage(goal, overrideCoverage)
+}
+
+func (s *Service) ensurePlanModeRevisionPreflight(sessionID string) error {
+	planMode, err := s.store.LoadPlanMode(sessionID)
+	if err != nil {
+		return err
+	}
+	switch planMode.Status {
+	case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusRejected, session.PlanModeStatusApproved:
+		return nil
+	default:
+		return fmt.Errorf("plan mode cannot be revised from status: %s", planMode.Status)
+	}
 }
 
 func planModeActionStatus(err error) int {
@@ -1850,6 +1873,7 @@ func planModeActionStatus(err error) int {
 	message := err.Error()
 	if strings.Contains(message, "not resumable") ||
 		strings.Contains(message, "not awaiting") ||
+		strings.Contains(message, "cannot be revised") ||
 		strings.Contains(message, "no pending") ||
 		strings.Contains(message, "coverage blocks approval") {
 		return http.StatusConflict

@@ -1517,6 +1517,33 @@ Validation:
 - Text search proving no stale `ready / blocked / completed` task-derived descriptions remain in the touched specs.
 - Standard lightweight formatting/diff checks before commit.
 
+### FCA-20260526-051: Web Plan Mode approve/revise can launch on invalid plan states
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` says Plan Mode `Approve & Run` approves the latest plan and starts execution, while `Ask for Changes` is a plan revision user fact; pending Plan Mode input should be answered or cancelled through the input/cancel controls.
+- `internal/session/planmode.go` `ApprovePlanMode` only accepts `awaiting_approval` or `approved`, and `RevisePlanMode` only accepts `awaiting_approval`, `rejected`, or `approved`.
+- `internal/webconsole/service.go` `handlePlanModeApprove` checks active handles and mission coverage, but does not verify the current Plan Mode status before `launchPlanModeContinue`.
+- `handlePlanModeRevise` also launches a continuation without verifying the Plan Mode status.
+- `launchPlanModeContinue` only checks session resumability, so a session in `awaiting_input` with Plan Mode still `planning` or `awaiting_user_input` can be claimed as running before the runtime discovers that approval/revision is invalid or interprets the revision as an ordinary continuation.
+
+Impact:
+
+Invalid Web Plan Mode actions can mutate durable session state and active Web handles instead of returning a clean conflict. A mistaken approve click before a plan is submitted can move the session through a failed continue path, and a mistaken revise click while Plan Mode is waiting for `request_user_input` can bypass the pending input control path.
+
+Minimal fix:
+
+- Preflight Web Plan Mode approve and revise actions against the current `planmode.json` status before launching the async continue path.
+- Return conflict for invalid statuses without claiming the session or appending messages.
+- Add focused Web service regressions for approve-from-planning and revise-from-awaiting-user-input.
+
+Validation:
+
+- Focused Web Plan Mode service regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1858,6 +1885,12 @@ Evidence gates:
 - Confirmed FCA-20260526-050 against `spec/12-task-system.md`, `spec/04-tools-and-skills.md`, `spec/08-sdk-and-api-evolution.md`, `spec/17-web-console.md`, `BuildTaskBoard`, and `task_list` metadata.
 - Confirmed this is spec drift only: current runtime, Web, CLI, and model-visible task facts already expose separate cancelled and combined done facts.
 - Confirmed the fix belongs in the stale spec descriptions, not in code.
+
+### Review 49
+
+- Confirmed FCA-20260526-051 against `spec/17-web-console.md`, `handlePlanModeApprove`, `handlePlanModeRevise`, `launchPlanModeContinue`, `ApprovePlanMode`, and `RevisePlanMode`.
+- Confirmed the backend store already rejects invalid Plan Mode statuses, but Web approval/revision launches the async continue path before surfacing those status errors.
+- Confirmed the fix belongs in Web action preflight so invalid operator actions fail before session run claiming or message append.
 
 ## Update Log
 
@@ -2956,3 +2989,27 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
 - `go test -timeout 120s ./internal/session ./internal/tools ./internal/webconsole -count=1`: passed.
+
+### FCA-20260526-051
+
+Slice: `fix(webconsole): preflight plan mode actions`
+
+Changes:
+
+- Added Web Plan Mode approval preflight for submitted-plan state before launching the async continue path.
+- Added Web Plan Mode revision preflight so revision is only accepted from awaiting approval, rejected, or approved plan states.
+- Added regressions proving approve-from-planning and revise-from-awaiting-user-input return conflict without claiming the session, appending messages, or mutating the pending Plan Mode facts.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServicePlanModeApproveAppendsReplayableUserMessage|TestServicePlanModeApproveRejectsPlanningBeforeLaunch|TestServicePlanModeApproveReturnsConflictWhenLinkedMissionCoverageBlocks|TestServicePlanModeReviseRejectsPendingInputBeforeLaunch|TestServicePlanModeReviseInputAndCancelControls' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
