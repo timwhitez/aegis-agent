@@ -2400,11 +2400,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var apiKeyAudit map[string]any
-	var apiKeyUpdate *struct {
-		envKey  string
-		envFile string
-		value   string
-	}
+	var apiKeyUpdate *webAPIKeyUpdate
 	if p, ok := updatedCfg.Providers[req.Provider]; ok {
 		if req.BaseURL != nil {
 			p.BaseURL = strings.TrimSpace(*req.BaseURL)
@@ -2434,11 +2430,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
 			cwd, _ := os.Getwd()
 			envPath := config.DefaultEnvFilePath(cwd)
-			apiKeyUpdate = &struct {
-				envKey  string
-				envFile string
-				value   string
-			}{
+			apiKeyUpdate = &webAPIKeyUpdate{
 				envKey:  p.APIKeyEnv,
 				envFile: envPath,
 				value:   *req.APIKey,
@@ -2460,6 +2452,12 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if err := s.ensureAuditLogWritable(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if apiKeyUpdate != nil {
+		if err := preflightWebAPIKeyUpdate(*apiKeyUpdate); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	if err := config.WriteFile(configPath, updatedCfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -2499,6 +2497,35 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+type webAPIKeyUpdate struct {
+	envKey  string
+	envFile string
+	value   string
+}
+
+func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
+	if strings.TrimSpace(update.envFile) == "" {
+		return fmt.Errorf("env file path is required")
+	}
+	if strings.TrimSpace(update.envKey) == "" {
+		return fmt.Errorf("env key is required")
+	}
+	if info, err := os.Lstat(update.envFile); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to update symlinked env file: %s", update.envFile)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("env file is not a regular file: %s", update.envFile)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if _, _, err := fileutil.ReadRegularFileNoSymlink(update.envFile); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func roleProviderOverridesResponse(cfg *config.Config) map[string]any {

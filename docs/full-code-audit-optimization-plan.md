@@ -1465,6 +1465,32 @@ Validation:
 - Focused CLI tasks command regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-049: Failed Web API-key env writes can leave unaudited config changes
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires Settings provider/model/API key writes to be risk-confirmed and auditable, with API-key audit events recording metadata but never secret values.
+- `internal/webconsole/service.go` `handleUpdateConfig` builds `updatedCfg`, preflights audit-log writability, then calls `config.WriteFile(configPath, updatedCfg)` before attempting `config.UpsertEnvFile` or `os.Setenv` for a submitted API key.
+- `config.UpsertEnvFile` rejects an empty env key, symlinked env file, and non-regular env-file paths; those failures happen after the config file has already been written.
+- The Web config audit events are appended only after the env-file and process environment updates succeed.
+
+Impact:
+
+A Settings save that includes an invalid API-key env target can return an error after persisting provider/model/reasoning/default-provider config changes. Because the handler appends `web.config.write` later, that failed request can leave durable config changes without the required Web audit event, and the operator sees the whole save as failed.
+
+Minimal fix:
+
+- Preflight the API-key env target before writing `config.yaml`.
+- Reuse the same basic env target invariants as `config.UpsertEnvFile`: non-empty env key, existing path is not a symlink, existing path is regular, and existing read errors are surfaced.
+- Add a regression proving a failed API-key env preflight leaves `config.yaml`, `.env`, process environment, and Web audit log unchanged.
+
+Validation:
+
+- Focused Web config regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1794,6 +1820,12 @@ Evidence gates:
 - Confirmed FCA-20260526-048 against `spec/12-task-system.md`, `BuildTaskBoard`, `tasksCommand`, `normalizeTaskBoard`, and existing CLI task command tests.
 - Confirmed this is a CLI fallback visibility drift after FCA-20260525-041: Web and tool task facts are separated, but normal CLI text output skipped the new `cancelled` group.
 - Confirmed the fix belongs in CLI rendering only; no session task graph or Web change is needed.
+
+### Review 47
+
+- Confirmed FCA-20260526-049 against `spec/17-web-console.md`, `handleUpdateConfig`, `config.WriteFile`, `config.UpsertEnvFile`, and Web config audit-event ordering.
+- Confirmed the prior FCA-20260526-043 fix delayed API-key persistence until after config writes, but did not preflight env-file failures that occur after the config write.
+- Confirmed the fix belongs in Web config mutation preflight/order only; `config.UpsertEnvFile` should remain the final path-safe writer.
 
 ## Update Log
 
@@ -2847,6 +2879,30 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260526-049
+
+Slice: `fix(webconsole): preflight api key env writes`
+
+Changes:
+
+- Added a Web Settings API-key env-target preflight before persisting `config.yaml`.
+- The preflight rejects missing env keys, symlinked env files, non-regular env files, and existing env-file read/path errors before any config mutation is written.
+- Added a regression proving a failed API-key env preflight leaves `config.yaml`, `.env`, process environment, and Web audit log unchanged.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestAPIKeyWriteDoesNotLogSecretValue|TestAPIKeyWriteWaitsForConfigWriteSuccess|TestAPIKeyWritePreflightsEnvTargetBeforeConfigWrite|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
