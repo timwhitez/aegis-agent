@@ -135,6 +135,10 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			})
 		}
 		if part.FunctionCall.Name != "" {
+			args, err := normalizeToolCallArguments("google", part.FunctionCall.Name, part.FunctionCall.Args)
+			if err != nil {
+				return TurnResult{}, err
+			}
 			if part.ThoughtSig != "" {
 				thoughtSignatureCount++
 			}
@@ -147,14 +151,14 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				Type:             "function_call",
 				Name:             part.FunctionCall.Name,
 				ID:               callID,
-				Args:             part.FunctionCall.Args,
+				Args:             args,
 				ThoughtSignature: part.ThoughtSig,
 				Model:            req.Model,
 			})
 			calls = append(calls, ToolCall{
 				ID:             callID,
 				Name:           part.FunctionCall.Name,
-				Arguments:      part.FunctionCall.Args,
+				Arguments:      args,
 				ProviderCallID: part.FunctionCall.ID,
 			})
 		}

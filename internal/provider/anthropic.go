@@ -121,18 +121,22 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				Model:    req.Model,
 			})
 		case "tool_use":
+			input, err := normalizeToolCallArguments("anthropic", item.Name, item.Input)
+			if err != nil {
+				return TurnResult{}, err
+			}
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider: "anthropic",
 				Type:     "tool_use",
 				ID:       item.ID,
 				Name:     item.Name,
-				Input:    item.Input,
+				Input:    input,
 				Model:    req.Model,
 			})
 			calls = append(calls, ToolCall{
 				ID:             item.ID,
 				Name:           item.Name,
-				Arguments:      item.Input,
+				Arguments:      input,
 				ProviderCallID: item.ID,
 			})
 		}

@@ -613,6 +613,35 @@ Validation:
 - Focused runtime provider stop-reason regression.
 - Full provider/runtime package tests before commit.
 
+### FCA-20260525-022: Provider tool-call arguments can be non-object JSON
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` defines provider tools through object `input_schema` contracts and keeps provider-specific response parsing inside adapters.
+- `internal/tools/registry.go` executes tools with `json.RawMessage` arguments, and skill command tools explicitly reject non-object JSON through `decodeCommandToolArgs`.
+- `internal/provider/openai.go` validates that `function_call.arguments` is syntactically valid JSON, but it accepts valid non-object values such as `null`, arrays, strings, or numbers.
+- `internal/provider/anthropic.go` copies `tool_use.input` directly into both `ProviderContentBlock.Input` and `ToolCall.Arguments` without checking that it is a JSON object.
+- `internal/provider/google.go` copies `functionCall.args` directly into both `ProviderContentBlock.Args` and `ToolCall.Arguments` without checking that it is a JSON object.
+- `internal/runtime/engine.go` records provider success and persists assistant tool calls before dispatching the tool arguments to tool handlers.
+
+Impact:
+
+An upstream or compatible provider can return a syntactically valid but non-object tool-call payload and have the runtime record it as a successful assistant tool call. That weakens provider/tool protocol integrity, can shift provider response-shape failures into later generic tool errors, and can persist replay facts that do not satisfy the harness tool schema contract.
+
+Minimal fix:
+
+- Add a shared provider-adapter helper that trims, validates, and preserves JSON object tool-call arguments.
+- Use it for OpenAI `function_call.arguments`, Anthropic `tool_use.input`, and Google `functionCall.args`.
+- Return `response_parse_error` from the owning provider adapter when a tool-call argument payload is empty, malformed, or not a JSON object.
+- Add focused adapter regressions for OpenAI, Anthropic, and Google non-object tool arguments.
+
+Validation:
+
+- Focused provider adapter non-object argument regressions.
+- Full provider package test before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -622,6 +651,7 @@ These areas have been inspected enough to avoid duplicating already-fixed items,
 - Workspace browser path resolution uses `tools.ResolveWorkspacePath` and denies `.git`, `.go-cli-agent`, credential directories, and `.env` variants.
 - Skill upload has multipart size, zip file count, per-entry size, total uncompressed size, traversal, absolute path, symlink destination, and direct-child uninstall checks.
 - Static frontend syntax parses with Node.
+- Provider cancellation during provider calls propagates `context.Canceled` through `JSONClient`, `classifyTransportError`, and `readAllWithIdleTimeout`; `Engine.Run` only maps it to pause or interrupt-steer behavior when the matching control flag exists, and pending interrupt steer requests are deferred or accepted at the next safe boundary.
 
 ## Review Plan
 
@@ -1195,6 +1225,29 @@ Validation:
 - `gofmt -l internal/provider/anthropic.go internal/provider/provider_test.go`: no output.
 - `go test ./internal/provider -count=1`: passed.
 - `go test ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-022
+
+Slice: `fix(provider): require object tool arguments`
+
+Changes:
+
+- Added a shared provider-adapter helper for trimming and validating tool-call arguments as JSON objects.
+- Applied the helper to OpenAI `function_call.arguments`, Anthropic `tool_use.input`, and Google `functionCall.args`.
+- Preserved valid object arguments exactly after whitespace trimming.
+- Returned provider `response_parse_error` for empty, malformed, or non-object tool-call arguments.
+- Added focused OpenAI, Anthropic, and Google adapter regressions for non-object tool arguments.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestOpenAIAdapterRejectsNonObjectFunctionCallArguments|TestOpenAIAdapterRejectsInvalidFunctionCallArguments|TestAnthropicAdapterRejectsNonObjectToolUseInput|TestGoogleAdapterRejectsNonObjectFunctionCallArgs' -count=1`: passed.
+- `gofmt -l internal/provider/tool_args.go internal/provider/openai.go internal/provider/anthropic.go internal/provider/google.go internal/provider/provider_test.go`: no output.
+- `go test ./internal/provider -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineProviderParseErrorFailsBeforeAssistantPersist|TestEngineProviderStopReasonFailuresAreResumable' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.

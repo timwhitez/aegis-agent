@@ -181,9 +181,33 @@ func TestOpenAIAdapterRejectsInvalidFunctionCallArguments(t *testing.T) {
 	if httpErr.Provider != "openai" || httpErr.Class != "response_parse_error" {
 		t.Fatalf("unexpected provider error: %#v", httpErr)
 	}
-	if !strings.Contains(httpErr.Message, "function_call arguments") {
-		t.Fatalf("expected function-call argument parse detail, got %q", httpErr.Message)
+	if !strings.Contains(httpErr.Message, "tool-call arguments") {
+		t.Fatalf("expected tool-call argument parse detail, got %q", httpErr.Message)
 	}
+}
+
+func TestOpenAIAdapterRejectsNonObjectFunctionCallArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_bad_args",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_1","name":"shell","arguments":"[]"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	assertProviderParseError(t, err, "openai", "JSON object")
 }
 
 func TestOpenAIAdapterMapsNonCompletedStatusToErrorStop(t *testing.T) {
@@ -366,6 +390,31 @@ func TestAnthropicAdapterMapsUnknownStopReasonToErrorStop(t *testing.T) {
 	if result.RawProvider["provider_stop_reason"] != "refusal" || result.RawProvider["stop_reason"] != "refusal" {
 		t.Fatalf("expected raw stop reason to be preserved, got %#v", result.RawProvider)
 	}
+}
+
+func TestAnthropicAdapterRejectsNonObjectToolUseInput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_bad_tool_input",
+			"stop_reason":"tool_use",
+			"content":[
+				{"type":"tool_use","id":"toolu_1","name":"shell","input":[]}
+			],
+			"usage":{"input_tokens":8,"output_tokens":4}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	assertProviderParseError(t, err, "anthropic", "JSON object")
 }
 
 func TestAnthropicAdapterAppliesPromptCacheMarkersAndTelemetry(t *testing.T) {
@@ -669,6 +718,32 @@ func TestGoogleAdapterMapsUnknownFinishReasonToErrorStop(t *testing.T) {
 	if result.RawProvider["provider_stop_reason"] != "RECITATION" || result.RawProvider["finish_reason"] != "RECITATION" {
 		t.Fatalf("expected raw finish reason to be preserved, got %#v", result.RawProvider)
 	}
+}
+
+func TestGoogleAdapterRejectsNonObjectFunctionCallArgs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_bad_args",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[{"functionCall":{"name":"shell","id":"call_1","args":[]}}]},
+				"finishReason":"STOP"
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	assertProviderParseError(t, err, "google", "JSON object")
 }
 
 func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
@@ -1284,5 +1359,22 @@ func TestGoogleAdapterSendsGenerationFields(t *testing.T) {
 		"thinkingBudget":  float64(2048),
 	}) {
 		t.Fatalf("unexpected thinkingConfig: %#v", thinking)
+	}
+}
+
+func assertProviderParseError(t *testing.T, err error, providerName, messagePart string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected provider parse error")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T %v", err, err)
+	}
+	if httpErr.Provider != providerName || httpErr.Class != "response_parse_error" {
+		t.Fatalf("unexpected provider error: %#v", httpErr)
+	}
+	if !strings.Contains(httpErr.Message, messagePart) {
+		t.Fatalf("expected error message to contain %q, got %q", messagePart, httpErr.Message)
 	}
 }
