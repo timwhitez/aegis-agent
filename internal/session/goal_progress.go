@@ -129,53 +129,56 @@ func CheckMissionPlanCoverage(goal SessionGoal) MissionPlanCoverage {
 }
 
 func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (SessionGoal, GoalProgressRecord, error) {
-	goal, err := s.LoadGoal(sessionID)
-	if err != nil {
-		return SessionGoal{}, GoalProgressRecord{}, err
-	}
-	if goal.GoalID == "" {
-		return SessionGoal{}, GoalProgressRecord{}, errors.New("session has no current goal")
-	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	source := normalizeGoalSource(input.Source)
 	planChanged := false
 	validationChanged := false
-	if len(input.FeatureUpdates) > 0 || len(input.MilestoneUpdates) > 0 {
-		if goal.Mission == nil {
-			return SessionGoal{}, GoalProgressRecord{}, errors.New("mission plan is required for feature or milestone updates")
+	record := GoalProgressRecord{}
+	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
+		if goal.GoalID == "" {
+			return errors.New("session has no current goal")
 		}
-		for _, update := range input.FeatureUpdates {
-			if err := applyFeatureProgressUpdate(goal.Mission.Features, update); err != nil {
-				return SessionGoal{}, GoalProgressRecord{}, err
+		if len(input.FeatureUpdates) > 0 || len(input.MilestoneUpdates) > 0 {
+			if goal.Mission == nil {
+				return errors.New("mission plan is required for feature or milestone updates")
 			}
-			planChanged = true
-		}
-		for _, update := range input.MilestoneUpdates {
-			if err := applyMilestoneProgressUpdate(goal.Mission.Milestones, update); err != nil {
-				return SessionGoal{}, GoalProgressRecord{}, err
+			for _, update := range input.FeatureUpdates {
+				if err := applyFeatureProgressUpdate(goal.Mission.Features, update); err != nil {
+					return err
+				}
+				planChanged = true
 			}
-			planChanged = true
+			for _, update := range input.MilestoneUpdates {
+				if err := applyMilestoneProgressUpdate(goal.Mission.Milestones, update); err != nil {
+					return err
+				}
+				planChanged = true
+			}
 		}
-	}
-	for _, update := range input.ValidationUpdates {
-		changed, err := applyValidationProgressUpdate(&goal, update, now)
-		if err != nil {
-			return SessionGoal{}, GoalProgressRecord{}, err
+		for _, update := range input.ValidationUpdates {
+			changed, err := applyValidationProgressUpdate(goal, update, now)
+			if err != nil {
+				return err
+			}
+			validationChanged = validationChanged || changed
 		}
-		validationChanged = validationChanged || changed
-	}
-	record := buildGoalProgressRecord(input, source, now)
-	if record.ID != "" {
-		goal.Progress = append(goal.Progress, record)
-		if record.Kind == "budget_wrapup" {
-			goal.BudgetWrapUpRecordedAt = now
+		record = buildGoalProgressRecord(input, source, now)
+		if record.ID != "" {
+			goal.Progress = append(goal.Progress, record)
+			if record.Kind == "budget_wrapup" {
+				goal.BudgetWrapUpRecordedAt = now
+			}
 		}
-	}
-	if !planChanged && !validationChanged && record.ID == "" {
-		return SessionGoal{}, GoalProgressRecord{}, errors.New("record_goal_progress requires at least one progress record or item update")
-	}
-	if err := s.SaveGoal(sessionID, goal); err != nil {
+		if !planChanged && !validationChanged && record.ID == "" {
+			return errors.New("record_goal_progress requires at least one progress record or item update")
+		}
+		return nil
+	})
+	if err != nil {
 		return SessionGoal{}, GoalProgressRecord{}, err
+	}
+	if !mutated {
+		return SessionGoal{}, GoalProgressRecord{}, errors.New("session has no current goal")
 	}
 	if record.ID != "" {
 		_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{

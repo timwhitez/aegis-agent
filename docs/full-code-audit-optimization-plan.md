@@ -786,6 +786,44 @@ Validation:
 - Full WebConsole package test before commit.
 - Full Go vet and test gate before commit.
 
+### FCA-20260525-028: Goal snapshot mutations can lose concurrent runtime progress facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md` define `goal.json` as the current durable goal snapshot used by Goal completion audit, WebConsole inspection, summaries, checkpoints, and recovery.
+- Before this slice, `internal/session/goal.go` `UpdateGoalAccounting` loaded `goal.json`, mutated usage / budget fields, and then saved the whole snapshot.
+- Before this slice, `internal/session/goal_progress.go` `RecordGoalProgress` loaded `goal.json`, mutated progress / mission / validation fields, and then saved the whole snapshot.
+- Runtime accounting is called after provider turns from `internal/runtime/goal.go`, while model progress facts are written through the `record_goal_progress` tool path in `internal/tools/registry.go`.
+- Web, CLI, runtime, and store-view paths can construct separate `Store` instances for the same session root, so the per-instance mutex did not protect the load / mutate / save transaction across runners or processes.
+
+Impact:
+
+A provider accounting update and a model progress / validation update could race on stale `goal.json` snapshots. The later stale save could drop `tokens_used`, `budget_limited_at`, `budget_wrapup_requested_at`, progress records, mission feature status, or validation evidence from the current goal snapshot, leaving the facts only partially represented in history or missing from Web / completion / recovery views.
+
+Minimal fix:
+
+- Add `Store.MutateGoal`, mirroring the existing parent-coordination mutation pattern, with a session-scoped `goal.lock` around read / mutate / validate / write.
+- Route runtime/tool-owned current-snapshot mutations through `MutateGoal`: goal completion, budget accounting, and structured goal progress.
+- Keep `SaveGoal` as full snapshot replacement but preserve its validation behavior before delegating to the serialized write path.
+- Add a focused cross-store regression that holds one goal mutation open while a second store records progress, then verifies accounting and progress both persist in `goal.json`.
+
+Validation:
+
+- `go test ./internal/session -run 'TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist|TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp|TestStoreGoalLifecycleAccountingAndSummary|TestStoreCompleteGoalPersistsAuditAndItemEvidence' -count=1`: passed.
+- `go test ./internal/session -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineBudgetLimitedGoalWrapUpBlocksFinish|TestGoalCompletionGateBlocksActiveGoalAndAllowsCompletedGoal|TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish|TestEngineRunModeStopsAtAwaitingInput' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineBudgetLimitedGoalWrapUpBlocksFinish|TestGoalCompletionGateBlocksActiveGoalAndAllowsCompletedGoal|TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish' -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/session/goal_progress.go internal/session/store_test.go`: no output.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+- Note: aggregate `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` and `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` were stopped after the top-level Go command stayed quiet with no visible package test child; the same package set was then validated through focused and grouped commands above.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -989,6 +1027,12 @@ Evidence gates:
 - Confirmed FCA-20260525-025 against `Service.Close`, `startSession`, `trackLaunch`, `handleContinueSession`, and `launchPlanModeContinue`.
 - Confirmed continue and Plan Mode continue already create handles before tracked goroutines, while initial start had a pre-session-id goroutine that was neither handle-owned nor wait-group tracked.
 - Confirmed the fix stays inside the Web service adapter lifecycle and does not introduce browser-side or in-memory session state authority; durable session facts remain owned by runtime/session store.
+
+### Review 26
+
+- Confirmed FCA-20260525-028 against the goal store mutation paths: `UpdateGoalAccounting`, `CompleteGoal`, and `RecordGoalProgress`.
+- Confirmed runtime accounting and model progress can be written through separate `Store` instances, so `Store.mu` alone is not a cross-runner or cross-process transaction boundary.
+- Confirmed the fix belongs in `internal/session`, preserving `goal.json` as the durable current snapshot and avoiding provider-, Web-, or tool-layer merge logic.
 
 ## Update Log
 
@@ -1536,3 +1580,28 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-028
+
+Slice: `fix(session): serialize goal snapshot mutations`
+
+Changes:
+
+- Added `Store.MutateGoal` with a session-scoped `goal.lock` around goal snapshot read / mutate / validate / write.
+- Routed goal completion, budget accounting, and structured goal progress through the serialized mutation path.
+- Kept no-goal runtime accounting as a no-op so ordinary non-goal sessions remain unaffected.
+- Preserved `SaveGoal` full-snapshot validation while making its write use the same serialized goal path.
+- Added a cross-store regression that blocks one goal mutation while another store records progress, then verifies accounting and progress both survive in `goal.json`.
+
+Validation:
+
+- `go test ./internal/session -run 'TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist|TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp|TestStoreGoalLifecycleAccountingAndSummary|TestStoreCompleteGoalPersistsAuditAndItemEvidence' -count=1`: passed.
+- `go test ./internal/session -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineBudgetLimitedGoalWrapUpBlocksFinish|TestGoalCompletionGateBlocksActiveGoalAndAllowsCompletedGoal|TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish|TestEngineRunModeStopsAtAwaitingInput' -count=1`: passed.
+- `go test ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/session/goal_progress.go internal/session/store_test.go`: no output.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.

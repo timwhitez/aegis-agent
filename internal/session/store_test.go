@@ -578,6 +578,129 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	}
 }
 
+func TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := storeA.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	tokenBudget := int64(5)
+	if _, err := storeA.CreateGoal(meta.ID, GoalDraft{
+		Enabled:      true,
+		Objective:    "Keep concurrent goal facts",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	accountingDone := make(chan error, 1)
+	go func() {
+		_, _, err := storeA.MutateGoal(meta.ID, func(goal *SessionGoal) error {
+			goal.TokensUsed += 6
+			if goal.Status == GoalStatusActive && goalBudgetExceeded(*goal) {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				goal.Status = GoalStatusBudgetLimited
+				goal.BudgetLimitedAt = now
+				goal.BudgetWrapUpRequestedAt = now
+			}
+			close(started)
+			<-release
+			return nil
+		})
+		accountingDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accounting mutation to hold the goal lock")
+	}
+
+	type progressResult struct {
+		record GoalProgressRecord
+		err    error
+	}
+	progressDone := make(chan progressResult, 1)
+	go func() {
+		_, record, err := storeB.RecordGoalProgress(meta.ID, GoalProgressInput{
+			Source:   GoalSourceTool,
+			Kind:     "progress",
+			Summary:  "progress persisted",
+			Evidence: []string{"progress evidence"},
+		})
+		progressDone <- progressResult{record: record, err: err}
+	}()
+
+	released := false
+	releaseGoalLock := func() {
+		if released {
+			return
+		}
+		released = true
+		close(release)
+	}
+	defer releaseGoalLock()
+
+	select {
+	case result := <-progressDone:
+		releaseGoalLock()
+		if result.err != nil {
+			t.Fatalf("progress mutation returned early with error: %v", result.err)
+		}
+		t.Fatalf("progress mutation completed before accounting released the goal lock: record=%#v", result.record)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseGoalLock()
+	select {
+	case err := <-accountingDone:
+		if err != nil {
+			t.Fatalf("accounting mutation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accounting mutation")
+	}
+
+	var progress progressResult
+	select {
+	case progress = <-progressDone:
+		if progress.err != nil {
+			t.Fatalf("record progress: %v", progress.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for progress mutation")
+	}
+	if progress.record.ID == "" {
+		t.Fatalf("expected progress record id, got %#v", progress.record)
+	}
+
+	loaded, err := storeA.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.TokensUsed != 6 || loaded.Status != GoalStatusBudgetLimited || loaded.BudgetWrapUpRequestedAt == "" {
+		t.Fatalf("expected accounting and budget fields to persist, got %#v", loaded)
+	}
+	if len(loaded.Progress) != 1 || loaded.Progress[0].ID != progress.record.ID || !containsString(loaded.Progress[0].Evidence, "progress evidence") {
+		t.Fatalf("expected progress record to persist with accounting update, got %#v", loaded.Progress)
+	}
+}
+
 func TestStoreGoalApprovalCreatesLinkedPlanMode(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

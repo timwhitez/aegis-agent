@@ -403,6 +403,62 @@ func (s *Store) LoadGoal(sessionID string) (SessionGoal, error) {
 }
 
 func (s *Store) SaveGoal(sessionID string, goal SessionGoal) error {
+	prepareGoalForSave(sessionID, &goal)
+	if err := ValidateGoal(goal); err != nil {
+		return err
+	}
+	if _, _, err := s.MutateGoal(sessionID, func(current *SessionGoal) error {
+		*current = goal
+		return nil
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) MutateGoal(sessionID string, mutate func(*SessionGoal) error) (SessionGoal, bool, error) {
+	path, err := s.sessionPath(sessionID, "goal.json")
+	if err != nil {
+		return SessionGoal{}, false, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "goal.lock")
+	if err != nil {
+		return SessionGoal{}, false, err
+	}
+	var goal SessionGoal
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.withFileLock(lockPath, func() error {
+		if err := readJSONFile(path, &goal); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if mutate != nil {
+			if err := mutate(&goal); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(goal.GoalID) == "" {
+			return nil
+		}
+		prepareGoalForSave(sessionID, &goal)
+		if err := ValidateGoal(goal); err != nil {
+			return err
+		}
+		return s.writeJSONFile(path, goal)
+	})
+	if err != nil {
+		return SessionGoal{}, false, err
+	}
+	if strings.TrimSpace(goal.GoalID) == "" {
+		return goal, false, nil
+	}
+	return goal, true, nil
+}
+
+func prepareGoalForSave(sessionID string, goal *SessionGoal) {
+	if goal == nil {
+		return
+	}
 	if strings.TrimSpace(goal.SessionID) == "" {
 		goal.SessionID = sessionID
 	}
@@ -419,16 +475,6 @@ func (s *Store) SaveGoal(sessionID string, goal SessionGoal) error {
 		goal.Mission.PlanStatus = NormalizeMissionPlanStatus(goal.Mission.PlanStatus)
 	}
 	goal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := ValidateGoal(goal); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	path, err := s.sessionPath(sessionID, "goal.json")
-	if err != nil {
-		return err
-	}
-	return s.writeJSONFile(path, goal)
 }
 
 func (s *Store) CreateGoal(sessionID string, draft GoalDraft) (SessionGoal, error) {
@@ -528,31 +574,36 @@ func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source
 }
 
 func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (SessionGoal, error) {
-	goal, err := s.LoadGoal(sessionID)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
+		if goal.GoalID == "" {
+			return errors.New("session has no current goal")
+		}
+		if err := applyGoalCriterionUpdates(goal.SuccessCriteria, input.CriteriaStatuses, now); err != nil {
+			return err
+		}
+		if err := applyGoalValidationUpdates(goal.ValidationPlan, input.ValidationStatuses, now); err != nil {
+			return err
+		}
+		goal.Status = GoalStatusComplete
+		goal.CompletedAt = now
+		goal.CompletionAudit = &GoalCompletion{
+			Status:      GoalStatusComplete,
+			Summary:     strings.TrimSpace(input.Summary),
+			Evidence:    compactStringList(input.Evidence),
+			CompletedBy: strings.TrimSpace(input.CompletedBy),
+			CompletedAt: now,
+		}
+		if goal.CompletionAudit.CompletedBy == "" {
+			goal.CompletionAudit.CompletedBy = normalizeGoalSource(input.Source)
+		}
+		return nil
+	})
 	if err != nil {
 		return SessionGoal{}, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := applyGoalCriterionUpdates(goal.SuccessCriteria, input.CriteriaStatuses, now); err != nil {
-		return SessionGoal{}, err
-	}
-	if err := applyGoalValidationUpdates(goal.ValidationPlan, input.ValidationStatuses, now); err != nil {
-		return SessionGoal{}, err
-	}
-	goal.Status = GoalStatusComplete
-	goal.CompletedAt = now
-	goal.CompletionAudit = &GoalCompletion{
-		Status:      GoalStatusComplete,
-		Summary:     strings.TrimSpace(input.Summary),
-		Evidence:    compactStringList(input.Evidence),
-		CompletedBy: strings.TrimSpace(input.CompletedBy),
-		CompletedAt: now,
-	}
-	if goal.CompletionAudit.CompletedBy == "" {
-		goal.CompletionAudit.CompletedBy = normalizeGoalSource(input.Source)
-	}
-	if err := s.SaveGoal(sessionID, goal); err != nil {
-		return SessionGoal{}, err
+	if !mutated {
+		return SessionGoal{}, errors.New("session has no current goal")
 	}
 	source := normalizeGoalSource(input.Source)
 	_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
@@ -690,24 +741,29 @@ func (s *Store) LoadGoalHistory(sessionID string) ([]GoalHistoryEntry, error) {
 }
 
 func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (SessionGoal, bool, error) {
-	goal, err := s.LoadGoal(sessionID)
+	budgetLimited := false
+	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
+		if goal.GoalID == "" {
+			return nil
+		}
+		goal.TokensUsed += maxInt64(0, delta.TokensUsedDelta)
+		goal.TimeUsedSeconds += maxInt64(0, delta.TimeUsedSecondsDelta)
+		if goal.Status == GoalStatusActive && goalBudgetExceeded(*goal) {
+			goal.Status = GoalStatusBudgetLimited
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			goal.BudgetLimitedAt = now
+			if goal.Control.StopOnBudget && goal.BudgetWrapUpRequestedAt == "" {
+				goal.BudgetWrapUpRequestedAt = now
+			}
+			budgetLimited = true
+		}
+		return nil
+	})
 	if err != nil {
 		return SessionGoal{}, false, err
 	}
-	goal.TokensUsed += maxInt64(0, delta.TokensUsedDelta)
-	goal.TimeUsedSeconds += maxInt64(0, delta.TimeUsedSecondsDelta)
-	budgetLimited := false
-	if goal.Status == GoalStatusActive && goalBudgetExceeded(goal) {
-		goal.Status = GoalStatusBudgetLimited
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		goal.BudgetLimitedAt = now
-		if goal.Control.StopOnBudget && goal.BudgetWrapUpRequestedAt == "" {
-			goal.BudgetWrapUpRequestedAt = now
-		}
-		budgetLimited = true
-	}
-	if err := s.SaveGoal(sessionID, goal); err != nil {
-		return SessionGoal{}, false, err
+	if !mutated {
+		return SessionGoal{}, false, nil
 	}
 	_ = s.AppendGoalHistory(sessionID, GoalHistoryEntry{
 		Type:   "goal.accounting.updated",
