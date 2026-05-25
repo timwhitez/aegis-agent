@@ -1485,6 +1485,70 @@ func TestEnsureBackgroundNotificationRefreshesChangedQueueFacts(t *testing.T) {
 	}
 }
 
+func TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := storeA.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	blocked := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_race",
+		Status:        QueueStatusBlocked,
+		SessionID:     "child_background_race",
+		SessionStatus: StatusAwaitingInput,
+		LastError:     "child session is resumable: awaiting_input",
+	})
+	if err := storeA.EnsureBackgroundNotification(meta.ID, blocked); err != nil {
+		t.Fatalf("ensure blocked: %v", err)
+	}
+	staleSnapshot, err := storeA.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load stale snapshot: %v", err)
+	}
+	staleSnapshot[0].DeliveryStatus = BackgroundNotificationAccepted
+
+	completed := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_race",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_race",
+		SessionStatus: StatusCompleted,
+		FinalText:     "child completed while parent accepted blocked result",
+	})
+	if err := storeB.EnsureBackgroundNotification(meta.ID, completed); err != nil {
+		t.Fatalf("ensure completed: %v", err)
+	}
+	if err := storeA.UpdateBackgroundNotifications(meta.ID, staleSnapshot); err != nil {
+		t.Fatalf("update stale accepted snapshot: %v", err)
+	}
+
+	loaded, err := storeA.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load merged notification: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one notification, got %#v", loaded)
+	}
+	if loaded[0].Status != QueueStatusCompleted || loaded[0].SessionStatus != StatusCompleted || loaded[0].FinalText != "child completed while parent accepted blocked result" {
+		t.Fatalf("expected concurrent completed facts to survive stale accepted update, got %#v", loaded[0])
+	}
+	if loaded[0].DeliveryStatus != BackgroundNotificationPending {
+		t.Fatalf("expected completed facts to remain pending for redelivery, got %#v", loaded[0])
+	}
+}
+
 func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)

@@ -1165,6 +1165,41 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
+### FCA-20260525-039: Background notification acceptance can erase fresher queue facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/15-background-queue.md` requires child completion/failure to flow back to the parent through durable `control/background.jsonl` notification facts, and Web Background inspector reads those same parent notifications.
+- `internal/runtime/engine.go` `drainBackground` loads the full notification slice, appends a `background_results` user message for pending entries, marks the loaded pending entries `accepted`, and calls `Store.UpdateBackgroundNotifications`.
+- `internal/session/store.go` `EnsureBackgroundNotification` can concurrently refresh the same `queue_job_id` from blocked/awaiting-input facts to completed/failed terminal facts after a child is continued.
+- `internal/session/store.go` `mergeBackgroundNotifications` currently builds replacements from the stale `UpdateBackgroundNotifications` argument and replaces any current durable notification with the same merge key, even when the current file contains newer same-job status, session status, final text, or error facts.
+
+Impact:
+
+A parent runner can accept a stale blocked background notification while the child finishes at nearly the same time. The subsequent `UpdateBackgroundNotifications` write can replace the fresh terminal pending notification with the older accepted blocked snapshot. The parent then loses the terminal notification redelivery opportunity, the Web Background inspector can keep showing stale blocked facts, and the parent provider view may never receive the child completion result.
+
+Minimal fix:
+
+- When merging a background notification update with an existing same-key durable notification, treat differing queue/session/result fields in the current file as newer facts and keep them pending instead of replacing them with a stale accepted snapshot.
+- Keep the existing accepted-status update when the current and updated facts are the same, and continue preserving unrelated concurrent appends.
+- Add focused store regression coverage for a stale accepted blocked snapshot racing with a concurrent completed same-job notification refresh.
+
+Validation:
+
+- `go test ./internal/session -run 'TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh|TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsMergesConcurrentAppend' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineAcceptsBackgroundResultsBeforeProviderCall|TestParentCoordinationWritesParkedAndResumedEvents' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -1434,6 +1469,12 @@ Evidence gates:
 - Confirmed FCA-20260525-038 against `ProcessNextJob`, `Runner.Continue`, `Engine.complete`, `Engine.fail`, `awaitingInput`, `pause`, session store queue reconciliation, `EnsureBackgroundNotification`, parent coordination, and the background-result completion gate.
 - Confirmed worker same-call completion is already handled; the gap is resumed blocked queue children that become terminal through ordinary continue paths.
 - Confirmed the fix should not add a workflow engine or automatic child orchestration. It should only propagate the already-durable child session terminal/resumable state into the linked queue job and parent facts.
+
+### Review 37
+
+- Confirmed FCA-20260525-039 against `Engine.drainBackground`, `Store.UpdateBackgroundNotifications`, `mergeBackgroundNotifications`, `EnsureBackgroundNotification`, `NewBackgroundNotification`, and Web session detail background notification rendering.
+- Confirmed this is not a duplicate-notification display issue; the store merge can overwrite the durable terminal notification fact before Web or runtime can observe it.
+- Confirmed the fix belongs in `internal/session` so runtime background drain, Web detail, session summaries, and CLI/API queue readers share the same durable notification merge semantics.
 
 ## Update Log
 
@@ -2241,6 +2282,30 @@ Validation:
 - `go test ./internal/runtime -run 'TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineAcceptsBackgroundResultsBeforeProviderCall' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260525-039
+
+Slice: `fix(session): preserve refreshed background notifications`
+
+Changes:
+
+- Changed background notification snapshot merging so an accepted stale snapshot only updates delivery status when the current same-job facts are unchanged.
+- Kept newer current queue/session/result facts when they differ from the stale update, preserving pending terminal redelivery.
+- Added a cross-store regression where a parent accepts a blocked notification snapshot while another store refreshes the same queue job to completed.
+
+Validation:
+
+- `go test ./internal/session -run 'TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh|TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsMergesConcurrentAppend' -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineAcceptsBackgroundResultsBeforeProviderCall|TestParentCoordinationWritesParkedAndResumedEvents' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review`: passed.

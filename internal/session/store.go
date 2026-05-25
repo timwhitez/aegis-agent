@@ -2387,7 +2387,7 @@ func mergeBackgroundNotifications(updated, current []BackgroundNotification) []B
 	for _, notification := range current {
 		key := backgroundNotificationMergeKey(notification)
 		if replacement, ok := byKey[key]; key != "" && ok {
-			merged = append(merged, replacement)
+			merged = append(merged, mergeBackgroundNotificationUpdate(replacement, notification))
 			seen[key] = struct{}{}
 			continue
 		}
@@ -2407,6 +2407,42 @@ func mergeBackgroundNotifications(updated, current []BackgroundNotification) []B
 		merged = append(merged, notification)
 	}
 	return merged
+}
+
+func mergeBackgroundNotificationUpdate(updated, current BackgroundNotification) BackgroundNotification {
+	if !backgroundNotificationFactsEqual(updated, current) {
+		return current
+	}
+	merged := current
+	if backgroundNotificationDeliveryRank(updated.DeliveryStatus) > backgroundNotificationDeliveryRank(current.DeliveryStatus) {
+		merged.DeliveryStatus = updated.DeliveryStatus
+	}
+	return merged
+}
+
+func backgroundNotificationFactsEqual(a, b BackgroundNotification) bool {
+	return a.QueueJobID == b.QueueJobID &&
+		a.SessionID == b.SessionID &&
+		a.AgentName == b.AgentName &&
+		a.AgentRole == b.AgentRole &&
+		a.Status == b.Status &&
+		a.SessionStatus == b.SessionStatus &&
+		a.RequestedWorkdir == b.RequestedWorkdir &&
+		a.EffectiveWorkdir == b.EffectiveWorkdir &&
+		equalStringSlices(a.VisiblePaths, b.VisiblePaths) &&
+		a.FinalText == b.FinalText &&
+		a.LastError == b.LastError
+}
+
+func backgroundNotificationDeliveryRank(status string) int {
+	switch status {
+	case BackgroundNotificationAccepted:
+		return 2
+	case BackgroundNotificationPending:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func mergeBackgroundNotification(existing, next BackgroundNotification) BackgroundNotification {
