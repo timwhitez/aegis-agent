@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-158: Session summary hides corrupt message and event logs
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `messages.jsonl`, `events.jsonl`, and `session.md` as session store facts / derived artifacts, and says `SessionSummaryWriter` writes an operator-readable `session.md`.
+- `spec/18-durable-contract-and-completion.md` says `session.md` summarizes canonical fact-file locations and is never a fact source, while messages/events/state remain authoritative logs.
+- `internal/runtime/session_summary.go` derives Tool Repetition from `store.LoadMessages(sessionID)` and recent owner clues from `store.LoadEvents(sessionID)`, but still called both loaders with discarded errors.
+- `internal/session/store.go` already returns real errors for corrupt or unreadable `messages.jsonl` and `events.jsonl`.
+- A focused pre-fix regression corrupted `messages.jsonl` and `events.jsonl`. Before the fix, `session.md` rendered Tool Repetition as `not observed` for corrupt messages and silently omitted recent owner context for corrupt events.
+
+Impact:
+
+Operators and recovery prompts could read `session.md` and conclude there was no tool repetition or recent owner clue while the real issue was unreadable durable logs. That weakens handoff, Web active-handle diagnostics, overread/no-op detection, and recovery confidence for the core message/event fact files.
+
+Minimal fix:
+
+- Preserve `not observed` for genuinely empty valid message logs.
+- Render non-missing `messages.jsonl` load failures in the Tool Repetition section.
+- Render non-missing `events.jsonl` load failures in the recent-owner header slot when no owner clue can be derived.
+- Keep `session.md` derived-only: summary write failures still do not become runtime authority.
+- Add focused runtime coverage for corrupt message/event log summary rendering.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt messages/events were hidden as normal empty observations.
+- Focused post-fix runtime regression proving `session.md` names `messages.jsonl` and `events.jsonl` load errors.
+- Existing optional-fact, task-state, artifact/provider, child/queue, and owner-clue summary/checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-157: Session summary hides corrupt child and queue facts
 
 Severity: Medium
@@ -5379,7 +5410,49 @@ Evidence gates:
 - Confirmed this is not an authority/gate change: missing child/queue/background state still renders as `not recorded`, while malformed present files should be visible in `session.md` as diagnostics.
 - Confirmed the minimal fix belongs in `writeSessionSummary`; store loaders and completion gates already report corrupt child/queue/background facts, and only the Markdown summary was still collapsing those errors into absence.
 
+### Review 151
+
+- Confirmed FCA-20260526-158 against the `messages.jsonl` / `events.jsonl` fact-source requirements in `spec/01-runtime-architecture.md` and the derived-view boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not an authority/gate change: valid empty message/event logs still render with no observed tool repetition or owner clue, while malformed present logs should be visible in `session.md` as diagnostics.
+- Confirmed the minimal fix belongs in `writeSessionSummary`; store loaders already report corrupt logs, and only the Markdown summary was still collapsing those errors into ordinary absence.
+
 ## Update Log
+
+### FCA-20260526-158
+
+Slice: `fix(runtime): surface corrupt log facts in session summary`
+
+Finding:
+
+- `writeSessionSummary` discarded `LoadMessages` and `LoadEvents` errors while deriving Tool Repetition and recent owner clues.
+- Before the fix, corrupt `messages.jsonl` rendered as `Tool Repetition: not observed`, and corrupt `events.jsonl` simply omitted recent owner diagnostics.
+
+Changes:
+
+- Rendered `messages.jsonl` load failures in the Tool Repetition section.
+- Rendered `events.jsonl` load failures in the recent-owner header slot when owner clues cannot be derived.
+- Preserved existing behavior for valid empty logs.
+- Added focused runtime coverage for corrupt message and event logs.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptLogFacts -count=1`: failed before the fix because corrupt message/event logs were hidden as ordinary empty observations.
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptLogFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionSummaryReportsCorrupt(LogFacts|ChildrenQueueFacts|ArtifactAndProviderAttemptFacts|OptionalFacts|TaskStateFacts)|TestSessionSummaryAndCheckpointRecordRecentOwnerClue' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-157
 

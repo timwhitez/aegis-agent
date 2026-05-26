@@ -611,6 +611,41 @@ func TestSessionSummaryReportsCorruptChildrenQueueFacts(t *testing.T) {
 	})
 }
 
+func TestSessionSummaryReportsCorruptLogFacts(t *testing.T) {
+	t.Run("messages", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "messages.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt messages: %v", err)
+		}
+		if err := writeSessionSummary(store, meta.ID); err != nil {
+			t.Fatalf("write summary: %v", err)
+		}
+		summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+		if err != nil {
+			t.Fatalf("read summary: %v", err)
+		}
+		if !strings.Contains(string(summary), "messages.jsonl load error") {
+			t.Fatalf("expected messages load error in summary, got:\n%s", string(summary))
+		}
+	})
+	t.Run("events", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "events.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt events: %v", err)
+		}
+		if err := writeSessionSummary(store, meta.ID); err != nil {
+			t.Fatalf("write summary: %v", err)
+		}
+		summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+		if err != nil {
+			t.Fatalf("read summary: %v", err)
+		}
+		if !strings.Contains(string(summary), "events.jsonl load error") {
+			t.Fatalf("expected events load error in summary, got:\n%s", string(summary))
+		}
+	})
+}
+
 func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"
