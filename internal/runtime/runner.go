@@ -794,13 +794,15 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 	if err != nil {
 		return err
 	}
-	r.emit(sessionID, "mission.plan.approved", "planmode", map[string]any{
+	if err := r.appendEvent(sessionID, "mission.plan.approved", "planmode", map[string]any{
 		"goal_id":           goal.GoalID,
 		"plan_mode_id":      planMode.PlanModeID,
 		"approved_version":  planMode.ApprovedVersion,
 		"approved_at":       approvedAt,
 		"coverage_override": overrideCoverage,
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 

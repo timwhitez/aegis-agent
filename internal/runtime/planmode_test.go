@@ -458,6 +458,78 @@ func TestApproveLinkedPlanModeMarksMissionPlanApproved(t *testing.T) {
 	}
 }
 
+func TestApproveLinkedMissionPlanReportsEventAppendError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := runner.store.CreateGoal(sessionID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Approve linked mission plan with required event",
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, _, err := runner.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := runner.store.ApprovePlanMode(sessionID, session.PlanModeSourceCLI); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	executing, err := runner.store.MarkPlanModeExecuting(sessionID, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	if executing.PlanModeID != planMode.PlanModeID {
+		t.Fatalf("unexpected executing plan mode: %#v", executing)
+	}
+	eventsPath := filepath.Join(runner.store.SessionDir(sessionID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events: %v", err)
+	}
+
+	err = runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI, false)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected mission approval event append error, got %v", err)
+	}
+	loaded, loadErr := runner.store.LoadGoal(sessionID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Mission == nil || loaded.Mission.PlanStatus != session.MissionPlanStatusApproved || loaded.Mission.ApprovedAt == "" {
+		t.Fatalf("mission approval history-backed snapshot should remain approved, got %#v", loaded.Mission)
+	}
+}
+
 func TestApproveLinkedPlanModeBlocksUncoveredMissionValidation(t *testing.T) {
 	cfg := config.Default()
 	runner := NewRunner(cfg)

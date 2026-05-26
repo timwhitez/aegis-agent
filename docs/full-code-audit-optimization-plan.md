@@ -2657,6 +2657,32 @@ Validation:
 - Adjacent Web goal endpoint and session store creation regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-097: Runtime linked mission approval hides event append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `mission.plan.approved` as a session event, and Plan Mode approval is the required execution gate for linked goal/mission approval.
+- Runtime `approveLinkedMissionPlan` used `ApproveMissionPlan` to persist the approved mission snapshot and append `mission.plan.approved` goal history, then emitted the matching session event through best-effort `emit`.
+- A focused runtime regression blocked `events.jsonl` after Plan Mode approval reached executing state. Before this fix, `approveLinkedMissionPlan` returned nil and left the mission approved even though the matching session event fact was missing.
+
+Impact:
+
+A linked Plan Mode approval could resume execution with mission approval visible in `goal.json` / `goal-history.jsonl` but absent from the session event timeline. Operators and Web/CLI recovery views that depend on the event stream would miss the approval control action while runtime continued as if all approval facts were durable.
+
+Minimal fix:
+
+- Use the error-returning event append helper for runtime linked mission approval.
+- Do not roll back `goal.json` on event failure because the source approval history has already been durably appended; rolling back only the current snapshot would contradict `goal-history.jsonl`.
+- Add focused coverage proving blocked `events.jsonl` is reported and the history-backed approved snapshot remains approved.
+
+Validation:
+
+- Focused runtime linked mission approval blocked-event regression.
+- Adjacent linked Plan Mode approval and coverage-block regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3244,6 +3270,12 @@ Evidence gates:
 - Confirmed FCA-20260526-096 against Web `handleGoalCreate`, store `CreateGoal`, `EnsurePlanModeForGoal`, and a focused blocked-`events.jsonl` HTTP regression.
 - Confirmed this is not a duplicate of FCA-20260526-095: the store helper now rolls back when `goal.created` history fails, while this Web adapter path failed after that history already succeeded and the matching Web event append failed.
 - Confirmed rollback needs to include created task files, Goal history, and linked Plan Mode state because all three can be introduced before the failed event append.
+
+### Review 90
+
+- Confirmed FCA-20260526-097 against runtime `approveLinkedMissionPlan`, `ApproveMissionPlan`, and a focused blocked-`events.jsonl` regression.
+- Confirmed this is not a rollback slice: mission approval history is already durable before the event append, so rolling back the current snapshot would create a history/snapshot contradiction.
+- Confirmed the fix should stop the continue/approval path by returning the event append error, while preserving the already-approved history-backed mission snapshot.
 
 ## Update Log
 
@@ -5720,6 +5752,40 @@ Validation:
 - `gofmt -l internal/session/goal.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalCreateReportsEventAppendErrorAndRollsBack|TestServiceGoalEndpointsMutateDurableGoal|TestServiceGoalPatchReportsHistoryAppendError|TestServiceMissionPlanPatchPlanModeReportsHistoryAppendError' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -run 'TestCreateGoalReturnsHistoryAppendErrorAndRollsBack|TestStoreGoalLifecycleAccountingAndSummary|TestStoreSaveTasksRemovesStaleTaskFiles' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-097
+
+Slice: `fix(runtime): report linked approval events`
+
+Finding:
+
+- Runtime linked mission approval appended mission approval history, then ignored failures appending the matching `mission.plan.approved` session event.
+- A focused regression blocked `events.jsonl`; before the fix, `approveLinkedMissionPlan` returned nil while the mission was approved with no event fact.
+
+Changes:
+
+- Switched linked mission approval from best-effort `emit` to error-returning `appendEvent`.
+- Preserved the approved current snapshot on event failure because `ApproveMissionPlan` already wrote the required `goal-history.jsonl` approval fact.
+- Added focused runtime coverage for blocked `events.jsonl` during linked mission approval.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestApproveLinkedMissionPlanReportsEventAppendError -count=1`: failed before the fix because no event append error was returned.
+- `go test -timeout 120s ./internal/runtime -run 'TestApproveLinkedMissionPlanReportsEventAppendError|TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/runtime -run 'TestApproveLinkedMissionPlanReportsEventAppendError|TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation|TestRunnerFailBeforeRunReportsFailedEventAppendError' -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
