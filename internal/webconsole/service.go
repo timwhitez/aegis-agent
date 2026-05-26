@@ -879,8 +879,14 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if contract, err := s.store.LoadContract(sessionID); err == nil && contract.ContractID != "" {
 		contractPtr = &contract
 	}
-	requiredArtifacts, _ := s.store.LoadArtifactTracker(sessionID)
-	providerAttempts, _ := s.store.LoadProviderAttempts(sessionID)
+	requiredArtifacts, err := s.store.LoadArtifactTracker(sessionID)
+	if err != nil {
+		return SessionDetailResponse{}, fmt.Errorf("load artifact-tracker.json: %w", err)
+	}
+	providerAttempts, err := s.store.LoadProviderAttempts(sessionID)
+	if err != nil {
+		return SessionDetailResponse{}, fmt.Errorf("load provider-attempts.jsonl: %w", err)
+	}
 	var checkpointPtr *session.LongRunCheckpoint
 	if checkpoint, err := s.store.LoadLongRunCheckpoint(sessionID); err == nil && checkpoint.SessionID != "" {
 		checkpointPtr = &checkpoint

@@ -4533,6 +4533,40 @@ func TestServiceSessionDetailReportsLinkedQueueReconcileError(t *testing.T) {
 	}
 }
 
+func TestServiceSessionDetailReportsProviderAttemptsLoadError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_detail_provider_attempts_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	attemptsPath := filepath.Join(svc.store.SessionDir(meta.ID), "provider-attempts.jsonl")
+	if err := os.WriteFile(attemptsPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write invalid provider attempts: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions/" + meta.ID)
+	if err != nil {
+		t.Fatalf("get session detail: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected provider attempts load error to return 500, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), "provider-attempts.jsonl") {
+		t.Fatalf("expected provider attempts path in response, got body=%s", string(body))
+	}
+}
+
 func TestServiceQueueWorkersProcessJob(t *testing.T) {
 	server := newFinishServer()
 	defer server.Close()

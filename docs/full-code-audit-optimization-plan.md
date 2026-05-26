@@ -3601,6 +3601,35 @@ Validation:
 - Focused post-fix WebConsole regression proving the same path returns HTTP 500 and successful reconciliation still updates detail state.
 - Standard grouped validation before commit.
 
+### FCA-20260526-130: Session detail hides corrupt provider attempt facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `provider-attempts.jsonl` as a recovery and diagnostic fact ledger, and `spec/18-durable-contract-and-completion.md` says session summaries and checkpoints read provider attempt facts from the durable ledger.
+- `spec/17-web-console.md` requires the Summary panel to show provider attempt ledger facts, and the existing frontend utility tests cover rendering those facts.
+- `internal/session/store.go` `LoadProviderAttempts` treats a missing ledger as an empty optional list but returns JSONL parse/read errors for corrupt or unreadable ledgers.
+- `internal/webconsole/service.go` `sessionDetail` discarded the error with `providerAttempts, _ := s.store.LoadProviderAttempts(sessionID)`.
+- A focused pre-fix WebConsole regression wrote invalid JSON to `provider-attempts.jsonl`; `GET /api/sessions/{id}` returned HTTP 200 and omitted provider attempts instead of surfacing the corrupt fact file.
+
+Impact:
+
+The Web console could present a normal-looking session detail while hiding a corrupt provider retry/timeout ledger. That weakens diagnosis of upstream retry behavior, timeout recovery, cache telemetry, and broad audit evidence because operators cannot tell whether there were no provider attempts or the durable attempt facts are unreadable.
+
+Minimal fix:
+
+- Propagate `LoadProviderAttempts` errors from `sessionDetail`, while preserving the store's missing-file-as-empty behavior.
+- Also propagate `LoadArtifactTracker` errors instead of silently dropping corrupt required-artifact facts, since that helper already treats missing files as empty.
+- Wrap these detail-load errors with the relevant fact-file name for actionable Web API responses.
+- Add focused WebConsole coverage for corrupt `provider-attempts.jsonl`.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving corrupt provider attempts returned HTTP 200 with hidden ledger facts.
+- Focused post-fix WebConsole regression proving corrupt provider attempts return HTTP 500 with the ledger filename in the response.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4386,6 +4415,12 @@ Evidence gates:
 - Confirmed FCA-20260526-129 against the durable queue/session fact requirements in `spec/01-runtime-architecture.md` and the Web session-detail authority boundary in `spec/17-web-console.md`.
 - Confirmed this is distinct from the queue-detail status-classification fix: the bug is not the HTTP status for malformed job IDs, but a swallowed reconciliation write failure when a session detail view opens a linked queue child.
 - Confirmed the minimal fix should stay in `sessionDetail`: the store already returns reconciliation errors, and the Web view should report them instead of rendering stale state.
+
+### Review 123
+
+- Confirmed FCA-20260526-130 against the provider-attempt ledger requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`, plus the Web Summary requirement in `spec/17-web-console.md`.
+- Confirmed this is not a missing optional-file issue: `LoadProviderAttempts` and `LoadArtifactTracker` already return empty lists for absent files, so propagating errors only affects corrupt or unreadable fact files.
+- Confirmed the minimal fix belongs in Web `sessionDetail` because the store already exposes the correct absent-versus-corrupt distinction; the Web adapter should not collapse that distinction into an empty display.
 
 ## Update Log
 
@@ -7336,6 +7371,41 @@ Validation:
 
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsLinkedQueueReconcileError -count=1`: failed before the fix because detail returned HTTP 200 with stale running state.
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceSessionDetail(ReconcilesLinkedQueueJob|ReportsLinkedQueueReconcileError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-130
+
+Slice: `fix(webconsole): report provider attempt load errors`
+
+Finding:
+
+- Session detail silently ignored provider-attempt ledger load errors even though the store already returns empty lists for missing ledgers and real errors for corrupt/unreadable ledgers.
+- Before the fix, invalid JSON in `provider-attempts.jsonl` made `GET /api/sessions/{id}` return HTTP 200 with no provider attempts, hiding the corrupt diagnostic fact file.
+
+Changes:
+
+- Propagated `LoadProviderAttempts` errors from `sessionDetail`.
+- Propagated `LoadArtifactTracker` errors from `sessionDetail` as the same absent-versus-corrupt optional fact pattern.
+- Wrapped both errors with the relevant fact filename for actionable Web API responses.
+- Added focused WebConsole regression coverage for corrupt `provider-attempts.jsonl`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsProviderAttemptsLoadError -count=1`: failed before the fix because corrupt provider attempts returned HTTP 200 and hidden ledger facts.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsProviderAttemptsLoadError -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
