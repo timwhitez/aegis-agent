@@ -1822,7 +1822,10 @@ func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
 
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	originalStatus := job.Status
-	meta, state, messages, ok := s.findSessionForQueueJob(job.ID)
+	meta, state, messages, ok, err := s.findSessionForQueueJob(job.ID)
+	if err != nil {
+		return job, false, err
+	}
 	if !ok {
 		if job.Status != QueueStatusRunning {
 			if isTerminalQueueStatus(job.Status) {
@@ -2118,10 +2121,13 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func (s *Store) findSessionForQueueJob(jobID string) (SessionMetadata, State, []Message, bool) {
+func (s *Store) findSessionForQueueJob(jobID string) (SessionMetadata, State, []Message, bool, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
-		return SessionMetadata{}, State{}, nil, false
+		if errors.Is(err, os.ErrNotExist) {
+			return SessionMetadata{}, State{}, nil, false, nil
+		}
+		return SessionMetadata{}, State{}, nil, false, err
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -2134,15 +2140,15 @@ func (s *Store) findSessionForQueueJob(jobID string) (SessionMetadata, State, []
 		}
 		state, err := s.LoadState(sessionID)
 		if err != nil {
-			return SessionMetadata{}, State{}, nil, false
+			return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s state.json: %w", sessionID, err)
 		}
 		messages, err := s.LoadMessages(sessionID)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return SessionMetadata{}, State{}, nil, false
+			return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s messages.jsonl: %w", sessionID, err)
 		}
-		return meta, state, messages, true
+		return meta, state, messages, true, nil
 	}
-	return SessionMetadata{}, State{}, nil, false
+	return SessionMetadata{}, State{}, nil, false, nil
 }
 
 func (s *Store) ensureBackgroundNotification(job QueueJob) {

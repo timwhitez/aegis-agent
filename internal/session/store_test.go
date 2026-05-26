@@ -2777,6 +2777,74 @@ func TestReconcileStaleLinkedRunningJobFailsSession(t *testing.T) {
 	}
 }
 
+func TestLoadJobReportsCorruptLinkedSessionFacts(t *testing.T) {
+	cases := []struct {
+		name string
+		file string
+	}{
+		{name: "state", file: "state.json"},
+		{name: "messages", file: "messages.jsonl"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+			oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
+			childMeta := SessionMetadata{
+				SchemaVersion:    1,
+				ID:               "child_corrupt_linked_" + tc.name,
+				CreatedAt:        oldHeartbeat,
+				Workdir:          t.TempDir(),
+				Mode:             ModeExec,
+				Provider:         "openai",
+				Model:            "gpt-5.4",
+				CompletionPolicy: CompletionPolicyAutonomous,
+				ParentSessionID:  "parent_corrupt_linked_" + tc.name,
+				RootSessionID:    "parent_corrupt_linked_" + tc.name,
+				AgentName:        "corrupt-child",
+				AgentRole:        "evaluator",
+				QueueJobID:       "job_corrupt_linked_" + tc.name,
+				Depth:            1,
+			}
+			if err := store.Create(childMeta, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: oldHeartbeat}); err != nil {
+				t.Fatalf("create child: %v", err)
+			}
+			job := QueueJob{
+				SchemaVersion:   1,
+				ID:              childMeta.QueueJobID,
+				CreatedAt:       oldHeartbeat,
+				Status:          QueueStatusRunning,
+				ClaimedAt:       oldHeartbeat,
+				HeartbeatAt:     oldHeartbeat,
+				ParentSessionID: childMeta.ParentSessionID,
+				RootSessionID:   childMeta.RootSessionID,
+				AgentName:       childMeta.AgentName,
+				AgentRole:       childMeta.AgentRole,
+				Prompt:          "stale",
+				Mode:            ModeExec,
+				Background:      true,
+			}
+			if err := store.SaveJob(job); err != nil {
+				t.Fatalf("save stale running job: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(store.SessionDir(childMeta.ID), tc.file), []byte("{not-json}\n"), 0o600); err != nil {
+				t.Fatalf("corrupt linked %s: %v", tc.file, err)
+			}
+
+			reconciled, err := store.LoadJob(job.ID)
+			if err == nil || !strings.Contains(err.Error(), tc.file) {
+				t.Fatalf("expected corrupt linked %s error, got job=%#v err=%v", tc.file, reconciled, err)
+			}
+			var persisted QueueJob
+			if err := readJSONFile(store.queueJobPath(QueueStatusRunning, job.ID), &persisted); err != nil {
+				t.Fatalf("read persisted running job: %v", err)
+			}
+			if persisted.Status != QueueStatusRunning || persisted.LastError != "" {
+				t.Fatalf("expected corrupt linked session facts not to mark job orphan, got %#v", persisted)
+			}
+		})
+	}
+}
+
 func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)

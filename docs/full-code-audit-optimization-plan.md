@@ -4094,6 +4094,36 @@ Validation:
 - Existing corrupt Goal/Plan summary snapshot regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-147: Queue reconciliation marks corrupt linked sessions as missing
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires queue reconciliation to converge only from file facts that prove the linked session state, and defines queue job leases / liveness as durable facts.
+- `spec/17-web-console.md` requires queue/job/session failure states to preserve visible error summaries and requires queue completion/failure to be observable through real child sessions and queue job records.
+- `internal/session/store.go` `findSessionForQueueJob` returned `ok=false` for `LoadState` errors and `LoadMessages` errors after finding a session whose `session.json` matched the queue job ID.
+- `internal/session/store.go` `reconcileQueueJobSession` treated that `ok=false` as "no linked session"; for stale running jobs, it rewrote the queue job to failed with `queue job stale: running job has no linked session and heartbeat is stale`.
+- A focused pre-fix store regression created a stale running queue job linked to a real child session, corrupted either `state.json` or `messages.jsonl`, then called `LoadJob`; before the fix, the job was marked failed as an orphan and no corrupt linked-session file was reported.
+
+Impact:
+
+Queue recovery could convert an unreadable linked child session into a false orphan failure. That loses the distinction between "no linked session exists" and "the linked session facts are corrupt", can mutate parent coordination and notifications from an unproven premise, and weakens Web/CLI queue diagnostics.
+
+Minimal fix:
+
+- Change `findSessionForQueueJob` to return a load error separately from the not-found result.
+- Continue skipping unreadable metadata for unrelated session-root entries, but once metadata matches the queue job ID, propagate corrupt `state.json` and `messages.jsonl`.
+- Stop `reconcileQueueJobSession` before stale-orphan repair when linked session facts are unreadable.
+- Add focused store coverage proving corrupt linked session facts are reported and the running queue job is not rewritten as an orphan failure.
+
+Validation:
+
+- Focused pre-fix store regression proving corrupt linked `state.json` / `messages.jsonl` made `LoadJob` mark the queue job failed as having no linked session.
+- Focused post-fix store regression proving corrupt linked session facts are reported and the persisted queue job remains running.
+- Existing stale-linked and completed-session reconciliation regressions remain green.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4982,7 +5012,48 @@ Evidence gates:
 - Confirmed this is not a stray-directory issue: unreadable `session.json` is still skipped, but once metadata loads successfully the directory is a real session and an unreadable `state.json` must be surfaced.
 - Confirmed the minimal fix belongs in `Store.listAllSessions` and `Store.ListChildren` because those are the shared session-summary paths used by root lists, paged lists, and child-session views.
 
+### Review 140
+
+- Confirmed FCA-20260526-147 against queue reconciliation's file-fact-only convergence requirement in `spec/01-runtime-architecture.md` and Web-visible queue failure semantics in `spec/17-web-console.md`.
+- Confirmed this is not a legitimate orphan repair case: `session.json` had already identified a linked session for the queue job, so unreadable `state.json` or `messages.jsonl` must stop reconciliation instead of being treated as no linked session.
+- Confirmed the minimal fix belongs in `findSessionForQueueJob` / `reconcileQueueJobSession` because that helper is the single point deciding whether a queue job has a linked session fact set available for reconciliation.
+
 ## Update Log
+
+### FCA-20260526-147
+
+Slice: `fix(session): report corrupt linked queue sessions`
+
+Finding:
+
+- `findSessionForQueueJob` returned "not found" when a linked session's `state.json` or `messages.jsonl` was corrupt.
+- Before the fix, `LoadJob` on a stale running queue job linked to such a session marked the job failed as `no linked session` instead of reporting the corrupt linked session facts.
+
+Changes:
+
+- Changed `findSessionForQueueJob` to return load errors separately from the no-linked-session result.
+- Propagated corrupt linked `state.json` / `messages.jsonl` errors through `reconcileQueueJobSession`.
+- Preserved the unrelated-session metadata skip behavior and the valid stale-orphan repair path.
+- Added focused store coverage proving corrupt linked session facts are reported and the running job is not rewritten as an orphan failure.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadJobReportsCorruptLinkedSessionFacts -count=1`: failed before the fix because corrupt linked session facts made `LoadJob` mark the stale running queue job failed as having no linked session.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobReportsCorruptLinkedSessionFacts|TestReconcileStaleLinkedRunningJobFailsSession|TestReconcileCompletedSessionCompletesJob' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-146
 
