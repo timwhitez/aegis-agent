@@ -993,12 +993,15 @@ func TestCheckpointResumeHintWarnsOnIsolationAndTrustDrift(t *testing.T) {
 	if err := store.SaveContract(meta.ID, contract); err != nil {
 		t.Fatalf("save drifted contract: %v", err)
 	}
-	injected, warnings, err := appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
+	injected, warnings, messageID, err := appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
 	if err != nil {
 		t.Fatalf("append checkpoint hint: %v", err)
 	}
 	if !injected {
 		t.Fatal("expected checkpoint resume hint")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		t.Fatal("expected checkpoint resume hint message id")
 	}
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "isolation workdir changed") || !strings.Contains(joined, "trust source changed") {
@@ -1010,6 +1013,9 @@ func TestCheckpointResumeHintWarnsOnIsolationAndTrustDrift(t *testing.T) {
 	}
 	if len(messages) == 0 || !strings.Contains(messages[len(messages)-1].Text, "drift warnings") {
 		t.Fatalf("expected drift warning in resume note, got %#v", messages)
+	}
+	if messages[len(messages)-1].ID != messageID {
+		t.Fatalf("expected returned message id %q to match resume note %#v", messageID, messages[len(messages)-1])
 	}
 }
 
@@ -1033,7 +1039,7 @@ func TestCheckpointResumeHintReportsCorruptContractSnapshot(t *testing.T) {
 		t.Fatalf("corrupt contract: %v", err)
 	}
 
-	injected, warnings, err := appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
+	injected, warnings, _, err := appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
 	if err == nil || !strings.Contains(err.Error(), "contract.json") {
 		t.Fatalf("expected corrupt contract.json error, injected=%t warnings=%#v err=%v", injected, warnings, err)
 	}

@@ -611,17 +611,17 @@ func goalValidationCounts(items []session.GoalValidation) (int, int) {
 	return verified, len(items)
 }
 
-func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetadata, provider, model string) (bool, []string, error) {
+func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetadata, provider, model string) (bool, []string, string, error) {
 	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil, nil
+			return false, nil, "", nil
 		}
-		return false, nil, err
+		return false, nil, "", err
 	}
 	warnings, err := checkpointDriftWarnings(store, meta, checkpoint, provider, model)
 	if err != nil {
-		return false, nil, err
+		return false, nil, "", err
 	}
 	text := "Harness resume note: a long-run checkpoint is available. Use durable session facts first"
 	if len(checkpoint.ResumeHints) > 0 {
@@ -637,7 +637,7 @@ func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetada
 		"kind":           "longrun_checkpoint",
 		"drift_warnings": append([]string(nil), warnings...),
 	}
-	return true, warnings, store.AppendMessage(meta.ID, msg)
+	return true, warnings, msg.ID, store.AppendMessage(meta.ID, msg)
 }
 
 func checkpointDriftWarnings(store *session.Store, meta session.SessionMetadata, checkpoint session.LongRunCheckpoint, provider, model string) ([]string, error) {

@@ -1208,6 +1208,72 @@ func TestRunnerAppendUserMessageReportsEventAppendErrorAndRollsBackMessage(t *te
 	}
 }
 
+func TestRunnerContinueReportsCheckpointResumeHintEventAppendError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai", cfg.Providers["openai"]),
+	}
+	state := session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runner.store.SaveLongRunCheckpoint(meta.ID, session.LongRunCheckpoint{
+		SchemaVersion:    1,
+		SessionID:        meta.ID,
+		RootSessionID:    meta.ID,
+		Provider:         meta.Provider,
+		Model:            meta.Model,
+		Workdir:          meta.Workdir,
+		RequestedWorkdir: meta.RequestedWorkdir,
+		ResumeHints:      []string{"resume from checkpoint"},
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+	eventsPath := filepath.Join(runner.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID})
+	if err == nil {
+		t.Fatalf("expected checkpoint resume hint event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "checkpoint.resume_hint.injected") {
+		t.Fatalf("expected checkpoint resume hint event context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	messages, loadErr := runner.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "longrun_checkpoint" {
+			t.Fatalf("event append failure should roll back checkpoint resume hint, got %#v", msg)
+		}
+	}
+}
+
 func TestRunnerContinueKeepsDurableTurnAndResetsRunBudgetAfterMaxTurnsFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"

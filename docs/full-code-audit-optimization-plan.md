@@ -4558,6 +4558,36 @@ Validation:
 - Focused session-store regression proving stale rollback IDs cannot remove a non-tail message.
 - Standard grouped validation before commit.
 
+### FCA-20260527-181: Checkpoint resume hints can lose injected-event evidence
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `checkpoint.resume_hint.injected` in the core event model and defines `messages.jsonl` / `events.jsonl` as session facts.
+- `spec/01-runtime-architecture.md` defines the long-run checkpoint writer as a recovery index, and `continue` can inject a harness resume note when that checkpoint exists.
+- `internal/runtime/session_summary.go` `appendCheckpointResumeHint` appended a `meta.kind=longrun_checkpoint` harness reminder to `messages.jsonl`.
+- `internal/runtime/runner.go` `Continue` then emitted `checkpoint.resume_hint.injected` through unchecked `r.emit`.
+- A focused pre-fix runtime regression blocked `events.jsonl` after the checkpoint note append point. Before the fix, `Continue` ignored the missing checkpoint event and failed later on `session.started`, leaving the resume note in `messages.jsonl` without matching injected-event evidence.
+
+Impact:
+
+Recovery could add a provider-visible checkpoint resume note without preserving the event that explains why the note was injected. If the run then failed later, operators and Web timelines could see a harness reminder in replayable messages but miss the durable checkpoint-injection event needed to explain recovery context.
+
+Minimal fix:
+
+- Return the appended checkpoint resume-note message ID from `appendCheckpointResumeHint`.
+- Use checked `appendEvent` for `checkpoint.resume_hint.injected` in `Runner.Continue`.
+- Roll back the just-appended checkpoint note if the required event append fails, and report error context naming `checkpoint.resume_hint.injected`.
+- Preserve existing drift-warning detection and checkpoint note content.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `events.jsonl` was ignored for checkpoint resume hint injection and the run failed later without checkpoint-event context.
+- Focused post-fix runtime regression proving blocked `events.jsonl` returns `checkpoint.resume_hint.injected` context and leaves no dangling checkpoint resume note.
+- Focused helper regression proving `appendCheckpointResumeHint` returns the message ID for the appended checkpoint note.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6194,7 +6224,51 @@ Evidence gates:
 - Confirmed the clean rollback boundary only covers direct runner messages and engine harness reminders because no other durable control record is advanced in those helpers.
 - Confirmed steer/background control-drain acceptance should remain a separate audit slice: those paths combine message append, control status mutation, accepted events, and optional Goal/background facts.
 
+### Review 174
+
+- Confirmed FCA-20260527-181 against the `checkpoint.resume_hint.injected` event catalog in `spec/01-runtime-architecture.md` and the long-run checkpoint recovery boundary in the same spec.
+- Confirmed this is not generic telemetry: the event explains a provider-visible harness resume note added to `messages.jsonl` before continuing a recovered session.
+- Confirmed the clean rollback boundary is the just-appended checkpoint note, so the minimal fix can reuse the existing tail-ID rollback helper without changing checkpoint generation or provider execution semantics.
+
 ## Update Log
+
+### FCA-20260527-181
+
+Slice: `fix(runtime): persist checkpoint resume hints`
+
+Finding:
+
+- `appendCheckpointResumeHint` appended a `longrun_checkpoint` harness reminder to `messages.jsonl`.
+- `Runner.Continue` then emitted `checkpoint.resume_hint.injected` through unchecked `r.emit`.
+- Before the fix, blocked `events.jsonl` left the checkpoint resume note durable while the run failed later on `session.started` without checkpoint-event context.
+
+Changes:
+
+- `appendCheckpointResumeHint` now returns the appended resume-note message ID.
+- `Runner.Continue` now records `checkpoint.resume_hint.injected` through checked `appendEvent`.
+- If that event append fails, `Continue` rolls back the just-appended checkpoint note with `RemoveLastMessageIfID` and reports `checkpoint.resume_hint.injected` context.
+- Added focused runtime coverage for blocked checkpoint event persistence and helper coverage for returned message ID.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerContinueReportsCheckpointResumeHintEventAppendError -count=1`: failed before the fix because `Continue` ignored the missing checkpoint event and failed later on `session.started`.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerContinueReportsCheckpointResumeHintEventAppendError -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CheckpointResumeHintWarnsOnIsolationAndTrustDrift|RunnerContinueReportsCheckpointResumeHintEventAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CheckpointResumeHintWarnsOnIsolationAndTrustDrift|CheckpointResumeHintReportsCorruptContractSnapshot|RunnerContinueReportsCheckpointResumeHintEventAppendError|RunnerContinueKeepsDurableTurnAndResetsRunBudgetAfterMaxTurnsFailure)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/runner.go internal/runtime/runner_test.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-180
 
