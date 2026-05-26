@@ -140,6 +140,8 @@ func (c *CompletionController) TrackToolResult(toolName string, result session.T
 		if err := c.store.SaveContract(c.sessionID, contract); err != nil {
 			return err
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("load contract.json: %w", err)
 	}
 	c.emitCompletion("artifact.tracked", map[string]any{
 		"path":      path,
@@ -172,6 +174,8 @@ func (c *CompletionController) requiredArtifactGate(toolName string) (string, st
 		if err := c.store.SaveContract(c.sessionID, contract); err != nil {
 			return "required_artifact_state", "Required-artifact gate could not persist refreshed contract state: " + err.Error()
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "required_artifact_state", "Required-artifact gate could not load contract state: load contract.json: " + err.Error()
 	}
 	var missing []string
 	var stale []string
