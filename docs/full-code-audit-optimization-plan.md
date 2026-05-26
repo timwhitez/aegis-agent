@@ -4410,6 +4410,34 @@ Validation:
 - Existing run-mode awaiting-input and loaded-skill regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-176: Special awaiting-input transitions can lose durable events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `session.awaiting_input` as a core session event and defines `state.json` / `events.jsonl` as session facts managed by `SessionStore`.
+- `spec/12-task-system.md` and `spec/13-live-input-and-steering.md` treat budget wrap-up, Plan Mode approval, and Plan Mode cancellation as resumable operator states rather than terminal completion.
+- `internal/runtime/engine.go` `awaitingBudgetWrapUp`, `awaitingPlanApproval`, and `awaitingPlanCancelled` saved `state.json` as `awaiting_input`, then emitted `session.awaiting_input` through unchecked `e.emit`.
+- Focused pre-fix runtime regressions blocked `events.jsonl` before each special awaiting-input transition. Before the fix, all three helpers returned `awaiting_input` without surfacing that the required lifecycle event was unwritable.
+
+Impact:
+
+Budget-limited sessions and Plan Mode sessions could become resumable in `state.json` while losing the reasoned lifecycle event that explains why the operator must approve, continue, or inspect the budget boundary. This weakens Web status diagnosis, recovery prompts, and auditability for non-default awaiting-input reasons.
+
+Minimal fix:
+
+- Use checked `appendEvent` for `session.awaiting_input` in budget wrap-up, Plan Mode approval, and Plan Mode cancellation transitions.
+- Include the specific awaiting-input reason in each returned append error context.
+- Preserve existing state phases, user-facing final text, and linked queue reconciliation ordering.
+
+Validation:
+
+- Focused pre-fix runtime regressions proving blocked `events.jsonl` was ignored for budget wrap-up, Plan Mode approval, and Plan Mode cancellation awaiting-input transitions.
+- Focused post-fix runtime regressions proving the same blocked event appends return `events.jsonl` errors with reason-specific context.
+- Existing budget wrap-up and Plan Mode submit regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6016,7 +6044,49 @@ Evidence gates:
 - Confirmed this is not a completion-policy change: run mode still stops at `awaiting_input` for done candidates, but that resumable transition must have matching durable event evidence.
 - Confirmed the minimal fix belongs in `awaitingInput`, because that helper owns the normal run-mode done-candidate state transition before linked queue reconciliation.
 
+### Review 169
+
+- Confirmed FCA-20260526-176 against the same session lifecycle event contract as FCA-20260526-175, plus the Goal budget and Plan Mode resumable-state paths in `spec/01-runtime-architecture.md`.
+- Confirmed this is a related but separate slice: `awaitingBudgetWrapUp`, `awaitingPlanApproval`, and `awaitingPlanCancelled` are distinct helper paths with reason-specific state phases and operator recovery meaning.
+- Confirmed the minimal fix belongs in those three helpers, not in generic event emission, so diagnostic `emit` calls remain best-effort.
+
 ## Update Log
+
+### FCA-20260526-176
+
+Slice: `fix(runtime): persist special awaiting input events`
+
+Finding:
+
+- `awaitingBudgetWrapUp`, `awaitingPlanApproval`, and `awaitingPlanCancelled` saved `state.json` as `awaiting_input`, but emitted the matching `session.awaiting_input` event through unchecked `e.emit`.
+- Before the fix, blocked `events.jsonl` still let these helpers return `awaiting_input` for budget wrap-up, Plan Mode approval, and Plan Mode cancellation.
+
+Changes:
+
+- Budget wrap-up awaiting-input transitions now use checked `appendEvent`.
+- Plan Mode approval awaiting-input transitions now use checked `appendEvent`.
+- Plan Mode cancellation awaiting-input transitions now use checked `appendEvent`.
+- Each returned event append error includes the specific transition reason.
+- Added focused runtime coverage for all three blocked-event paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(BudgetWrapUpAwaitingReportsEventAppendError|SubmitPlanReportsAwaitingApprovalEventAppendError|PlanCancelledReportsAwaitingInputEventAppendError)' -count=1`: failed before the fix because all three transitions ignored blocked `events.jsonl`.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(BudgetWrapUpAwaitingReportsEventAppendError|SubmitPlanReportsAwaitingApprovalEventAppendError|PlanCancelledReportsAwaitingInputEventAppendError)|TestEngineBudgetWrapUpThenFinishAwaitsInput|TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-175
 

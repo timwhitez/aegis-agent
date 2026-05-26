@@ -783,7 +783,9 @@ func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionM
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
 	}
-	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "goal_budget_limited"})
+	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "goal_budget_limited"}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.awaiting_input event for goal_budget_limited: %w", err)
+	}
 	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
 		return result, err
@@ -803,7 +805,9 @@ func (e *Engine) awaitingPlanApproval(ctx context.Context, meta session.SessionM
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
 	}
-	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_approval"})
+	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_approval"}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.awaiting_input event for plan_approval: %w", err)
+	}
 	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode is awaiting approval."}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
 		return result, err
@@ -823,7 +827,9 @@ func (e *Engine) awaitingPlanCancelled(ctx context.Context, meta session.Session
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
 	}
-	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_cancelled"})
+	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_cancelled"}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.awaiting_input event for plan_cancelled: %w", err)
+	}
 	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode cancelled."}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
 		return result, err

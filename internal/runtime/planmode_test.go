@@ -288,6 +288,74 @@ func TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults(t *testing.T) {
 	}
 }
 
+func TestEngineSubmitPlanReportsAwaitingApprovalEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Plan this change before editing.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if _, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan this change"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if !hasProviderTool(req.Tools, "submit_plan") {
+			t.Fatalf("submit_plan missing from planning tools: %#v", req.Tools)
+		}
+		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove events: %v", err)
+		}
+		if err := os.Mkdir(eventsPath, 0o700); err != nil {
+			t.Fatalf("block events path: %v", err)
+		}
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{{
+				ID:   "call_submit",
+				Name: "submit_plan",
+				Arguments: json.RawMessage(`{
+					"title":"Plan",
+					"summary":"Add Plan Mode safely.",
+					"plan_markdown":"# Summary\n\nAdd Plan Mode safely.\n\n# Verification\n\nRun tests.",
+					"verification":["go test ./internal/runtime"]
+				}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.awaiting_input event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "plan_approval") || !strings.Contains(err.Error(), "session.awaiting_input") {
+		t.Fatalf("expected plan approval awaiting-input event context, got %v", err)
+	}
+}
+
+func TestEnginePlanCancelledReportsAwaitingInputEventAppendError(t *testing.T) {
+	engine, meta, state, _, hookManager, _ := newTestEngine(t, session.ModeExec)
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+
+	result, err := engine.awaitingPlanCancelled(context.Background(), meta, state, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.awaiting_input event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "plan_cancelled") || !strings.Contains(err.Error(), "session.awaiting_input") {
+		t.Fatalf("expected plan cancelled awaiting-input event context, got %v", err)
+	}
+}
+
 func TestParentLinkedQueueBlockedDuringPendingPlanMode(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
