@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -301,6 +304,105 @@ func TestPlanInputCancelReturnsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestCancelPlanModeReportsCancelledEventAppendError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Cancel plan mode"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	blockRuntimeEventsPath(t, runner.store, sessionID)
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, CancelPlan: true, Source: session.PlanModeSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected plan mode cancellation event append error, got result=%#v err=%v", result, err)
+	}
+}
+
+func TestApprovePlanModeReportsPlanApprovedEventAppendError(t *testing.T) {
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("expected /v1/responses, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_planmode_event",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ready after approval"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        3,
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		Retry:             config.Retry{MaxAttempts: 1},
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Approve plan mode"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.\n\n# Verification\n\nRun tests.",
+		Verification: []string{"go test ./internal/runtime"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	blockRuntimeEventsPath(t, runner.store, sessionID)
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, Source: session.PlanModeSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected plan mode approval event append error, got result=%#v err=%v", result, err)
+	}
+	if calls := providerCalls.Load(); calls != 0 {
+		t.Fatalf("provider should not run after missing plan approval event, got %d calls", calls)
+	}
+}
+
 func TestActivePlanInputDeliveryClaimsWaiterBeforeSend(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
@@ -388,6 +490,17 @@ func blockRuntimePlanModeHistoryPath(t *testing.T, store *session.Store, session
 	}
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block plan mode history path: %v", err)
+	}
+}
+
+func blockRuntimeEventsPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	eventsPath := filepath.Join(store.SessionDir(sessionID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
 	}
 }
 

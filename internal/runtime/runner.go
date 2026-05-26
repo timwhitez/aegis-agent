@@ -649,7 +649,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err != nil {
 			return r.failBeforeRun(meta.ID, state, "plan_input", err)
 		}
-		r.emit(meta.ID, "planmode.cancelled", "planmode", planModeEventData(planMode))
+		if err := r.appendEvent(meta.ID, "planmode.cancelled", "planmode", planModeEventData(planMode)); err != nil {
+			return r.failBeforeRun(meta.ID, state, "planmode", err)
+		}
 		state.Status = session.StatusAwaitingInput
 		state.Phase = "plan_cancelled"
 		if err := r.store.SaveState(meta.ID, state); err != nil {
@@ -667,12 +669,16 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
-		r.emit(meta.ID, "planmode.plan_approved", "planmode", planModeEventData(approved))
+		if err := r.appendEvent(meta.ID, "planmode.plan_approved", "planmode", planModeEventData(approved)); err != nil {
+			return r.failBeforeRun(meta.ID, state, "planmode", err)
+		}
 		executing, err := r.store.MarkPlanModeExecuting(meta.ID, source)
 		if err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
-		r.emit(meta.ID, "planmode.execution_started", "planmode", planModeEventData(executing))
+		if err := r.appendEvent(meta.ID, "planmode.execution_started", "planmode", planModeEventData(executing)); err != nil {
+			return r.failBeforeRun(meta.ID, state, "planmode", err)
+		}
 		if err := r.approveLinkedMissionPlan(meta.ID, executing, source, req.OverrideGoalCoverage); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
@@ -695,14 +701,18 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
-		r.emit(meta.ID, "planmode.created", "prepare", planModeEventData(planMode))
+		if err := r.appendEvent(meta.ID, "planmode.created", "prepare", planModeEventData(planMode)); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
 	} else if !req.ApprovePlan && stringsTrim(req.Message) != "" {
 		if planMode, err := r.store.LoadPlanMode(meta.ID); err == nil && planMode.Status == session.PlanModeStatusAwaitingApproval {
 			revised, err := r.store.RevisePlanMode(meta.ID, source, req.Message)
 			if err != nil {
 				return r.failBeforeRun(meta.ID, state, "prepare", err)
 			}
-			r.emit(meta.ID, "planmode.plan_revised", "prepare", planModeEventData(revised))
+			if err := r.appendEvent(meta.ID, "planmode.plan_revised", "prepare", planModeEventData(revised)); err != nil {
+				return r.failBeforeRun(meta.ID, state, "prepare", err)
+			}
 			extraUserMeta = map[string]any{
 				"source":       "planmode_revision",
 				"plan_mode_id": revised.PlanModeID,
@@ -853,11 +863,13 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 	}); err != nil {
 		return err
 	}
-	r.emit(sessionID, "planmode.input_cancelled", "plan_input", map[string]any{
+	if err := r.appendEvent(sessionID, "planmode.input_cancelled", "plan_input", map[string]any{
 		"plan_mode_id": planMode.PlanModeID,
 		"request_id":   request.RequestID,
 		"recovered":    true,
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -904,12 +916,14 @@ func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, 
 	if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
 		return err
 	}
-	r.emit(sessionID, "planmode.input_answered", "plan_input", map[string]any{
+	if err := r.appendEvent(sessionID, "planmode.input_answered", "plan_input", map[string]any{
 		"plan_mode_id": planMode.PlanModeID,
 		"request_id":   request.RequestID,
 		"answers":      answers,
 		"recovered":    true,
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 

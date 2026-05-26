@@ -2683,6 +2683,33 @@ Validation:
 - Adjacent linked Plan Mode approval and coverage-block regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-098: Runtime Plan Mode continue actions hide event append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` maps Plan Mode control actions to structured session events, including `planmode.created`, `planmode.input_answered`, `planmode.input_cancelled`, `planmode.plan_approved`, `planmode.execution_started`, `planmode.plan_revised`, and `planmode.cancelled`.
+- Runtime `Continue` persisted Plan Mode create / approve / executing / revise / cancel transitions through the session store, then wrote the matching session events with best-effort `emit`.
+- Runtime recovered Plan Mode input answer/cancel helpers appended replay tool results and Plan Mode history, then also used best-effort `emit` for the matching input events.
+- Focused regressions blocked `events.jsonl`. Before this fix, Plan Mode cancellation returned `Status:"awaiting_input"` and final text `Plan Mode cancelled.` with no `planmode.cancelled` event, while Plan Mode approval returned an assistant result and called the provider despite missing the `planmode.plan_approved` event.
+
+Impact:
+
+Operator-driven Plan Mode control actions could be reported as successful while the event timeline missed the control fact. In the approval path this was worse than a display gap: runtime could enter the provider execution turn even though the approval event fact was not durable, weakening Web/CLI recovery and the local event timeline as an audit source for the execution gate.
+
+Minimal fix:
+
+- Route runtime Plan Mode create / approve / execution-start / revise / cancel events in `Continue` through the error-returning event append helper.
+- Route recovered Plan Mode input answer/cancel events through the same error-returning path after their replay/history facts are written.
+- Keep generic runtime `emit` behavior unchanged for diagnostic events; this slice only hardens Plan Mode control events called out by the durable event catalog and reached through `Continue`.
+
+Validation:
+
+- Focused blocked-`events.jsonl` regressions for Plan Mode cancellation and approval.
+- Adjacent Plan Mode input cancellation and linked mission approval regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3276,6 +3303,12 @@ Evidence gates:
 - Confirmed FCA-20260526-097 against runtime `approveLinkedMissionPlan`, `ApproveMissionPlan`, and a focused blocked-`events.jsonl` regression.
 - Confirmed this is not a rollback slice: mission approval history is already durable before the event append, so rolling back the current snapshot would create a history/snapshot contradiction.
 - Confirmed the fix should stop the continue/approval path by returning the event append error, while preserving the already-approved history-backed mission snapshot.
+
+### Review 91
+
+- Confirmed FCA-20260526-098 against the Plan Mode event catalog in `spec/01-runtime-architecture.md`, runtime `Continue`, and recovered Plan Mode input answer/cancel helpers.
+- Confirmed the approval bug is not only a missing timeline entry: with `events.jsonl` blocked, the pre-fix approval path continued into the provider turn after losing the approval event.
+- Confirmed this slice should not promote all runtime `emit` calls to hard failures; the minimal boundary is Plan Mode control events where store/history/replay facts represent an operator action or execution gate transition.
 
 ## Update Log
 
@@ -5786,6 +5819,40 @@ Validation:
 - `git diff --check`: passed.
 - `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/runtime -run 'TestApproveLinkedMissionPlanReportsEventAppendError|TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedPlanModeBlocksUncoveredMissionValidation|TestRunnerFailBeforeRunReportsFailedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-098
+
+Slice: `fix(runtime): report plan mode control events`
+
+Finding:
+
+- Runtime Plan Mode continue actions persisted Plan Mode transitions and replay facts, then ignored failures appending matching required session events.
+- Focused regressions blocked `events.jsonl`; before the fix, Plan Mode cancellation returned success without `planmode.cancelled`, and Plan Mode approval continued into the provider turn without `planmode.plan_approved`.
+
+Changes:
+
+- Switched Plan Mode create, approval, execution-start, revision, and cancellation events in `Runner.Continue` from best-effort `emit` to error-returning `appendEvent`.
+- Switched recovered Plan Mode input answer/cancel events from best-effort `emit` to error-returning `appendEvent`.
+- Added blocked-event regressions proving cancellation and approval now report the durable event failure, and approval no longer starts the provider turn when the approval event is missing.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeReportsCancelledEventAppendError|ApprovePlanModeReportsPlanApprovedEventAppendError)' -count=1`: failed before the fix because cancellation and approval returned success while `events.jsonl` was blocked.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeReportsCancelledEventAppendError|ApprovePlanModeReportsPlanApprovedEventAppendError|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|ApproveLinkedMissionPlanReportsEventAppendError)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeReportsCancelledEventAppendError|ApprovePlanModeReportsPlanApprovedEventAppendError|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|ApproveLinkedMissionPlanReportsEventAppendError|TestRunnerFailBeforeRunReportsFailedEventAppendError)' -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
