@@ -589,6 +589,52 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	}
 }
 
+func TestStoreListReportsCorruptSummarySnapshots(t *testing.T) {
+	cases := []struct {
+		name string
+		file string
+	}{
+		{name: "goal", file: "goal.json"},
+		{name: "planmode", file: "planmode.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewStore(t.TempDir())
+			parentID := "summary_snapshot_parent_" + tc.name
+			meta := SessionMetadata{
+				SchemaVersion:    1,
+				ID:               NewSessionID(),
+				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+				Workdir:          t.TempDir(),
+				Mode:             ModeRun,
+				Provider:         "fake",
+				Model:            "fake",
+				CompletionPolicy: CompletionPolicyInteractive,
+				ParentSessionID:  parentID,
+				RootSessionID:    parentID,
+				Depth:            1,
+			}
+			state := State{Status: StatusCompleted, Phase: "done", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+			if err := store.Create(meta, state); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), tc.file), []byte("{not-json}\n"), 0o600); err != nil {
+				t.Fatalf("write invalid %s: %v", tc.file, err)
+			}
+
+			if _, err := store.List(10); err == nil || !strings.Contains(err.Error(), tc.file) {
+				t.Fatalf("expected List to report %s, got %v", tc.file, err)
+			}
+			if _, _, err := store.ListPage(10, 0); err == nil || !strings.Contains(err.Error(), tc.file) {
+				t.Fatalf("expected ListPage to report %s, got %v", tc.file, err)
+			}
+			if _, err := store.ListChildren(parentID, 10); err == nil || !strings.Contains(err.Error(), tc.file) {
+				t.Fatalf("expected ListChildren to report %s, got %v", tc.file, err)
+			}
+		})
+	}
+}
+
 func TestCreateGoalReturnsHistoryAppendErrorAndRollsBack(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

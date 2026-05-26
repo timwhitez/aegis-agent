@@ -833,8 +833,12 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 		}
-		s.populateGoalSummary(&summary)
-		s.populatePlanModeSummary(&summary)
+		if err := s.populateGoalSummary(&summary); err != nil {
+			return nil, err
+		}
+		if err := s.populatePlanModeSummary(&summary); err != nil {
+			return nil, err
+		}
 		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -887,8 +891,12 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 		}
-		s.populateGoalSummary(&summary)
-		s.populatePlanModeSummary(&summary)
+		if err := s.populateGoalSummary(&summary); err != nil {
+			return nil, err
+		}
+		if err := s.populatePlanModeSummary(&summary); err != nil {
+			return nil, err
+		}
 		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -903,30 +911,44 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 	return result, nil
 }
 
-func (s *Store) populateGoalSummary(summary *SessionSummary) {
+func (s *Store) populateGoalSummary(summary *SessionSummary) error {
 	if summary == nil || strings.TrimSpace(summary.ID) == "" {
-		return
+		return nil
 	}
 	goal, err := s.LoadGoal(summary.ID)
-	if err != nil || goal.GoalID == "" {
-		return
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("goal.json: %w", err)
+	}
+	if goal.GoalID == "" {
+		return nil
 	}
 	summary.GoalStatus = goal.Status
 	summary.GoalMode = goal.Mode
 	summary.GoalObjective = goal.Objective
+	return nil
 }
 
-func (s *Store) populatePlanModeSummary(summary *SessionSummary) {
+func (s *Store) populatePlanModeSummary(summary *SessionSummary) error {
 	if summary == nil || strings.TrimSpace(summary.ID) == "" {
-		return
+		return nil
 	}
 	planMode, err := s.LoadPlanMode(summary.ID)
-	if err != nil || planMode.PlanModeID == "" {
-		return
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("planmode.json: %w", err)
+	}
+	if planMode.PlanModeID == "" {
+		return nil
 	}
 	summary.PlanModeStatus = planMode.Status
 	summary.PlanModeVersion = planMode.PlanVersion
 	summary.PlanModeSummary = planMode.Summary
+	return nil
 }
 
 func (s *Store) NextTaskID(sessionID string) (string, error) {

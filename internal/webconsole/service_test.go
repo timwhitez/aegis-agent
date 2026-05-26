@@ -5395,6 +5395,46 @@ func TestServiceHistoryPagination(t *testing.T) {
 	}
 }
 
+func TestServiceSessionListReportsSummarySnapshotLoadErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		file string
+	}{
+		{name: "goal", file: "goal.json"},
+		{name: "planmode", file: "planmode.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "")
+			svc, err := New(cfg, Options{WorkerCount: 0})
+			if err != nil {
+				t.Fatalf("new service: %v", err)
+			}
+			defer svc.Close()
+
+			meta := testSessionMetadata(t, "summary_snapshot_error_"+tc.name)
+			if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(svc.store.SessionDir(meta.ID), tc.file), []byte("{not-json}\n"), 0o600); err != nil {
+				t.Fatalf("write invalid %s: %v", tc.file, err)
+			}
+
+			for _, path := range []string{"/api/sessions", "/api/history"} {
+				recorder := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				svc.ServeHTTP(recorder, req)
+				if recorder.Code != http.StatusInternalServerError {
+					t.Fatalf("expected %s load error from %s, got %d body=%s", tc.file, path, recorder.Code, recorder.Body.String())
+				}
+				if !strings.Contains(recorder.Body.String(), tc.file) {
+					t.Fatalf("expected %s in %s response, got body=%s", tc.file, path, recorder.Body.String())
+				}
+			}
+		})
+	}
+}
+
 func TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

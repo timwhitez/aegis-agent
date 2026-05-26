@@ -3717,6 +3717,35 @@ Validation:
 - Adjacent Web rollback regressions for Goal create, generic Goal patch, mission-plan patch, and mission validation patch.
 - Standard grouped validation before commit.
 
+### FCA-20260526-134: Session lists hide corrupt Goal and Plan Mode summary snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires the Sessions list and recent session rail to show Goal / Plan Mode summary facts from the selected local session state, while `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` define `goal.json` and `planmode.json` as durable session fact sources.
+- `internal/session/store.go` enriches `SessionSummary` through `populateGoalSummary` and `populatePlanModeSummary`, which called `LoadGoal` / `LoadPlanMode` and returned early for every error.
+- Because `LoadGoal` / `LoadPlanMode` return `fs.ErrNotExist` for absent optional snapshots but JSON parse/read errors for corrupt snapshots, the summary path collapsed "no snapshot exists" and "snapshot is corrupt" into the same empty summary.
+- A focused pre-fix WebConsole regression wrote invalid JSON to `goal.json` and `planmode.json`; both `/api/sessions` and `/api/history` returned HTTP 200 and omitted the corrupt fact fields instead of reporting the local file corruption.
+
+Impact:
+
+The Web console could show a clean Sessions or History list while hiding corrupt current Goal or Plan Mode snapshots. Operators could not distinguish a session with no Goal / Plan Mode from a session whose durable objective or execution-gate facts were unreadable, weakening recovery, approval-gate traceability, and audit evidence.
+
+Minimal fix:
+
+- Make `populateGoalSummary` and `populatePlanModeSummary` return errors.
+- Continue treating `fs.ErrNotExist` as an absent optional summary.
+- Propagate non-missing `goal.json` and `planmode.json` load failures through `List`, `ListPage`, and `ListChildren`.
+- Add store-level and WebConsole regressions for corrupt summary snapshots.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving corrupt `goal.json` and `planmode.json` returned HTTP 200 from `/api/sessions`.
+- Focused post-fix store regression proving `List` / `ListPage` report the corrupt snapshot filename.
+- Focused post-fix WebConsole regression proving `/api/sessions` and `/api/history` return HTTP 500 with the corrupt snapshot filename.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4526,6 +4555,12 @@ Evidence gates:
 - Confirmed FCA-20260526-133 against the Plan Mode event list in `spec/01-runtime-architecture.md` and the Web Plan Mode fact-source boundary in `spec/17-web-console.md`.
 - Confirmed this is distinct from earlier linked Plan Mode creation rollback fixes: `EnsurePlanModeForGoal` can succeed and append Plan Mode history, while the Web-only `planmode.created` event append fails afterward.
 - Confirmed the minimal fix should stay in Web handlers because the store owns Plan Mode snapshot/history writes, while the Web service owns session events for Web control actions and already has rollback paths around later event failures.
+
+### Review 127
+
+- Confirmed FCA-20260526-134 against the durable Goal / Plan Mode fact-source requirements in `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is distinct from FCA-20260526-132: that fix covered session detail snapshot loading, while this issue covers summary/list enrichment through `SessionSummary`.
+- Confirmed the minimal fix belongs in the shared store list path so Web list/history, CLI session listing, children listing, and SDK callers observe the same absent-versus-corrupt distinction without creating a Web-specific authority.
 
 ## Update Log
 
@@ -7629,6 +7664,42 @@ Validation:
 - `node --check internal/webconsole/assets/settings-view.js`: passed.
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-134
+
+Slice: `fix(session): report summary snapshot load errors`
+
+Finding:
+
+- Session list summaries silently ignored corrupt `goal.json` and `planmode.json` files even though those files are durable Goal / Plan Mode fact sources.
+- Before the fix, invalid JSON in either summary snapshot made `/api/sessions` and `/api/history` return HTTP 200 with empty Goal / Plan Mode summary fields.
+
+Changes:
+
+- Changed `populateGoalSummary` and `populatePlanModeSummary` to return errors.
+- Preserved missing optional snapshots as absent summaries.
+- Propagated non-missing Goal / Plan Mode load errors through `List`, `ListPage`, and `ListChildren`, wrapping errors with `goal.json` or `planmode.json`.
+- Added focused store and WebConsole regressions for corrupt summary snapshots.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionListReportsSummarySnapshotLoadErrors -count=1`: failed before the fix because corrupt summary snapshots returned HTTP 200.
+- `go test -timeout 120s ./internal/session -run TestStoreListReportsCorruptSummarySnapshots -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionListReportsSummarySnapshotLoadErrors -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
