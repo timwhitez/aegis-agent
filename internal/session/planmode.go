@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"go-cli-agent/internal/fileutil"
 )
 
 const (
@@ -266,6 +269,10 @@ func (s *Store) CreatePlanMode(sessionID string, draft PlanModeDraft) (PlanModeS
 	if goal, err := s.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
 		linkedGoalID = goal.GoalID
 	}
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, err
+	}
 	state, err := NewPlanModeFromDraft(sessionID, draft, linkedGoalID)
 	if err != nil {
 		return PlanModeState{}, err
@@ -282,6 +289,9 @@ func (s *Store) CreatePlanMode(sessionID string, draft PlanModeDraft) (PlanModeS
 			"objective": state.Objective,
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	return state, nil
@@ -430,6 +440,10 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 	if len(input.Verification) == 0 {
 		return PlanModeState{}, errors.New("verification is required")
 	}
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, err
+	}
 	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
 		if state.PlanModeID == "" {
 			return errors.New("session has no current plan mode")
@@ -471,6 +485,9 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 			"summary": state.Summary,
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	return state, nil
@@ -502,6 +519,10 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 	if err := ValidatePlanModeInputRequest(request); err != nil {
 		return PlanModeState{}, err
 	}
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, err
+	}
 	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
 		if state.PlanModeID == "" {
 			return errors.New("session has no current plan mode")
@@ -530,6 +551,9 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 			"questions":    len(request.Questions),
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	return state, nil
@@ -537,6 +561,10 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 
 func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers []PlanModeInputAnswer) (PlanModeState, PlanModeInputRequest, error) {
 	var request PlanModeInputRequest
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, PlanModeInputRequest{}, err
+	}
 	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
 		if state.PlanModeID == "" {
 			return errors.New("session has no current plan mode")
@@ -574,6 +602,9 @@ func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers
 			"answers":    answers,
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, PlanModeInputRequest{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, PlanModeInputRequest{}, err
 	}
 	return state, request, nil
@@ -581,6 +612,10 @@ func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers
 
 func (s *Store) ApprovePlanMode(sessionID string, source string) (PlanModeState, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, err
+	}
 	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
 		if state.PlanModeID == "" {
 			return errors.New("session has no current plan mode")
@@ -614,12 +649,19 @@ func (s *Store) ApprovePlanMode(sessionID string, source string) (PlanModeState,
 		Status:      state.Status,
 		PlanVersion: state.PlanVersion,
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	return state, nil
 }
 
 func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanModeState, error) {
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, err
+	}
 	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
 		if state.PlanModeID == "" {
 			return errors.New("session has no current plan mode")
@@ -646,12 +688,19 @@ func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanMode
 		Status:      state.Status,
 		PlanVersion: state.ApprovedVersion,
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	return state, nil
 }
 
 func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState, error) {
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, err
+	}
 	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
 		if state.PlanModeID == "" {
 			return errors.New("session has no current plan mode")
@@ -679,12 +728,19 @@ func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState
 			"message": strings.TrimSpace(message),
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	return state, nil
 }
 
 func (s *Store) CancelPlanMode(sessionID string, source string) (PlanModeState, error) {
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeState{}, err
+	}
 	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
 		if state.PlanModeID == "" {
 			return errors.New("session has no current plan mode")
@@ -710,9 +766,95 @@ func (s *Store) CancelPlanMode(sessionID string, source string) (PlanModeState, 
 		Status:      state.Status,
 		PlanVersion: state.PlanVersion,
 	}); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	return state, nil
+}
+
+type planModeRollback struct {
+	Snapshot        PlanModeState
+	HasSnapshot     bool
+	PlanMarkdown    []byte
+	HasPlanMarkdown bool
+}
+
+func (s *Store) planModeRollbackSnapshot(sessionID string) (planModeRollback, error) {
+	rollback := planModeRollback{}
+	previous, err := s.LoadPlanMode(sessionID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return rollback, nil
+	}
+	if err != nil {
+		return rollback, err
+	}
+	rollback.Snapshot = previous
+	rollback.HasSnapshot = strings.TrimSpace(previous.PlanModeID) != ""
+	planPath, err := s.sessionPath(sessionID, "artifacts", "planmode-plan.md")
+	if err != nil {
+		return rollback, err
+	}
+	data, _, err := fileutil.ReadRegularFileNoSymlink(planPath)
+	if err == nil {
+		rollback.PlanMarkdown = append([]byte(nil), data...)
+		rollback.HasPlanMarkdown = true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return rollback, err
+	}
+	return rollback, nil
+}
+
+func (s *Store) rollbackPlanModeAfterHistoryError(sessionID string, rollback planModeRollback) error {
+	if !rollback.HasSnapshot {
+		return s.removePlanModeSnapshot(sessionID)
+	}
+	if err := s.writePlanModeSnapshot(sessionID, rollback.Snapshot); err != nil {
+		return err
+	}
+	return s.restorePlanModeMarkdown(sessionID, rollback)
+}
+
+func (s *Store) writePlanModeSnapshot(sessionID string, state PlanModeState) error {
+	path, err := s.sessionPath(sessionID, "planmode.json")
+	if err != nil {
+		return err
+	}
+	preparePlanModeForSave(sessionID, &state)
+	if err := ValidatePlanMode(state); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeJSONFile(path, state)
+}
+
+func (s *Store) removePlanModeSnapshot(sessionID string) error {
+	path, err := s.sessionPath(sessionID, "planmode.json")
+	if err != nil {
+		return err
+	}
+	if err := fileutil.RemoveFileNoSymlink(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) restorePlanModeMarkdown(sessionID string, rollback planModeRollback) error {
+	path, err := s.sessionPath(sessionID, "artifacts", "planmode-plan.md")
+	if err != nil {
+		return err
+	}
+	if !rollback.HasPlanMarkdown {
+		return fileutil.RemoveFileNoSymlink(path)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFileNoSymlink(path, rollback.PlanMarkdown, s.fileMode)
 }
 
 func (s *Store) loadPlanModeNoLock(sessionID string) (PlanModeState, error) {

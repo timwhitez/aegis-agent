@@ -2289,6 +2289,34 @@ Validation:
 - Adjacent normal steer submission regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-083: Plan Mode history failures can leave advanced snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` define `planmode.json`, `artifacts/planmode-history.jsonl`, and the submitted plan Markdown as durable Plan Mode facts.
+- FCA-20260526-060 already made Plan Mode transition helpers return `AppendPlanModeHistory` errors, but those helpers still mutated `planmode.json` before appending the required history fact.
+- A focused regression blocked `artifacts/planmode-history.jsonl` during `SubmitPlanMode`. Before this fix, the helper returned a history append error but left `planmode.json` advanced to `awaiting_approval` with `plan_version=1` and left the submitted `artifacts/planmode-plan.md` behind.
+- The same mutation-before-history shape existed for approval, execution, input request/answer, revision, cancellation, creation, and linked-goal relink transitions.
+
+Impact:
+
+Recovery, Web detail, and provider prompt construction could observe an advanced current Plan Mode snapshot even though the append-only transition history was missing the matching fact. Operators would see an error, but subsequent reads could still treat the failed transition as current state.
+
+Minimal fix:
+
+- Snapshot the previous Plan Mode current facts before transitions that require history.
+- If the required history append fails after a current snapshot mutation, restore the previous `planmode.json`; for submit, also restore or remove the derived `artifacts/planmode-plan.md`.
+- Apply the same rollback behavior to created Plan Mode snapshots and goal-linked pending Plan Mode relinks.
+- Extend focused blocked-history regressions to assert failed submit and approval do not advance current snapshots.
+
+Validation:
+
+- Focused Plan Mode submit and approval history-failure regressions.
+- Adjacent linked-goal Plan Mode relink regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2792,6 +2820,12 @@ Evidence gates:
 - Confirmed FCA-20260526-082 against `spec/13-live-input-and-steering.md`, the Web running-session submit workflow in `spec/17-web-console.md`, `Runner.Steer`, and focused blocked-`events.jsonl` evidence.
 - Confirmed the source fact remains `control/steer.jsonl`, but a failed API response must not leave that control request live after required queued timeline evidence failed to persist.
 - Confirmed the fix is limited to initial steer submission events and does not harden accepted/deferred/interrupted events without separate evidence.
+
+### Review 76
+
+- Confirmed FCA-20260526-083 against Plan Mode durable fact requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`, current `planmode.json` mutation ordering, and focused blocked-history evidence.
+- Confirmed this is not a duplicate of FCA-20260526-060: that slice made history append failures visible, while this slice prevents the current Plan Mode snapshot and derived plan Markdown from remaining advanced after the visible failure.
+- Confirmed rollback belongs in the session store helpers so CLI, Web, runtime, SDK, and future callers read consistent Plan Mode facts after a failed transition.
 
 ## Update Log
 
@@ -4811,6 +4845,38 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-083
+
+Slice: `fix(session): roll back failed plan mode history transitions`
+
+Finding:
+
+- Plan Mode store helpers returned required `planmode-history.jsonl` append errors, but they mutated `planmode.json` before the failed history append.
+- A focused regression blocked `planmode-history.jsonl`; before the fix, failed submit returned an error while leaving the current snapshot in `awaiting_approval` with a submitted plan version and derived plan Markdown.
+
+Changes:
+
+- Added rollback snapshots for Plan Mode current facts before history-backed transitions.
+- Restored the previous `planmode.json` when a required history append fails after mutation.
+- Restored or removed `artifacts/planmode-plan.md` when submit history append fails after writing the derived plan file.
+- Applied rollback to Plan Mode creation and linked-goal relink paths.
+- Extended focused submit and approval history-failure regressions to assert current snapshot rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestSubmitPlanModeReturnsHistoryAppendError -count=1`: failed before the fix because failed submit left `planmode.json` advanced to `awaiting_approval`.
+- `go test -timeout 120s ./internal/session -run 'TestSubmitPlanModeReturnsHistoryAppendError|TestApprovePlanModeReturnsHistoryAppendError|TestStoreGoalApprovalRelinksExistingPendingPlanMode' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/planmode.go internal/session/goal.go internal/session/planmode_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

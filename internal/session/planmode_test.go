@@ -112,6 +112,17 @@ func TestSubmitPlanModeReturnsHistoryAppendError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "planmode-history.jsonl") {
 		t.Fatalf("expected plan mode history append error, got %v", err)
 	}
+	loaded, loadErr := store.LoadPlanMode(sessionID)
+	if loadErr != nil {
+		t.Fatalf("load plan mode: %v", loadErr)
+	}
+	if loaded.Status != PlanModeStatusPlanning || loaded.PlanVersion != 0 || loaded.PlanMarkdown != "" {
+		t.Fatalf("failed submit should not advance plan mode snapshot, got %#v", loaded)
+	}
+	planPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "planmode-plan.md")
+	if _, statErr := os.Stat(planPath); !os.IsNotExist(statErr) {
+		t.Fatalf("failed submit should not leave plan markdown artifact, got stat err=%v", statErr)
+	}
 }
 
 func TestApprovePlanModeReturnsHistoryAppendError(t *testing.T) {
@@ -136,6 +147,13 @@ func TestApprovePlanModeReturnsHistoryAppendError(t *testing.T) {
 	_, err := store.ApprovePlanMode(sessionID, PlanModeSourceCLI)
 	if err == nil || !strings.Contains(err.Error(), "planmode-history.jsonl") {
 		t.Fatalf("expected plan mode history append error, got %v", err)
+	}
+	loaded, loadErr := store.LoadPlanMode(sessionID)
+	if loadErr != nil {
+		t.Fatalf("load plan mode: %v", loadErr)
+	}
+	if loaded.Status != PlanModeStatusAwaitingApproval || loaded.ApprovedVersion != 0 || len(loaded.Approvals) != 0 {
+		t.Fatalf("failed approval should not advance plan mode snapshot, got %#v", loaded)
 	}
 }
 

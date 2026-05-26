@@ -560,6 +560,10 @@ func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source
 			return existing, false, nil
 		}
 		if strings.TrimSpace(existing.LinkedGoalID) == "" && IsPlanModePending(existing.Status) {
+			rollback, err := s.planModeRollbackSnapshot(sessionID)
+			if err != nil {
+				return PlanModeState{}, false, err
+			}
 			existing.LinkedGoalID = goal.GoalID
 			if err := s.SavePlanMode(sessionID, existing); err != nil {
 				return PlanModeState{}, false, err
@@ -573,6 +577,9 @@ func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source
 					"linked_goal_id": goal.GoalID,
 				},
 			}); err != nil {
+				if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+					return PlanModeState{}, false, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+				}
 				return PlanModeState{}, false, err
 			}
 			return existing, false, nil
