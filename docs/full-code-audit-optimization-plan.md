@@ -4496,6 +4496,37 @@ Validation:
 - Focused post-fix runtime regression proving blocked `events.jsonl` returns a `session.started` append error before provider execution.
 - Existing runtime/session and Web-first validation matrix before commit.
 
+### FCA-20260526-179: Goal accounting can lose required runtime events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `goal.accounting.updated` and `goal.budget_limited` as session events, and defines `goal.json`, `artifacts/goal-history.jsonl`, and `events.jsonl` as local session facts.
+- `spec/01-runtime-architecture.md` also requires `stop_on_budget=true` to write a durable budget wrap-up request before the limited wrap-up turn.
+- `internal/runtime/goal.go` `updateGoalAccounting` called `UpdateGoalAccounting`, which mutates `goal.json` and appends goal history, then emitted `goal.accounting.updated`, `goal.budget_limited`, and `goal.budget_wrapup_required` through unchecked `e.emit`.
+- A focused pre-fix runtime regression blocked `events.jsonl` after the provider returned usage. Before the fix, the engine ignored the missing `goal.accounting.updated` event and continued until a later lifecycle event append failed.
+
+Impact:
+
+Runtime accounting could advance Goal usage, budget status, and budget wrap-up request facts without preserving the corresponding durable session events. That weakens Web timelines, recovery diagnostics, and auditability for Goal budget decisions, especially because later event failures can mask the missing accounting event.
+
+Minimal fix:
+
+- Use checked `appendEvent` for `goal.accounting.updated`.
+- Use checked `appendEvent` for `goal.budget_limited` and `goal.budget_wrapup_required` in the same accounting helper.
+- Skip runtime accounting events when no current Goal was actually mutated, avoiding empty `goal.accounting.updated` events on sessions without `goal.json`.
+- Preserve the existing Goal snapshot/history mutation semantics and stop before assistant persistence when required accounting events cannot be recorded.
+- Preserve original runtime error context if `Engine.fail` also cannot append `session.failed`.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `events.jsonl` was ignored for `goal.accounting.updated` and execution failed later without accounting context.
+- Focused post-fix runtime regression proving blocked `events.jsonl` returns a `goal.accounting.updated` append error before assistant persistence.
+- Focused failure-path regression proving `Engine.fail` keeps original failure context when the fallback `session.failed` event append also fails.
+- Adjacent budget wrap-up accounting and awaiting-input regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6120,7 +6151,51 @@ Evidence gates:
 - Confirmed this is a runner-owned lifecycle boundary, not a provider or engine decision: the event is emitted after start setup and before `Engine.Run`.
 - Confirmed the minimal fix belongs in `runExisting` and does not promote diagnostic-only events globally.
 
+### Review 172
+
+- Confirmed FCA-20260526-179 against the Goal event catalog and durable Goal accounting requirements in `spec/01-runtime-architecture.md`.
+- Confirmed this is not cosmetic telemetry: `updateGoalAccounting` has already mutated `goal.json` and goal history, so missing runtime events leave timelines and recovery views behind the authoritative Goal facts.
+- Confirmed the minimal fix belongs in `updateGoalAccounting`, and the generic `Engine.fail` wrapper should preserve the original accounting event context if the failure event append also hits the blocked `events.jsonl` path.
+
 ## Update Log
+
+### FCA-20260526-179
+
+Slice: `fix(runtime): persist goal accounting events`
+
+Finding:
+
+- Runtime Goal accounting wrote `goal.json` and `artifacts/goal-history.jsonl`, then emitted `goal.accounting.updated`, `goal.budget_limited`, and `goal.budget_wrapup_required` through unchecked `e.emit`.
+- Before the fix, blocked `events.jsonl` after provider usage accounting let execution continue past the missing `goal.accounting.updated` event and failed later without accounting context.
+
+Changes:
+
+- `updateGoalAccounting` now uses checked `appendEvent` for `goal.accounting.updated`.
+- Budget-limited accounting now uses checked `appendEvent` for `goal.budget_limited` and `goal.budget_wrapup_required`.
+- Accounting now returns without emitting Goal events when there is no current Goal ID.
+- `Engine.fail` now preserves the original runtime error context when appending the fallback `session.failed` event also fails.
+- Added focused runtime coverage proving missing accounting event persistence stops before assistant output is recorded.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineGoalAccountingReportsEventAppendError -count=1`: failed before the fix because the engine failed later on `session.awaiting_input` without `goal.accounting.updated` context.
+- `go test -timeout 120s ./internal/runtime -run TestEngineGoalAccountingReportsEventAppendError -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(GoalAccountingReportsEventAppendError|FailReportsFailedEventAppendError|BudgetWrapUpThenFinishAwaitsInput|BudgetWrapUpAwaitingReportsEventAppendError|BudgetWrapUpTurnStartReportsGoalHistoryError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(AwaitingInputReportsEventAppendError|ProviderStopReasonReportsFailedEventAppendError|IncompleteNoFinishReportsFailedEventAppendError|CompleteReportsCompletedEventAppendError|GoalAccountingReportsEventAppendError|FailReportsFailedEventAppendError)|TestEngineSubmitPlanReportsAwaitingApprovalEventAppendError' -count=1`: passed after adding the no-current-goal guard exposed by the full runtime sweep.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/goal.go internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-178
 

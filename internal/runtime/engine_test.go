@@ -440,6 +440,9 @@ func TestEngineFailReportsFailedEventAppendError(t *testing.T) {
 	if !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected events append error with path context, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("expected original failure context, got %v", err)
+	}
 }
 
 func TestEngineProviderAutoResumeReportsProviderAttemptAppendError(t *testing.T) {
@@ -550,6 +553,57 @@ func TestEngineProviderSuccessReportsProviderAttemptAppendError(t *testing.T) {
 	for _, msg := range messages {
 		if msg.Role == "assistant" {
 			t.Fatalf("provider success ledger failure should stop before assistant persistence: %#v", messages)
+		}
+	}
+}
+
+func TestEngineGoalAccountingReportsEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Track accounting events.",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	adapter := emittingAdapter{
+		run: func(_ context.Context, _ provider.TurnRequest, _ provider.EmitFunc) (provider.TurnResult, error) {
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
+			return provider.TurnResult{
+				Text:       "accounting should fail before this persists",
+				StopReason: "done_candidate",
+				Usage:      provider.Usage{InputTokens: 3, OutputTokens: 2},
+			}, nil
+		},
+	}
+
+	result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected goal.accounting.updated event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "goal.accounting.updated") {
+		t.Fatalf("expected accounting event context, got %v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			t.Fatalf("goal accounting event failure should stop before assistant persistence: %#v", messages)
 		}
 	}
 }

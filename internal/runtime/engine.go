@@ -901,7 +901,7 @@ func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state s
 		return RunResult{}, saveErr
 	}
 	if appendErr := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"error": state.LastError}); appendErr != nil {
-		return RunResult{}, appendErr
+		return RunResult{}, fmt.Errorf("record session.failed event after %v: %w", err, appendErr)
 	}
 	result := RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}
 	if reconcileErr := e.reconcileLinkedQueueJob(meta.ID); reconcileErr != nil {

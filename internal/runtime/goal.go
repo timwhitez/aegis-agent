@@ -129,18 +129,27 @@ func (e *Engine) updateGoalAccounting(sessionID string, turn int, usage provider
 		}
 		return session.SessionGoal{}, false, err
 	}
-	e.emit(sessionID, "goal.accounting.updated", "provider_call", map[string]any{
+	if strings.TrimSpace(goal.GoalID) == "" {
+		return session.SessionGoal{}, false, nil
+	}
+	if err := e.appendEvent(sessionID, "goal.accounting.updated", "provider_call", map[string]any{
 		"goal_id":                 goal.GoalID,
 		"status":                  goal.Status,
 		"tokens_used_delta":       tokens,
 		"time_used_seconds_delta": elapsedSeconds,
 		"tokens_used":             goal.TokensUsed,
 		"time_used_seconds":       goal.TimeUsedSeconds,
-	})
+	}); err != nil {
+		return session.SessionGoal{}, false, fmt.Errorf("record goal.accounting.updated event: %w", err)
+	}
 	if limited {
-		e.emit(sessionID, "goal.budget_limited", "provider_call", goalEventData(goal))
+		if err := e.appendEvent(sessionID, "goal.budget_limited", "provider_call", goalEventData(goal)); err != nil {
+			return session.SessionGoal{}, false, fmt.Errorf("record goal.budget_limited event: %w", err)
+		}
 		if goal.Control.StopOnBudget {
-			e.emit(sessionID, "goal.budget_wrapup_required", "provider_call", goalEventData(goal))
+			if err := e.appendEvent(sessionID, "goal.budget_wrapup_required", "provider_call", goalEventData(goal)); err != nil {
+				return session.SessionGoal{}, false, fmt.Errorf("record goal.budget_wrapup_required event: %w", err)
+			}
 		}
 	}
 	_ = writeSessionSummary(e.store, sessionID)
