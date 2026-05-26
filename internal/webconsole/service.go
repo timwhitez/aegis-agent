@@ -2263,10 +2263,37 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		IsolationRoot:   req.IsolationRoot,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, queueJobActionStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, job)
+}
+
+func queueJobActionStatus(err error) int {
+	if err == nil {
+		return http.StatusAccepted
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return http.StatusNotFound
+	}
+	var configErr *runtime.ConfigError
+	if errors.As(err, &configErr) {
+		return http.StatusBadRequest
+	}
+	message := err.Error()
+	if strings.Contains(message, "prompt is required") ||
+		strings.Contains(message, "session id is required") ||
+		strings.Contains(message, "invalid session id") ||
+		strings.Contains(message, "unsupported agent role") ||
+		strings.Contains(message, "unknown provider") ||
+		strings.Contains(message, "isolation target must not be inside source workdir") {
+		return http.StatusBadRequest
+	}
+	if strings.Contains(message, "plan mode is pending") ||
+		strings.Contains(message, "not available before approve or cancel") {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 func (s *Service) handleScaleWorkers(w http.ResponseWriter, r *http.Request) {

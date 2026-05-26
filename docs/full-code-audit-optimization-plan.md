@@ -3154,6 +3154,35 @@ Validation:
 - Focused post-fix WebConsole regression for the same path and adjacent successful Web steer source test.
 - Standard grouped validation before commit.
 
+### FCA-20260526-114: Web queue submit reports durable job-store failures as client errors
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires Web errors to distinguish user input errors from infrastructure failures such as unwritable session roots or queue persistence failures.
+- `spec/01-runtime-architecture.md` requires queue jobs to be durable local file facts managed through `QueueStore And Worker`, not transient Web state.
+- `internal/runtime/delegation.go` `QueueSubmit` performs both request validation and durable work: pending parent Plan Mode rejection, parent metadata load, provider/model resolution, `_queue/<status>/<job>.json` persistence, and optional parent-coordination updates.
+- `internal/webconsole/service.go` `handleCreateJob` mapped every `QueueSubmit` error to HTTP 400.
+- A focused WebConsole regression replaced the queue root `_queue` with a regular file. Before the fix, `/api/queue/jobs` returned HTTP 400 even though the failure was a local durable queue-store write failure and no queued job fact was persisted.
+
+Impact:
+
+Operators could receive a bad-request response for local queue storage corruption or filesystem failure. That points recovery at changing the submitted prompt or payload even though the correct remediation is to repair local durable queue/session facts or retry after storage recovery.
+
+Minimal fix:
+
+- Add a narrow Web queue submit status classifier.
+- Keep malformed prompt, unsupported role, unknown provider/config request errors, and invalid isolation request errors as HTTP 400.
+- Return HTTP 409 for parent sessions blocked by pending Plan Mode, HTTP 404 for missing durable session facts, and HTTP 500 for queue store, parent coordination, or other infrastructure failures.
+- Add focused WebConsole coverage for blocked `_queue` persistence and update the existing pending Plan Mode queue-gate expectation to conflict.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving blocked queue-store writes returned HTTP 400.
+- Focused post-fix WebConsole regression for the same path and adjacent pending Plan Mode queue gate.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3843,6 +3872,12 @@ Evidence gates:
 - Confirmed FCA-20260526-113 against durable steer requirements in `spec/13-live-input-and-steering.md`, Web local file fact requirements in `spec/17-web-console.md`, and runtime `Steer` write ordering.
 - Confirmed this is distinct from earlier steer event rollback work: the runtime already rejects the queued request on required event failure, while the Web adapter still misclassified durable write failures as client errors.
 - Confirmed the minimal fix should stay in the Web adapter's HTTP status mapping and not move store-specific logic into the frontend or provider layer.
+
+### Review 107
+
+- Confirmed FCA-20260526-114 against Web error-class requirements in `spec/17-web-console.md`, queue durability requirements in `spec/01-runtime-architecture.md`, and runtime `QueueSubmit` write ordering in `internal/runtime/delegation.go`.
+- Confirmed this is distinct from FCA-20260526-113: steer writes `control/steer.jsonl`, while queue submit writes global `_queue` job facts and optional parent coordination facts.
+- Confirmed the minimal fix should stay in the Web service HTTP adapter. Runtime queue behavior, queue store layout, provider selection, and frontend queue UI do not need to change for this slice.
 
 ## Update Log
 
@@ -6248,6 +6283,40 @@ Validation:
 
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSteerReportsStoreAppendFailureAsServerError -count=1`: failed before the fix because blocked steer queue writes returned HTTP 400.
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceSteer(WritesWebSource|ReportsStoreAppendFailureAsServerError)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-114
+
+Slice: `fix(webconsole): classify queue submit store errors`
+
+Finding:
+
+- Web queue submit returned HTTP 400 for durable queue job-store write failures from `Runner.QueueSubmit`.
+- Blocking the `_queue` root caused the request to fail before any job fact was durable, but the API classified it as a bad client request.
+
+Changes:
+
+- Added `queueJobActionStatus` for Web queue submit responses.
+- Kept prompt/config/request validation errors as HTTP 400.
+- Mapped parent pending Plan Mode queue submissions to HTTP 409 conflict and missing durable session facts to HTTP 404.
+- Mapped local queue store, parent coordination, and other infrastructure failures to HTTP 500.
+- Added focused WebConsole coverage for blocked `_queue` persistence and updated the parent pending Plan Mode queue-gate expectation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(QueueSubmitReportsStoreAppendFailureAsServerError|PlanModeGetAndParentQueueGate)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.

@@ -1948,9 +1948,38 @@ func TestServicePlanModeGetAndParentQueueGate(t *testing.T) {
 	errResp := postJSONError(t, ts.URL+"/api/queue/jobs", map[string]any{
 		"parent_session_id": meta.ID,
 		"prompt":            "child work",
-	}, http.StatusBadRequest)
+	}, http.StatusConflict)
 	if !strings.Contains(errResp.Error, "plan mode is pending") {
 		t.Fatalf("expected pending plan mode queue error, got %#v", errResp)
+	}
+}
+
+func TestServiceQueueSubmitReportsStoreAppendFailureAsServerError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	queueRoot := filepath.Join(svc.store.Root(), "_queue")
+	if err := os.MkdirAll(filepath.Dir(queueRoot), 0o700); err != nil {
+		t.Fatalf("create session root parent: %v", err)
+	}
+	if err := os.WriteFile(queueRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block queue root: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", bytes.NewBufferString(`{"prompt":"queued child work"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("unexpected status: %d want %d body=%s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "not a directory") {
+		t.Fatalf("expected queue store error in response, got body=%s", recorder.Body.String())
 	}
 }
 
