@@ -2130,17 +2130,31 @@ func (s *Service) handleSteerSession(w http.ResponseWriter, r *http.Request, ses
 		Source:    "web",
 	})
 	if err != nil {
-		status := http.StatusBadRequest
-		var sizeErr runtime.SteerValidationError
-		if errors.As(err, &sizeErr) {
-			status = http.StatusBadRequest
-		} else if strings.Contains(err.Error(), "not running") {
-			status = http.StatusConflict
-		}
-		writeError(w, status, err)
+		writeError(w, steerActionStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, result)
+}
+
+func steerActionStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	var sizeErr runtime.SteerValidationError
+	if errors.As(err, &sizeErr) {
+		return http.StatusBadRequest
+	}
+	message := err.Error()
+	if strings.Contains(message, "steer message is required") {
+		return http.StatusBadRequest
+	}
+	if strings.Contains(message, "not running") {
+		return http.StatusConflict
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
 }
 
 func (s *Service) handleInterruptSession(w http.ResponseWriter, sessionID string) {

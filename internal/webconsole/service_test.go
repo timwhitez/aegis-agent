@@ -77,6 +77,39 @@ func TestServiceSteerWritesWebSource(t *testing.T) {
 	}
 }
 
+func TestServiceSteerReportsStoreAppendFailureAsServerError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_steer_store_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	steerPath := filepath.Join(svc.store.SessionDir(meta.ID), "control", "steer.jsonl")
+	if err := os.Remove(steerPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove steer file: %v", err)
+	}
+	if err := os.Mkdir(steerPath, 0o700); err != nil {
+		t.Fatalf("block steer path: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/steer", bytes.NewBufferString(`{"message":"focus on the failing test","interrupt":false}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("unexpected status: %d want %d body=%s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "is a directory") {
+		t.Fatalf("expected steer store error in response, got body=%s", recorder.Body.String())
+	}
+}
+
 func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
