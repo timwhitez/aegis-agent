@@ -1194,15 +1194,19 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 	if err := e.store.UpdateBackgroundNotifications(sessionID, notifications); err != nil {
 		return 0, err
 	}
-	e.emit(sessionID, "user.message", "control_drain", map[string]any{
+	if err := e.appendEvent(sessionID, "user.message", "control_drain", map[string]any{
 		"text":   text,
 		"mode":   meta.Mode,
 		"source": "background_results",
 		"count":  len(pending),
-	})
-	e.emit(sessionID, "session.background.accepted", "control_drain", map[string]any{
+	}); err != nil {
+		return 0, err
+	}
+	if err := e.appendEvent(sessionID, "session.background.accepted", "control_drain", map[string]any{
 		"count": len(pending),
-	})
+	}); err != nil {
+		return 0, err
+	}
 	return len(pending), nil
 }
 

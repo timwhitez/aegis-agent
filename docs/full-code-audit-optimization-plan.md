@@ -4299,6 +4299,34 @@ Validation:
 - Existing steer goal-history failure, corrupt goal snapshot, interrupt acceptance, and concurrent steer-count regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-172: Background results continue without durable accepted events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `events.jsonl`, `messages.jsonl`, `control/background.jsonl`, and parent/queue coordination facts as local session facts.
+- The background queue profile in `spec/09-phase-plan.md` requires real session / queue association and notification evidence rather than compatibility shells.
+- `internal/runtime/engine.go` `drainBackground` appended accepted background results to `messages.jsonl` and marked background notifications accepted, but emitted the accepted `user.message` and `session.background.accepted` events through unchecked `e.emit`.
+- A focused pre-fix runtime regression blocked `events.jsonl` before pending background results were accepted. Before the fix, provider execution continued despite the accepted background-result events being unwritable.
+
+Impact:
+
+The runtime could consume pending background results and continue parent execution without preserving durable event evidence that those results were accepted. This weakens recovery and Web timeline auditing for parent/queue handoff completion.
+
+Minimal fix:
+
+- Use checked `appendEvent` calls for background-results `user.message` and `session.background.accepted` events.
+- Stop before provider execution if accepted-event persistence fails.
+- Preserve existing successful background-results injection and accepted notification status behavior.
+
+Validation:
+
+- Focused pre-fix runtime regression proving provider execution continued after `events.jsonl` was blocked during background-results acceptance.
+- Focused post-fix runtime regression proving accepted-event append failure returns an `events.jsonl` error before provider execution.
+- Existing background-results injection and steer accepted-event regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5881,7 +5909,47 @@ Evidence gates:
 - Confirmed this is not a generic telemetry issue: `session.steer.accepted` is the durable fact that a queued steer moved into model-visible execution, so provider continuation without that event weakens replay and recovery.
 - Confirmed the minimal fix belongs in `drainSteer`, because that is the acceptance boundary that writes the user message, marks the request accepted, updates goal history, refreshes contract state, and then lets provider execution continue.
 
+### Review 165
+
+- Confirmed FCA-20260526-172 against the background queue fact requirements in `spec/01-runtime-architecture.md` and the large-project queue evidence boundary in `spec/09-phase-plan.md`.
+- Confirmed this mirrors the steer acceptance durability issue but is independently relevant: `drainBackground` consumes pending background notifications, writes model-visible parent context, and then allows provider execution to continue.
+- Confirmed the minimal fix belongs in `drainBackground`, because that is the acceptance boundary that moves background notifications into parent-visible execution context.
+
 ## Update Log
+
+### FCA-20260526-172
+
+Slice: `fix(runtime): persist background accepted events`
+
+Finding:
+
+- `drainBackground` used unchecked event emission for accepted background-results `user.message` and `session.background.accepted` events.
+- Before the fix, a blocked `events.jsonl` still allowed pending background results to be appended as a user message, marked accepted, and provider execution to continue.
+
+Changes:
+
+- Background-results acceptance now uses checked event appends for the accepted user-message event.
+- Background-results acceptance now uses checked event appends for `session.background.accepted`.
+- Added focused runtime coverage proving provider execution does not continue when background accepted events cannot be persisted.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineBackgroundAcceptanceReportsAcceptedEventAppendError -count=1`: failed before the fix because the provider was called after accepted-event append failure.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBackgroundAcceptanceReportsAcceptedEventAppendError|TestEngineAcceptsBackgroundResultsBeforeProviderCall|TestEngineSteerAcceptanceReportsAcceptedEventAppendError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-171
 

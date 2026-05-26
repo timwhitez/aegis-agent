@@ -2266,6 +2266,39 @@ func TestEngineAcceptsBackgroundResultsBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestEngineBackgroundAcceptanceReportsAcceptedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "master task")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	notification := session.NewBackgroundNotification(session.QueueJob{
+		ID:            "job_1",
+		Status:        session.QueueStatusCompleted,
+		SessionID:     "child_1",
+		SessionStatus: session.StatusCompleted,
+		FinalText:     "child done",
+	})
+	if err := engine.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
+		t.Fatalf("append background notification: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatalf("provider should not be called after background accepted event append failure")
+		return provider.TurnResult{}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected background accepted event append error, result=%#v err=%v", result, err)
+	}
+}
+
 func TestEngineCompletingQueuedChildReconcilesParentQueueFacts(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	parentMeta := session.SessionMetadata{
