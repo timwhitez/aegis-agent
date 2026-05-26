@@ -162,6 +162,38 @@ func TestCompletionControllerTrackToolResultReportsArtifactTrackerError(t *testi
 	}
 }
 
+func TestCompletionControllerRequiredArtifactGateReportsTrackerRefreshError(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh contract: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("new content"), 0o600); err != nil {
+		t.Fatalf("update artifact: %v", err)
+	}
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	if err := controller.TrackToolResult("write_file", session.ToolResult{
+		Name:          "write_file",
+		LLMOutput:     "wrote reports/final.md",
+		DisplayOutput: "wrote reports/final.md",
+		Metadata:      map[string]any{"path": artifactPath},
+	}, 2); err != nil {
+		t.Fatalf("track write: %v", err)
+	}
+	blockRuntimeArtifactTrackerPath(t, store, meta.ID)
+
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"done"}`))
+	if decision.Status != GateBlock || decision.GateID != "required_artifact_state" || !strings.Contains(decision.ModelMessage, "artifact-tracker.json") {
+		t.Fatalf("expected required-artifact state block, got %#v", decision)
+	}
+}
+
 func TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")

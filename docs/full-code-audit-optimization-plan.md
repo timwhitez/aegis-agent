@@ -1920,6 +1920,32 @@ Validation:
 - Existing required-artifact gate and contract freshness regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-070: Required-artifact finish gate bypasses state refresh failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` requires the generic required-artifact gate to distinguish current presence, touched-by-session, and changed-from-baseline using `artifact-tracker.json`.
+- Before this slice, `requiredArtifactGate("finish")` refreshed artifact status in memory, then ignored failures loading/saving `artifact-tracker.json` and ignored `contract.json` sync failures.
+- A focused regression reproduced a false allow by replacing `artifact-tracker.json` with a directory after a valid required-artifact write: `EvaluateToolCall("finish")` returned `allow` even though the gate could not load or persist the refreshed durable artifact state.
+
+Impact:
+
+The model could complete a session while the required-artifact gate could not write the refreshed fact source used by WebConsole, `session.md`, checkpoints, and recovery. That makes finish decisions depend on transient in-memory status while the durable tracker/contract state remains unreadable or stale.
+
+Minimal fix:
+
+- Treat artifact tracker load failures as `required_artifact_state` blocks instead of no-op gate absence.
+- Treat artifact tracker save failures and contract sync failures during finish-gate refresh as `required_artifact_state` blocks.
+- Add a focused finish-gate regression for blocked `artifact-tracker.json`.
+
+Validation:
+
+- Focused finish-gate tracker refresh regression.
+- Existing required-artifact tracking and contract freshness regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2351,6 +2377,12 @@ Evidence gates:
 - Confirmed FCA-20260526-069 against `spec/01-runtime-architecture.md`, `spec/12-task-system.md`, `spec/18-durable-contract-and-completion.md`, `CompletionController.TrackToolResult`, engine tool execution, and focused blocked-tracker regressions.
 - Confirmed this is not a derived-summary issue: `artifact-tracker.json` is the durable required-artifact gate fact, and a failed tracker update after successful file write must be visible to runtime and recovery.
 - Confirmed the fix must preserve provider replay completeness after the file side effect, so the engine appends the failed tool result and synthetic skipped results before failing.
+
+### Review 64
+
+- Confirmed FCA-20260526-070 against `spec/18-durable-contract-and-completion.md`, `requiredArtifactGate`, `EvaluateToolCall`, and focused blocked-tracker finish-gate regression.
+- Confirmed this is a finish-gate state-source issue rather than a display summary issue: the gate could allow `finish` when `artifact-tracker.json` was unreadable or could not be refreshed.
+- Confirmed the fix should block as `required_artifact_state`, preserving normal missing/stale artifact messages for valid tracker reads.
 
 ## Update Log
 
@@ -3957,6 +3989,36 @@ Validation:
 
 - `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerTrackToolResultReportsArtifactTrackerError' -count=1`: failed before the fix because `TrackToolResult` had no error return.
 - `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerTrackToolResultReportsArtifactTrackerError|TestEngineArtifactTrackingFailureWritesReplayCompleteToolResult|TestCompletionControllerRequiresSessionTouchedArtifact|TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction|TestSessionContractTracksRequiredArtifactAndCompletionGate' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-070
+
+Slice: `fix(runtime): block finish on artifact state failures`
+
+Finding:
+
+- Required-artifact finish gate ignored failures loading or saving refreshed `artifact-tracker.json` and ignored `contract.json` sync failures.
+- A blocked `artifact-tracker.json` path reproduced a false allow: `EvaluateToolCall("finish")` returned `allow` even though the gate could not load or persist the durable artifact state.
+
+Changes:
+
+- Changed required-artifact gate to block as `required_artifact_state` on artifact tracker load failures.
+- Changed finish-gate refresh to block as `required_artifact_state` when refreshed artifact tracker or contract state cannot be saved.
+- Added a focused finish-gate regression for blocked `artifact-tracker.json`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerRequiredArtifactGateReportsTrackerRefreshError' -count=1`: failed before the fix by allowing `finish`.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerRequiredArtifactGateReportsTrackerRefreshError|TestCompletionControllerTrackToolResultReportsArtifactTrackerError|TestCompletionControllerRequiresSessionTouchedArtifact|TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction|TestRequiredArtifactGateRejectsSymlinkedArtifactAfterContractCreation|TestSessionContractTracksRequiredArtifactAndCompletionGate' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

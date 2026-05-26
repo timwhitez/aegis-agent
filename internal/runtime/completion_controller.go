@@ -148,15 +148,22 @@ func (c *CompletionController) requiredArtifactGate(toolName string) (string, st
 		return "", ""
 	}
 	artifacts, err := c.store.LoadArtifactTracker(c.sessionID)
-	if err != nil || len(artifacts) == 0 {
+	if err != nil {
+		return "required_artifact_state", "Required-artifact gate could not load artifact state: " + err.Error()
+	}
+	if len(artifacts) == 0 {
 		return "", ""
 	}
 	artifacts = refreshArtifactStatuses(artifacts)
-	_ = c.store.SaveArtifactTracker(c.sessionID, artifacts)
+	if err := c.store.SaveArtifactTracker(c.sessionID, artifacts); err != nil {
+		return "required_artifact_state", "Required-artifact gate could not persist refreshed artifact state: " + err.Error()
+	}
 	if contract, err := c.store.LoadContract(c.sessionID); err == nil {
 		contract.RequiredArtifacts = artifacts
 		contract.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		_ = c.store.SaveContract(c.sessionID, contract)
+		if err := c.store.SaveContract(c.sessionID, contract); err != nil {
+			return "required_artifact_state", "Required-artifact gate could not persist refreshed contract state: " + err.Error()
+		}
 	}
 	var missing []string
 	var stale []string
