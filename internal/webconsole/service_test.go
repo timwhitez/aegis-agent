@@ -1636,6 +1636,56 @@ func TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact(t *testing.T)
 	}
 }
 
+func TestServiceMissionPlanApproveRollsBackHistoryWhenEventAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_approve_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Approve mission plan with blocked events",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	beforeHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "events.jsonl") {
+		t.Fatalf("expected event append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.GoalID != goal.GoalID || loaded.Mission == nil || session.NormalizeMissionPlanStatus(loaded.Mission.PlanStatus) == session.MissionPlanStatusApproved || loaded.Mission.ApprovedAt != "" {
+		t.Fatalf("failed mission approval should restore unapproved goal snapshot, got %#v", loaded.Mission)
+	}
+	afterHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history after failed approval: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || goalHistoryContainsType(afterHistory, "mission.plan.approved") {
+		t.Fatalf("failed mission approval should restore goal history, before=%#v after=%#v", beforeHistory, afterHistory)
+	}
+}
+
 func TestServiceMissionPlanApproveRejectsGoalWithoutMissionPlan(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

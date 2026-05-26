@@ -1470,24 +1470,20 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 			if approvedAt == "" {
 				approvedAt = nowString()
 			}
-			goal, err = s.store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
+			goal, err = s.approveMissionPlanWithEvent(sessionID, session.MissionPlanApprovalInput{
 				Source:           session.GoalSourceWeb,
 				ApprovedAt:       approvedAt,
 				CoverageOverride: req.OverrideCoverage,
 				PlanModeID:       planMode.PlanModeID,
 				ApprovedVersion:  planMode.ApprovedVersion,
-			})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			if err := s.appendGoalEvent(sessionID, goal, "mission.plan.approved", map[string]any{
+			}, map[string]any{
 				"approved_at":       approvedAt,
 				"plan_mode_id":      planMode.PlanModeID,
 				"approved_version":  planMode.ApprovedVersion,
 				"coverage_override": req.OverrideCoverage,
-			}); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
+			})
+			if err != nil {
+				writeError(w, missionPlanApprovalStatus(err), err)
 				return
 			}
 			writeJSON(w, http.StatusOK, goal)
@@ -1514,20 +1510,16 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	approvedAt := nowString()
-	goal, err = s.store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
+	goal, err = s.approveMissionPlanWithEvent(sessionID, session.MissionPlanApprovalInput{
 		Source:           session.GoalSourceWeb,
 		ApprovedAt:       approvedAt,
 		CoverageOverride: req.OverrideCoverage,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.appendGoalEvent(sessionID, goal, "mission.plan.approved", map[string]any{
+	}, map[string]any{
 		"approved_at":       approvedAt,
 		"coverage_override": req.OverrideCoverage,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+	})
+	if err != nil {
+		writeError(w, missionPlanApprovalStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, goal)
@@ -4364,6 +4356,51 @@ func (s *Service) appendGoalEvent(sessionID string, goal session.SessionGoal, ev
 		data[key] = value
 	}
 	return s.store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", data))
+}
+
+func (s *Service) approveMissionPlanWithEvent(sessionID string, input session.MissionPlanApprovalInput, eventExtra map[string]any) (session.SessionGoal, error) {
+	previousGoal, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		return session.SessionGoal{}, err
+	}
+	previousHistory, err := s.store.LoadGoalHistory(sessionID)
+	if err != nil {
+		return session.SessionGoal{}, err
+	}
+	goal, err := s.store.ApproveMissionPlan(sessionID, input)
+	if err != nil {
+		return session.SessionGoal{}, err
+	}
+	if err := s.appendGoalEvent(sessionID, goal, "mission.plan.approved", eventExtra); err != nil {
+		if restoreErr := s.store.SaveGoal(sessionID, previousGoal); restoreErr != nil {
+			return session.SessionGoal{}, missionPlanApprovalEventError{err: fmt.Errorf("restore goal after mission plan approval event error %v: %w", err, restoreErr)}
+		}
+		if restoreErr := s.store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+			return session.SessionGoal{}, missionPlanApprovalEventError{err: fmt.Errorf("restore goal history after mission plan approval event error %v: %w", err, restoreErr)}
+		}
+		return session.SessionGoal{}, missionPlanApprovalEventError{err: err}
+	}
+	return goal, nil
+}
+
+type missionPlanApprovalEventError struct {
+	err error
+}
+
+func (e missionPlanApprovalEventError) Error() string {
+	return e.err.Error()
+}
+
+func (e missionPlanApprovalEventError) Unwrap() error {
+	return e.err
+}
+
+func missionPlanApprovalStatus(err error) int {
+	var eventErr missionPlanApprovalEventError
+	if errors.As(err, &eventErr) {
+		return http.StatusInternalServerError
+	}
+	return http.StatusBadRequest
 }
 
 func (s *Service) goalFacts(sessionID string, goal session.SessionGoal, children ChildrenResponse, background []session.BackgroundNotification) *GoalFactsResponse {

@@ -3067,6 +3067,36 @@ Validation:
 - Adjacent Plan Mode approval/mission runtime tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-111: Web mission approval event failure leaves approved goal facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md` require Web Goal controls to reuse durable `goal.json`, `goal-history.jsonl`, and `events.jsonl` facts.
+- `internal/webconsole/service.go` `handleMissionPlanApprove` called `ApproveMissionPlan`, which mutates `goal.json` and appends `mission.plan.approved` to `goal-history.jsonl`, then appended a required `mission.plan.approved` session event through `appendGoalEvent`.
+- If `events.jsonl` append failed after the approval mutation, the HTTP request returned 500 while the mission plan remained approved and history-backed.
+- A focused WebConsole regression blocked `events.jsonl`; before the fix, failed mission approval left `goal.json.mission.plan_status=approved` and `goal-history.jsonl` contained `mission.plan.approved`.
+
+Impact:
+
+A Web operator could receive a failed mission approval response while durable Goal facts said approval succeeded. Recovery, session detail, Goal inspector, and future approval retries could then disagree about whether a real operator approval completed.
+
+Minimal fix:
+
+- Snapshot the current Goal and Goal history before Web mission plan approval.
+- Append the required `mission.plan.approved` event through the same helper that performs the approval.
+- Restore both `goal.json` and `goal-history.jsonl` when the event append fails.
+- Preserve HTTP 400 for store-level approval errors and HTTP 500 for event/rollback failures.
+- Add focused WebConsole coverage for blocked `events.jsonl`, restored unapproved mission snapshot, and restored Goal history.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving failed event append left the mission approved.
+- Focused post-fix WebConsole regression for the same path.
+- Adjacent Web mission approval tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3738,6 +3768,12 @@ Evidence gates:
 - Confirmed FCA-20260526-110 against linked mission approval requirements in `spec/01-runtime-architecture.md`, `spec/18-durable-contract-and-completion.md`, and runtime `approveLinkedMissionPlan` ordering.
 - Confirmed this is separate from Plan Mode approval replay: Plan Mode approval/execution can be idempotent while linked Goal/Mission history still duplicates after an event append failure.
 - Confirmed the minimal fix should require matching goal id, Plan Mode id, and approved version before treating a mission approval retry as recovered.
+
+### Review 104
+
+- Confirmed FCA-20260526-111 against Web Goal control requirements in `spec/17-web-console.md`, durable Goal/Event fact requirements in `spec/01-runtime-architecture.md`, and mission approval evidence requirements in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is distinct from FCA-20260526-110: the runtime linked Plan Mode approval path is now idempotent, while the Web direct mission approval path could still leave an approved snapshot after a failed event append.
+- Confirmed the minimal fix should keep Web mutation semantics transactional instead of adding a second Web-owned approval state or moving approval logic into the frontend.
 
 ## Update Log
 
@@ -6083,6 +6119,42 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-111
+
+Slice: `fix(webconsole): roll back failed mission approval event`
+
+Finding:
+
+- Web mission plan approval could persist an approved mission snapshot and `mission.plan.approved` Goal history before failing to append the required session event.
+- The failed HTTP response therefore disagreed with durable Goal facts, leaving recovery and the Goal inspector to treat the approval as completed.
+
+Changes:
+
+- Added a Web mission approval helper that snapshots `goal.json` and `goal-history.jsonl` before approval.
+- Appends the required `mission.plan.approved` session event as part of the helper.
+- Restores both the Goal snapshot and Goal history when the event append fails.
+- Preserves HTTP 400 for store-level approval validation errors and HTTP 500 for event/rollback failures.
+- Added focused WebConsole coverage for blocked `events.jsonl`, restored unapproved mission snapshot, and restored Goal history.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanApproveRollsBackHistoryWhenEventAppendFails -count=1`: failed before the fix because failed event append left `mission.plan_status=approved`.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanApproveRollsBackHistoryWhenEventAppendFails -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(MissionApproveExecutingPlanModeAppendsApprovalFact|MissionPlanApproveRollsBackHistoryWhenEventAppendFails|MissionPlanApproveRejectsGoalWithoutMissionPlan|GoalFactsAndMissionCoverageApproval)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
