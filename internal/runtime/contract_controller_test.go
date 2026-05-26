@@ -747,6 +747,96 @@ func TestLongRunCheckpointReportsCorruptArtifactTracker(t *testing.T) {
 	}
 }
 
+func TestLongRunCheckpointReportsCorruptChildrenQueueFacts(t *testing.T) {
+	makeCheckpointEligible := func(t *testing.T, store *session.Store, meta session.SessionMetadata) session.SessionMetadata {
+		t.Helper()
+		meta.ParentSessionID = "parent-session"
+		if err := store.SaveMetadata(meta.ID, meta); err != nil {
+			t.Fatalf("save metadata: %v", err)
+		}
+		return meta
+	}
+	assertNoCheckpoint := func(t *testing.T, store *session.Store, sessionID string) {
+		t.Helper()
+		if _, loadErr := store.LoadLongRunCheckpoint(sessionID); !errors.Is(loadErr, os.ErrNotExist) {
+			t.Fatalf("expected no misleading checkpoint after corrupt child/queue facts, got %v", loadErr)
+		}
+	}
+
+	t.Run("child sessions", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		meta = makeCheckpointEligible(t, store, meta)
+		child := session.SessionMetadata{
+			SchemaVersion:    1,
+			ID:               session.NewSessionID(),
+			CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+			Workdir:          t.TempDir(),
+			Mode:             session.ModeRun,
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			CompletionPolicy: session.CompletionPolicyInteractive,
+			ParentSessionID:  meta.ID,
+			RootSessionID:    meta.ID,
+			Depth:            1,
+		}
+		if err := store.Create(child, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+			t.Fatalf("create child session: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(store.SessionDir(child.ID), "state.json"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt child state: %v", err)
+		}
+
+		err := writeLongRunCheckpoint(store, meta.ID)
+		if err == nil || !strings.Contains(err.Error(), "state.json") {
+			t.Fatalf("expected corrupt child session error, got %v", err)
+		}
+		assertNoCheckpoint(t, store, meta.ID)
+	})
+	t.Run("queue jobs", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		meta = makeCheckpointEligible(t, store, meta)
+		job := session.QueueJob{
+			SchemaVersion:   1,
+			ID:              "job_corrupt_checkpoint",
+			Status:          session.QueueStatusQueued,
+			ParentSessionID: meta.ID,
+			RootSessionID:   meta.ID,
+			Prompt:          "queued work",
+			Mode:            session.ModeExec,
+			Background:      true,
+		}
+		if err := store.EnqueueJob(job); err != nil {
+			t.Fatalf("enqueue job: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(store.Root(), "_queue", session.QueueStatusQueued, job.ID+".json"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt queue job: %v", err)
+		}
+
+		err := writeLongRunCheckpoint(store, meta.ID)
+		if err == nil || !strings.Contains(err.Error(), "job_corrupt_checkpoint.json") {
+			t.Fatalf("expected corrupt queue job error, got %v", err)
+		}
+		assertNoCheckpoint(t, store, meta.ID)
+	})
+	t.Run("background notifications", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		meta = makeCheckpointEligible(t, store, meta)
+		backgroundPath := filepath.Join(store.SessionDir(meta.ID), "control", "background.jsonl")
+		if err := os.MkdirAll(filepath.Dir(backgroundPath), 0o700); err != nil {
+			t.Fatalf("create control dir: %v", err)
+		}
+		if err := os.WriteFile(backgroundPath, []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt background notifications: %v", err)
+		}
+
+		err := writeLongRunCheckpoint(store, meta.ID)
+		if err == nil || !strings.Contains(err.Error(), "background.jsonl") {
+			t.Fatalf("expected corrupt background notification error, got %v", err)
+		}
+		assertNoCheckpoint(t, store, meta.ID)
+	})
+}
+
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

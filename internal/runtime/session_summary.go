@@ -359,9 +359,18 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("load tasks for long-run checkpoint: %w", err)
 	}
-	children, _ := store.ListChildren(sessionID, 100)
-	jobs, _ := store.ListJobsByParent(sessionID, 100)
-	notifications, _ := store.LoadBackgroundNotifications(sessionID)
+	children, err := store.ListChildren(sessionID, 100)
+	if err != nil {
+		return fmt.Errorf("load child sessions for long-run checkpoint: %w", err)
+	}
+	jobs, err := store.ListJobsByParent(sessionID, 100)
+	if err != nil {
+		return fmt.Errorf("load queue jobs for long-run checkpoint: %w", err)
+	}
+	notifications, err := store.LoadBackgroundNotifications(sessionID)
+	if err != nil {
+		return fmt.Errorf("load control/background.jsonl for long-run checkpoint: %w", err)
+	}
 	messages, _ := store.LoadMessages(sessionID)
 	eventsList, _ := store.LoadEvents(sessionID)
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)

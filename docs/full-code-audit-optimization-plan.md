@@ -4154,6 +4154,38 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-161: Long-run checkpoint hides corrupt child and queue facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `LongRunCheckpointWriter` as recording parent wait state, resume hints, child/queue state, and background notification counts for long-running recovery.
+- `spec/18-durable-contract-and-completion.md` says long-run checkpoints are resume indexes, not replacements for source facts, and that checkpoints record unresolved child/queue state.
+- Prior store and gate fixes already make corrupt child `state.json`, queue job JSON, and `control/background.jsonl` reportable, and `FCA-20260526-157` hardened `session.md` to display those corrupt child/queue/background facts.
+- `internal/runtime/session_summary.go` `writeLongRunCheckpoint` still called `store.ListChildren`, `store.ListJobsByParent`, and `store.LoadBackgroundNotifications` with discarded errors before writing `checkpoints/longrun-latest.json`.
+- A focused pre-fix regression corrupted child `state.json`, a parent queue job JSON file, and `control/background.jsonl` in checkpoint-worthy sessions. Before the fix, `writeLongRunCheckpoint` returned nil and could write a checkpoint with empty unresolved child/queue state or `background_notifications=0`.
+
+Impact:
+
+Long-running parent recovery could create or overwrite a checkpoint that omits unresolved child sessions, unresolved queue jobs, or background notifications while the source child/queue facts are corrupt. That weakens resume guidance and can make recovery prompts treat child/queue work as absent when the real problem is unreadable durable state.
+
+Minimal fix:
+
+- Propagate `ListChildren` errors from `writeLongRunCheckpoint` with `load child sessions for long-run checkpoint` context.
+- Propagate `ListJobsByParent` errors with `load queue jobs for long-run checkpoint` context.
+- Propagate `LoadBackgroundNotifications` errors with `load control/background.jsonl for long-run checkpoint` context.
+- Preserve valid empty child/queue/background behavior.
+- Do not write a misleading long-run checkpoint when these child/queue/background facts are corrupt.
+- Add focused runtime coverage proving corrupt child sessions, queue jobs, and background notifications stop checkpoint writing and leave no checkpoint artifact.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt child/queue/background facts were hidden by checkpoint writing.
+- Focused post-fix runtime regression proving corrupt child/queue/background state is reported and no checkpoint is written.
+- Existing corrupt artifact tracker, corrupt todo, corrupt task graph, child/queue summary, parent-background gate, and owner-clue checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-160: Long-run checkpoint hides corrupt artifact tracker
 
 Severity: Medium
@@ -5487,7 +5519,49 @@ Evidence gates:
 - Confirmed this is not a missing optional tracker compatibility issue: `LoadArtifactTracker` still returns an empty list for absent tracker state, while malformed present `artifact-tracker.json` is corrupt recovery state.
 - Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because completion gates and `session.md` already report corrupt artifact tracker state and only the checkpoint writer was still discarding that error.
 
+### Review 154
+
+- Confirmed FCA-20260526-161 against the child/queue recovery requirements in `spec/01-runtime-architecture.md` and the checkpoint resume-index boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a missing optional child/queue/background compatibility issue: valid sessions with no child sessions, no queue jobs, and no background notifications still produce empty facts, while malformed present child/queue/background files are corrupt recovery state.
+- Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because store loaders, completion gates, and `session.md` already report corrupt child/queue/background state and only the checkpoint writer was still discarding those errors.
+
 ## Update Log
+
+### FCA-20260526-161
+
+Slice: `fix(runtime): report corrupt checkpoint child queue facts`
+
+Finding:
+
+- `writeLongRunCheckpoint` discarded `ListChildren`, `ListJobsByParent`, and `LoadBackgroundNotifications` errors while building `checkpoints/longrun-latest.json`.
+- Before the fix, corrupt child `state.json`, corrupt queue job JSON, and corrupt `control/background.jsonl` in checkpoint-worthy sessions returned nil from checkpoint writing and could produce a checkpoint with omitted child/queue/background facts.
+
+Changes:
+
+- Propagated `ListChildren` errors from `writeLongRunCheckpoint` as `load child sessions for long-run checkpoint`.
+- Propagated `ListJobsByParent` errors as `load queue jobs for long-run checkpoint`.
+- Propagated `LoadBackgroundNotifications` errors as `load control/background.jsonl for long-run checkpoint`.
+- Added focused runtime coverage proving corrupt child/queue/background facts prevent a misleading checkpoint artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptChildrenQueueFacts -count=1`: failed before the fix because corrupt child/queue/background state returned nil from checkpoint writing.
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptChildrenQueueFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsCorrupt(ChildrenQueueFacts|ArtifactTracker|TodoState|TaskGraph)|TestSessionSummaryReportsCorruptChildrenQueueFacts|TestParentCoordinationGateReportsCorruptBackgroundNotifications|TestSessionSummaryAndCheckpointRecordRecentOwnerClue' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-160
 
