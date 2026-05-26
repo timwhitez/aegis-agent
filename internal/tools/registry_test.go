@@ -624,6 +624,95 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	}
 }
 
+func TestUpdateGoalReportsRequiredEventErrorAndRestoresGoal(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:         true,
+		Objective:       "Keep the goal active when completion event persistence fails",
+		SuccessCriteria: []string{"criterion remains pending"},
+		ValidationPlan:  []string{"validation remains pending"},
+		Source:          session.GoalSourceTool,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	previousGoal, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous goal: %v", err)
+	}
+	previousHistory, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous history: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	eventErr := errors.New("events.jsonl blocked")
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		EmitRequired: func(eventType string, _ map[string]any) error {
+			if eventType != "goal.completed" {
+				t.Fatalf("unexpected required event %q", eventType)
+			}
+			return eventErr
+		},
+	}
+
+	result, err := registry.Execute(context.Background(), "update_goal", execCtx, json.RawMessage(`{
+		"status":"complete",
+		"completion_summary":"This should roll back.",
+		"evidence":["blocked events path"],
+		"criteria_statuses":[{"id":"criterion_0001","status":"verified","evidence":["should not persist"]}],
+		"validation_statuses":[{"id":"validation_0001","status":"verified","evidence":["should not persist"]}]
+	}`))
+	if err != nil {
+		t.Fatalf("update_goal execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "goal.completed") || !strings.Contains(result.DisplayOutput, eventErr.Error()) {
+		t.Fatalf("expected goal.completed event error result, got %#v", result)
+	}
+	goal, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored goal: %v", err)
+	}
+	if goal.Status != previousGoal.Status || goal.CompletedAt != "" || goal.CompletionAudit != nil {
+		t.Fatalf("expected active goal restored after event failure, got %#v", goal)
+	}
+	if goal.SuccessCriteria[0].Status != previousGoal.SuccessCriteria[0].Status || goal.ValidationPlan[0].Status != previousGoal.ValidationPlan[0].Status {
+		t.Fatalf("expected goal item statuses restored, got criteria=%#v validation=%#v", goal.SuccessCriteria, goal.ValidationPlan)
+	}
+	history, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored history: %v", err)
+	}
+	if len(history) != len(previousHistory) {
+		t.Fatalf("expected history restored to %d entries, got %d: %#v", len(previousHistory), len(history), history)
+	}
+	for _, entry := range history {
+		if entry.Type == "goal.completed" {
+			t.Fatalf("failed event append must not leave goal.completed history, got %#v", history)
+		}
+	}
+}
+
 func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

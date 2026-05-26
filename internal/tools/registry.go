@@ -1861,6 +1861,17 @@ func defUpdateGoal() Definition {
 			if strings.TrimSpace(input.Status) != session.GoalStatusComplete {
 				return errorResult("update_goal", errors.New("update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system")), nil
 			}
+			previousGoal, err := execCtx.Store.LoadGoal(execCtx.SessionID)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return errorResult("update_goal", errors.New("session has no current goal")), nil
+				}
+				return errorResult("update_goal", err), nil
+			}
+			previousHistory, err := execCtx.Store.LoadGoalHistory(execCtx.SessionID)
+			if err != nil {
+				return errorResult("update_goal", err), nil
+			}
 			goal, err := execCtx.Store.CompleteGoal(execCtx.SessionID, session.GoalCompletionInput{
 				Source:             session.GoalSourceTool,
 				CompletedBy:        session.GoalSourceTool,
@@ -1872,14 +1883,20 @@ func defUpdateGoal() Definition {
 			if err != nil {
 				return errorResult("update_goal", err), nil
 			}
-			if execCtx.Emit != nil {
-				execCtx.Emit("goal.completed", map[string]any{
-					"goal_id":   goal.GoalID,
-					"mode":      goal.Mode,
-					"status":    goal.Status,
-					"objective": goal.Objective,
-					"evidence":  append([]string(nil), goal.CompletionAudit.Evidence...),
-				})
+			if err := emitToolEvent(execCtx, "goal.completed", map[string]any{
+				"goal_id":   goal.GoalID,
+				"mode":      goal.Mode,
+				"status":    goal.Status,
+				"objective": goal.Objective,
+				"evidence":  append([]string(nil), goal.CompletionAudit.Evidence...),
+			}); err != nil {
+				if rollbackErr := execCtx.Store.SaveGoal(execCtx.SessionID, previousGoal); rollbackErr != nil {
+					return errorResult("update_goal", fmt.Errorf("restore goal after goal.completed event failure %v: %w", err, rollbackErr)), nil
+				}
+				if rollbackErr := execCtx.Store.RestoreGoalHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
+					return errorResult("update_goal", fmt.Errorf("restore goal history after goal.completed event failure %v: %w", err, rollbackErr)), nil
+				}
+				return errorResult("update_goal", fmt.Errorf("record goal.completed event: %w", err)), nil
 			}
 			data, _ := json.MarshalIndent(goal, "", "  ")
 			return session.ToolResult{

@@ -4762,6 +4762,34 @@ Validation:
 - Focused engine regression proving built-in `todo_write` receives the checked runtime event path and does not leave changed todo state when `events.jsonl` is blocked.
 - Standard grouped validation before commit.
 
+### FCA-20260527-188: Goal completion tool can lose the required completion event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `goal.completed` in the session event catalog, and `spec/11-spec-audit-and-traceability.md` requires `update_goal(status=complete)` evidence to be reflected in the durable goal completion audit.
+- `internal/tools/registry.go` `defUpdateGoal` called `Store.CompleteGoal`, which wrote `goal.json` and appended `artifacts/goal-history.jsonl`, then emitted `goal.completed` through unchecked `ExecContext.Emit`.
+- `internal/runtime/engine.go` wires `ExecContext.Emit` to best-effort `e.emit`, which ignores `events.jsonl` append failures.
+- A focused registry regression blocked the checked event path; before the fix, `update_goal` returned a successful completion result while the event callback was never required and the goal remained complete.
+
+Impact:
+
+Recovery, Web timelines, and completion audits could observe a completed `goal.json` and goal history without the required session event that explains the model-driven completion transition. A retry after event storage repair would also see the goal already complete, so the missing timeline fact could not be naturally recovered by re-running the same model tool.
+
+Minimal fix:
+
+- Snapshot the current goal and goal history before model-driven `CompleteGoal`.
+- Route model-tool `goal.completed` through the checked tool event callback.
+- If the required event cannot be written, restore the previous goal snapshot and previous goal history and return an error tool result.
+- Leave non-catalog `goal.progress.recorded` as best-effort telemetry until the spec promotes it to a required event.
+
+Validation:
+
+- Focused pre-fix registry regression proving `update_goal` succeeded and left the goal complete when required event persistence was unavailable.
+- Focused post-fix registry regression proving blocked `goal.completed` returns an error result and restores the previous goal snapshot/history.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6440,7 +6468,49 @@ Evidence gates:
 - Confirmed the owning runtime path still used best-effort `e.emit` through `ExecContext.Emit`, which ignored `events.jsonl` append failures after tool state mutations.
 - Confirmed the minimal fix should stay tool-contract scoped: add a checked callback for required task-system events and roll back the affected todo/task snapshot on event failure, without changing other diagnostic tool events or imposing a workflow engine.
 
+### Review 181
+
+- Confirmed FCA-20260527-188 against `spec/01-runtime-architecture.md`: `goal.completed` is a catalogued session event for the model-driven goal completion transition, not optional display telemetry.
+- Confirmed the issue is distinct from store-level `CompleteGoal` history rollback. `CompleteGoal` already rolls back when `goal-history.jsonl` append fails; this gap happens after that store transition succeeds and the matching session event append fails.
+- Confirmed the minimal fix should stay inside the model tool path by snapshotting `goal.json` plus `goal-history.jsonl`, using `EmitRequired` for `goal.completed`, and restoring those facts on event failure. `goal.progress.recorded` remains best-effort because it is not in the current event catalog.
+
 ## Update Log
+
+### FCA-20260527-188
+
+Slice: `fix(tools): require goal completion events`
+
+Finding:
+
+- `update_goal(status=complete)` persisted the completed goal snapshot and appended `goal.completed` history, then emitted the required `goal.completed` session event through unchecked `ExecContext.Emit`.
+- A blocked or unwritable `events.jsonl` path could therefore leave a model-driven goal completion without the matching event timeline fact.
+
+Changes:
+
+- Snapshotted the current goal and goal history before model-driven completion.
+- Switched model-tool `goal.completed` emission to the checked tool event callback.
+- Restored the previous goal snapshot and previous goal history when required event persistence fails, then returned an error tool result.
+- Added focused registry coverage for blocked `goal.completed` event persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestUpdateGoalReportsRequiredEventErrorAndRestoresGoal -count=1`: failed before the fix because `update_goal` returned success and left `goal.json` complete.
+- `go test -timeout 120s ./internal/tools -run TestUpdateGoalReportsRequiredEventErrorAndRestoresGoal -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test(GoalToolsCreateReadRejectInvalidStatusAndComplete|UpdateGoalReportsRequiredEventErrorAndRestoresGoal|TodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot|TodoWriteNoopReportsRequiredEventError|TaskToolsReportRequiredEventErrorAndRestoreTaskGraph|TodoAndTaskToolsPersistSessionFiles)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-187
 
