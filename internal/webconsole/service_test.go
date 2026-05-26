@@ -4466,6 +4466,73 @@ func TestServiceSessionDetailReconcilesLinkedQueueJob(t *testing.T) {
 	}
 }
 
+func TestServiceSessionDetailReportsLinkedQueueReconcileError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	childMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_detail_reconcile_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_detail_reconcile_error",
+		RootSessionID:    "parent_detail_reconcile_error",
+		QueueJobID:       "job_detail_reconcile_error",
+		Depth:            1,
+	}
+	if err := svc.store.Create(childMeta, session.State{
+		Status:    session.StatusRunning,
+		Phase:     "provider_call",
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          session.QueueStatusFailed,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		Prompt:          "fail",
+		Mode:            session.ModeExec,
+		Background:      true,
+		LastError:       "queue failure",
+	}); err != nil {
+		t.Fatalf("save failed job: %v", err)
+	}
+	stateLockPath := filepath.Join(svc.store.SessionDir(childMeta.ID), "state.lock")
+	if err := os.Mkdir(stateLockPath, 0o700); err != nil {
+		t.Fatalf("block state lock: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions/" + childMeta.ID)
+	if err != nil {
+		t.Fatalf("get session detail: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected linked queue reconcile error to return 500, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), "persist linked session state") {
+		t.Fatalf("expected linked queue reconcile error in response, got body=%s", string(body))
+	}
+}
+
 func TestServiceQueueWorkersProcessJob(t *testing.T) {
 	server := newFinishServer()
 	defer server.Close()

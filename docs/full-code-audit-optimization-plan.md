@@ -3574,6 +3574,33 @@ Validation:
 - Focused post-fix WebConsole regression proving malformed queue job IDs return HTTP 400 while missing queue jobs still return HTTP 404.
 - Standard grouped validation before commit.
 
+### FCA-20260526-129: Session detail hides linked queue reconciliation failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires queue jobs and linked child session state to be explainable from durable file facts, and `spec/17-web-console.md` positions session detail as a Web view over those same facts.
+- `internal/webconsole/service.go` `sessionDetail` intentionally called `s.store.LoadJob(meta.QueueJobID)` before reading state, so opening a queue-linked child session can reconcile terminal queue facts into the child `state.json`.
+- The same call discarded its error with `_, _ = s.store.LoadJob(meta.QueueJobID)`, even though `LoadJob` can return write failures from `reconcileQueueJobSession`.
+- A focused pre-fix WebConsole regression created a child session with `state.status=running`, a linked failed queue job, and an unwritable `state.lock`. `GET /api/sessions/{child}` still returned HTTP 200 with stale `running` state after the reconciliation write failed.
+
+Impact:
+
+The Web console could show a queue-linked child session as still running even when the queue job had already reached a terminal failed state and the store could not persist the required child-state repair. That weakens operator recovery, active-handle guidance, queue/child traceability, and the durable-state invariant that Web views should not hide failed fact reconciliation.
+
+Minimal fix:
+
+- Propagate linked queue job `LoadJob` / reconciliation errors from `sessionDetail`.
+- Keep successful reconciliation behavior unchanged.
+- Add focused WebConsole coverage for both successful linked queue reconciliation and failed reconciliation reporting.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving failed linked queue reconciliation returned HTTP 200 with stale state.
+- Focused post-fix WebConsole regression proving the same path returns HTTP 500 and successful reconciliation still updates detail state.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4353,6 +4380,12 @@ Evidence gates:
 - Confirmed FCA-20260526-128 against the Web API error-classification requirements in `spec/17-web-console.md` and the queue job ID validation in `internal/session/store.go`.
 - Confirmed this is not a missing-job or queue-reconciliation issue: a syntactically valid missing job should remain HTTP 404, while store/reconciliation failures should remain HTTP 500.
 - Confirmed the minimal fix belongs in the Web HTTP adapter. The store should continue returning validation errors, and the queue store layout, worker behavior, and advanced queue API contract do not need to change for this slice.
+
+### Review 122
+
+- Confirmed FCA-20260526-129 against the durable queue/session fact requirements in `spec/01-runtime-architecture.md` and the Web session-detail authority boundary in `spec/17-web-console.md`.
+- Confirmed this is distinct from the queue-detail status-classification fix: the bug is not the HTTP status for malformed job IDs, but a swallowed reconciliation write failure when a session detail view opens a linked queue child.
+- Confirmed the minimal fix should stay in `sessionDetail`: the store already returns reconciliation errors, and the Web view should report them instead of rendering stale state.
 
 ## Update Log
 
@@ -7269,6 +7302,40 @@ Validation:
 
 - `go test -timeout 120s ./internal/webconsole -run TestServiceQueueJobDetailRejectsMalformedJobID -count=1`: failed before the fix because malformed job IDs returned HTTP 500.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceQueueJobDetailRejectsMalformedJobID -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-129
+
+Slice: `fix(webconsole): report linked queue reconcile errors`
+
+Finding:
+
+- Session detail intentionally triggered linked queue job reconciliation for queue-child sessions, but ignored the returned error.
+- Before the fix, `GET /api/sessions/{child}` could return HTTP 200 with stale `running` state when a linked failed queue job could not persist the required child `state.json` repair.
+
+Changes:
+
+- Propagated linked queue job `LoadJob` / reconciliation errors from `sessionDetail`.
+- Kept successful reconciliation behavior unchanged.
+- Added focused WebConsole regression coverage for failed linked queue reconciliation while preserving the existing successful reconciliation test.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsLinkedQueueReconcileError -count=1`: failed before the fix because detail returned HTTP 200 with stale running state.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSessionDetail(ReconcilesLinkedQueueJob|ReportsLinkedQueueReconcileError)' -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
