@@ -309,8 +309,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			state.Status = session.StatusFailed
 			state.LastError = err.Error()
 			state.Phase = "provider_call"
-			_ = e.store.SaveState(meta.ID, state)
-			e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"error": err.Error()})
+			if saveErr := e.store.SaveState(meta.ID, state); saveErr != nil {
+				return RunResult{}, fmt.Errorf("record provider failure state after %v: %w", err, saveErr)
+			}
+			if appendErr := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"error": err.Error()}); appendErr != nil {
+				return RunResult{}, fmt.Errorf("record provider failure event after %v: %w", err, appendErr)
+			}
 			if appendErr := recordProviderFailure(e.store, meta, state.Turn, err, false); appendErr != nil {
 				return e.fail(ctx, meta, state, appendErr, hookManager)
 			}
@@ -842,7 +846,9 @@ func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state s
 	if saveErr := e.store.SaveState(meta.ID, state); saveErr != nil {
 		return RunResult{}, saveErr
 	}
-	e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"error": state.LastError})
+	if appendErr := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"error": state.LastError}); appendErr != nil {
+		return RunResult{}, appendErr
+	}
 	e.reconcileLinkedQueueJob(meta.ID)
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
@@ -860,6 +866,15 @@ func (e *Engine) emit(sessionID, eventType, phase string, data map[string]any) {
 	evt := events.New(sessionID, eventType, phase, data)
 	_ = e.store.AppendEvent(sessionID, evt)
 	e.bus.Publish(evt)
+}
+
+func (e *Engine) appendEvent(sessionID, eventType, phase string, data map[string]any) error {
+	evt := events.New(sessionID, eventType, phase, data)
+	if err := e.store.AppendEvent(sessionID, evt); err != nil {
+		return err
+	}
+	e.bus.Publish(evt)
+	return nil
 }
 
 func (e *Engine) guardrailsYolo() bool {

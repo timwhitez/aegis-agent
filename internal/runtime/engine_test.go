@@ -244,6 +244,91 @@ func TestEngineProviderFailureReportsProviderAttemptAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineProviderFailureReportsStateSaveError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	statePath := filepath.Join(engine.store.SessionDir(meta.ID), "state.json")
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		if err := os.Remove(statePath); err != nil {
+			t.Fatalf("remove state: %v", err)
+		}
+		if err := os.Mkdir(statePath, 0o700); err != nil {
+			t.Fatalf("block state path: %v", err)
+		}
+		return provider.TurnResult{}, errors.New("upstream failed")
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected state save error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "state.json") {
+		t.Fatalf("expected state write error with path context, got %v", err)
+	}
+}
+
+func TestEngineProviderFailureReportsFailedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{}, errors.New("upstream failed")
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.failed event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "upstream failed") {
+		t.Fatalf("expected original provider failure context, got %v", err)
+	}
+}
+
+func TestEngineFailReportsFailedEventAppendError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.SessionStart = []config.HookDefinition{{
+		Name:       "fail-start",
+		FailClosed: true,
+		Command:    []string{"/bin/sh", "-c", "exit 1"},
+	}}
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatal("provider should not be called after fail-closed session start hook")
+		return provider.TurnResult{}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.failed event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+}
+
 func TestEngineProviderAutoResumeReportsProviderAttemptAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	engine.cfg.Runtime.ProviderAutoResume.Enabled = true

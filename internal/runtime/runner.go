@@ -1319,8 +1319,12 @@ func (r *Runner) failBeforeRun(sessionID string, state session.State, phase stri
 	state.Status = session.StatusFailed
 	state.Phase = phase
 	state.LastError = err.Error()
-	_ = r.store.SaveState(sessionID, state)
-	r.emit(sessionID, "session.failed", phase, map[string]any{"error": err.Error()})
+	if saveErr := r.store.SaveState(sessionID, state); saveErr != nil {
+		return RunResult{}, fmt.Errorf("record pre-run failure state after %v: %w", err, saveErr)
+	}
+	if appendErr := r.appendEvent(sessionID, "session.failed", phase, map[string]any{"error": err.Error()}); appendErr != nil {
+		return RunResult{}, fmt.Errorf("record pre-run failure event after %v: %w", err, appendErr)
+	}
 	_ = writeSessionSummary(r.store, sessionID)
 	_ = writeLongRunCheckpoint(r.store, sessionID)
 	return RunResult{
@@ -1328,6 +1332,15 @@ func (r *Runner) failBeforeRun(sessionID string, state session.State, phase stri
 		Status:    state.Status,
 		LastError: state.LastError,
 	}, err
+}
+
+func (r *Runner) appendEvent(sessionID, eventType, phase string, data map[string]any) error {
+	evt := events.New(sessionID, eventType, phase, data)
+	if err := r.store.AppendEvent(sessionID, evt); err != nil {
+		return err
+	}
+	r.bus.Publish(evt)
+	return nil
 }
 
 func (r *Runner) adapter(name string) (provider.Adapter, error) {

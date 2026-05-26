@@ -1973,6 +1973,39 @@ Validation:
 - Adjacent CLI goal plan/status/clear regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-072: Runtime failure paths hide failed-state write failures
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` makes `state.json` and `events.jsonl` durable session fact sources, and `spec/17-web-console.md` relies on those facts for session errors and recovery state.
+- Before this slice, `Runner.failBeforeRun` set `state.status=failed` after pre-engine errors, but ignored `SaveState` and ignored the `session.failed` event append through `emit`.
+- A focused runner regression used a fail-closed user-message hook after `Continue` had durably claimed the session as `running`; the hook replaced `state.json` with a directory, and `Continue` returned only the hook error while the durable state update failure was hidden.
+- The direct provider failure path in `Engine.Run` similarly ignored the `SaveState` error and the `session.failed` event append error before recording provider failure attempts.
+- Focused engine regressions reproduced both hidden paths: blocking `state.json` after the provider call started still returned the original provider error, and blocking `events.jsonl` still returned the original provider error with no failed event fact.
+- The shared `Engine.fail` helper already returned failed-state save errors, but it also emitted `session.failed` through the ignored event path.
+
+Impact:
+
+Operators and recovery tooling could receive a failed run result while the durable session was still `running`, or while the timeline lacked the required `session.failed` event explaining the failure. That can make Web/CLI recovery decisions depend on stale state, hide why a session stopped before the engine ran, and weaken provider-failure diagnostics.
+
+Minimal fix:
+
+- Make `Runner.failBeforeRun` return failed-state write errors and failed-event append errors, preserving the original error in context.
+- Make the provider-failure branch in `Engine.Run` return failed-state write errors and failed-event append errors before recording provider failure attempts.
+- Make `Engine.fail` append the required `session.failed` event through an error-returning path.
+- Keep ordinary event emission best-effort elsewhere; this change is limited to failure transition facts that determine recovery state.
+- Add focused runner and engine regressions for blocked `state.json` and `events.jsonl` failure facts.
+
+Validation:
+
+- Focused runner pre-run failure-state/event regressions.
+- Focused engine provider-failure state/event regressions.
+- Focused shared `Engine.fail` event regression.
+- Adjacent provider retry/failure/auto-resume/success regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4082,6 +4115,41 @@ Validation:
 
 - `go test -timeout 120s ./internal/app -run 'TestGoalPlanApproveCommandReportsEventAppendError' -count=1`: failed before the fix with success JSON.
 - `go test -timeout 120s ./internal/app -run 'TestGoalPlanApproveCommandReportsEventAppendError|TestGoalMissionPlanAndValidationCommands|TestGoalPlanApproveRejectsGoalWithoutMissionPlan|TestGoalStatusCommandReportsHistoryAppendError|TestGoalClearCommandReportsHistoryAppendError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-072
+
+Slice: `fix(runtime): report failure fact write errors`
+
+Finding:
+
+- Runtime pre-engine and direct provider failure paths ignored required failure fact write errors.
+- `Runner.failBeforeRun` hid `state.json` write failures and `session.failed` event append failures after a pre-engine error, so a failed `Continue` could leave the session durably `running` or missing its failed event.
+- `Engine.Run` direct provider failures ignored the same failed-state and failed-event write failures before recording provider attempts.
+- `Engine.fail` returned failed-state save errors but still ignored `session.failed` event append failures.
+
+Changes:
+
+- Added error-returning event append helpers for runner/engine failure transitions.
+- Changed `Runner.failBeforeRun` to return failed-state and failed-event write errors with the original pre-engine error preserved in context.
+- Changed the direct provider failure branch to return failed-state and failed-event write errors before writing provider failure attempts.
+- Changed `Engine.fail` to return `session.failed` event append errors.
+- Added focused runner and engine regressions for blocked `state.json` and `events.jsonl` failure facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerFailBeforeRunReports(StateSave|FailedEventAppend)Error|TestEngineProviderFailureReports(StateSave|FailedEventAppend)Error|TestEngineFailReportsFailedEventAppendError' -count=1`: failed before the fix with original hook/provider errors and missing durable failure fact diagnostics.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerFailBeforeRunReports(StateSave|FailedEventAppend)Error|TestEngineProviderFailureReports(StateSave|FailedEventAppend)Error|TestEngineFailReportsFailedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinueClaimsSessionBeforeUserMessageHook|TestRunnerFailBeforeRunReports(StateSave|FailedEventAppend)Error|TestEngineProvider(FailureReportsProviderAttemptAppendError|FailureReportsStateSaveError|FailureReportsFailedEventAppendError|RetryReportsProviderAttemptAppendError|AutoResumeReportsProviderAttemptAppendError|SuccessReportsProviderAttemptAppendError)|TestEngineProviderParseErrorFailsBeforeAssistantPersist|TestEngineAutoResumesProviderTimeoutBeforeFailing' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
