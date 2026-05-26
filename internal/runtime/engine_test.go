@@ -1622,6 +1622,39 @@ func TestEngineExecModeRequiresFinish(t *testing.T) {
 	}
 }
 
+func TestEngineIncompleteNoFinishReportsFailedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "first", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
+			return provider.TurnResult{Text: "second", StopReason: "done_candidate"}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.failed event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "incomplete_no_finish") || !strings.Contains(err.Error(), "session.failed") {
+		t.Fatalf("expected incomplete_no_finish failed event context, got %v", err)
+	}
+}
+
 func TestEngineAllowsDisablingHardTurnLimit(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	engine.cfg.Runtime.MaxTurnsHard = -1
@@ -2653,6 +2686,52 @@ func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 	}
 	if !hasEventType(events, "tool.before") || !hasEventType(events, "tool.interrupted") {
 		t.Fatalf("expected tool lifecycle events, got %#v", events)
+	}
+}
+
+func TestEnginePauseReportsPausedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	registry.Register(tools.Definition{
+		Name:        "slow",
+		Description: "slow",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			<-ctx.Done()
+			return session.ToolResult{}, ctx.Err()
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "slow")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove events: %v", err)
+			return
+		}
+		if err := os.Mkdir(eventsPath, 0o700); err != nil {
+			t.Errorf("block events path: %v", err)
+			return
+		}
+		engine.control.requestPause()
+	}()
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.paused event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "session.paused") {
+		t.Fatalf("expected paused event context, got %v", err)
 	}
 }
 

@@ -725,7 +725,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			if err := e.store.SaveState(meta.ID, state); err != nil {
 				return RunResult{}, err
 			}
-			e.emit(meta.ID, "session.failed", "turn_decide", map[string]any{"reason": state.IncompleteReason})
+			if err := e.appendEvent(meta.ID, "session.failed", "turn_decide", map[string]any{"reason": state.IncompleteReason}); err != nil {
+				return RunResult{}, fmt.Errorf("record session.failed event for %s: %w", state.IncompleteReason, err)
+			}
 			result := RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}
 			if e.cfg.Runtime.RalphLoop.Enabled {
 				return e.runner.AutoContinue(ctx, meta.ID)
@@ -874,7 +876,9 @@ func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state 
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
 	}
-	e.emit(meta.ID, "session.paused", state.Phase, map[string]any{"reason": reason})
+	if err := e.appendEvent(meta.ID, "session.paused", state.Phase, map[string]any{"reason": reason}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.paused event: %w", err)
+	}
 	result := RunResult{SessionID: meta.ID, Status: state.Status}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
 		return result, err

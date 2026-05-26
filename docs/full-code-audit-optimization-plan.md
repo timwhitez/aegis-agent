@@ -4438,6 +4438,36 @@ Validation:
 - Existing budget wrap-up and Plan Mode submit regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-177: Remaining engine lifecycle transitions can lose durable events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `session.failed` and `session.paused` as core session events and defines `state.json` / `events.jsonl` as session facts managed by `SessionStore`.
+- `spec/01-runtime-architecture.md` also treats `exec` no-finish failure and `paused` as explicit session-state transitions, not diagnostic-only telemetry.
+- `internal/runtime/engine.go` saved `state.json` as failed for autonomous `incomplete_no_finish`, then emitted `session.failed` through unchecked `e.emit`.
+- `internal/runtime/engine.go` `pause` saved `state.json` as paused, then emitted `session.paused` through unchecked `e.emit`.
+- Focused pre-fix runtime regressions blocked `events.jsonl` before each transition. Before the fix, both paths returned their new state without surfacing that the required lifecycle event was unwritable.
+
+Impact:
+
+An autonomous exec session could fail without the durable event explaining `incomplete_no_finish`, and an interrupted session could pause without the matching pause event. That weakens Web timelines, recovery prompts, and auditability for the two remaining engine-owned lifecycle state transitions.
+
+Minimal fix:
+
+- Use checked `appendEvent` for autonomous `incomplete_no_finish` `session.failed`.
+- Use checked `appendEvent` for `session.paused`.
+- Include the transition reason or event type in returned append error context.
+- Preserve existing state transitions, pause behavior, and adjacent tool-result replay behavior.
+
+Validation:
+
+- Focused pre-fix runtime regressions proving blocked `events.jsonl` was ignored for autonomous no-finish failure and pause transitions.
+- Focused post-fix runtime regressions proving both blocked event appends return `events.jsonl` errors with lifecycle context.
+- Existing exec no-finish and interrupted-tool pause regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6050,7 +6080,49 @@ Evidence gates:
 - Confirmed this is a related but separate slice: `awaitingBudgetWrapUp`, `awaitingPlanApproval`, and `awaitingPlanCancelled` are distinct helper paths with reason-specific state phases and operator recovery meaning.
 - Confirmed the minimal fix belongs in those three helpers, not in generic event emission, so diagnostic `emit` calls remain best-effort.
 
+### Review 170
+
+- Confirmed FCA-20260526-177 against the remaining engine lifecycle state transitions in `spec/01-runtime-architecture.md`: autonomous no-finish failure and explicit pause.
+- Confirmed this does not promote diagnostic event writes globally: it only hardens the two remaining session lifecycle events that must explain a durable `state.json` transition.
+- Confirmed the minimal fix belongs in the `incomplete_no_finish` branch and `pause` helper, preserving existing tool-result replay and pause semantics.
+
 ## Update Log
+
+### FCA-20260526-177
+
+Slice: `fix(runtime): persist remaining lifecycle events`
+
+Finding:
+
+- Autonomous no-finish failure saved `state.json` as failed, but emitted `session.failed` through unchecked `e.emit`.
+- `pause` saved `state.json` as paused, but emitted `session.paused` through unchecked `e.emit`.
+- Before the fix, blocked `events.jsonl` still let both transitions return their new state without required lifecycle event evidence.
+
+Changes:
+
+- `incomplete_no_finish` now uses checked `appendEvent` for `session.failed`.
+- `pause` now uses checked `appendEvent` for `session.paused`.
+- Returned event append errors include transition-specific context.
+- Added focused runtime coverage for both blocked-event paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(IncompleteNoFinishReportsFailedEventAppendError|PauseReportsPausedEventAppendError)' -count=1`: failed before the fix because both transitions ignored blocked `events.jsonl`.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(IncompleteNoFinishReportsFailedEventAppendError|PauseReportsPausedEventAppendError|ExecModeRequiresFinish|WritesInterruptedToolResultOnPause)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-176
 
