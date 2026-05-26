@@ -158,6 +158,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						"budget_wrapup_turn_started_at": goalCopy.BudgetWrapUpTurnStartedAt,
 					},
 				}); err != nil {
+					if rollbackErr := e.store.SaveGoal(meta.ID, *goal); rollbackErr != nil {
+						return RunResult{}, fmt.Errorf("restore goal after budget wrap-up turn history error %v: %w", err, rollbackErr)
+					}
 					return e.fail(ctx, meta, state, err, hookManager)
 				}
 				e.emit(meta.ID, "goal.budget_wrapup_turn_started", "prepare", goalEventData(goalCopy))

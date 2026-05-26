@@ -2344,6 +2344,32 @@ Validation:
 - Focused Goal accounting, completion, mission approval, and progress history-failure regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-085: budget wrap-up turn history failure can leave advanced goal snapshot
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` make `goal.json` plus `artifacts/goal-history.jsonl` the durable Goal fact source for budget-limited recovery and completion gating.
+- FCA-20260526-068 made the runtime budget wrap-up turn-start path return `goal.budget_wrapup_turn_started` history append failures before provider execution, but that path still wrote `BudgetWrapUpTurnStartedAt` to `goal.json` before appending history.
+- A focused regression blocked `artifacts/goal-history.jsonl`. Before this fix, `Engine.Run` returned the history append error and failed the session, but `goal.json` still had `budget_wrapup_turn_started_at` set.
+
+Impact:
+
+Recovery and completion gating could later observe that a budget wrap-up turn had already started even though the append-only history fact was missing and the provider turn did not run. That could distort budget-limited handoff state after a failed run.
+
+Minimal fix:
+
+- Preserve the previous Goal snapshot around the runtime-owned budget-wrap-up turn-start mutation.
+- If the required `goal.budget_wrapup_turn_started` history append fails, restore the previous `goal.json` before failing the session.
+- Keep the existing failure-before-provider behavior unchanged.
+
+Validation:
+
+- Focused budget wrap-up turn-start history-failure regression asserting snapshot rollback.
+- Adjacent budget wrap-up happy-path and completion-gate regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2859,6 +2885,12 @@ Evidence gates:
 - Confirmed FCA-20260526-084 against Goal durable fact requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`, current `goal.json` mutation ordering, and focused blocked-history evidence.
 - Confirmed this is not a duplicate of FCA-20260526-061: that slice made history append failures visible, while this slice prevents current Goal snapshots from remaining advanced after the visible failure.
 - Confirmed the fix belongs in Goal store helpers so CLI, Web, runtime, SDK, and future callers read consistent Goal facts after failed completion, accounting, mission approval, or progress transitions.
+
+### Review 78
+
+- Confirmed FCA-20260526-085 against Goal durable fact requirements, the runtime budget wrap-up turn-start path, and focused blocked-history evidence.
+- Confirmed this is not a duplicate of FCA-20260526-068: that slice stopped before provider execution on history failure, while this slice prevents the runtime-owned `goal.json` turn-start marker from remaining advanced after the failure.
+- Confirmed the fix is scoped to the manual runtime `SaveGoal` path; store-owned Goal transitions are covered by FCA-20260526-084.
 
 ## Update Log
 
@@ -4936,6 +4968,36 @@ Validation:
 - `go test -timeout 120s ./internal/session -run 'TestUpdateGoalAccountingReturnsHistoryAppendError|TestCompleteGoalReturnsHistoryAppendError|TestRecordGoalProgressReturnsHistoryAppendError|TestApproveMissionPlanReturnsHistoryAppendError|TestApproveMissionPlanRejectsGoalWithoutMissionPlan' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/session/goal.go internal/session/goal_progress.go internal/session/store_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-085
+
+Slice: `fix(runtime): roll back failed budget wrap-up turn start`
+
+Finding:
+
+- Runtime marked `BudgetWrapUpTurnStartedAt` in `goal.json` before appending the required `goal.budget_wrapup_turn_started` history fact.
+- A focused regression blocked `goal-history.jsonl`; before the fix, `Engine.Run` returned the history append error but left `budget_wrapup_turn_started_at` advanced in `goal.json`.
+
+Changes:
+
+- Restored the previous Goal snapshot when the runtime-owned budget wrap-up turn-start history append fails.
+- Preserved the existing behavior that fails before emitting `goal.budget_wrapup_turn_started` or calling the provider.
+- Extended the focused budget wrap-up history-failure regression to assert snapshot rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError -count=1`: failed before the fix because `budget_wrapup_turn_started_at` remained set after the history append error.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError|TestEngineBudgetWrapUpThenFinishAwaitsInput|TestGoalCompletionGateRequiresBudgetWrapUpWhenStopOnBudget' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

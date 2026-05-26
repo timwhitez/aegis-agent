@@ -907,6 +907,13 @@ func TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError(t *testing.T) {
 	if result.Status != session.StatusFailed {
 		t.Fatalf("expected failed result after goal-history append error, got %#v", result)
 	}
+	goal, loadErr := engine.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if goal.BudgetWrapUpTurnStartedAt != "" {
+		t.Fatalf("failed budget wrap-up turn start should not advance goal snapshot, got %#v", goal)
+	}
 }
 
 func TestEngineYoloBypassesRetrievalGuards(t *testing.T) {
