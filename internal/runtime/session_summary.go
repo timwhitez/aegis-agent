@@ -345,12 +345,21 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		return err
 	}
 	contract, contractErr := store.LoadContract(sessionID)
+	if contractErr != nil && !errors.Is(contractErr, os.ErrNotExist) {
+		return fmt.Errorf("load contract.json for long-run checkpoint: %w", contractErr)
+	}
 	artifacts, err := store.LoadArtifactTracker(sessionID)
 	if err != nil {
 		return fmt.Errorf("load artifact-tracker.json for long-run checkpoint: %w", err)
 	}
 	goal, goalErr := store.LoadGoal(sessionID)
+	if goalErr != nil && !errors.Is(goalErr, os.ErrNotExist) {
+		return fmt.Errorf("load goal.json for long-run checkpoint: %w", goalErr)
+	}
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
+	if planModeErr != nil && !errors.Is(planModeErr, os.ErrNotExist) {
+		return fmt.Errorf("load planmode.json for long-run checkpoint: %w", planModeErr)
+	}
 	todo, err := store.LoadTodo(sessionID)
 	if err != nil {
 		return fmt.Errorf("load todo.json for long-run checkpoint: %w", err)
@@ -380,6 +389,9 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		return fmt.Errorf("load events.jsonl for long-run checkpoint: %w", err)
 	}
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
+	if coordinationErr != nil && !errors.Is(coordinationErr, os.ErrNotExist) {
+		return fmt.Errorf("load parent-coordination.json for long-run checkpoint: %w", coordinationErr)
+	}
 	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
 
 	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, planMode, planModeErr, artifacts, tasks, children, jobs, state) {

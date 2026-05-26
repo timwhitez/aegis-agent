@@ -881,6 +881,39 @@ func TestLongRunCheckpointReportsCorruptLogFacts(t *testing.T) {
 	})
 }
 
+func TestLongRunCheckpointReportsCorruptOptionalFacts(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{name: "contract", file: "contract.json", want: "contract.json"},
+		{name: "goal", file: "goal.json", want: "goal.json"},
+		{name: "plan mode", file: "planmode.json", want: "planmode.json"},
+		{name: "parent coordination", file: "parent-coordination.json", want: "parent-coordination.json"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, meta := newRuntimeTestSession(t)
+			meta.ParentSessionID = "parent-session"
+			if err := store.SaveMetadata(meta.ID, meta); err != nil {
+				t.Fatalf("save metadata: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), tc.file), []byte("{not-json}\n"), 0o600); err != nil {
+				t.Fatalf("write corrupt %s: %v", tc.file, err)
+			}
+
+			err := writeLongRunCheckpoint(store, meta.ID)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected corrupt %s error, got %v", tc.file, err)
+			}
+			if _, loadErr := store.LoadLongRunCheckpoint(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+				t.Fatalf("expected no misleading checkpoint after corrupt %s, got %v", tc.file, loadErr)
+			}
+		})
+	}
+}
+
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-163: Long-run checkpoint hides corrupt optional recovery snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `contract.json`, `goal.json`, `planmode.json`, `parent-coordination.json`, and long-run checkpoints as session recovery facts managed by the session store.
+- `spec/18-durable-contract-and-completion.md` says checkpoints record contract, Goal, Plan Mode, and parent child/queue wait-state recovery facts, while remaining resume indexes rather than replacing those source files.
+- Prior Web, gate, and `session.md` fixes already distinguish missing optional snapshots from corrupt present snapshots for these same files.
+- `internal/runtime/session_summary.go` `writeLongRunCheckpoint` still called `LoadContract`, `LoadGoal`, `LoadPlanMode`, and `LoadParentCoordination` without returning non-missing load errors before writing `checkpoints/longrun-latest.json`.
+- A focused pre-fix regression corrupted `contract.json`, `goal.json`, `planmode.json`, and `parent-coordination.json` in checkpoint-worthy sessions. Before the fix, `writeLongRunCheckpoint` returned nil and could write a checkpoint without those recovery snapshots or with an inaccurate parent wait state.
+
+Impact:
+
+Long-running recovery could create or overwrite a checkpoint that silently drops corrupt contract, Goal, Plan Mode, or parent coordination facts. That can make future continuation guidance treat unreadable authority/recovery snapshots as absent state and weakens the same diagnostics already surfaced by Web detail, gates, and `session.md`.
+
+Minimal fix:
+
+- Return `load contract.json for long-run checkpoint` for corrupt or unreadable contract snapshots while preserving missing-contract compatibility.
+- Return `load goal.json for long-run checkpoint` for corrupt or unreadable Goal snapshots while preserving no-Goal compatibility.
+- Return `load planmode.json for long-run checkpoint` for corrupt or unreadable Plan Mode snapshots while preserving no-Plan-Mode compatibility.
+- Return `load parent-coordination.json for long-run checkpoint` for corrupt or unreadable parent coordination snapshots while preserving no-parent-coordination compatibility.
+- Add focused runtime coverage proving corrupt optional recovery snapshots stop checkpoint writing and leave no checkpoint artifact.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt optional recovery snapshots were hidden by checkpoint writing.
+- Focused post-fix runtime regression proving corrupt optional snapshot state is reported and no checkpoint is written.
+- Existing corrupt log, child/queue/background, artifact tracker, todo, task graph, optional summary, parent coordination gate, checkpoint drift, and provider-attempt checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-162: Long-run checkpoint hides corrupt message and event logs
 
 Severity: Medium
@@ -5562,7 +5593,48 @@ Evidence gates:
 - Confirmed this is not a valid-empty log compatibility issue: `Store.Create` initializes `messages.jsonl` and `events.jsonl`, so empty log files remain valid while malformed present log files are corrupt required session facts.
 - Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because store loaders and `session.md` already report corrupt message/event logs and only the checkpoint writer was still discarding those errors.
 
+### Review 156
+
+- Confirmed FCA-20260526-163 against the optional recovery snapshot requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a missing optional-file compatibility issue: absent contract, Goal, Plan Mode, or parent coordination snapshots remain valid no-state cases, while malformed present snapshots are corrupt recovery facts.
+- Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because Web detail, completion/Plan/parent gates, checkpoint drift handling, and `session.md` already report these corrupt snapshots and only checkpoint writing still collapsed them into absence.
+
 ## Update Log
+
+### FCA-20260526-163
+
+Slice: `fix(runtime): report corrupt checkpoint optional facts`
+
+Finding:
+
+- `writeLongRunCheckpoint` did not return non-missing `LoadContract`, `LoadGoal`, `LoadPlanMode`, or `LoadParentCoordination` errors while building `checkpoints/longrun-latest.json`.
+- Before the fix, corrupt `contract.json`, `goal.json`, `planmode.json`, and `parent-coordination.json` in checkpoint-worthy sessions returned nil from checkpoint writing and could produce a checkpoint without those recovery snapshots or with inaccurate parent wait state.
+
+Changes:
+
+- Propagated corrupt/unreadable `contract.json`, `goal.json`, `planmode.json`, and `parent-coordination.json` errors from `writeLongRunCheckpoint`.
+- Preserved missing optional snapshot compatibility by continuing to allow `os.ErrNotExist`.
+- Added focused runtime coverage proving corrupt optional recovery snapshots prevent a misleading checkpoint artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptOptionalFacts -count=1`: failed before the fix because corrupt optional snapshot state returned nil from checkpoint writing.
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptOptionalFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsCorrupt(OptionalFacts|LogFacts|ChildrenQueueFacts|ArtifactTracker|TodoState|TaskGraph)|TestSessionSummaryReportsCorruptOptionalFacts|TestParentCoordinationGateReportsCorruptCoordinationSnapshot|TestCheckpointResumeHintReportsCorruptContractSnapshot|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-162
 
