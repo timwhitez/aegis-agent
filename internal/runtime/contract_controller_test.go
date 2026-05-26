@@ -837,6 +837,50 @@ func TestLongRunCheckpointReportsCorruptChildrenQueueFacts(t *testing.T) {
 	})
 }
 
+func TestLongRunCheckpointReportsCorruptLogFacts(t *testing.T) {
+	makeCheckpointEligible := func(t *testing.T, store *session.Store, meta session.SessionMetadata) session.SessionMetadata {
+		t.Helper()
+		meta.ParentSessionID = "parent-session"
+		if err := store.SaveMetadata(meta.ID, meta); err != nil {
+			t.Fatalf("save metadata: %v", err)
+		}
+		return meta
+	}
+	assertNoCheckpoint := func(t *testing.T, store *session.Store, sessionID string) {
+		t.Helper()
+		if _, loadErr := store.LoadLongRunCheckpoint(sessionID); !errors.Is(loadErr, os.ErrNotExist) {
+			t.Fatalf("expected no misleading checkpoint after corrupt logs, got %v", loadErr)
+		}
+	}
+
+	t.Run("messages", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		meta = makeCheckpointEligible(t, store, meta)
+		if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "messages.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt messages: %v", err)
+		}
+
+		err := writeLongRunCheckpoint(store, meta.ID)
+		if err == nil || !strings.Contains(err.Error(), "messages.jsonl") {
+			t.Fatalf("expected corrupt messages error, got %v", err)
+		}
+		assertNoCheckpoint(t, store, meta.ID)
+	})
+	t.Run("events", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		meta = makeCheckpointEligible(t, store, meta)
+		if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "events.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt events: %v", err)
+		}
+
+		err := writeLongRunCheckpoint(store, meta.ID)
+		if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+			t.Fatalf("expected corrupt events error, got %v", err)
+		}
+		assertNoCheckpoint(t, store, meta.ID)
+	})
+}
+
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

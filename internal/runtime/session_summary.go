@@ -371,8 +371,14 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("load control/background.jsonl for long-run checkpoint: %w", err)
 	}
-	messages, _ := store.LoadMessages(sessionID)
-	eventsList, _ := store.LoadEvents(sessionID)
+	messages, err := store.LoadMessages(sessionID)
+	if err != nil {
+		return fmt.Errorf("load messages.jsonl for long-run checkpoint: %w", err)
+	}
+	eventsList, err := store.LoadEvents(sessionID)
+	if err != nil {
+		return fmt.Errorf("load events.jsonl for long-run checkpoint: %w", err)
+	}
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
 

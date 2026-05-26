@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-162: Long-run checkpoint hides corrupt message and event logs
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `messages.jsonl` and `events.jsonl` as session fact sources, and `LongRunCheckpointWriter` records source-message/source-event counts plus recent owner clues for recovery.
+- `spec/18-durable-contract-and-completion.md` says long-run checkpoints are resume indexes, not replacements for messages/events/state.
+- `FCA-20260526-158` hardened `session.md` to display corrupt message and event logs instead of rendering ordinary absence.
+- `internal/runtime/session_summary.go` `writeLongRunCheckpoint` still called `store.LoadMessages` and `store.LoadEvents` with discarded errors before deriving `source_message_count`, `source_event_count`, and `recent_owner`.
+- A focused pre-fix regression corrupted `messages.jsonl` and `events.jsonl` in checkpoint-worthy sessions. Before the fix, `writeLongRunCheckpoint` returned nil and could write a checkpoint with zero source counts or missing owner clues.
+
+Impact:
+
+Long-running recovery could create or overwrite a checkpoint that says the source transcript or event stream has zero entries while the real log file is corrupt. That weakens resume diagnostics, hides recent WebConsole/runner owner clues, and can mislead operators or future continuations into treating unreadable session history as empty history.
+
+Minimal fix:
+
+- Propagate `LoadMessages` errors from `writeLongRunCheckpoint` with `load messages.jsonl for long-run checkpoint` context.
+- Propagate `LoadEvents` errors with `load events.jsonl for long-run checkpoint` context.
+- Preserve valid empty log behavior.
+- Do not write a misleading long-run checkpoint when these required session log facts are corrupt.
+- Add focused runtime coverage proving corrupt message and event logs stop checkpoint writing and leave no checkpoint artifact.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt message/event logs were hidden by checkpoint writing.
+- Focused post-fix runtime regression proving corrupt message/event log state is reported and no checkpoint is written.
+- Existing corrupt child/queue/background, corrupt artifact tracker, corrupt todo, corrupt task graph, session-summary log, owner-clue checkpoint, and provider-attempt checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-161: Long-run checkpoint hides corrupt child and queue facts
 
 Severity: Medium
@@ -5525,7 +5556,48 @@ Evidence gates:
 - Confirmed this is not a missing optional child/queue/background compatibility issue: valid sessions with no child sessions, no queue jobs, and no background notifications still produce empty facts, while malformed present child/queue/background files are corrupt recovery state.
 - Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because store loaders, completion gates, and `session.md` already report corrupt child/queue/background state and only the checkpoint writer was still discarding those errors.
 
+### Review 155
+
+- Confirmed FCA-20260526-162 against the message/event fact-source requirements in `spec/01-runtime-architecture.md` and the checkpoint resume-index boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a valid-empty log compatibility issue: `Store.Create` initializes `messages.jsonl` and `events.jsonl`, so empty log files remain valid while malformed present log files are corrupt required session facts.
+- Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because store loaders and `session.md` already report corrupt message/event logs and only the checkpoint writer was still discarding those errors.
+
 ## Update Log
+
+### FCA-20260526-162
+
+Slice: `fix(runtime): report corrupt checkpoint logs`
+
+Finding:
+
+- `writeLongRunCheckpoint` discarded `LoadMessages` and `LoadEvents` errors while building `checkpoints/longrun-latest.json`.
+- Before the fix, corrupt `messages.jsonl` and `events.jsonl` in checkpoint-worthy sessions returned nil from checkpoint writing and could produce a checkpoint with zero source counts or missing recent owner clues.
+
+Changes:
+
+- Propagated `LoadMessages` errors from `writeLongRunCheckpoint` as `load messages.jsonl for long-run checkpoint`.
+- Propagated `LoadEvents` errors as `load events.jsonl for long-run checkpoint`.
+- Added focused runtime coverage proving corrupt message/event logs prevent a misleading checkpoint artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptLogFacts -count=1`: failed before the fix because corrupt message/event log state returned nil from checkpoint writing.
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptLogFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsCorrupt(LogFacts|ChildrenQueueFacts|ArtifactTracker|TodoState|TaskGraph)|TestSessionSummaryReportsCorruptLogFacts|TestSessionSummaryAndCheckpointRecordRecentOwnerClue|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-161
 
