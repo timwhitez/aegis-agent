@@ -4154,6 +4154,35 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-152: Session summary hides corrupt optional recovery facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` states `session.md` is a derived view, not a fact source, but it is still the operator-readable summary used for recovery and handoff.
+- `spec/01-runtime-architecture.md` says SessionSummaryWriter aggregates contract, artifact tracker, provider attempts, children, queue, background notifications, and checkpoint facts.
+- `internal/runtime/session_summary.go` rendered Goal, Plan Mode, contract, parent coordination, and checkpoint sections as `not recorded` whenever the corresponding `Load...` call failed, without distinguishing absent optional files from malformed existing files.
+- A focused pre-fix summary regression corrupted `goal.json`, `planmode.json`, `contract.json`, `parent-coordination.json`, and `checkpoints/longrun-latest.json`; before the fix, `session.md` said each affected section was not recorded.
+
+Impact:
+
+Operators and recovery prompts could read `session.md` and conclude no Goal, Plan Mode, contract, parent wait state, or checkpoint existed when the real issue was corrupt durable state. That does not change authoritative gates, but it weakens the derived recovery artifact exactly when a human needs diagnostics.
+
+Minimal fix:
+
+- Keep absent optional files rendered as `not recorded`.
+- Render non-missing load failures in the affected `session.md` sections with the specific file name and error.
+- Do not make `session.md` authoritative or block runtime execution on summary-writing paths.
+- Add focused summary coverage for corrupt optional fact files.
+
+Validation:
+
+- Focused pre-fix summary regression proving corrupt optional files were rendered as `not recorded`.
+- Focused post-fix summary regression proving the generated Markdown includes `goal.json`, `planmode.json`, `contract.json`, `parent-coordination.json`, and `longrun-latest.json` load errors.
+- Existing provider-attempt and task-summary/checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-151: Compaction hides corrupt feature-list state
 
 Severity: Medium
@@ -5162,7 +5191,47 @@ Evidence gates:
 - Confirmed this is not a no-feature-list compatibility issue: absent `feature_list.json` remains optional, but a malformed existing feature-list file is a corrupt session fact and must not be summarized as `feature_list: null`.
 - Confirmed the minimal fix belongs in `compactor.BuildWithProfile` because that is where the durable compaction summary is built and where feature-list load failures were being collapsed into absence.
 
+### Review 145
+
+- Confirmed FCA-20260526-152 against `SessionSummaryWriter` requirements in `spec/01-runtime-architecture.md` and the derived-view boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not an authority/gate change: missing optional files still render as `not recorded`, while malformed existing recovery facts should be visible in `session.md` as diagnostics.
+- Confirmed the minimal fix belongs in `writeSessionSummary` because Web detail and completion gates already report corrupt source facts; this slice only prevents the derived Markdown summary from misrepresenting corrupt facts as absent.
+
 ## Update Log
+
+### FCA-20260526-152
+
+Slice: `fix(runtime): surface corrupt facts in session summary`
+
+Finding:
+
+- `writeSessionSummary` collapsed corrupt optional recovery facts into `not recorded`.
+- Before the fix, corrupt `goal.json`, `planmode.json`, `contract.json`, `parent-coordination.json`, and `checkpoints/longrun-latest.json` were hidden in `session.md`.
+
+Changes:
+
+- Render non-missing Goal, Plan Mode, contract, parent coordination, and long-run checkpoint load failures in the corresponding `session.md` sections.
+- Preserved `not recorded` for absent optional files.
+- Added focused summary coverage for corrupt optional fact files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptOptionalFacts -count=1`: failed before the fix because corrupt optional fact files rendered as `not recorded`.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionSummaryReportsCorruptOptionalFacts|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable|TestSessionSummaryAndCheckpointSeparateCancelledTasks' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-151
 

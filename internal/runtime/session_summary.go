@@ -135,6 +135,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		if goal.Status == session.GoalStatusBudgetLimited && goal.Control.StopOnBudget {
 			b.WriteString(fmt.Sprintf("- budget wrap-up: requested=`%t` recorded=`%t`\n", goal.BudgetWrapUpRequestedAt != "", session.HasBudgetWrapUpRecord(goal)))
 		}
+	} else if goalErr != nil && !errors.Is(goalErr, os.ErrNotExist) {
+		b.WriteString(fmt.Sprintf("goal.json load error: `%s`\n", goalErr.Error()))
 	} else {
 		b.WriteString("not recorded\n")
 	}
@@ -151,6 +153,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		if planMode.PendingRequest != nil {
 			b.WriteString(fmt.Sprintf("- pending input: `%s` questions=`%d`\n", planMode.PendingRequest.RequestID, len(planMode.PendingRequest.Questions)))
 		}
+	} else if planModeErr != nil && !errors.Is(planModeErr, os.ErrNotExist) {
+		b.WriteString(fmt.Sprintf("planmode.json load error: `%s`\n", planModeErr.Error()))
 	} else {
 		b.WriteString("not recorded\n")
 	}
@@ -166,6 +170,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		if len(contract.RequiredArtifacts) > 0 {
 			b.WriteString(fmt.Sprintf("- required artifacts: `%d`\n", len(contract.RequiredArtifacts)))
 		}
+	} else if contractErr != nil && !errors.Is(contractErr, os.ErrNotExist) {
+		b.WriteString(fmt.Sprintf("contract.json load error: `%s`\n", contractErr.Error()))
 	} else {
 		b.WriteString("not recorded\n")
 	}
@@ -234,7 +240,7 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	}
 
 	b.WriteString("\n## Children And Queue\n\n")
-	if len(children) == 0 && len(jobs) == 0 && len(notifications) == 0 && coordinationErr != nil {
+	if len(children) == 0 && len(jobs) == 0 && len(notifications) == 0 && coordinationErr != nil && errors.Is(coordinationErr, os.ErrNotExist) {
 		b.WriteString("not recorded\n")
 	} else {
 		if coordinationErr == nil && coordination.ParentSessionID != "" {
@@ -252,6 +258,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 			if len(coordination.FailedChildSessions) > 0 || len(coordination.FailedQueueJobs) > 0 {
 				b.WriteString(fmt.Sprintf("- failed children/jobs: `%d` / `%d`\n", len(coordination.FailedChildSessions), len(coordination.FailedQueueJobs)))
 			}
+		} else if coordinationErr != nil && !errors.Is(coordinationErr, os.ErrNotExist) {
+			b.WriteString(fmt.Sprintf("- parent-coordination.json load error: `%s`\n", coordinationErr.Error()))
 		}
 		if len(children) > 0 {
 			b.WriteString(fmt.Sprintf("- child sessions: `%d`\n", len(children)))
@@ -271,6 +279,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		if len(checkpoint.ResumeHints) > 0 {
 			b.WriteString(fmt.Sprintf("- resume hints: `%s`\n", strings.Join(checkpoint.ResumeHints, "`, `")))
 		}
+	} else if checkpointErr != nil && !errors.Is(checkpointErr, os.ErrNotExist) {
+		b.WriteString(fmt.Sprintf("longrun-latest.json load error: `%s`\n", checkpointErr.Error()))
 	} else {
 		b.WriteString("not recorded\n")
 	}

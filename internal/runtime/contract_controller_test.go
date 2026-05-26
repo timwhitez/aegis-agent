@@ -411,6 +411,48 @@ func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 	}
 }
 
+func TestSessionSummaryReportsCorruptOptionalFacts(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "goal.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt goal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "planmode.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt plan mode: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "contract.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt contract: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(store.SessionDir(meta.ID), "checkpoints"), 0o700); err != nil {
+		t.Fatalf("create checkpoints dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "checkpoints", "longrun-latest.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt checkpoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "parent-coordination.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt parent coordination: %v", err)
+	}
+
+	if err := writeSessionSummary(store, meta.ID); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+	summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	text := string(summary)
+	for _, want := range []string{
+		"goal.json load error",
+		"planmode.json load error",
+		"contract.json load error",
+		"parent-coordination.json load error",
+		"longrun-latest.json load error",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in session summary, got:\n%s", want, text)
+		}
+	}
+}
+
 func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"
