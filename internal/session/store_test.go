@@ -709,6 +709,49 @@ func TestCreateGoalReturnsHistoryAppendErrorAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestAppendGoalHistoryReportsCorruptCurrentGoalSnapshot(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Track history linkage",
+		Source:    GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goalPath := filepath.Join(store.SessionDir(meta.ID), "goal.json")
+	if err := os.WriteFile(goalPath, []byte(`{"goal_id":`), 0o600); err != nil {
+		t.Fatalf("write corrupt goal: %v", err)
+	}
+	err := store.AppendGoalHistory(meta.ID, GoalHistoryEntry{
+		Type:   "goal.updated",
+		Source: GoalSourceSystem,
+		Status: GoalStatusActive,
+	})
+	if err == nil || !strings.Contains(err.Error(), "load goal.json for goal history") {
+		t.Fatalf("expected corrupt goal snapshot error, got %v", err)
+	}
+	history, historyErr := store.LoadGoalHistory(meta.ID)
+	if historyErr != nil {
+		t.Fatalf("load goal history: %v", historyErr)
+	}
+	if len(history) != 1 || history[0].Type != "goal.created" {
+		t.Fatalf("corrupt goal snapshot should not append unlinked history, got %#v", history)
+	}
+}
+
 func TestUpdateGoalAccountingReturnsHistoryAppendError(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

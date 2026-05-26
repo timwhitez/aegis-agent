@@ -145,6 +145,36 @@ func TestSubmitPlanModeReturnsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestAppendPlanModeHistoryReportsCorruptCurrentPlanModeSnapshot(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Track plan history linkage",
+		Source:    PlanModeSourceCLI,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	planModePath := filepath.Join(store.SessionDir(sessionID), "planmode.json")
+	if err := os.WriteFile(planModePath, []byte(`{"plan_mode_id":`), 0o600); err != nil {
+		t.Fatalf("write corrupt plan mode: %v", err)
+	}
+	err := store.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+		Type:   "planmode.plan_revised",
+		Source: PlanModeSourceSystem,
+		Status: PlanModeStatusPlanning,
+	})
+	if err == nil || !strings.Contains(err.Error(), "load planmode.json for plan mode history") {
+		t.Fatalf("expected corrupt plan mode snapshot error, got %v", err)
+	}
+	history, historyErr := store.LoadPlanModeHistory(sessionID)
+	if historyErr != nil {
+		t.Fatalf("load plan mode history: %v", historyErr)
+	}
+	if len(history) != 1 || history[0].Type != "planmode.created" {
+		t.Fatalf("corrupt plan mode snapshot should not append unlinked history, got %#v", history)
+	}
+}
+
 func TestRestorePlanModeSnapshotRemovesCreatedPlanMode(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	snapshot, err := store.SnapshotPlanMode(sessionID)

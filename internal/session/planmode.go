@@ -403,6 +403,8 @@ func (s *Store) AppendPlanModeHistory(sessionID string, entry PlanModeHistoryEnt
 	if entry.PlanModeID == "" {
 		if state, err := s.loadPlanModeNoLock(sessionID); err == nil {
 			entry.PlanModeID = state.PlanModeID
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("load planmode.json for plan mode history: %w", err)
 		}
 	}
 	path, err := s.sessionPath(sessionID, "artifacts", "planmode-history.jsonl")

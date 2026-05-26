@@ -4154,6 +4154,36 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-165: Goal and Plan Mode history appends hide corrupt current snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `goal.json` / `artifacts/goal-history.jsonl` and `planmode.json` / `artifacts/planmode-history.jsonl` as paired durable session facts for Goal and Plan Mode state transitions.
+- `spec/11-spec-audit-and-traceability.md` says `goal.json` and `artifacts/goal-history.jsonl` are Goal facts, and `planmode.json` plus `artifacts/planmode-history.jsonl` are the Plan Mode fact source and transition log.
+- `internal/session/goal.go` `AppendGoalHistory` inferred `entry.GoalID` from `goal.json` only when `loadGoalNoLock` returned nil, but discarded every load error before appending history.
+- `internal/session/planmode.go` `AppendPlanModeHistory` inferred `entry.PlanModeID` from `planmode.json` only when `loadPlanModeNoLock` returned nil, but discarded every load error before appending history.
+- Focused pre-fix regressions corrupted `goal.json` and `planmode.json`, then appended history entries without explicit IDs. Before the fix, both helpers returned nil and wrote unlinked history rows while the current snapshot files were malformed.
+
+Impact:
+
+Store-level callers that rely on history append helpers to infer the current Goal or Plan Mode ID could create audit rows disconnected from the current snapshot while a present source file was corrupt. That weakens recovery and traceability because the transition log no longer proves which durable Goal or Plan Mode state the entry belonged to, and the corruption is hidden behind a successful append.
+
+Minimal fix:
+
+- Return `load goal.json for goal history` when `AppendGoalHistory` needs the current Goal ID and a present `goal.json` is unreadable or malformed.
+- Return `load planmode.json for plan mode history` when `AppendPlanModeHistory` needs the current Plan Mode ID and a present `planmode.json` is unreadable or malformed.
+- Preserve valid no-current-snapshot compatibility by continuing to allow `fs.ErrNotExist` when the entry does not explicitly require an ID.
+- Add focused store coverage proving corrupt snapshots stop unlinked Goal and Plan Mode history appends.
+
+Validation:
+
+- Focused pre-fix store regressions proving corrupt current snapshots were hidden and unlinked history was appended.
+- Focused post-fix store regressions proving corrupt current snapshots return actionable errors and do not append new history rows.
+- Existing history append rollback regressions for Goal and Plan Mode remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-164: Compaction hides corrupt Goal snapshot state
 
 Severity: Medium
@@ -5636,7 +5666,50 @@ Evidence gates:
 - Confirmed this is not a no-Goal compatibility issue: absent `goal.json` still means no current Goal, while malformed present `goal.json` is corrupt recovery state.
 - Confirmed the minimal fix belongs in the compactor because `loadGoalOptional` already exposes the absent-versus-corrupt distinction, and only the compaction summary/reuse paths were discarding it.
 
+### Review 158
+
+- Confirmed FCA-20260526-165 against the paired snapshot/history fact-source requirements in `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md`.
+- Confirmed this is not a valid missing-snapshot compatibility issue: absent `goal.json` / `planmode.json` remains allowed for explicit history entries without an inferred ID, while malformed present snapshots must not be collapsed into no current ID.
+- Confirmed the minimal fix belongs in the store append helpers because they are the shared linkage point for callers that omit `GoalID` or `PlanModeID`, and strengthening only that point avoids adding workflow-specific guards.
+
 ## Update Log
+
+### FCA-20260526-165
+
+Slice: `fix(session): report corrupt history snapshots`
+
+Finding:
+
+- `AppendGoalHistory` and `AppendPlanModeHistory` discarded current snapshot load errors while auto-filling missing `GoalID` and `PlanModeID`.
+- Before the fix, corrupt `goal.json` or `planmode.json` returned nil from history appends and wrote unlinked audit rows with empty IDs.
+
+Changes:
+
+- `AppendGoalHistory` now returns `load goal.json for goal history` when it needs to infer `GoalID` and a present `goal.json` is corrupt or unreadable.
+- `AppendPlanModeHistory` now returns `load planmode.json for plan mode history` when it needs to infer `PlanModeID` and a present `planmode.json` is corrupt or unreadable.
+- Missing current snapshots remain compatible through `fs.ErrNotExist`.
+- Added focused store coverage for corrupt current Goal and Plan Mode snapshots during history append.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestAppend(GoalHistoryReportsCorruptCurrentGoalSnapshot|PlanModeHistoryReportsCorruptCurrentPlanModeSnapshot)' -count=1`: failed before the fix because corrupt snapshots were hidden and appends returned nil.
+- `go test -timeout 120s ./internal/session -run 'TestAppend(GoalHistoryReportsCorruptCurrentGoalSnapshot|PlanModeHistoryReportsCorruptCurrentPlanModeSnapshot)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(CreateGoalReturnsHistoryAppendErrorAndRollsBack|AppendGoalHistoryReportsCorruptCurrentGoalSnapshot|UpdateGoalAccountingReturnsHistoryAppendError|CompleteGoalReturnsHistoryAppendError|RecordGoalProgressReturnsHistoryAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(CreatePlanModeReportsCorruptLinkedGoalSnapshot|SubmitPlanModeReturnsHistoryAppendError|AppendPlanModeHistoryReportsCorruptCurrentPlanModeSnapshot|ApprovePlanModeReturnsHistoryAppendError|PlanModeInputValidationAndAnswer)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/goal.go internal/session/planmode.go internal/session/store_test.go internal/session/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-164
 

@@ -937,6 +937,8 @@ func (s *Store) AppendGoalHistory(sessionID string, entry GoalHistoryEntry) erro
 	if entry.GoalID == "" {
 		if goal, err := s.loadGoalNoLock(sessionID); err == nil {
 			entry.GoalID = goal.GoalID
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("load goal.json for goal history: %w", err)
 		}
 	}
 	path, err := s.sessionPath(sessionID, "artifacts", "goal-history.jsonl")
