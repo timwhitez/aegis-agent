@@ -3324,6 +3324,33 @@ Validation:
 - Focused post-fix WebConsole and config-package regressions proving invalid env keys are rejected before persistence.
 - Standard grouped validation before commit.
 
+### FCA-20260526-120: Web API-key env file can alias the config file
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats Settings config/API-key writes as sensitive mutations, and `spec/01-runtime-architecture.md` requires local file facts to remain consistent.
+- `internal/webconsole/service.go` `handleUpdateConfig` computed `configPath` and `apiKeyUpdate.envFile` independently, but did not reject the same filesystem path being used for both.
+- The handler writes YAML config first through `config.WriteFile`, then appends the API key through `config.UpsertEnvFile`.
+- A focused WebConsole regression set `GO_CLI_AGENT_ENV_FILE` to the same `config.yaml` path used by `Options.ConfigPath`. Before the fix, `/api/config` returned HTTP 200 and left a single file containing YAML config plus an appended `OPENAI_API_KEY=...` assignment.
+
+Impact:
+
+Operators could accidentally configure the API-key env target to the config file itself and receive a successful Settings response. The resulting file is neither a clean YAML config nor a separate env file, and it may contain a persisted secret in a location the user expected to hold only provider/model configuration.
+
+Minimal fix:
+
+- Add a Web Settings preflight that rejects API-key env-file targets whose cleaned absolute path matches the config path.
+- Run this preflight before config, env-file, process environment, or audit mutation.
+- Add focused WebConsole coverage asserting no config/env file or process env mutation occurs when the two targets alias.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving the aliased config/env target returned HTTP 200.
+- Focused post-fix WebConsole regression proving the alias is rejected before persistence.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4049,6 +4076,12 @@ Evidence gates:
 - Confirmed FCA-20260526-119 against Settings API-key sensitivity requirements in `spec/17-web-console.md`, provider API-key configuration behavior in `spec/03-provider-contracts.md`, and durable local fact consistency from `spec/01-runtime-architecture.md`.
 - Confirmed this is distinct from FCA-20260526-118: that issue covered env-file target failure after config persistence, while this one covers a malformed provider env key that reaches `.env` persistence and only fails at `os.Setenv`.
 - Confirmed the minimal fix should share the existing config env-file allowlist with Web preflight and `UpsertEnvFile`, without changing provider adapters, Settings UI payload shape, or audit event contents.
+
+### Review 113
+
+- Confirmed FCA-20260526-120 against Settings sensitivity requirements in `spec/17-web-console.md` and durable local file consistency requirements in `spec/01-runtime-architecture.md`.
+- Confirmed this is distinct from FCA-20260526-118 and FCA-20260526-119: those cover env write failure and malformed env names, while this path is reported as a successful save but corrupts the target layout by using one file for both config and API-key env data.
+- Confirmed the minimal fix should remain a Web Settings target preflight; config persistence, env-file formatting, Settings frontend payloads, and audit event shape do not need to change for this slice.
 
 ## Update Log
 
@@ -6670,6 +6703,40 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/config -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-120
+
+Slice: `fix(webconsole): reject API key config target alias`
+
+Finding:
+
+- Web Settings allowed `GO_CLI_AGENT_ENV_FILE` to point at the same path as `Options.ConfigPath`.
+- Before the fix, `/api/config` returned HTTP 200, wrote YAML config, then appended `OPENAI_API_KEY=...` into the same file.
+
+Changes:
+
+- Added a Web Settings API-key target preflight that rejects env-file paths matching the cleaned absolute config path.
+- Ran the alias preflight before config, env-file, process env, or audit mutation.
+- Added focused WebConsole coverage proving no config/env file or process env mutation occurs for the alias case.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsConfigPathAsEnvFile -count=1`: failed before the fix with HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsConfigPathAsEnvFile -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|RejectsInvalidEnvKeyBeforePersistence|RejectsConfigPathAsEnvFile|DoesNotLogSecretValue)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.

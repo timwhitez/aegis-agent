@@ -2753,6 +2753,10 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		if err := preflightWebAPIKeyConfigTarget(configPath, apiKeyUpdate.envFile); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	configSnapshot, err := snapshotWebConfigFile(configPath)
 	if err != nil {
@@ -2856,6 +2860,34 @@ func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
 		return err
 	}
 	return nil
+}
+
+func preflightWebAPIKeyConfigTarget(configPath, envFile string) error {
+	same, err := sameWebPath(configPath, envFile)
+	if err != nil {
+		return err
+	}
+	if same {
+		return fmt.Errorf("API key env file must be separate from config file: %s", envFile)
+	}
+	return nil
+}
+
+func sameWebPath(a, b string) (bool, error) {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false, nil
+	}
+	absA, err := filepath.Abs(filepath.Clean(a))
+	if err != nil {
+		return false, err
+	}
+	absB, err := filepath.Abs(filepath.Clean(b))
+	if err != nil {
+		return false, err
+	}
+	return absA == absB, nil
 }
 
 func roleProviderOverridesResponse(cfg *config.Config) map[string]any {
