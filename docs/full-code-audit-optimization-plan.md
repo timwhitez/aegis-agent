@@ -2885,6 +2885,37 @@ Validation:
 - Adjacent Plan Mode approval/input runtime tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-105: Plan Mode revision retry loses replay metadata
+
+Severity: High
+
+Evidence:
+
+- `spec/17-web-console.md` defines Ask for Changes as a Plan Mode revision user message and `spec/18-durable-contract-and-completion.md` requires Plan Mode facts to remain recoverable through durable session files.
+- `internal/runtime/runner.go` revised Plan Mode by calling `RevisePlanMode`, appending a `planmode.plan_revised` event, and only then appending the user message with `meta.source=planmode_revision`.
+- If `messages.jsonl` append failed, durable Plan Mode state moved back to `planning` and history recorded `planmode.plan_revised`, but no replayable revision user message existed.
+- A retry with the same revision text no longer entered the revision branch because it only recognized `awaiting_approval`; it appended a plain user message with no `planmode_revision` metadata and continued provider execution.
+- A focused regression blocked `messages.jsonl` during revision, restored the path, retried the same revision, and observed the retry had no `planmode_revision` message before the fix.
+
+Impact:
+
+After a filesystem failure or crash at the revision replay-message boundary, recovery could lose the only durable marker distinguishing a Plan Mode revision from an ordinary user continuation. Web inspector, timeline, and provider replay would see a plain user prompt even though Plan Mode history said a revision occurred.
+
+Minimal fix:
+
+- Make runtime revision handling idempotent for the recovery case where Plan Mode is already back in `planning` and the latest `planmode.plan_revised` history row matches the same Plan Mode id, plan version, and revision text.
+- Require the matching replay message to still be absent before treating a planning-state continuation as recovered revision replay, so repeated ordinary planning continuations are not reclassified.
+- Re-emit a missing `planmode.plan_revised` event only for the matching Plan Mode id/version.
+- Append the retried user message with `meta.source=planmode_revision` instead of treating it as an ordinary continuation.
+- Add focused runtime coverage for blocked `messages.jsonl` during revision and retry after restoring the path.
+
+Validation:
+
+- Focused pre-fix runtime regression proving revision retry produced no `planmode_revision` user message.
+- Focused post-fix runtime regression for the same path.
+- Adjacent Plan Mode approval/revision runtime tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3520,6 +3551,12 @@ Evidence gates:
 - Confirmed FCA-20260526-104 against Plan Mode approval replay requirements in `spec/01-runtime-architecture.md`, provider replay rules in `spec/03-provider-contracts.md`, Web approval behavior in `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is distinct from missing Plan Mode control events: the required events and history can be present, while the replayable `planmode_approval` user message is still missing after `messages.jsonl` append failure.
 - Confirmed the minimal fix should make approval retry idempotent for already-approved/executing Plan Mode states instead of rolling back established history-backed approval facts or treating all runtime events as transactional.
+
+### Review 98
+
+- Confirmed FCA-20260526-105 against Web Ask-for-Changes semantics in `spec/17-web-console.md`, Plan Mode durable recovery requirements in `spec/18-durable-contract-and-completion.md`, and runtime `Continue` revision handling.
+- Confirmed this is distinct from approval retry: the failed durable fact is the revision user-message metadata, and the partially advanced Plan Mode state is `planning`, not `executing`.
+- Confirmed the minimal fix should require matching `planmode.plan_revised` history and an absent replay message before treating a planning-state retry as a recovered revision, so normal planning continuations remain ordinary user messages.
 
 ## Update Log
 
@@ -5632,6 +5669,43 @@ Validation:
 - `go test -timeout 120s ./internal/runtime -run TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage -count=1`: failed before the fix with `plan mode is not awaiting approval: executing`.
 - `go test -timeout 120s ./internal/runtime -run TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'Test(ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApprovePlanModeReportsPlanApprovedEventAppendError|ApproveLinkedMissionPlanReportsEventAppendError|ApproveLinkedPlanModeMarksMissionPlanApproved|ApproveLinkedPlanModeBlocksUncoveredMissionValidation|CancelPlanModeReportsCancelledEventAppendError|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelReturnsHistoryAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-105
+
+Slice: `fix(runtime): retry failed plan revision replay`
+
+Finding:
+
+- Runtime Plan Mode revision could persist `planmode.plan_revised` and move `planmode.json` back to `planning` before appending the required `meta.source=planmode_revision` user message.
+- With `messages.jsonl` blocked, retrying the same revision appended an ordinary user message and continued execution without restoring the replay metadata.
+
+Changes:
+
+- Added an idempotent runtime revision helper that recognizes a planning-state retry only when the latest matching `planmode.plan_revised` history row has the same Plan Mode id, plan version, and revision text.
+- The recovery branch also requires the replayable `planmode_revision` user message to still be absent, preventing a later duplicate plain continuation from being reclassified after a successful retry.
+- Re-appends a missing `planmode.plan_revised` event only for the same Plan Mode id/version.
+- Preserves `meta.source=planmode_revision` on retry instead of treating the message as a plain continuation.
+- Added focused runtime coverage for blocked `messages.jsonl` during revision, retry after restoring the path, and repeated same-text planning continuation after the replay message already exists.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage -count=1`: failed before the fix because retry wrote no `planmode_revision` user message.
+- `go test -timeout 120s ./internal/runtime -run 'Test(RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApprovePlanModeReportsPlanApprovedEventAppendError|CancelPlanModeReportsCancelledEventAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApprovePlanModeReportsPlanApprovedEventAppendError|ApproveLinkedMissionPlanReportsEventAppendError|ApproveLinkedPlanModeMarksMissionPlanApproved|ApproveLinkedPlanModeBlocksUncoveredMissionValidation|CancelPlanModeReportsCancelledEventAppendError|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelReturnsHistoryAppendError)' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.

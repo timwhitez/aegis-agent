@@ -592,6 +592,123 @@ func TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage(t
 	}
 }
 
+func TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage(t *testing.T) {
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_planmode_revision_retry",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"revision retry continued"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        3,
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		Retry:             config.Retry{MaxAttempts: 1},
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planMode, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Retry plan revision", Source: session.PlanModeSourceCLI})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+
+	revisionMessage := "Use a narrower implementation."
+	blockRuntimeMessagesPath(t, runner.store, sessionID)
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, Message: revisionMessage, Source: session.PlanModeSourceCLI})
+	if err == nil {
+		t.Fatalf("expected revision replay message append error, got result=%#v err=%v", result, err)
+	}
+	if calls := providerCalls.Load(); calls != 0 {
+		t.Fatalf("provider should not run while revision replay message is missing, got %d calls", calls)
+	}
+	revised, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode after failed revision: %v", err)
+	}
+	if revised.PlanModeID != planMode.PlanModeID || revised.Status != session.PlanModeStatusPlanning {
+		t.Fatalf("expected partially revised planning plan mode, got %#v", revised)
+	}
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err == nil && countPlanModeRevisionMessages(messages) != 0 {
+		t.Fatalf("failed revision should not have appended replay message yet, got %#v", messages)
+	}
+
+	messagesPath := filepath.Join(runner.store.SessionDir(sessionID), "messages.jsonl")
+	if err := os.RemoveAll(messagesPath); err != nil {
+		t.Fatalf("remove blocked messages path: %v", err)
+	}
+	retried, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, Message: revisionMessage, Source: session.PlanModeSourceCLI})
+	if err != nil {
+		t.Fatalf("retry plan revision: result=%#v err=%v", retried, err)
+	}
+	if retried.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected retry to continue into awaiting input, got %#v", retried)
+	}
+	if calls := providerCalls.Load(); calls != 1 {
+		t.Fatalf("expected provider to run exactly once after retry, got %d", calls)
+	}
+	messages, err = runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages after retry: %v", err)
+	}
+	if count := countPlanModeRevisionMessages(messages); count != 1 {
+		t.Fatalf("expected one replayable planmode revision user message after retry, got %d messages=%#v", count, messages)
+	}
+
+	duplicate, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, Message: revisionMessage, Source: session.PlanModeSourceCLI})
+	if err != nil {
+		t.Fatalf("continue after recorded revision: result=%#v err=%v", duplicate, err)
+	}
+	if calls := providerCalls.Load(); calls != 2 {
+		t.Fatalf("expected provider to run again for ordinary planning continuation, got %d", calls)
+	}
+	messages, err = runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages after duplicate continuation: %v", err)
+	}
+	if count := countPlanModeRevisionMessages(messages); count != 1 {
+		t.Fatalf("recorded revision should not be reclassified on repeated planning continuation, got %d messages=%#v", count, messages)
+	}
+}
+
 func TestActivePlanInputDeliveryClaimsWaiterBeforeSend(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
@@ -717,6 +834,16 @@ func countPlanModeApprovalMessages(messages []session.Message) int {
 	var count int
 	for _, msg := range messages {
 		if msg.Role == "user" && msg.Meta["source"] == "planmode_approval" {
+			count++
+		}
+	}
+	return count
+}
+
+func countPlanModeRevisionMessages(messages []session.Message) int {
+	var count int
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "planmode_revision" {
 			count++
 		}
 	}

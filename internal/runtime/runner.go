@@ -695,18 +695,17 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	} else if !req.ApprovePlan && stringsTrim(req.Message) != "" {
-		if planMode, err := r.store.LoadPlanMode(meta.ID); err == nil && planMode.Status == session.PlanModeStatusAwaitingApproval {
-			revised, err := r.store.RevisePlanMode(meta.ID, source, req.Message)
+		if planMode, err := r.store.LoadPlanMode(meta.ID); err == nil {
+			revised, ok, err := r.ensurePlanModeRevisedForMessage(meta.ID, planMode, source, req.Message)
 			if err != nil {
 				return r.failBeforeRun(meta.ID, state, "prepare", err)
 			}
-			if err := r.appendEvent(meta.ID, "planmode.plan_revised", "prepare", planModeEventData(revised)); err != nil {
-				return r.failBeforeRun(meta.ID, state, "prepare", err)
-			}
-			extraUserMeta = map[string]any{
-				"source":       "planmode_revision",
-				"plan_mode_id": revised.PlanModeID,
-				"plan_version": revised.PlanVersion,
+			if ok {
+				extraUserMeta = map[string]any{
+					"source":       "planmode_revision",
+					"plan_mode_id": revised.PlanModeID,
+					"plan_version": revised.PlanVersion,
+				}
 			}
 		}
 	}
@@ -734,6 +733,86 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func (r *Runner) ensurePlanModeRevisedForMessage(sessionID string, planMode session.PlanModeState, source, message string) (session.PlanModeState, bool, error) {
+	switch planMode.Status {
+	case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusRejected, session.PlanModeStatusApproved:
+		revised, err := r.store.RevisePlanMode(sessionID, source, message)
+		if err != nil {
+			return session.PlanModeState{}, false, err
+		}
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_revised", revised); err != nil {
+			return session.PlanModeState{}, false, err
+		}
+		return revised, true, nil
+	case session.PlanModeStatusPlanning:
+		if !r.hasMatchingPlanModeRevisionHistory(sessionID, planMode, message) {
+			return planMode, false, nil
+		}
+		recorded, err := r.hasPlanModeRevisionMessage(sessionID, planMode)
+		if err != nil {
+			return session.PlanModeState{}, false, err
+		}
+		if recorded {
+			return planMode, false, nil
+		}
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_revised", planMode); err != nil {
+			return session.PlanModeState{}, false, err
+		}
+		return planMode, true, nil
+	default:
+		return planMode, false, nil
+	}
+}
+
+func (r *Runner) hasMatchingPlanModeRevisionHistory(sessionID string, planMode session.PlanModeState, message string) bool {
+	history, err := r.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		return false
+	}
+	message = strings.TrimSpace(message)
+	for i := len(history) - 1; i >= 0; i-- {
+		item := history[i]
+		if item.Type != "planmode.plan_revised" {
+			continue
+		}
+		if item.PlanModeID != planMode.PlanModeID || item.PlanVersion != planMode.PlanVersion {
+			return false
+		}
+		return strings.TrimSpace(fmt.Sprint(item.Data["message"])) == message
+	}
+	return false
+}
+
+func (r *Runner) hasPlanModeRevisionMessage(sessionID string, planMode session.PlanModeState) (bool, error) {
+	messages, err := r.store.LoadMessages(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	planModeID := strings.TrimSpace(planMode.PlanModeID)
+	if planModeID == "" || planMode.PlanVersion <= 0 {
+		return false, nil
+	}
+	for _, msg := range messages {
+		if msg.Role != "user" || msg.Meta == nil {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(msg.Meta["source"])) != "planmode_revision" {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(msg.Meta["plan_mode_id"])) != planModeID {
+			continue
+		}
+		if intFromEventData(msg.Meta, "plan_version") != planMode.PlanVersion {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *Runner) ensurePlanModeExecutingForApproval(sessionID, source string) (session.PlanModeState, error) {
@@ -820,6 +899,9 @@ func (r *Runner) hasPlanModeEvent(sessionID, eventType string, planMode session.
 			continue
 		}
 		if eventType == "planmode.execution_started" && intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
+			continue
+		}
+		if eventType == "planmode.plan_revised" && intFromEventData(item.Data, "plan_version") != planMode.PlanVersion {
 			continue
 		}
 		return true, nil
