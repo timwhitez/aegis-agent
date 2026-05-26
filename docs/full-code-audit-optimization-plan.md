@@ -3240,6 +3240,34 @@ Validation:
 - Focused post-fix WebConsole regression for the same path.
 - Standard grouped validation before commit.
 
+### FCA-20260526-117: Web goal and mission plan patches report durable goal write failures as client errors
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires Web mutation responses to distinguish malformed requests from local durable fact-store failures.
+- `spec/01-runtime-architecture.md` requires Web goal controls to reuse the same durable `goal.json` fact source as the runtime and CLI.
+- `internal/webconsole/service.go` `handleGoalPatch` and `handleMissionPlanPatch` both load the current goal and history, then persist changes through `s.store.PatchGoal`.
+- `PatchGoal` validates and writes `goal.json` under the session `goal.lock`; blocked lock or write paths are local store failures, not bad patch payloads.
+- Focused WebConsole regressions blocked `goal.lock` by replacing it with a directory. Before the fix, both `/api/sessions/{id}/goal` and `/api/sessions/{id}/mission/plan` returned HTTP 400 while leaving the existing Goal snapshot unchanged.
+
+Impact:
+
+Operators could receive client-error responses for durable Goal store corruption while ordinary Goal and Mission plan patches were not persisted. That misdirects recovery toward changing valid patch payloads instead of repairing or retrying the local session store.
+
+Minimal fix:
+
+- Use the existing `goalStoreStatus` classifier for `PatchGoal` failures in both Web patch handlers.
+- Preserve HTTP 400 for validation errors from `PatchGoal` and HTTP 500 for local store write failures.
+- Add focused WebConsole regressions for blocked `goal.lock` on generic Goal patch and Mission plan patch.
+
+Validation:
+
+- Focused pre-fix WebConsole regressions proving blocked `goal.lock` returned HTTP 400 for both endpoints.
+- Focused post-fix WebConsole regressions for both endpoints.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3947,6 +3975,12 @@ Evidence gates:
 - Confirmed FCA-20260526-116 against Web error-class requirements in `spec/17-web-console.md`, Goal durability requirements in `spec/01-runtime-architecture.md`, and `handleMissionValidationPatch` write ordering in `internal/webconsole/service.go`.
 - Confirmed this is distinct from earlier Goal history/event rollback fixes: the failure occurs before history or event append, while persisting `goal.json` itself.
 - Confirmed the minimal fix should stay in the Web service status mapping for this endpoint; session store `SaveGoal` and Goal validation semantics do not need to change for this slice.
+
+### Review 110
+
+- Confirmed FCA-20260526-117 against Web error-class requirements in `spec/17-web-console.md`, Goal fact-source requirements in `spec/01-runtime-architecture.md`, and both `PatchGoal` call sites in `handleGoalPatch` / `handleMissionPlanPatch`.
+- Confirmed this is distinct from FCA-20260526-116: that route writes through `SaveGoal`, while these two routes write through `PatchGoal` and already had a reusable `goalStoreStatus` classifier.
+- Confirmed the minimal fix should only change Web HTTP status mapping and focused regressions; Goal patch validation, mission approval reset semantics, Plan Mode creation, task sync, and rollback paths remain unchanged.
 
 ## Update Log
 
@@ -6453,6 +6487,39 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestServiceMissionValidationPatchReportsGoalWriteFailureAsServerError -count=1`: failed before the fix with HTTP 400.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceMissionValidationPatchReportsGoalWriteFailureAsServerError -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionValidation(PatchReportsGoalWriteFailureAsServerError|PlanPatchReportsHistoryAppendError|ContractPatchReportsHistoryAppendError|PatchResetsApprovedPlanToPendingGate)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-117
+
+Slice: `fix(webconsole): classify goal patch store errors`
+
+Finding:
+
+- Web generic Goal patch and Mission plan patch persisted changes through `PatchGoal`, but reported blocked durable `goal.lock` writes as HTTP 400.
+- Blocking `goal.lock` made both `/api/sessions/{id}/goal` and `/api/sessions/{id}/mission/plan` return client errors even though the existing Goal snapshot remained unchanged and the problem was local store persistence.
+
+Changes:
+
+- Reused `goalStoreStatus` for `PatchGoal` failures in `handleGoalPatch` and `handleMissionPlanPatch`.
+- Added focused WebConsole regressions for blocked `goal.lock` on both endpoints, asserting server-error status and unchanged Goal facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)ReportsGoalWriteFailureAsServerError' -count=1`: failed before the fix with HTTP 400 for both endpoints.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)ReportsGoalWriteFailureAsServerError' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)ReportsGoalWriteFailureAsServerError|TestService(GoalPatchReportsHistoryAppendError|MissionPlanPatchReportsHistoryAppendError)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.

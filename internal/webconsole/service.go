@@ -1107,7 +1107,7 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		Mission:         mission,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, goalStoreStatus(err), err)
 		return
 	}
 	createdTasks := []session.Task{}
@@ -1357,7 +1357,7 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	}
 	goal, err := s.store.PatchGoal(sessionID, session.GoalPatchInput{Mission: mission})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, goalStoreStatus(err), err)
 		return
 	}
 	createdTasks := []session.Task{}
