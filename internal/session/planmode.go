@@ -781,6 +781,35 @@ type planModeRollback struct {
 	HasPlanMarkdown bool
 }
 
+type PlanModeSnapshot struct {
+	State           PlanModeState
+	HasState        bool
+	PlanMarkdown    []byte
+	HasPlanMarkdown bool
+}
+
+func (s *Store) SnapshotPlanMode(sessionID string) (PlanModeSnapshot, error) {
+	rollback, err := s.planModeRollbackSnapshot(sessionID)
+	if err != nil {
+		return PlanModeSnapshot{}, err
+	}
+	return PlanModeSnapshot{
+		State:           rollback.Snapshot,
+		HasState:        rollback.HasSnapshot,
+		PlanMarkdown:    append([]byte(nil), rollback.PlanMarkdown...),
+		HasPlanMarkdown: rollback.HasPlanMarkdown,
+	}, nil
+}
+
+func (s *Store) RestorePlanModeSnapshot(sessionID string, snapshot PlanModeSnapshot) error {
+	return s.rollbackPlanModeAfterHistoryError(sessionID, planModeRollback{
+		Snapshot:        snapshot.State,
+		HasSnapshot:     snapshot.HasState,
+		PlanMarkdown:    append([]byte(nil), snapshot.PlanMarkdown...),
+		HasPlanMarkdown: snapshot.HasPlanMarkdown,
+	})
+}
+
 func (s *Store) planModeRollbackSnapshot(sessionID string) (planModeRollback, error) {
 	rollback := planModeRollback{}
 	previous, err := s.LoadPlanMode(sessionID)

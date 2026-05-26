@@ -602,6 +602,50 @@ func TestServiceMissionPlanPatchTaskSyncReportsHistoryAppendError(t *testing.T) 
 	}
 }
 
+func TestServiceMissionPlanPatchPlanModeReportsHistoryAppendError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_plan_planmode_history_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Patch mission plan mode with history",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebGoalHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"plan_status": session.MissionPlanStatusNeedsApproval,
+		"features":    []map[string]any{{"id": "feature_web", "title": "Web feature", "status": "pending"}},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Mission != nil && (len(loaded.Mission.Features) != 0 || loaded.Mission.PlanStatus == session.MissionPlanStatusNeedsApproval) {
+		t.Fatalf("failed plan-mode mission patch should not advance goal snapshot, got %#v", loaded.Mission)
+	}
+	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
+		t.Fatalf("failed plan-mode mission patch should not create plan mode, got planMode=%#v err=%v", planMode, planErr)
+	}
+}
+
 func TestServiceMissionPatchCannotApproveWithoutApprovalEndpoint(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

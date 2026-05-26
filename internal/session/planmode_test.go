@@ -125,6 +125,30 @@ func TestSubmitPlanModeReturnsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestRestorePlanModeSnapshotRemovesCreatedPlanMode(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	snapshot, err := store.SnapshotPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("snapshot plan mode: %v", err)
+	}
+	if snapshot.HasState {
+		t.Fatalf("expected empty snapshot, got %#v", snapshot)
+	}
+	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "created plan",
+		Source:    PlanModeSourceWeb,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if err := store.RestorePlanModeSnapshot(sessionID, snapshot); err != nil {
+		t.Fatalf("restore plan mode: %v", err)
+	}
+	if _, err := store.LoadPlanMode(sessionID); !os.IsNotExist(err) {
+		t.Fatalf("expected restored snapshot to remove plan mode, got %v", err)
+	}
+}
+
 func TestApprovePlanModeReturnsHistoryAppendError(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
