@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -92,6 +94,8 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	var featureList *session.FeatureList
 	if fl, err := c.store.LoadFeatureList(sessionID); err == nil {
 		featureList = &fl
+	} else if !errors.Is(err, fs.ErrNotExist) && !isSymlinkedSessionPathError(err) {
+		return nil, size, false, fmt.Errorf("load feature_list.json for compaction: %w", err)
 	}
 
 	summary := map[string]any{

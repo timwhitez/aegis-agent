@@ -4154,6 +4154,35 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-151: Compaction hides corrupt feature-list state
+
+Severity: Medium
+
+Evidence:
+
+- `spec/04-tools-and-skills.md` defines `feature_list_create` / `feature_list_update` / `feature_list_read` as durable feature-list tools.
+- `spec/18-durable-contract-and-completion.md` includes pre-completion feature checks, and the existing `FCA-20260526-143` fix established that absent `feature_list.json` is optional but malformed existing feature-list state must not be treated as absent.
+- `internal/runtime/compaction.go` loaded the feature list for compaction summaries with `if fl, err := LoadFeatureList(...); err == nil { ... }`, silently dropping every load error.
+- A focused pre-fix compaction regression wrote invalid JSON to `feature_list.json`; before the fix, compaction succeeded, wrote a durable summary artifact, and embedded `"feature_list": null`.
+
+Impact:
+
+Long-running sessions could compact context while hiding a malformed durable feature list. After compaction, the model would receive a summary that looked like no feature-list state existed, weakening feature convergence recovery and making the compaction artifact contradict the existing session facts.
+
+Minimal fix:
+
+- Keep missing `feature_list.json` optional.
+- Keep the existing symlink/path-safety behavior that ignores symlinked feature-list state rather than treating unsafe external content as session evidence.
+- Return a compaction error for corrupt or otherwise unreadable feature-list snapshots.
+- Add focused compactor coverage proving corrupt `feature_list.json` stops compaction and no misleading summary artifact is written.
+
+Validation:
+
+- Focused pre-fix compactor regression proving corrupt `feature_list.json` was hidden as `feature_list: null`.
+- Focused post-fix compactor regression proving corrupt feature-list state is reported and no summary artifact is written.
+- Existing pre-completion feature-list gate coverage remains green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-150: Queue worker treats parent fact persistence failure as child failure
 
 Severity: High
@@ -5127,7 +5156,47 @@ Evidence gates:
 - Confirmed this is not the same as a normal failed child job: a linked child session had already persisted `StatusCompleted`, and the remaining error was a parent queue fact append failure, so the queue job should preserve the child terminal result and report infrastructure persistence failure to the worker.
 - Confirmed the minimal fix belongs across `Engine.reconcileLinkedQueueJob` result/error propagation and `Runner.ProcessNextJob` because the engine is the source of the linked queue reconciliation error, while the worker decides whether `runErr` is normal child failure or queue persistence failure.
 
+### Review 144
+
+- Confirmed FCA-20260526-151 against the durable feature-list tool contract in `spec/04-tools-and-skills.md` and the pre-completion feature-list fact boundary already established by FCA-20260526-143.
+- Confirmed this is not a no-feature-list compatibility issue: absent `feature_list.json` remains optional, but a malformed existing feature-list file is a corrupt session fact and must not be summarized as `feature_list: null`.
+- Confirmed the minimal fix belongs in `compactor.BuildWithProfile` because that is where the durable compaction summary is built and where feature-list load failures were being collapsed into absence.
+
 ## Update Log
+
+### FCA-20260526-151
+
+Slice: `fix(runtime): report corrupt feature list during compaction`
+
+Finding:
+
+- `compactor.BuildWithProfile` ignored every `LoadFeatureList` error while constructing durable compaction summaries.
+- Before the fix, corrupt `feature_list.json` produced a successful compaction summary containing `feature_list: null`.
+
+Changes:
+
+- Changed compaction to ignore only missing `feature_list.json` and the existing symlink/path-safety rejection case.
+- Returned `load feature_list.json for compaction` for corrupt or otherwise unreadable feature-list snapshots.
+- Added focused compactor coverage proving corrupt `feature_list.json` stops compaction without writing a misleading summary artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCompactorReportsCorruptFeatureList -count=1`: failed before the fix because compaction succeeded and wrote `feature_list: null`.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactorReportsCorruptFeatureList|TestCompactorWritesDurableSummaryArtifact|TestPreCompletionFeatureGate(IgnoresSymlinkedFeatureList|BlocksCorruptFeatureList)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-150
 

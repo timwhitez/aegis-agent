@@ -227,6 +227,50 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	}
 }
 
+func TestCompactorReportsCorruptFeatureList(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "feature_list.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt feature list: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", "Continue the large feature convergence task."),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
+	}
+
+	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, compactionProfileForPolicy(32, 1, 0), 0, func(events.Event) {})
+	if err == nil || !strings.Contains(err.Error(), "feature_list.json") {
+		t.Fatalf("expected corrupt feature_list.json error, got view=%#v didCompact=%t err=%v", view, didCompact, err)
+	}
+	if didCompact {
+		t.Fatal("expected corrupt feature list to stop compaction")
+	}
+	summaryDir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions")
+	if entries, readErr := os.ReadDir(summaryDir); readErr == nil && len(entries) != 0 {
+		t.Fatalf("expected no compaction summary after corrupt feature list, got %#v", entries)
+	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("read compaction summary dir: %v", readErr)
+	}
+}
+
 func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()
