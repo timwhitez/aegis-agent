@@ -773,6 +773,62 @@ func TestServiceMissionPlanPatchTaskSyncReportsHistoryAppendError(t *testing.T) 
 	}
 }
 
+func TestServiceMissionPlanPatchRollsBackWhenTaskSyncFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_plan_task_sync_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	original, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Mission before task sync failure",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebTaskboardLockPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"create_tasks_from_plan": true,
+		"features": []map[string]any{{
+			"id":     "feature_task_sync",
+			"title":  "Feature requiring task sync",
+			"status": "pending",
+		}},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "taskboard.lock") && !strings.Contains(apiErr.Error, "is a directory") {
+		t.Fatalf("expected taskboard lock error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Mode != original.Mode || loaded.GoalID != original.GoalID {
+		t.Fatalf("failed task sync should restore original goal identity, got %#v original=%#v", loaded, original)
+	}
+	if loaded.Mission != nil && (len(loaded.Mission.Features) != 0 || loaded.Mission.CreateTasksFromPlan) {
+		t.Fatalf("failed task sync should restore original mission plan, got %#v", loaded.Mission)
+	}
+	tasks, taskErr := svc.store.ListTasks(meta.ID)
+	if taskErr != nil {
+		t.Fatalf("list tasks: %v", taskErr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed task sync should not leave tasks, got %#v", tasks)
+	}
+}
+
 func TestServiceMissionPlanPatchPlanModeReportsHistoryAppendError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -1159,6 +1215,61 @@ func TestServiceGoalPatchMissionPlanModeReportsHistoryAppendError(t *testing.T) 
 	}
 	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
 		t.Fatalf("failed generic mission patch should not create plan mode, got planMode=%#v err=%v", planMode, planErr)
+	}
+}
+
+func TestServiceGoalPatchRollsBackWhenTaskSyncFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_patch_task_sync_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	original, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Plain goal before task sync failure",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebTaskboardLockPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"mission": map[string]any{
+			"create_tasks_from_plan": true,
+			"features": []map[string]any{{
+				"id":     "feature_task_sync",
+				"title":  "Feature requiring task sync",
+				"status": "pending",
+			}},
+		},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "taskboard.lock") && !strings.Contains(apiErr.Error, "is a directory") {
+		t.Fatalf("expected taskboard lock error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Mode != original.Mode || loaded.Mission != nil || loaded.GoalID != original.GoalID {
+		t.Fatalf("failed task sync should restore original goal, got %#v original=%#v", loaded, original)
+	}
+	tasks, taskErr := svc.store.ListTasks(meta.ID)
+	if taskErr != nil {
+		t.Fatalf("list tasks: %v", taskErr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed task sync should not leave tasks, got %#v", tasks)
 	}
 }
 
@@ -6049,6 +6160,17 @@ func blockWebPlanModeHistoryPath(t *testing.T, store *session.Store, sessionID s
 	}
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block plan mode history path: %v", err)
+	}
+}
+
+func blockWebTaskboardLockPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	lockPath := filepath.Join(store.SessionDir(sessionID), "tasks", "taskboard.lock")
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove taskboard lock: %v", err)
+	}
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		t.Fatalf("block taskboard lock path: %v", err)
 	}
 }
 

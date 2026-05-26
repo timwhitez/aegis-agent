@@ -2766,6 +2766,35 @@ Validation:
 - Adjacent Web goal / mission / Plan Mode rollback tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-101: Web goal task-sync failures leave patched goal facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines the persistent task graph as durable recovery state, while `spec/17-web-console.md` requires the Web Console to read and write the same local goal/task facts rather than maintaining a second state source.
+- `internal/webconsole/service.go` `handleGoalPatch` called `PatchGoal` before loading the task snapshot or running `SyncMissionPlanTasks` when the patched mission enabled `create_tasks_from_plan`.
+- `handleMissionPlanPatch` loaded the old task snapshot first, but still called `PatchGoal` before running `SyncMissionPlanTasks`.
+- If task synchronization failed after the goal patch, the handlers returned HTTP 500 without restoring the previous `goal.json` or any partially changed task files.
+- Focused regressions replaced `tasks/taskboard.lock` with a directory. Before this fix, generic goal patch and mission plan patch returned an error while leaving `goal.json` advanced to a mission with `create_tasks_from_plan=true` and new feature facts, despite no synchronized task graph.
+
+Impact:
+
+The Web operator could see a failed patch response while durable goal facts claimed task-backed mission work had been enabled. Recovery, Goal inspector task links, session summaries, and later validation could then disagree with the actual task graph.
+
+Minimal fix:
+
+- Restore the previous goal snapshot if `handleGoalPatch` cannot load the task snapshot after applying a patch.
+- Restore previous goal and task snapshots if task synchronization fails in generic goal patch or mission plan patch paths.
+- Add focused WebConsole regressions for blocked taskboard lock failures in both routes.
+
+Validation:
+
+- Focused pre-fix WebConsole regressions proving goal facts advanced after task-sync failure.
+- Focused post-fix WebConsole regressions for the same paths.
+- Adjacent Web goal / mission rollback tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3377,6 +3406,12 @@ Evidence gates:
 - Confirmed FCA-20260526-100 against the linked Plan Mode gate requirements in `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`, plus Web goal create / patch handlers.
 - Confirmed this is a source-fact consistency issue, not just a missing event: blocked `planmode-history.jsonl` made the API return failure while `goal.json`, goal history, and task facts still advanced without the required linked Plan Mode gate.
 - Confirmed the minimal fix should restore the previous durable goal/task/Plan Mode snapshots on gate-creation failure instead of weakening `EnsurePlanModeForGoal` or bypassing Plan Mode approval.
+
+### Review 94
+
+- Confirmed FCA-20260526-101 against `spec/12-task-system.md`, `spec/17-web-console.md`, Web `handleGoalPatch`, Web `handleMissionPlanPatch`, and `SyncMissionPlanTasks`.
+- Confirmed this is distinct from FCA-20260526-100: the failing durable fact is task synchronization after a goal patch, not linked Plan Mode gate creation.
+- Confirmed the minimal fix belongs in the Web handlers because the store-level `PatchGoal` and `SyncMissionPlanTasks` operations are individually valid, while the Web endpoint composes them into one operator mutation that must roll back on partial failure.
 
 ## Update Log
 
@@ -5987,6 +6022,40 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreate|MissionPlanPatch)RollsBackWhenLinkedPlanModeCreationFails' -count=1`: failed before the fix because the failed responses left mutated goal/task facts.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreate|MissionPlanPatch)RollsBackWhenLinkedPlanModeCreationFails' -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreateReportsEventAppendErrorAndRollsBack|GoalCreateRollsBackWhenLinkedPlanModeCreationFails|GoalPatchReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|MissionPlanPatchReportsHistoryAppendError|MissionPlanPatchTaskSyncReportsHistoryAppendError|MissionPlanPatchPlanModeReportsHistoryAppendError|MissionPlanPatchRollsBackWhenLinkedPlanModeCreationFails|MissionValidationContractPatchReportsHistoryAppendError|MissionValidationPatchResetsApprovedPlanToPendingGate|GoalEndpointsMutateDurableGoal)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-101
+
+Slice: `fix(webconsole): roll back failed task sync`
+
+Finding:
+
+- Web goal patch and mission plan patch could persist `goal.json` changes before task synchronization failed.
+- Focused regressions blocked `tasks/taskboard.lock`; before the fix, both routes returned HTTP 500 while leaving goal facts advanced to a task-synced mission shape without a matching task graph.
+
+Changes:
+
+- Restored the previous goal snapshot when generic goal patch fails to load the task snapshot after applying a patch.
+- Restored previous goal/task snapshots when generic goal patch or mission plan patch task synchronization fails.
+- Added focused WebConsole regressions for task-sync failure rollback in both routes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)RollsBackWhenTaskSyncFails' -count=1`: failed before the fix because failed task sync left mutated goal facts.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)RollsBackWhenTaskSyncFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatchReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|GoalPatchRollsBackWhenTaskSyncFails|MissionPlanPatchReportsHistoryAppendError|MissionPlanPatchTaskSyncReportsHistoryAppendError|MissionPlanPatchRollsBackWhenTaskSyncFails|MissionPlanPatchTaskSyncPreservesRuntimeProgressFacts|GoalCreateRollsBackWhenLinkedPlanModeCreationFails|MissionPlanPatchRollsBackWhenLinkedPlanModeCreationFails)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.

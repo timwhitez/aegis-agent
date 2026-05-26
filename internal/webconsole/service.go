@@ -1111,12 +1111,20 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 	if goal.Mission != nil && goal.Mission.CreateTasksFromPlan {
 		previousTasks, err = s.store.ListTasks(sessionID)
 		if err != nil {
+			if restoreErr := s.store.SaveGoal(sessionID, current); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after task snapshot error %v: %w", err, restoreErr))
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 		tasksSnapshotLoaded = true
 		syncedGoal, tasks, _, err := s.store.SyncMissionPlanTasks(sessionID)
 		if err != nil {
+			if restoreErr := s.restoreGoalPatchAfterTaskSyncError(sessionID, current, previousTasks, tasksSnapshotLoaded, err); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, restoreErr)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -1321,6 +1329,10 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	if mission.CreateTasksFromPlan {
 		syncedGoal, tasks, _, err := s.store.SyncMissionPlanTasks(sessionID)
 		if err != nil {
+			if restoreErr := s.restoreGoalPatchAfterTaskSyncError(sessionID, current, previousTasks, tasksSnapshotLoaded, err); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, restoreErr)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -4235,6 +4247,18 @@ func (s *Service) restoreGoalPatchAfterPlanModeError(sessionID string, previousG
 	}
 	if err := s.store.SaveGoal(sessionID, previousGoal); err != nil {
 		return fmt.Errorf("restore goal after linked plan mode error %v: %w", cause, err)
+	}
+	return nil
+}
+
+func (s *Service) restoreGoalPatchAfterTaskSyncError(sessionID string, previousGoal session.SessionGoal, previousTasks []session.Task, hasTasksSnapshot bool, cause error) error {
+	if hasTasksSnapshot {
+		if err := s.store.SaveTasks(sessionID, previousTasks); err != nil {
+			return fmt.Errorf("restore tasks after task sync error %v: %w", cause, err)
+		}
+	}
+	if err := s.store.SaveGoal(sessionID, previousGoal); err != nil {
+		return fmt.Errorf("restore goal after task sync error %v: %w", cause, err)
 	}
 	return nil
 }
