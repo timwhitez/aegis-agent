@@ -416,7 +416,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if err := e.store.SaveState(meta.ID, state); err != nil {
 					return RunResult{}, err
 				}
-				e.emit(meta.ID, "session.failed", state.Phase, map[string]any{"reason": failureReason, "stop_reason": result.StopReason})
+				if err := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"reason": failureReason, "stop_reason": result.StopReason}); err != nil {
+					return RunResult{}, fmt.Errorf("record provider stop failure event for %s: %w", failureReason, err)
+				}
 				_ = writeSessionSummary(e.store, meta.ID)
 				_ = writeLongRunCheckpoint(e.store, meta.ID)
 				return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil

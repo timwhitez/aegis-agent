@@ -646,6 +646,34 @@ func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
 	}
 }
 
+func TestEngineProviderStopReasonReportsFailedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "partial", StopReason: "max_tokens"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.failed event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "provider_max_tokens") {
+		t.Fatalf("expected provider stop failure context, got %v", err)
+	}
+}
+
 func TestEnginePersistsOpenAIReasoningOnlyProviderBlockWhenReplayValid(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {

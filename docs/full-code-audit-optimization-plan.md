@@ -4327,6 +4327,34 @@ Validation:
 - Existing background-results injection and steer accepted-event regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-173: Provider stop failures ignore durable failed events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `session.failed` as a core session event and defines `events.jsonl` as a session fact managed by `SessionStore`.
+- `spec/03-provider-contracts.md` maps provider `max_tokens`, `blocked`, and `error` stop reasons to resumable failure handling rather than normal completion.
+- `internal/runtime/engine.go` saved `state.json` as failed for provider stop failures, then emitted the matching `session.failed` event through unchecked `e.emit`.
+- A focused pre-fix runtime regression blocked `events.jsonl` before a `max_tokens` stop result. Before the fix, the engine returned a failed result without surfacing that the required failure event was not persisted.
+
+Impact:
+
+A provider stop failure could update `state.json` while losing the durable timeline fact that explains why the session became failed. That weakens recovery, Web timeline diagnosis, and provider-stop auditability for max-token, blocked, and provider-error stop outcomes.
+
+Minimal fix:
+
+- Use checked `appendEvent` for the provider stop-failure `session.failed` event.
+- Include the provider stop failure reason in the returned append error context.
+- Preserve the existing failed-state persistence and resumable failure semantics.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `events.jsonl` was ignored for provider stop failures.
+- Focused post-fix runtime regression proving the same blocked event append returns an `events.jsonl` error with provider stop context.
+- Existing provider stop failure and failed-event append regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5915,7 +5943,47 @@ Evidence gates:
 - Confirmed this mirrors the steer acceptance durability issue but is independently relevant: `drainBackground` consumes pending background notifications, writes model-visible parent context, and then allows provider execution to continue.
 - Confirmed the minimal fix belongs in `drainBackground`, because that is the acceptance boundary that moves background notifications into parent-visible execution context.
 
+### Review 166
+
+- Confirmed FCA-20260526-173 against the provider stop-reason mapping in `spec/03-provider-contracts.md` and the session event fact-source boundary in `spec/01-runtime-architecture.md`.
+- Confirmed this is distinct from provider transport failures: the provider returned a successful response envelope with a failure stop reason, so the engine-owned stop-decision branch must persist the matching failed lifecycle event.
+- Confirmed the minimal fix belongs in the provider stop-failure branch in `Engine.Run`, because that is where `state.json` is marked failed and returned as a resumable provider stop failure.
+
 ## Update Log
+
+### FCA-20260526-173
+
+Slice: `fix(runtime): persist provider stop failure events`
+
+Finding:
+
+- Provider stop failures saved `state.json` as failed for `max_tokens` / `blocked` / `error`, but emitted the matching `session.failed` event through unchecked `e.emit`.
+- Before the fix, a blocked `events.jsonl` still let `Engine.Run` return a failed result without reporting that the provider stop failure event was missing.
+
+Changes:
+
+- Provider stop failures now use checked `appendEvent` for `session.failed`.
+- The returned event append error includes the provider stop failure reason.
+- Added focused runtime coverage proving blocked `events.jsonl` is reported for provider stop failures.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderStopReasonReportsFailedEventAppendError -count=1`: failed before the fix because the blocked event append was ignored.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderStopReason(ReportsFailedEventAppendError|FailuresAreResumable)|TestEngineProviderFailureReportsFailedEventAppendError|TestEngineFailReportsFailedEventAppendError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-172
 
