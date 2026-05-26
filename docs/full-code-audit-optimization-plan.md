@@ -2395,6 +2395,31 @@ Validation:
 - Focused CLI goal status and clear history-failure regressions asserting snapshot rollback.
 - Standard grouped validation before commit.
 
+### FCA-20260526-087: Web goal history failures can leave status or clear mutations applied
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` define `goal.json` plus `artifacts/goal-history.jsonl` as durable Goal facts.
+- Web `handleGoalStatus` called `SetGoalStatus` before appending the required Web goal history/event facts through `appendGoalMutation`. Web `handleGoalClear` removed `goal.json` before appending `goal.cleared` history/event facts.
+- Focused HTTP regressions blocked `artifacts/goal-history.jsonl`. Before this fix, Web `POST /api/sessions/{id}/goal/pause` returned an internal server error while leaving `goal.json` paused, and Web `DELETE /api/sessions/{id}/goal` returned an internal server error while leaving `goal.json` removed.
+
+Impact:
+
+The local Web console could report that a required durable history fact failed while later refreshes, recovery, provider prompt construction, and Mission Control panels observed the failed status or clear mutation as current state.
+
+Minimal fix:
+
+- Snapshot the previous Goal before Web status mutations and restore it if the required Web goal mutation history/event append fails.
+- Restore the previous Goal if Web clear cannot persist the required `goal.cleared` history or event.
+- Keep the fix scoped to Web goal status/clear handlers; mission plan and validation patch handlers require separate proof before promotion.
+
+Validation:
+
+- Focused Web goal status and clear history-failure regressions asserting snapshot rollback.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2922,6 +2947,12 @@ Evidence gates:
 - Confirmed FCA-20260526-086 against Goal durable fact requirements, CLI `mutateGoalStatus`, CLI `goal clear`, and focused blocked-history evidence.
 - Confirmed this is not a duplicate of FCA-20260526-084: store-owned Goal transitions roll back internally, while these CLI adapter paths mutate current Goal facts and append history/events outside the store helpers.
 - Confirmed the fix is scoped to CLI; Web goal controls require separate proof because they have separate handlers and response semantics.
+
+### Review 80
+
+- Confirmed FCA-20260526-087 against Goal durable fact requirements, Web `handleGoalStatus`, Web `handleGoalClear`, and focused blocked-history HTTP evidence.
+- Confirmed this is not a duplicate of FCA-20260526-086: CLI and Web adapters have separate mutation wrappers and separate user-visible response paths.
+- Confirmed the fix is scoped to Web status/clear; Web mission plan and validation patch paths still need independent proof because they can create linked plan-mode side facts and tasks.
 
 ## Update Log
 
@@ -5059,6 +5090,39 @@ Validation:
 - `go test -timeout 120s ./internal/app -run 'TestGoalStatusCommandReportsHistoryAppendError|TestGoalClearCommandReportsHistoryAppendError' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/app/app.go internal/app/app_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-087
+
+Slice: `fix(webconsole): roll back failed goal status mutations`
+
+Finding:
+
+- Web goal status and clear handlers returned required `goal-history.jsonl` append errors, but left the current `goal.json` mutation applied.
+- Focused regressions blocked `goal-history.jsonl`; before the fix, failed Web pause left `status=paused` and failed Web clear removed `goal.json`.
+
+Changes:
+
+- Restored the previous Goal snapshot when Web status history or event append fails.
+- Restored the previous Goal snapshot when Web clear history or event append fails.
+- Extended focused Web history-failure regressions to assert rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalStatusReportsHistoryAppendError|TestServiceGoalClearReportsHistoryAppendError' -count=1`: failed before the fix because failed pause/clear left `goal.json` mutated.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalStatusReportsHistoryAppendError|TestServiceGoalClearReportsHistoryAppendError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.

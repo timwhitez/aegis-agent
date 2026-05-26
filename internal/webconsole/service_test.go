@@ -289,6 +289,50 @@ func TestServiceGoalClearReportsHistoryAppendError(t *testing.T) {
 	if !strings.Contains(apiErr.Error, "goal-history.jsonl") {
 		t.Fatalf("expected goal history append error, got %#v", apiErr)
 	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("failed goal clear should restore goal snapshot, got load error: %v", loadErr)
+	}
+	if loaded.GoalID == "" || loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal clear should restore active goal snapshot, got %#v", loaded)
+	}
+}
+
+func TestServiceGoalStatusReportsHistoryAppendError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_status_history_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Pause goal with history",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebGoalHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal/pause", map[string]any{}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal pause should not advance goal snapshot, got %#v", loaded)
+	}
 }
 
 func TestServiceGoalPatchPreservesRuntimeProgressFacts(t *testing.T) {

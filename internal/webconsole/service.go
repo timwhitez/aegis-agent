@@ -1118,6 +1118,10 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
 				"previous_status": goal.Status,
 			},
 		}); err != nil {
+			if restoreErr := s.store.SaveGoal(sessionID, goal); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after clear history error %v: %w", err, restoreErr))
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -1125,6 +1129,10 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
 			"goal_id":         goal.GoalID,
 			"previous_status": goal.Status,
 		})); err != nil {
+			if restoreErr := s.store.SaveGoal(sessionID, goal); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after clear event error %v: %w", err, restoreErr))
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -1133,12 +1141,21 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
 }
 
 func (s *Service) handleGoalStatus(w http.ResponseWriter, sessionID, status, eventType string) {
+	previous, err := s.store.LoadGoal(sessionID)
+	if err != nil {
+		writeError(w, goalStoreStatus(err), err)
+		return
+	}
 	goal, err := s.store.SetGoalStatus(sessionID, status, session.GoalSourceWeb)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
 		return
 	}
 	if err := s.appendGoalMutation(sessionID, goal, eventType, nil); err != nil {
+		if restoreErr := s.store.SaveGoal(sessionID, previous); restoreErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after status mutation error %v: %w", err, restoreErr))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
