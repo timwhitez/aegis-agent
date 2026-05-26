@@ -2262,6 +2262,33 @@ Validation:
 - Adjacent provider retry ledger, parse-failure, and auto-resume regression group.
 - Standard grouped validation before commit.
 
+### FCA-20260526-082: steer submission can report queued without required durable events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` says each steer produces `session.steer.requested`, `session.steer.queued`, and `session.steer.accepted` events, while `spec/17-web-console.md` expects the running-session submit path to show `session.steer.queued` in the timeline after submission.
+- `Runner.Steer` appended the durable `control/steer.jsonl` request, refreshed the pending counter, and then emitted `session.steer.requested` / `session.steer.queued` through the best-effort `emit` helper.
+- A focused regression blocked `events.jsonl` with a directory before `Runner.Steer` emitted the submission events. Before the fix, `Runner.Steer` returned accepted `queued`, left the steer pending, and the required timeline evidence could not be persisted.
+
+Impact:
+
+CLI and Web could report a steer as queued while the Web-first timeline was missing the spec-required queued evidence. Because the control fact was already pending, a failed caller response could still leave the live runner to consume the steer, creating confusing partial success.
+
+Minimal fix:
+
+- Append `session.steer.requested` and `session.steer.queued` through the error-returning event path in `Runner.Steer`.
+- If either required submission event cannot persist after the control record was appended, mark that steer request `rejected` and refresh `pending_steer_count` before returning the append error.
+- Keep later accepted/deferred/interrupted runtime events out of this slice unless a separate focused proof shows source-fact drift or false success.
+- Add a focused blocked-`events.jsonl` regression for the queued submission path.
+
+Validation:
+
+- Focused steer queued event append failure regression.
+- Adjacent normal steer submission regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2759,6 +2786,12 @@ Evidence gates:
 - Confirmed FCA-20260526-081 against `spec/03-provider-contracts.md`, the provider adapter callback in `Engine.Run`, and focused blocked-`events.jsonl` retry evidence.
 - Confirmed this is distinct from the provider-attempt retry ledger fix: the ledger records durable retry diagnostics, while the spec also requires a searchable `provider.retry` event.
 - Confirmed the fix keeps non-retry provider callback events on the existing best-effort timeline path.
+
+### Review 75
+
+- Confirmed FCA-20260526-082 against `spec/13-live-input-and-steering.md`, the Web running-session submit workflow in `spec/17-web-console.md`, `Runner.Steer`, and focused blocked-`events.jsonl` evidence.
+- Confirmed the source fact remains `control/steer.jsonl`, but a failed API response must not leave that control request live after required queued timeline evidence failed to persist.
+- Confirmed the fix is limited to initial steer submission events and does not harden accepted/deferred/interrupted events without separate evidence.
 
 ## Update Log
 
@@ -4749,4 +4782,35 @@ Validation:
 
 - `go test -timeout 120s ./internal/runtime -run TestEngineProviderRetryReportsEventAppendError -count=1`: failed before the fix with `awaiting_input` and no append error.
 - `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderRetryReportsEventAppendError|TestEngineProviderRetryReportsProviderAttemptAppendError|TestEngineRecordsProviderParseFailureAttempt|TestEngineAutoResumesProviderTimeoutBeforeFailing' -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-082
+
+Slice: `fix(runtime): require steer queued event persistence`
+
+Finding:
+
+- Running-session steer submission wrote the durable control request and pending counter before emitting required `session.steer.requested` / `session.steer.queued` events through the best-effort helper.
+- A focused regression blocked `events.jsonl`; before the fix, `Runner.Steer` returned accepted `queued` and left the steer pending without persisting the required queued timeline evidence.
+
+Changes:
+
+- Switched initial steer submission events to the error-returning append path.
+- Marked the just-created steer request `rejected` and refreshed `pending_steer_count` when required submission event persistence fails after the control record is written.
+- Kept later steer runtime events unchanged in this slice.
+- Added a focused blocked-`events.jsonl` steer submission regression.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerSteerReportsQueuedEventAppendError -count=1`: failed before the fix with accepted `queued` and no append error.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerSteerReportsQueuedEventAppendError|TestRunnerSteerReturnsQueuedBehaviorForRunningSession' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -w internal/runtime/runner.go internal/runtime/runner_test.go`: applied formatting with no residual diff.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

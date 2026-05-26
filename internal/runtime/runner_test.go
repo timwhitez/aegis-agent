@@ -1452,6 +1452,62 @@ func TestRunnerSteerReturnsQueuedBehaviorForRunningSession(t *testing.T) {
 	}
 }
 
+func TestRunnerSteerReportsQueuedEventAppendError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	eventsPath := filepath.Join(runner.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	result, err := runner.Steer(context.Background(), SteerRequest{
+		SessionID: meta.ID,
+		Message:   "focus on tests",
+		Interrupt: true,
+	})
+	if err == nil {
+		t.Fatalf("expected steer queued event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	requests, err := runner.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusRejected {
+		t.Fatalf("event append failure should reject durable steer request, got %#v", requests)
+	}
+	loadedState, err := runner.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.PendingSteerCount != 0 {
+		t.Fatalf("event append failure should refresh pending steer count, got %#v", loadedState)
+	}
+}
+
 func TestRunnerWatchSteerHandlesMultipleInterruptRequests(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

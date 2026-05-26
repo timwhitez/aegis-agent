@@ -978,13 +978,23 @@ func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error)
 	if _, err := r.store.RefreshPendingSteerCount(req.SessionID); err != nil {
 		return SteerResult{}, err
 	}
-	r.emit(req.SessionID, "session.steer.requested", "control", map[string]any{
+	if err := r.appendEvent(req.SessionID, "session.steer.requested", "control", map[string]any{
 		"id":        request.ID,
 		"interrupt": request.Interrupt,
-	})
-	r.emit(req.SessionID, "session.steer.queued", "control", map[string]any{
+	}); err != nil {
+		if rejectErr := r.rejectQueuedSteerRequest(req.SessionID, request.ID); rejectErr != nil {
+			return SteerResult{}, fmt.Errorf("record steer requested event after rejecting queued steer failed with %v: %w", rejectErr, err)
+		}
+		return SteerResult{}, err
+	}
+	if err := r.appendEvent(req.SessionID, "session.steer.queued", "control", map[string]any{
 		"id": request.ID,
-	})
+	}); err != nil {
+		if rejectErr := r.rejectQueuedSteerRequest(req.SessionID, request.ID); rejectErr != nil {
+			return SteerResult{}, fmt.Errorf("record steer queued event after rejecting queued steer failed with %v: %w", rejectErr, err)
+		}
+		return SteerResult{}, err
+	}
 	if meta, err := r.store.LoadMetadata(req.SessionID); err == nil {
 		_ = writeSessionSummary(r.store, meta.ID)
 	}
@@ -993,6 +1003,30 @@ func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error)
 		Accepted:  true,
 		Behavior:  "queued",
 	}, nil
+}
+
+func (r *Runner) rejectQueuedSteerRequest(sessionID, requestID string) error {
+	requests, err := r.store.LoadSteerRequests(sessionID)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range requests {
+		if requests[i].ID != requestID {
+			continue
+		}
+		requests[i].Status = session.SteerStatusRejected
+		changed = true
+		break
+	}
+	if !changed {
+		return nil
+	}
+	if err := r.store.UpdateSteerRequests(sessionID, requests); err != nil {
+		return err
+	}
+	_, err = r.store.RefreshPendingSteerCount(sessionID)
+	return err
 }
 
 func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
