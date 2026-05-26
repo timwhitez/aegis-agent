@@ -218,30 +218,37 @@ func (c *CompletionController) parentCoordinationGate(toolName string) (string, 
 		return "", ""
 	}
 	notifications, err := c.store.LoadBackgroundNotifications(c.sessionID)
-	if err == nil {
-		var pending []string
-		for _, notification := range notifications {
-			if notification.DeliveryStatus != session.BackgroundNotificationPending {
-				continue
-			}
-			id := strings.TrimSpace(notification.QueueJobID)
-			if id == "" {
-				id = strings.TrimSpace(notification.SessionID)
-			}
-			if id == "" {
-				id = strings.TrimSpace(notification.ID)
-			}
-			pending = append(pending, id)
+	if err != nil {
+		return "parent_background_state", "Parent-background gate could not load control/background.jsonl: " + err.Error()
+	}
+	var pending []string
+	for _, notification := range notifications {
+		if notification.DeliveryStatus != session.BackgroundNotificationPending {
+			continue
 		}
-		if len(pending) > 0 {
-			c.emitCompletion("completion.gate.parent_background_pending", map[string]any{
-				"pending_background_notifications": pending,
-			})
-			return "parent_background_pending", fmt.Sprintf("Parent-background gate: completed child or background results are pending transcript acceptance before finish (%s). Continue one more turn so the harness can accept those durable facts, then reconcile them before the final conclusion.", joinPromptItems(pending))
+		id := strings.TrimSpace(notification.QueueJobID)
+		if id == "" {
+			id = strings.TrimSpace(notification.SessionID)
 		}
+		if id == "" {
+			id = strings.TrimSpace(notification.ID)
+		}
+		pending = append(pending, id)
+	}
+	if len(pending) > 0 {
+		c.emitCompletion("completion.gate.parent_background_pending", map[string]any{
+			"pending_background_notifications": pending,
+		})
+		return "parent_background_pending", fmt.Sprintf("Parent-background gate: completed child or background results are pending transcript acceptance before finish (%s). Continue one more turn so the harness can accept those durable facts, then reconcile them before the final conclusion.", joinPromptItems(pending))
 	}
 	coordination, err := c.store.LoadParentCoordination(c.sessionID)
-	if err != nil || coordination.ParentSessionID == "" {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", ""
+		}
+		return "parent_coordination_state", "Parent-coordination gate could not load parent-coordination.json: " + err.Error()
+	}
+	if coordination.ParentSessionID == "" {
 		return "", ""
 	}
 	if len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0 {

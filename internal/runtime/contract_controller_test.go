@@ -700,6 +700,37 @@ func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *
 	}
 }
 
+func TestParentCoordinationGateReportsCorruptBackgroundNotifications(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	backgroundPath := filepath.Join(store.SessionDir(meta.ID), "control", "background.jsonl")
+	if err := os.MkdirAll(filepath.Dir(backgroundPath), 0o700); err != nil {
+		t.Fatalf("mkdir background control dir: %v", err)
+	}
+	if err := os.WriteFile(backgroundPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt background notifications: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))
+	if decision.Status != GateBlock || decision.GateID != "parent_background_state" || !strings.Contains(decision.ModelMessage, "background.jsonl") {
+		t.Fatalf("expected corrupt background notification block, got %#v", decision)
+	}
+}
+
+func TestParentCoordinationGateReportsCorruptCoordinationSnapshot(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	coordinationPath := filepath.Join(store.SessionDir(meta.ID), "parent-coordination.json")
+	if err := os.WriteFile(coordinationPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt parent coordination: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))
+	if decision.Status != GateBlock || decision.GateID != "parent_coordination_state" || !strings.Contains(decision.ModelMessage, "parent-coordination.json") {
+		t.Fatalf("expected corrupt parent coordination block, got %#v", decision)
+	}
+}
+
 func TestParentCoordinationWritesParkedAndResumedEvents(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := addParentChildSession(store, meta.ID, "child-1", "wait-all"); err != nil {

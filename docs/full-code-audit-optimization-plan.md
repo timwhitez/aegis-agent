@@ -3860,6 +3860,36 @@ Validation:
 - Focused post-fix runtime regressions proving corrupt `contract.json` is reported from write tracking and blocks finish.
 - Standard grouped validation before commit.
 
+### FCA-20260526-139: Parent completion gate hides corrupt background wait state
+
+Severity: High
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` defines `parent-coordination.json` and background notifications as durable parent/child completion facts that block parent `finish` while unresolved or unaccepted child/queue work remains.
+- `spec/01-runtime-architecture.md` requires session/state/messages/events and related session files to be durable fact sources, not in-memory-only state.
+- `internal/runtime/completion_controller.go` `parentCoordinationGate` called `LoadBackgroundNotifications` and only inspected pending notifications when `err == nil`, silently ignoring corrupt `control/background.jsonl`.
+- The same gate called `LoadParentCoordination` and returned no gate for every error, collapsing an absent optional coordination snapshot and a corrupt existing `parent-coordination.json`.
+- Focused pre-fix runtime regressions wrote invalid JSON to each file; `EvaluateToolCall(..., "finish", ...)` returned `GateAllow` in both cases.
+
+Impact:
+
+A parent session could finish while durable background result-acceptance facts or explicit parent coordination wait state were unreadable. That weakens child/queue traceability, can bypass unresolved work gates, and makes recovery treat corrupt wait-state files as if no child or queue work existed.
+
+Minimal fix:
+
+- Treat background-notification load errors as `parent_background_state` finish blocks; the store already returns an empty slice for a missing notification log.
+- Treat only missing `parent-coordination.json` as no coordination state.
+- Return `parent_coordination_state` for corrupt or unreadable parent coordination snapshots.
+- Include `control/background.jsonl` or `parent-coordination.json` in the gate messages.
+- Add focused runtime regressions for both corrupt wait-state files.
+
+Validation:
+
+- Focused pre-fix runtime regressions proving corrupt background notification and parent coordination facts allowed `finish`.
+- Focused post-fix runtime regressions proving corrupt background notification and parent coordination facts block `finish`.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4699,6 +4729,12 @@ Evidence gates:
 - Confirmed FCA-20260526-138 against explicit contract and required-artifact durability requirements in `spec/18-durable-contract-and-completion.md` and the session fact-source boundary in `spec/01-runtime-architecture.md`.
 - Confirmed this is not a missing optional contract issue: sessions without explicit contracts may still lack `contract.json`, but an existing malformed contract snapshot is a corrupt durable fact.
 - Confirmed the minimal fix belongs in `CompletionController` because it owns required-artifact write tracking and finish-gate refresh; the store already exposes the missing-versus-corrupt distinction.
+
+### Review 132
+
+- Confirmed FCA-20260526-139 against parent coordination and background result-acceptance requirements in `spec/18-durable-contract-and-completion.md`, plus the session file fact-source boundary in `spec/01-runtime-architecture.md`.
+- Confirmed this is not an empty parent/no-child case: `LoadBackgroundNotifications` already returns an empty slice for a missing log, and absent `parent-coordination.json` remains optional; only existing malformed wait-state files should block.
+- Confirmed the minimal fix belongs in `CompletionController.parentCoordinationGate` because it is the centralized finish gate responsible for preventing parent completion while durable child/queue facts are unresolved or unreadable.
 
 ## Update Log
 
@@ -6250,6 +6286,43 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-139
+
+Slice: `fix(runtime): report corrupt parent wait state`
+
+Finding:
+
+- `parentCoordinationGate` ignored corrupt `control/background.jsonl` and `parent-coordination.json` while deciding whether `finish` should be blocked.
+- Before the fix, corrupt durable wait-state files made `EvaluateToolCall(..., "finish", ...)` return `GateAllow`.
+
+Changes:
+
+- Changed parent background notification load errors to block finish with `parent_background_state`.
+- Changed parent coordination load errors to ignore only missing `parent-coordination.json`.
+- Added `parent_coordination_state` blocks for corrupt/unreadable coordination snapshots.
+- Added focused runtime regressions for both corrupt wait-state files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestParentCoordinationGateReportsCorrupt(BackgroundNotifications|CoordinationSnapshot)' -count=1`: failed before the fix because both corrupt wait-state files allowed `finish`.
+- `go test -timeout 120s ./internal/runtime -run 'TestParentCoordinationGateReportsCorrupt(BackgroundNotifications|CoordinationSnapshot)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ParentCoordinationGateReportsCorruptBackgroundNotifications|ParentCoordinationGateReportsCorruptCoordinationSnapshot|ParentCoordinationGateBlocksWaitAllAndAllowsWaitAnyAfterOneCompletion|ParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish|ParentCoordinationWritesParkedAndResumedEvents)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/completion_controller.go internal/runtime/contract_controller_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
