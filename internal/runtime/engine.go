@@ -186,7 +186,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			contextData["plan_mode_id"] = planMode.PlanModeID
 			contextData["plan_version"] = planMode.PlanVersion
 		}
-		e.emit(meta.ID, "session.context.loaded", "prepare", contextData)
+		if err := e.appendEvent(meta.ID, "session.context.loaded", "prepare", contextData); err != nil {
+			return RunResult{}, fmt.Errorf("record session.context.loaded event: %w", err)
+		}
 
 		systemPrompt := buildSystemPrompt(meta.Workdir, meta.Mode, systemOverride, catalog.Summaries(), catalog.TrustedCommandTools(meta.Workdir), state, messages, meta.AgentName, meta.AgentRole)
 		if goal != nil {

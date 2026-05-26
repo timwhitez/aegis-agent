@@ -4674,6 +4674,35 @@ Validation:
 - Existing multiple-interrupt watcher regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260527-185: Turns can proceed with unrecorded durable context snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` says prepare reads the durable context view from `todo.json`, `tasks/`, and `reports/spec.md` / `plan.md` / `progress.md` / `validation.md`, then writes `session.context.loaded` so recovery and live validation can see project-memory and task/todo counts.
+- `spec/12-task-system.md` likewise describes `session.context.loaded` as durable evidence for current todo/task counts and project-memory present/missing state.
+- `internal/runtime/engine.go` built the context-loaded payload and emitted `session.context.loaded` through unchecked `e.emit`.
+- The same turn then used that durable context to construct the provider prompt and continue execution even if `events.jsonl` could not record the context snapshot.
+- A focused pre-fix engine regression blocked `events.jsonl` before prepare. Before the fix, the engine still reached the provider with no durable `session.context.loaded` event for that turn.
+
+Impact:
+
+Recovery, Web timelines, and live validation could lack the event that explains which todo/task/project-memory facts were loaded into the provider turn. For long-running sessions, that weakens the ability to distinguish a model operating from current durable context from one operating after a failed context-evidence write.
+
+Minimal fix:
+
+- Use checked `appendEvent` for `session.context.loaded`.
+- Fail the turn before provider prompt construction if the context-loaded event cannot be persisted.
+- Preserve the existing event payload, including todo/task counts, project-memory present/missing paths, role hints, and Goal / Plan Mode context.
+
+Validation:
+
+- Focused runtime regression proving blocked `events.jsonl` returns `session.context.loaded` context and prevents provider execution.
+- Existing durable context payload regression remains green.
+- Existing provider failure / provider stop / incomplete-no-finish failed-event regressions remain targeted at their original `session.failed` append paths after `session.context.loaded` now fails earlier when blocked.
+- Standard grouped validation completed in the update log.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6334,7 +6363,52 @@ Evidence gates:
 - Confirmed the existing `Runner.Steer` requested/queued event rollback does not cover the watcher-side in-memory interrupt signal because the watcher can observe an already queued request later.
 - Confirmed event-first ordering is appropriate here: if the event cannot be persisted, the queued steer remains durable and can still be accepted at a safe boundary, but the runtime should not trigger an unrecorded interrupt cancellation.
 
+### Review 178
+
+- Confirmed FCA-20260527-185 against `spec/01-runtime-architecture.md` and `spec/12-task-system.md`, which frame `session.context.loaded` as durable evidence for the context facts loaded into the turn.
+- Confirmed this is not generic telemetry: the event records todo/task counts, project-memory present/missing paths, role hints, Goal, and Plan Mode context immediately before provider prompt construction.
+- Confirmed the minimal fix should fail before provider execution when that event cannot be written, preserving the fact-source boundary without changing context construction or prompt content.
+
 ## Update Log
+
+### FCA-20260527-185
+
+Slice: `fix(runtime): persist context loaded events`
+
+Finding:
+
+- Engine prepare loaded todo/task/project-memory/goal/plan context and built the provider prompt from it.
+- It emitted `session.context.loaded` through unchecked `e.emit`.
+- Before the fix, blocked `events.jsonl` still let the provider run without durable context-loaded evidence for that turn.
+
+Changes:
+
+- `Engine.Run` now records `session.context.loaded` through checked `appendEvent`.
+- If the event append fails, the turn returns an error before provider prompt construction.
+- Existing context payload fields are unchanged.
+- Added focused runtime coverage for blocked context-loaded event persistence.
+- Retargeted existing failed-event regressions so their blocked `events.jsonl` setup occurs after the checked context-loaded event, preserving their original provider failure, provider stop, and incomplete-no-finish coverage.
+- Stabilized the existing steer watcher event-persistence regression by waiting for the cancelled watcher goroutine to exit before restoring `events.jsonl`; this avoids a validation-only race where the old watcher could append during the restore window and have its event truncated.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(ReportsContextLoadedEventAppendError|EmitsContextLoadedEventWithDurableState)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(ProviderFailureReportsFailedEventAppendError|ProviderStopReasonReportsFailedEventAppendError|IncompleteNoFinishReportsFailedEventAppendError|ReportsContextLoadedEventAppendError|EmitsContextLoadedEventWithDurableState)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerWatchSteerRequiresInterruptRequestedEventBeforeSignal -count=20`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go internal/runtime/runner_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-184
 

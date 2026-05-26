@@ -346,13 +346,13 @@ func TestEngineProviderFailureReportsFailedEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("remove events: %v", err)
-	}
-	if err := os.Mkdir(eventsPath, 0o700); err != nil {
-		t.Fatalf("block events path: %v", err)
-	}
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove events: %v", err)
+		}
+		if err := os.Mkdir(eventsPath, 0o700); err != nil {
+			t.Fatalf("block events path: %v", err)
+		}
 		return provider.TurnResult{}, errors.New("upstream failed")
 	})
 
@@ -734,13 +734,13 @@ func TestEngineProviderStopReasonReportsFailedEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("remove events: %v", err)
-	}
-	if err := os.Mkdir(eventsPath, 0o700); err != nil {
-		t.Fatalf("block events path: %v", err)
-	}
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove events: %v", err)
+		}
+		if err := os.Mkdir(eventsPath, 0o700); err != nil {
+			t.Fatalf("block events path: %v", err)
+		}
 		return provider.TurnResult{Text: "partial", StopReason: "max_tokens"}, nil
 	})
 
@@ -1687,13 +1687,16 @@ func TestEngineIncompleteNoFinishReportsFailedEventAppendError(t *testing.T) {
 			return provider.TurnResult{Text: "first", StopReason: "done_candidate"}, nil
 		},
 		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "second", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
 				t.Fatalf("remove events: %v", err)
 			}
 			if err := os.Mkdir(eventsPath, 0o700); err != nil {
 				t.Fatalf("block events path: %v", err)
 			}
-			return provider.TurnResult{Text: "second", StopReason: "done_candidate"}, nil
+			return provider.TurnResult{Text: "third", StopReason: "done_candidate"}, nil
 		},
 	)
 
@@ -3335,6 +3338,29 @@ func TestEngineEmitsContextLoadedEventWithDurableState(t *testing.T) {
 	}
 	if evt.Data["root_session_id"] != "root-role" || evt.Data["parent_session_id"] != "parent-role" {
 		t.Fatalf("expected parent/root identity in context event, got %#v", evt.Data)
+	}
+}
+
+func TestEngineReportsContextLoadedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "load context")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatal("provider should not run when context-loaded event cannot be persisted")
+		return provider.TurnResult{}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "session.context.loaded") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected context-loaded event append error, result=%#v err=%v", result, err)
 	}
 }
 

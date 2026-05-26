@@ -1841,12 +1841,21 @@ func TestRunnerWatchSteerRequiresInterruptRequestedEventBeforeSignal(t *testing.
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go runner.watchSteer(ctx, meta.ID)
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		runner.watchSteer(ctx, meta.ID)
+	}()
 	time.Sleep(50 * time.Millisecond)
 	if runner.control.consumeSteerInterrupt() {
 		t.Fatal("watcher should not signal interrupt when interrupt_requested event cannot be persisted")
 	}
 	cancel()
+	select {
+	case <-watcherDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for blocked steer watcher to stop")
+	}
 
 	if err := os.Remove(eventsPath); err != nil {
 		t.Fatalf("remove blocked events path: %v", err)
