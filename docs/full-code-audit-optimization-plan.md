@@ -4382,6 +4382,34 @@ Validation:
 - Existing finish and tool-hook completion regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-175: Awaiting-input transitions can lose durable events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `session.awaiting_input` as a core session event and defines `state.json` / `events.jsonl` as session facts managed by `SessionStore`.
+- `spec/13-live-input-and-steering.md` treats `awaiting_input` as a resumable state for `continue`, so the transition must remain traceable from durable session facts.
+- `internal/runtime/engine.go` `awaitingInput` saved `state.json` as `awaiting_input`, then emitted `session.awaiting_input` through unchecked `e.emit`.
+- A focused pre-fix runtime regression blocked `events.jsonl` after the provider returned a run-mode done candidate. Before the fix, `Engine.Run` returned `awaiting_input` even though the required lifecycle event was unwritable.
+
+Impact:
+
+A run-mode session could become resumable in `state.json` while losing the timeline event that explains why the session stopped and can be continued. That weakens Web status diagnosis, operator recovery, and auditability for normal done-candidate stops.
+
+Minimal fix:
+
+- Use checked `appendEvent` for the normal `session.awaiting_input` lifecycle event.
+- Include `session.awaiting_input` in the returned append error context.
+- Preserve existing run-mode done-candidate semantics and linked queue reconciliation ordering.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `events.jsonl` was ignored during normal awaiting-input transition.
+- Focused post-fix runtime regression proving the same blocked event append returns an `events.jsonl` error with awaiting-input context.
+- Existing run-mode awaiting-input and loaded-skill regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5982,7 +6010,47 @@ Evidence gates:
 - Confirmed this is not diagnostic-only telemetry: `session.completed` is the terminal lifecycle event matching a durable `state.json` terminal transition and is relied on by timelines and recovery evidence.
 - Confirmed the minimal fix belongs in `complete`, because that is the single helper that records successful `finish` completion and then reconciles linked queue facts.
 
+### Review 168
+
+- Confirmed FCA-20260526-175 against the session lifecycle event catalog in `spec/01-runtime-architecture.md` and the run/continue semantics in `spec/13-live-input-and-steering.md`.
+- Confirmed this is not a completion-policy change: run mode still stops at `awaiting_input` for done candidates, but that resumable transition must have matching durable event evidence.
+- Confirmed the minimal fix belongs in `awaitingInput`, because that helper owns the normal run-mode done-candidate state transition before linked queue reconciliation.
+
 ## Update Log
+
+### FCA-20260526-175
+
+Slice: `fix(runtime): persist awaiting input lifecycle events`
+
+Finding:
+
+- `awaitingInput` saved `state.json` as `awaiting_input`, but emitted the matching `session.awaiting_input` event through unchecked `e.emit`.
+- Before the fix, a blocked `events.jsonl` still let `Engine.Run` return `awaiting_input` after a run-mode done candidate.
+
+Changes:
+
+- Normal awaiting-input transitions now use checked `appendEvent` for `session.awaiting_input`.
+- The returned event append error includes `session.awaiting_input` context.
+- Added focused runtime coverage proving blocked `events.jsonl` is reported during normal awaiting-input transition.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineAwaitingInputReportsEventAppendError -count=1`: failed before the fix because awaiting-input returned success with a missing event.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineAwaitingInputReportsEventAppendError|TestEngineRunModeStopsAtAwaitingInput|TestEnginePreservesLoadedSkillStateAcrossNextTurn' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-174
 
