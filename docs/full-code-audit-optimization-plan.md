@@ -3268,6 +3268,34 @@ Validation:
 - Focused post-fix WebConsole regressions for both endpoints.
 - Standard grouped validation before commit.
 
+### FCA-20260526-118: Web API-key env write failure leaves persisted config changes
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats Settings provider/API key writes as sensitive local Web actions requiring clear failure behavior and auditability.
+- `internal/webconsole/service.go` `handleUpdateConfig` preflighted the API-key env target, wrote `config.yaml`, then wrote the `.env` API key.
+- If the env write failed after config persistence, the handler returned HTTP 500 while leaving the new config file on disk. The in-memory service config was not swapped, so file facts and live service state diverged.
+- A focused WebConsole regression set `GO_CLI_AGENT_ENV_FILE` to `<configPath>/.env` while `configPath` did not exist. Env preflight passed; `config.WriteFile` created `configPath` as a regular file; `config.UpsertEnvFile` then failed because its parent path was not a directory. Before the fix, the failed response left `model: should-not-persist` in the config file.
+
+Impact:
+
+Operators could retry or inspect Settings after a failed API-key write while the persisted config file already contained the new provider/model settings. Restarting the Web service or CLI could then pick up changes that the failed response implied had not been applied.
+
+Minimal fix:
+
+- Snapshot the existing config file before writing.
+- If API-key env persistence fails after config write, restore the previous config bytes or remove the newly-created config file.
+- Keep existing ordering that config write must succeed before API key persistence, so a failed config write still cannot persist API keys.
+- Add focused WebConsole coverage for env write failure rollback and keep existing config/API-key preflight tests.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving failed env write left config changes persisted.
+- Focused post-fix WebConsole regression proving config changes roll back on env write failure.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3981,6 +4009,12 @@ Evidence gates:
 - Confirmed FCA-20260526-117 against Web error-class requirements in `spec/17-web-console.md`, Goal fact-source requirements in `spec/01-runtime-architecture.md`, and both `PatchGoal` call sites in `handleGoalPatch` / `handleMissionPlanPatch`.
 - Confirmed this is distinct from FCA-20260526-116: that route writes through `SaveGoal`, while these two routes write through `PatchGoal` and already had a reusable `goalStoreStatus` classifier.
 - Confirmed the minimal fix should only change Web HTTP status mapping and focused regressions; Goal patch validation, mission approval reset semantics, Plan Mode creation, task sync, and rollback paths remain unchanged.
+
+### Review 111
+
+- Confirmed FCA-20260526-118 against Settings sensitivity requirements in `spec/17-web-console.md` and durable local file fact consistency from `spec/01-runtime-architecture.md`.
+- Confirmed the issue is not covered by the existing config-write-before-API-key test: that test blocks config persistence before env write, while this failure occurs after config persistence and before env/process key mutation.
+- Confirmed the minimal fix should be a local Web settings rollback helper, not a change to config package persistence semantics or audit-log ordering.
 
 ## Update Log
 
@@ -6520,6 +6554,41 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)ReportsGoalWriteFailureAsServerError' -count=1`: failed before the fix with HTTP 400 for both endpoints.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)ReportsGoalWriteFailureAsServerError' -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)ReportsGoalWriteFailureAsServerError|TestService(GoalPatchReportsHistoryAppendError|MissionPlanPatchReportsHistoryAppendError)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-118
+
+Slice: `fix(webconsole): roll back config on API key failure`
+
+Finding:
+
+- Web Settings saved `config.yaml` before persisting an API key to the configured env file.
+- If env-file persistence failed after config write, the handler returned HTTP 500 while leaving the new config on disk and without swapping the in-memory service config.
+- A focused regression used `GO_CLI_AGENT_ENV_FILE=<configPath>/.env`; env preflight passed, config write created `<configPath>` as a regular file, and the env write failed because its parent was not a directory. Before the fix, the failed response left `model: should-not-persist` in the config file.
+
+Changes:
+
+- Snapshotted existing config file bytes before Settings writes.
+- Restored the previous config file, or removed a newly created config file, when API-key env persistence fails after config write.
+- Added focused WebConsole coverage for config rollback on env write failure.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRollsBackConfigWhenEnvWriteFails -count=1`: failed before the fix because the config file retained `should-not-persist`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|DoesNotLogSecretValue)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|DoesNotLogSecretValue)|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.

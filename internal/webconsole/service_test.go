@@ -3620,6 +3620,45 @@ func TestAPIKeyWritePreflightsEnvTargetBeforeConfigWrite(t *testing.T) {
 	}
 }
 
+func TestAPIKeyWriteRollsBackConfigWhenEnvWriteFails(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	t.Setenv("OPENAI_API_KEY", "")
+	configPath := filepath.Join(cwd, "config-as-env-parent")
+	envPath := filepath.Join(configPath, ".env")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+
+	cfg := testConfig(t, "")
+	provider := cfg.Providers["openai"]
+	provider.APIKeyEnv = "OPENAI_API_KEY"
+	cfg.Providers["openai"] = provider
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"model":    "should-not-persist",
+		"api_key":  "sk-should-not-persist",
+	}, http.StatusInternalServerError)
+	if errResp.Error == "" {
+		t.Fatalf("expected env write error, got %#v", errResp)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "" {
+		t.Fatalf("failed env write should not mutate process API key, got %q", got)
+	}
+	if data, err := os.ReadFile(configPath); err == nil && strings.Contains(string(data), "should-not-persist") {
+		t.Fatalf("failed env write should roll back config persistence, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read config file: %v", err)
+	}
+}
+
 func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})

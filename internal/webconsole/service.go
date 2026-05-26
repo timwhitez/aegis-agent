@@ -2754,12 +2754,21 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	configSnapshot, err := snapshotWebConfigFile(configPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := config.WriteFile(configPath, updatedCfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if apiKeyUpdate != nil {
 		if err := config.UpsertEnvFile(apiKeyUpdate.envFile, apiKeyUpdate.envKey, apiKeyUpdate.value); err != nil {
+			if restoreErr := restoreWebConfigFile(configPath, configSnapshot); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore config after API key write error %v: %w", err, restoreErr))
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -2798,6 +2807,29 @@ type webAPIKeyUpdate struct {
 	envKey  string
 	envFile string
 	value   string
+}
+
+type webConfigFileSnapshot struct {
+	data   []byte
+	exists bool
+}
+
+func snapshotWebConfigFile(path string) (webConfigFileSnapshot, error) {
+	data, _, err := fileutil.ReadRegularFileNoSymlink(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return webConfigFileSnapshot{}, nil
+		}
+		return webConfigFileSnapshot{}, err
+	}
+	return webConfigFileSnapshot{data: append([]byte(nil), data...), exists: true}, nil
+}
+
+func restoreWebConfigFile(path string, snapshot webConfigFileSnapshot) error {
+	if snapshot.exists {
+		return fileutil.AtomicWriteFileNoSymlink(path, snapshot.data, 0o600)
+	}
+	return fileutil.RemoveFileNoSymlink(path)
 }
 
 func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
