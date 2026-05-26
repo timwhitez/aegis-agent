@@ -305,6 +305,89 @@ func TestPlanInputCancelReturnsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestPlanInputCancelRetryAfterHistoryFailureRestoresFacts(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Cancel plan input"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	request := session.PlanModeInputRequest{
+		RequestID:  "pmq_cancel_retry_history",
+		ToolCallID: "call_cancel_retry_history",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := runner.store.SetPlanModePendingRequest(sessionID, request, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+	blockRuntimePlanModeHistoryPath(t, runner.store, sessionID)
+
+	err := runner.appendPlanInputCancelToolResult(sessionID, session.PlanModeSourceCLI)
+	if err == nil || !strings.Contains(err.Error(), "planmode-history.jsonl") {
+		t.Fatalf("expected plan mode history append error, got %v", err)
+	}
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages after failed history append: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, request.ToolCallID, "request_user_input"); count != 1 {
+		t.Fatalf("expected one replay tool result after failed history append, got %d messages=%#v", count, messages)
+	}
+
+	historyPath := filepath.Join(runner.store.SessionDir(sessionID), "artifacts", "planmode-history.jsonl")
+	if err := os.RemoveAll(historyPath); err != nil {
+		t.Fatalf("remove blocked history path: %v", err)
+	}
+	if err := runner.appendPlanInputCancelToolResult(sessionID, session.PlanModeSourceCLI); err != nil {
+		t.Fatalf("retry plan input cancellation facts: %v", err)
+	}
+	messages, err = runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages after retry: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, request.ToolCallID, "request_user_input"); count != 1 {
+		t.Fatalf("retry should not duplicate replay tool result, got %d messages=%#v", count, messages)
+	}
+	history, err := runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load history after retry: %v", err)
+	}
+	if count := countRuntimePlanModeHistoryType(history, "planmode.input_cancelled"); count != 1 {
+		t.Fatalf("retry should restore one input-cancel history row, got %d history=%#v", count, history)
+	}
+	events, err := runner.store.LoadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("load events after retry: %v", err)
+	}
+	if count := countRuntimeEventType(events, "planmode.input_cancelled"); count != 1 {
+		t.Fatalf("retry should append one input-cancel event, got %d events=%#v", count, events)
+	}
+}
+
 func TestPlanInputAnswerRollsBackWhenToolResultAppendFails(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
@@ -916,6 +999,18 @@ func countRuntimeEventType(items []events.Event, target string) int {
 	for _, item := range items {
 		if item.Type == target {
 			count++
+		}
+	}
+	return count
+}
+
+func countRuntimeToolResults(messages []session.Message, toolCallID, name string) int {
+	var count int
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults {
+			if result.ToolCallID == toolCallID && result.Name == name {
+				count++
+			}
 		}
 	}
 	return count

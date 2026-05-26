@@ -1020,49 +1020,113 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 		return nil
 	}
 	request := *planMode.PendingRequest
-	exists, err := r.hasToolResult(sessionID, request.ToolCallID, "request_user_input")
+	toolResultExists, err := r.hasToolResult(sessionID, request.ToolCallID, "request_user_input")
 	if err != nil {
 		return err
 	}
-	if exists {
-		return nil
+	if !toolResultExists {
+		result := session.ToolResult{
+			ToolCallID:    request.ToolCallID,
+			Name:          "request_user_input",
+			LLMOutput:     "Error: Plan Mode input was cancelled by the user.",
+			DisplayOutput: "Error: Plan Mode input was cancelled by the user.",
+			IsError:       true,
+			Metadata: map[string]any{
+				"planmode":     true,
+				"request_id":   request.RequestID,
+				"cancelled":    true,
+				"plan_mode_id": planMode.PlanModeID,
+			},
+		}
+		if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
+			return err
+		}
 	}
-	result := session.ToolResult{
-		ToolCallID:    request.ToolCallID,
-		Name:          "request_user_input",
-		LLMOutput:     "Error: Plan Mode input was cancelled by the user.",
-		DisplayOutput: "Error: Plan Mode input was cancelled by the user.",
-		IsError:       true,
-		Metadata: map[string]any{
-			"planmode":     true,
-			"request_id":   request.RequestID,
-			"cancelled":    true,
-			"plan_mode_id": planMode.PlanModeID,
-		},
-	}
-	if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
+	historyExists, err := r.hasPlanModeInputCancelHistory(sessionID, planMode.PlanModeID, request.RequestID, request.ToolCallID)
+	if err != nil {
 		return err
 	}
-	if err := r.store.AppendPlanModeHistory(sessionID, session.PlanModeHistoryEntry{
-		PlanModeID: planMode.PlanModeID,
-		Type:       "planmode.input_cancelled",
-		Source:     source,
-		Status:     planMode.Status,
-		Data: map[string]any{
-			"request_id":   request.RequestID,
-			"tool_call_id": request.ToolCallID,
-		},
-	}); err != nil {
-		return err
+	if !historyExists {
+		if err := r.store.AppendPlanModeHistory(sessionID, session.PlanModeHistoryEntry{
+			PlanModeID: planMode.PlanModeID,
+			Type:       "planmode.input_cancelled",
+			Source:     source,
+			Status:     planMode.Status,
+			Data: map[string]any{
+				"request_id":   request.RequestID,
+				"tool_call_id": request.ToolCallID,
+			},
+		}); err != nil {
+			return err
+		}
 	}
-	if err := r.appendEvent(sessionID, "planmode.input_cancelled", "plan_input", map[string]any{
-		"plan_mode_id": planMode.PlanModeID,
-		"request_id":   request.RequestID,
-		"recovered":    true,
-	}); err != nil {
+	if err := r.appendPlanInputCancelledEventOnce(sessionID, planMode.PlanModeID, request.RequestID); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (r *Runner) appendPlanInputCancelledEventOnce(sessionID, planModeID, requestID string) error {
+	recorded, err := r.hasPlanModeInputCancelEvent(sessionID, planModeID, requestID)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return nil
+	}
+	return r.appendEvent(sessionID, "planmode.input_cancelled", "plan_input", map[string]any{
+		"plan_mode_id": planModeID,
+		"request_id":   requestID,
+		"recovered":    true,
+	})
+}
+
+func (r *Runner) hasPlanModeInputCancelHistory(sessionID, planModeID, requestID, toolCallID string) (bool, error) {
+	history, err := r.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		return false, err
+	}
+	planModeID = strings.TrimSpace(planModeID)
+	requestID = strings.TrimSpace(requestID)
+	toolCallID = strings.TrimSpace(toolCallID)
+	for _, item := range history {
+		if item.Type != "planmode.input_cancelled" {
+			continue
+		}
+		if strings.TrimSpace(item.PlanModeID) != planModeID {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["request_id"])) != requestID {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["tool_call_id"])) != toolCallID {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func (r *Runner) hasPlanModeInputCancelEvent(sessionID, planModeID, requestID string) (bool, error) {
+	events, err := r.store.LoadEvents(sessionID)
+	if err != nil {
+		return false, err
+	}
+	planModeID = strings.TrimSpace(planModeID)
+	requestID = strings.TrimSpace(requestID)
+	for _, item := range events {
+		if item.Type != "planmode.input_cancelled" {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["plan_mode_id"])) != planModeID {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["request_id"])) != requestID {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *Runner) hasToolResult(sessionID, toolCallID, name string) (bool, error) {
