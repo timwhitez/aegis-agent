@@ -593,6 +593,44 @@ func TestCheckpointResumeHintWarnsOnIsolationAndTrustDrift(t *testing.T) {
 	}
 }
 
+func TestCheckpointResumeHintReportsCorruptContractSnapshot(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := store.SaveContract(meta.ID, session.SessionContract{
+		SchemaVersion: 1,
+		ContractID:    "contract_" + meta.ID,
+		Source:        "user_instruction",
+		TrustSource:   "explicit_user",
+		Profile:       "large_project",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("save contract: %v", err)
+	}
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "contract.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt contract: %v", err)
+	}
+
+	injected, warnings, err := appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
+	if err == nil || !strings.Contains(err.Error(), "contract.json") {
+		t.Fatalf("expected corrupt contract.json error, injected=%t warnings=%#v err=%v", injected, warnings, err)
+	}
+	if injected {
+		t.Fatalf("expected no checkpoint hint injection when current contract is corrupt")
+	}
+	messages, loadErr := store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "longrun_checkpoint" {
+			t.Fatalf("did not expect checkpoint resume note after corrupt contract, got %#v", msg)
+		}
+	}
+}
+
 func TestParentCoordinationGateBlocksWaitAllAndAllowsWaitAnyAfterOneCompletion(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)

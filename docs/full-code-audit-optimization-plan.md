@@ -4154,6 +4154,36 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-153: Checkpoint resume hints hide corrupt contract drift state
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` defines `contract.json` as the durable session contract snapshot and says long-run checkpoint resume notes are visible continuation hints, not a replacement for source facts.
+- `spec/01-runtime-architecture.md` requires session/contract/checkpoint facts to stay file-backed and recoverable through the runtime/session store boundary.
+- `internal/runtime/session_summary.go` `appendCheckpointResumeHint` loaded `checkpoints/longrun-latest.json`, then called `checkpointDriftWarnings` before appending a harness resume note.
+- `checkpointDriftWarnings` called `LoadContract` for the current `contract.json` but collapsed every non-success result into a `"missing current contract"` warning whenever the checkpoint had a contract snapshot.
+- A focused pre-fix regression corrupted `contract.json` after writing a long-run checkpoint. Before the fix, `appendCheckpointResumeHint` returned `injected=true`, appended the resume note, and returned no error while warnings said the contract was missing rather than corrupt.
+
+Impact:
+
+`continue` recovery could inject a checkpoint handoff while the current durable contract fact was unreadable. That misdirects the model/operator toward a drift warning instead of storage repair, and it can append a new harness reminder before reporting the corrupt completion/recovery authority.
+
+Minimal fix:
+
+- Preserve the existing warning for a genuinely absent current `contract.json` when the checkpoint still has a contract snapshot.
+- Return an actionable `load contract.json for checkpoint drift` error for corrupt or otherwise unreadable current contract snapshots.
+- Do not inject the checkpoint resume note when the current contract fact is corrupt.
+- Add focused runtime coverage proving corrupt current contract state blocks checkpoint resume-note injection while the existing isolation/trust drift warning path remains green.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `contract.json` was reported as a missing current contract warning and the checkpoint resume note was injected.
+- Focused post-fix runtime regression proving corrupt `contract.json` returns an error and no checkpoint resume note is appended.
+- Existing checkpoint isolation/trust drift regression remains green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-152: Session summary hides corrupt optional recovery facts
 
 Severity: Medium
@@ -5197,7 +5227,48 @@ Evidence gates:
 - Confirmed this is not an authority/gate change: missing optional files still render as `not recorded`, while malformed existing recovery facts should be visible in `session.md` as diagnostics.
 - Confirmed the minimal fix belongs in `writeSessionSummary` because Web detail and completion gates already report corrupt source facts; this slice only prevents the derived Markdown summary from misrepresenting corrupt facts as absent.
 
+### Review 146
+
+- Confirmed FCA-20260526-153 against the durable contract and long-run checkpoint boundaries in `spec/18-durable-contract-and-completion.md`: checkpoint resume notes are derived hints, while `contract.json` remains the current source fact for completion and recovery constraints.
+- Confirmed this is not a no-contract compatibility issue: a genuinely missing current `contract.json` can still be summarized as checkpoint drift, but a malformed existing contract file must be surfaced as corrupt state.
+- Confirmed the minimal fix belongs in `checkpointDriftWarnings`, because that helper is the point where the current contract fact is compared to the checkpoint snapshot before `appendCheckpointResumeHint` writes a new harness reminder.
+
 ## Update Log
+
+### FCA-20260526-153
+
+Slice: `fix(runtime): report corrupt checkpoint contract drift`
+
+Finding:
+
+- `checkpointDriftWarnings` treated every current `contract.json` load failure as a missing contract while preparing checkpoint resume hints.
+- Before the fix, corrupt `contract.json` after a long-run checkpoint returned `injected=true`, appended the checkpoint resume note, and emitted only a missing-current-contract warning.
+
+Changes:
+
+- Changed `checkpointDriftWarnings` to return an error as well as warnings.
+- Preserved the existing missing-current-contract warning for absent `contract.json`.
+- Returned `load contract.json for checkpoint drift` for corrupt or otherwise unreadable current contract snapshots.
+- Added focused runtime coverage proving corrupt current contract state prevents checkpoint resume-note injection.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCheckpointResumeHintReportsCorruptContractSnapshot -count=1`: failed before the fix because corrupt `contract.json` was reported as a missing current contract warning and the checkpoint note was injected.
+- `go test -timeout 120s ./internal/runtime -run 'TestCheckpointResumeHint(ReportsCorruptContractSnapshot|WarnsOnIsolationAndTrustDrift)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-152
 

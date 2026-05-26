@@ -560,7 +560,10 @@ func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetada
 		}
 		return false, nil, err
 	}
-	warnings := checkpointDriftWarnings(store, meta, checkpoint, provider, model)
+	warnings, err := checkpointDriftWarnings(store, meta, checkpoint, provider, model)
+	if err != nil {
+		return false, nil, err
+	}
 	text := "Harness resume note: a long-run checkpoint is available. Use durable session facts first"
 	if len(checkpoint.ResumeHints) > 0 {
 		text += "; hints: " + strings.Join(checkpoint.ResumeHints, "; ")
@@ -578,7 +581,7 @@ func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetada
 	return true, warnings, store.AppendMessage(meta.ID, msg)
 }
 
-func checkpointDriftWarnings(store *session.Store, meta session.SessionMetadata, checkpoint session.LongRunCheckpoint, provider, model string) []string {
+func checkpointDriftWarnings(store *session.Store, meta session.SessionMetadata, checkpoint session.LongRunCheckpoint, provider, model string) ([]string, error) {
 	var warnings []string
 	if checkpoint.Provider != "" && checkpoint.Provider != provider {
 		warnings = append(warnings, fmt.Sprintf("provider changed from %s to %s", checkpoint.Provider, provider))
@@ -600,11 +603,13 @@ func checkpointDriftWarnings(store *session.Store, meta session.SessionMetadata,
 			if checkpoint.ContractSnapshot.TrustSource != "" && current.TrustSource != "" && checkpoint.ContractSnapshot.TrustSource != current.TrustSource {
 				warnings = append(warnings, fmt.Sprintf("trust source changed from %s to %s", checkpoint.ContractSnapshot.TrustSource, current.TrustSource))
 			}
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("load contract.json for checkpoint drift: %w", err)
 		} else if checkpoint.ContractSnapshot.TrustSource != "" {
 			warnings = append(warnings, fmt.Sprintf("trust source changed from %s to missing current contract", checkpoint.ContractSnapshot.TrustSource))
 		}
 	}
-	return warnings
+	return warnings, nil
 }
 
 func isolationDriftWarning(previous, current *session.IsolationInfo) string {
