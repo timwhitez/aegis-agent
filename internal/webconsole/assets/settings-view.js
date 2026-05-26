@@ -367,13 +367,17 @@ async function renderSettings() {
         }
         saveButton.innerText = 'Saving...';
         saveButton.disabled = true;
+        const submittedAPIKey = currentAPIKeyValue();
         await saveConfig(buildConfigPayload());
         showToast('Settings saved.', 'success');
         saveButton.innerText = 'Saved';
         saveButton.disabled = false;
-        if (apiKeyInput.value !== maskedKey) {
+        if (submittedAPIKey !== '') {
           apiKeyInput.value = maskedKey;
           apiKeyInput.dataset.originalHasKey = 'true';
+        } else if (apiKeyInput.value !== maskedKey) {
+          apiKeyInput.value = '';
+          apiKeyInput.dataset.originalHasKey = 'false';
         }
         setTimeout(() => {
           if (document.body.contains(saveButton)) {

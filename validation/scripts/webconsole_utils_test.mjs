@@ -5,6 +5,7 @@ import vm from 'node:vm';
 
 const utilsSource = readFileSync(new URL('../../internal/webconsole/assets/utils.js', import.meta.url), 'utf8');
 const sessionViewSource = readFileSync(new URL('../../internal/webconsole/assets/session-view.js', import.meta.url), 'utf8');
+const settingsViewSource = readFileSync(new URL('../../internal/webconsole/assets/settings-view.js', import.meta.url), 'utf8');
 const context = {
   console: {
     warn() {}
@@ -93,6 +94,7 @@ vm.runInContext(`
   }
 `, context, { filename: 'renderer-test-stubs.js' });
 vm.runInContext(sessionViewSource, context, { filename: 'session-view.js' });
+vm.runInContext(settingsViewSource, context, { filename: 'settings-view.js' });
 
 function sameRealm(value) {
   return JSON.parse(JSON.stringify(value));
@@ -363,4 +365,110 @@ test('summary panel renders provider attempt ledger facts', () => {
   assert.match(html, /cache create 11/);
   assert.match(html, /request_timeout/);
   assert.match(html, /response resp_p.+done/);
+});
+
+test('settings save keeps empty API key fields unmasked after success', async () => {
+  function fakeElement(initial = {}) {
+    return {
+      value: initial.value || '',
+      checked: Boolean(initial.checked),
+      disabled: false,
+      dataset: {},
+      listeners: {},
+      innerHTML: '',
+      innerText: initial.innerText || '',
+      textContent: initial.textContent || '',
+      addEventListener(event, callback) {
+        this.listeners[event] = callback;
+      },
+      querySelector() {
+        return null;
+      },
+      querySelectorAll() {
+        return [];
+      }
+    };
+  }
+
+  const previousNodes = context.nodes;
+  const previousDocument = context.document;
+  const previousRequestJSON = context.requestJSON;
+  const previousSaveConfig = context.saveConfig;
+  const previousTestConfig = context.testConfig;
+  const previousShowToast = context.showToast;
+  const previousConfirm = context.window.confirm;
+
+  const container = fakeElement();
+  const elements = {
+    'settings-provider': fakeElement({ value: 'openai' }),
+    'settings-api-provider': fakeElement(),
+    'settings-api-provider-help': fakeElement(),
+    'settings-guardrails': fakeElement({ value: 'standard' }),
+    'settings-max-turns-hard': fakeElement(),
+    'settings-disable-hard-turn-limit': fakeElement(),
+    'settings-baseurl': fakeElement(),
+    'settings-model': fakeElement(),
+    'settings-reasoning-mode': fakeElement(),
+    'settings-reasoning-help': fakeElement(),
+    'settings-reasoning-summary': fakeElement(),
+    'settings-reasoning-summary-help': fakeElement(),
+    'settings-apikey': fakeElement(),
+    'settings-test-btn': fakeElement({ innerText: 'Test Settings' }),
+    'settings-save-btn': fakeElement({ innerText: 'Save Changes' })
+  };
+  const savedPayloads = [];
+  const toasts = [];
+
+  context.nodes = { views: { settings: container } };
+  context.document = {
+    getElementById(id) {
+      return elements[id] || null;
+    }
+  };
+  context.requestJSON = async () => ({
+    default_provider: 'openai',
+    guardrails_mode: 'standard',
+    max_turns_hard: 40,
+    disable_hard_turn_limit: false,
+    role_providers: {},
+    providers: {
+      openai: {
+        has_key: false,
+        api_provider: '',
+        effective_api_provider: 'openai-compatible',
+        base_url: 'https://example.invalid/v1',
+        model: 'gpt-test',
+        reasoning_mode: 'default',
+        reasoning_summary: 'default'
+      }
+    }
+  });
+  context.saveConfig = async (payload) => {
+    savedPayloads.push(payload);
+    return { success: true };
+  };
+  context.testConfig = async () => ({ success: true });
+  context.showToast = (message, tone) => {
+    toasts.push({ message, tone });
+  };
+  context.window.confirm = () => true;
+
+  try {
+    await context.renderSettings();
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    context.nodes = previousNodes;
+    context.document = previousDocument;
+    context.requestJSON = previousRequestJSON;
+    context.saveConfig = previousSaveConfig;
+    context.testConfig = previousTestConfig;
+    context.showToast = previousShowToast;
+    context.window.confirm = previousConfirm;
+  }
+
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].apiKey, '');
+  assert.equal(elements['settings-apikey'].value, '');
+  assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'false');
+  assert.equal(toasts.at(-1)?.tone, 'success');
 });

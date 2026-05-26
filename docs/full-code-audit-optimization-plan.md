@@ -3460,6 +3460,34 @@ Validation:
 - Focused post-fix WebConsole regression proving blank API-key values are rejected before persistence.
 - Standard grouped validation before commit.
 
+### FCA-20260526-125: Settings save masks empty API-key fields after success
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires Settings failures and form states to be clear to the local Web operator, especially for API-key writes.
+- `internal/webconsole/assets/settings-view.js` used the same post-success branch for any API-key field whose current value was not the mask.
+- When the backend reported `has_key=false` and the user saved other settings with the API-key field blank, the frontend still replaced the blank value with the mask and set `dataset.originalHasKey = "true"`.
+- A focused Node renderer regression loaded Settings with `has_key: false`, clicked Save with an empty key, and observed the input becoming `••••••••••••••••` even though the submitted payload had `apiKey: ""`.
+
+Impact:
+
+The Settings screen could claim an API key existed immediately after a successful save that did not submit or persist one. Operators could then skip credential setup because the UI looked populated, while subsequent provider probes or sessions still had no usable key.
+
+Minimal fix:
+
+- Capture the normalized API-key payload before saving.
+- Only mask the field and mark `originalHasKey=true` when a non-empty key was actually submitted.
+- Leave empty API-key fields empty and marked as no-key after successful non-key Settings saves.
+- Add focused Node renderer coverage for the empty-key save path.
+
+Validation:
+
+- Focused pre-fix Node renderer regression proving empty API-key fields were masked after save.
+- Focused post-fix Node renderer regression proving empty API-key fields remain empty after save.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4215,6 +4243,12 @@ Evidence gates:
 - Confirmed FCA-20260526-124 against Settings API-key sensitivity requirements in `spec/17-web-console.md` and provider credential resolution in `internal/config/config.go`.
 - Confirmed this is distinct from FCA-20260526-122: NUL-containing values fail at `os.Setenv`, while whitespace-only values were accepted as a successful save but are later trimmed to an unusable credential.
 - Confirmed the minimal fix should stay in Web Settings API-key preflight. The env-file formatter, Settings UI confirmation, provider adapters, and credential loader do not need to change for this slice.
+
+### Review 118
+
+- Confirmed FCA-20260526-125 against Settings API-key operator-state requirements in `spec/17-web-console.md`.
+- Confirmed this is distinct from FCA-20260526-124: that slice blocks backend persistence of blank key values, while this one fixes the frontend state after a successful save that intentionally submits no key.
+- Confirmed the minimal fix should stay in the Settings renderer post-save state update. Backend config persistence, API-key preflight, env-file formatting, and provider probes do not need to change for this slice.
 
 ## Update Log
 
@@ -7004,6 +7038,39 @@ Validation:
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-125
+
+Slice: `fix(webconsole): keep empty API key field unmasked`
+
+Finding:
+
+- Settings UI masked the API-key field after a successful save even when the backend had reported no existing key and the user submitted no key.
+- Before the fix, a save with `apiKey: ""` changed the local field to `••••••••••••••••` and set `dataset.originalHasKey = "true"`.
+
+Changes:
+
+- Captured the normalized API-key payload before save.
+- Only mask the field and mark `originalHasKey=true` when a non-empty key was actually submitted.
+- Left empty API-key fields empty and marked as no-key after successful non-key Settings saves.
+- Added focused Node renderer coverage for the empty-key save path.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the empty API-key field became the mask.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 15/15 tests.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
