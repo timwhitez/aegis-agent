@@ -2182,6 +2182,32 @@ Validation:
 - Adjacent synchronous delegate regression group.
 - Standard grouped validation before commit.
 
+### FCA-20260526-079: provider cancellation can lose required durable event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` requires provider preemption to leave a searchable durable `provider.cancelled` event.
+- `Engine.Run` handled provider-call cancellation for pause / interrupt steer through the best-effort `emit` helper, so an `events.jsonl` write failure did not fail the run.
+- A focused regression blocked `events.jsonl` with a directory during interrupt steer cancellation. Before the fix, `Engine.Run` returned `awaiting_input` after accepting the steer path even though `provider.cancelled` was not persisted.
+
+Impact:
+
+Interrupted provider turns could appear to have accepted live steering without the required durable cancellation evidence. Replay, recovery, and Web-first operator timelines would not be able to prove that the provider turn was actually preempted.
+
+Minimal fix:
+
+- Use the error-returning event append path for `provider.cancelled` in provider pause and interrupt-steer cancellation branches.
+- Keep unrelated provider retry / auto-resume timeline emits unchanged in this slice.
+- Add a focused provider cancellation event append regression.
+
+Validation:
+
+- Focused provider cancellation event append failure regression.
+- Adjacent interrupt-steer cancellation and defer regression group.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2661,6 +2687,12 @@ Evidence gates:
 - Confirmed FCA-20260526-078 against `spec/18-durable-contract-and-completion.md`, synchronous `Delegate`, `addParentChildSession`, `resolveParentChildSession`, and focused blocked-parent-coordination regression evidence.
 - Confirmed this is distinct from FCA-20260526-077: this path is non-queued child delegation and uses child-session coordination lists rather than queue-job coordination lists.
 - Confirmed returning the child runner's original error remains higher priority if both child execution and later coordination fail.
+
+### Review 72
+
+- Confirmed FCA-20260526-079 against `spec/13-live-input-and-steering.md`, `Engine.Run`, provider cancellation branches, and focused blocked-`events.jsonl` interrupt-steer evidence.
+- Confirmed this event is not merely diagnostic in this path: the live-steer spec explicitly requires durable `provider.cancelled` evidence when provider preemption succeeds.
+- Confirmed the fix stays scoped to provider cancellation and does not change generic best-effort timeline event behavior.
 
 ## Update Log
 
@@ -4567,5 +4599,35 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test --timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-079
+
+Slice: `fix(runtime): require provider cancellation event persistence`
+
+Finding:
+
+- Provider-call pause / interrupt-steer cancellation wrote required `provider.cancelled` evidence through the best-effort event helper.
+- A focused regression blocked `events.jsonl`; before the fix, interrupt-steer cancellation returned `awaiting_input` without persisting the required durable cancellation event.
+
+Changes:
+
+- Added an error-returning `appendProviderCancelled` helper.
+- Propagated `provider.cancelled` append failures from provider pause and interrupt-steer cancellation branches.
+- Added a focused provider cancellation event append regression.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderCancellationReportsCancelledEventAppendError -count=1`: failed before the fix with `awaiting_input` and no append error.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderCancellationReportsCancelledEventAppendError|TestEngineInterruptSteerCancelsProviderAndContinuesWithAcceptedMessage|TestEngineInterruptSteerDeferredFinishLeavesSessionAwaitingInput|TestEngineInterruptSteerDuringToolDefersUntilNextTurn' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

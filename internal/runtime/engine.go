@@ -282,10 +282,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				switch {
 				case e.control.consumePause():
 					reason := e.control.takePauseReason()
-					e.emit(meta.ID, "provider.cancelled", "provider_call", map[string]any{"reason": reason})
+					if appendErr := e.appendProviderCancelled(meta.ID, reason); appendErr != nil {
+						return RunResult{}, appendErr
+					}
 					return e.pause(ctx, meta, state, reason, hookManager)
 				case e.control.consumeSteerInterrupt():
-					e.emit(meta.ID, "provider.cancelled", "provider_call", map[string]any{"reason": "steer_interrupt"})
+					if appendErr := e.appendProviderCancelled(meta.ID, "steer_interrupt"); appendErr != nil {
+						return RunResult{}, appendErr
+					}
 					continue
 				}
 			}
@@ -936,6 +940,10 @@ func (e *Engine) emitProviderAutoResume(sessionID string, err error, attempt int
 		}
 	}
 	e.emit(sessionID, "provider.auto_resume", "provider_call", data)
+}
+
+func (e *Engine) appendProviderCancelled(sessionID, reason string) error {
+	return e.appendEvent(sessionID, "provider.cancelled", "provider_call", map[string]any{"reason": reason})
 }
 
 func providerAutoResumePrompt(err error, attempt, maxAttempts int) string {

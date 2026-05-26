@@ -297,6 +297,48 @@ func TestEngineProviderFailureReportsFailedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineProviderCancellationReportsCancelledEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "initial")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	firstTurnStarted := make(chan struct{})
+	fake := provider.NewFake(func(ctx context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if got := req.Messages[len(req.Messages)-1].Text; got != "initial" {
+			t.Fatalf("expected initial prompt on first turn, got %q", got)
+		}
+		close(firstTurnStarted)
+		<-ctx.Done()
+		return provider.TurnResult{}, ctx.Err()
+	})
+
+	go func() {
+		<-firstTurnStarted
+		if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("switch direction", true)); err != nil {
+			t.Errorf("append steer: %v", err)
+			return
+		}
+		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove events: %v", err)
+			return
+		}
+		if err := os.Mkdir(eventsPath, 0o700); err != nil {
+			t.Errorf("block events path: %v", err)
+			return
+		}
+		engine.control.requestSteerInterrupt()
+	}()
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected provider.cancelled event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+}
+
 func TestEngineFailReportsFailedEventAppendError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Hooks.SessionStart = []config.HookDefinition{{
