@@ -46,6 +46,101 @@ func TestProviderToolsExposePlanModeToolsOnlyWhilePending(t *testing.T) {
 	}
 }
 
+func TestContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_planmode_create_retry",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"planning continued"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        3,
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		Retry:             config.Retry{MaxAttempts: 1},
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	draft := session.PlanModeDraft{Enabled: true, Objective: "Create plan mode on continue", Source: session.PlanModeSourceCLI}
+	blockRuntimeEventsPath(t, runner.store, sessionID)
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, PlanMode: &draft, Source: session.PlanModeSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected plan mode created event append error, got result=%#v err=%v", result, err)
+	}
+	created, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode after failed event append: %v", err)
+	}
+	if created.Status != session.PlanModeStatusPlanning || created.Objective != draft.Objective {
+		t.Fatalf("expected durable created plan mode after event failure, got %#v", created)
+	}
+	history, err := runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode history after failed event append: %v", err)
+	}
+	if count := countRuntimePlanModeHistoryType(history, "planmode.created"); count != 1 {
+		t.Fatalf("expected one created history row after failed event append, got %d history=%#v", count, history)
+	}
+
+	eventsPath := filepath.Join(runner.store.SessionDir(sessionID), "events.jsonl")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatalf("remove blocked events path: %v", err)
+	}
+	retried, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, PlanMode: &draft, Source: session.PlanModeSourceCLI})
+	if err != nil {
+		t.Fatalf("retry plan mode creation event: result=%#v err=%v", retried, err)
+	}
+	reloaded, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode after retry: %v", err)
+	}
+	if reloaded.PlanModeID != created.PlanModeID {
+		t.Fatalf("retry should not replace current plan mode, before=%#v after=%#v", created, reloaded)
+	}
+	history, err = runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode history after retry: %v", err)
+	}
+	if count := countRuntimePlanModeHistoryType(history, "planmode.created"); count != 1 {
+		t.Fatalf("retry should not duplicate created history, got %d history=%#v", count, history)
+	}
+	events, err := runner.store.LoadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("load events after retry: %v", err)
+	}
+	if count := countRuntimeEventType(events, "planmode.created"); count != 1 {
+		t.Fatalf("retry should append one created event, got %d events=%#v", count, events)
+	}
+}
+
 func TestPlanModeGateBlocksToolsAfterCreateGoalRequiresApproval(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

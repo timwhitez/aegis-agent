@@ -684,11 +684,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if strings.TrimSpace(draft.Objective) == "" {
 			draft.Objective = firstNonEmpty(req.Message, "Plan Mode continuation")
 		}
-		planMode, err := r.store.CreatePlanMode(meta.ID, draft)
-		if err != nil {
-			return r.failBeforeRun(meta.ID, state, "prepare", err)
-		}
-		if err := r.appendEvent(meta.ID, "planmode.created", "prepare", planModeEventData(planMode)); err != nil {
+		if _, err := r.ensurePlanModeCreatedForContinue(meta.ID, draft); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	} else if !req.ApprovePlan && stringsTrim(req.Message) != "" {
@@ -730,6 +726,35 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func (r *Runner) ensurePlanModeCreatedForContinue(sessionID string, draft session.PlanModeDraft) (session.PlanModeState, error) {
+	if current, err := r.store.LoadPlanMode(sessionID); err == nil && matchesPlanModeDraft(current, draft) {
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.created", current); err != nil {
+			return session.PlanModeState{}, err
+		}
+		return current, nil
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return session.PlanModeState{}, err
+	}
+	planMode, err := r.store.CreatePlanMode(sessionID, draft)
+	if err != nil {
+		return session.PlanModeState{}, err
+	}
+	if err := r.appendPlanModeEventOnce(sessionID, "planmode.created", planMode); err != nil {
+		return session.PlanModeState{}, err
+	}
+	return planMode, nil
+}
+
+func matchesPlanModeDraft(planMode session.PlanModeState, draft session.PlanModeDraft) bool {
+	if !draft.Enabled || !planMode.Enabled || planMode.Status != session.PlanModeStatusPlanning {
+		return false
+	}
+	if strings.TrimSpace(planMode.Objective) != strings.TrimSpace(draft.Objective) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(planMode.Source), strings.TrimSpace(draft.Source))
 }
 
 func (r *Runner) ensurePlanModeCancelled(sessionID, source string) (session.PlanModeState, error) {

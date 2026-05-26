@@ -3007,6 +3007,36 @@ Validation:
 - Adjacent Plan Mode answer/cancel runtime tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-109: Continue Plan Mode creation retry replaces current gate
+
+Severity: High
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` defines `planmode.json`, `artifacts/planmode-history.jsonl`, and `events.jsonl` as the durable Plan Mode fact surfaces, and `spec/17-web-console.md` treats Plan Mode as the execution gate that Web/CLI must not replace accidentally.
+- `internal/runtime/runner.go` `Continue` with `PlanMode.Enabled` called `CreatePlanMode`, then appended a required `planmode.created` runtime event.
+- If `events.jsonl` append failed after the store creation, `planmode.json` and history already contained the new planning gate.
+- Retrying the same continue request called `CreatePlanMode` again, replacing the current Plan Mode id and duplicating `planmode.created` history instead of repairing the missing event for the existing gate.
+- A focused regression blocked `events.jsonl`, retried with the same Plan Mode draft after restoring the path, and observed a different Plan Mode id before the fix.
+
+Impact:
+
+A transient event append failure at Plan Mode creation could orphan the first gate and replace it with a second gate on retry. That breaks continuity for Web inspector state, linked recovery evidence, and any operator reasoning tied to the original Plan Mode id.
+
+Minimal fix:
+
+- Add an idempotent continue-time Plan Mode creation helper.
+- When the current Plan Mode is still a planning gate matching the requested objective/source, re-append the missing `planmode.created` event without creating a new Plan Mode.
+- Continue to create a new Plan Mode for genuinely different drafts.
+- Add focused runtime coverage for blocked `events.jsonl`, retry after restoring the path, unchanged Plan Mode id, one `planmode.created` history row, and one restored runtime event.
+
+Validation:
+
+- Focused pre-fix runtime regression proving retry replaced the current Plan Mode id.
+- Focused post-fix runtime regression for the same path.
+- Adjacent Plan Mode creation/revision/input runtime tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3666,6 +3696,12 @@ Evidence gates:
 - Confirmed FCA-20260526-108 against Plan Mode input recovery requirements in `spec/18-durable-contract-and-completion.md` and runtime recovered input answer ordering.
 - Confirmed this is the symmetric answer-side event gap after FCA-20260526-107: answer history and replay can exist, while only the runtime event is missing.
 - Confirmed the minimal fix must verify the same request id, answer payload, original tool call id, and existing tool result before treating a no-pending-request retry as recovered.
+
+### Review 102
+
+- Confirmed FCA-20260526-109 against Plan Mode durable gate requirements in `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, and continue-time Plan Mode creation in `internal/runtime/runner.go`.
+- Confirmed this is a gate identity issue rather than a provider replay issue: retry can replace `planmode.json` before any provider turn is needed.
+- Confirmed the minimal fix should only reuse a current planning Plan Mode whose objective/source match the requested draft, preserving normal creation semantics for different drafts.
 
 ## Update Log
 
@@ -5927,6 +5963,43 @@ Validation:
 - `go test -timeout 120s ./internal/runtime -run TestPlanInputAnswerRetryAfterEventFailureRestoresEvent -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'Test(PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|CancelPlanModeReportsCancelledEventAppendError)' -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'Test(PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|CancelPlanModeReportsCancelledEventAppendError|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-109
+
+Slice: `fix(runtime): retry failed plan mode creation event`
+
+Finding:
+
+- Continue-time Plan Mode creation could persist `planmode.json` and `planmode.created` history before failing to append the required `planmode.created` runtime event.
+- Retrying the same continue request then created a second Plan Mode with a different id instead of repairing the missing event for the existing gate.
+
+Changes:
+
+- Added an idempotent continue-time Plan Mode creation helper.
+- Reuses an existing planning Plan Mode when its objective/source match the requested draft, re-appending the missing `planmode.created` event once.
+- Leaves genuinely different Plan Mode drafts on the existing creation path.
+- Added focused runtime coverage for blocked `events.jsonl`, retry after restoring the path, unchanged Plan Mode id, one created history row, and one restored created event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode -count=1`: failed before the fix because retry replaced the current Plan Mode id.
+- `go test -timeout 120s ./internal/runtime -run TestContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode|PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|CancelPlanModeReportsCancelledEventAppendError|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage)' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
