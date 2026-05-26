@@ -4588,6 +4588,37 @@ Validation:
 - Focused helper regression proving `appendCheckpointResumeHint` returns the message ID for the appended checkpoint note.
 - Standard grouped validation before commit.
 
+### FCA-20260527-182: Contract refresh can persist snapshots without required contract events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `contract.created` and `contract.updated` in the core event model and defines `contract.json`, `artifact-tracker.json`, `messages.jsonl`, and `events.jsonl` as session facts.
+- `spec/13-live-input-and-steering.md` requires accepted steering that changes deliverables or completion conditions to sync `contract.created` / `contract.updated` and the artifact tracker, rather than relying only on the prompt view.
+- `internal/runtime/contract.go` refreshed `contract.json`, `artifact-tracker.json`, and `artifacts/contract-history.jsonl` before emitting the matching contract event through a void callback backed by unchecked `r.emit` / `e.emit`.
+- If `events.jsonl` was unavailable after the contract files were written, refresh returned success in the event path. On retry, `contractsEquivalent` could treat the already-written snapshot as current and skip the missing `contract.created` / `contract.updated` event permanently.
+- The same write-before-error shape affected later refresh failures: without a rollback snapshot, a failed tracker/history/event step could leave contract state advanced beyond the observable event timeline.
+
+Impact:
+
+Start, Continue, or accepted steer could advance completion gates and required artifacts while the Web timeline and recovery event stream missed the core contract event explaining the change. Because the next refresh could see an equivalent contract, operators would not necessarily get a self-healing retry path for the missing event.
+
+Minimal fix:
+
+- Change contract-refresh event callbacks to return errors and use checked `appendEvent` for `contract.created` / `contract.updated` in Runner and Engine paths.
+- Capture a contract refresh rollback snapshot before mutating `contract.json`, `artifact-tracker.json`, or contract history.
+- Restore the prior contract snapshot, artifact tracker, and contract history if a required write or core contract event append fails.
+- Keep `artifact.required` best-effort because it is a diagnostic/derived event and is not part of the core event catalog.
+- Refresh contract state on `continue` even without a new user message, while keeping empty sessions without external user instructions as a no-op to avoid fabricating contracts.
+
+Validation:
+
+- Focused runtime regression proving blocked `events.jsonl` during `contract.created` returns an event-path error and removes the newly written contract/tracker/history snapshot.
+- Focused runtime regression proving blocked `events.jsonl` during `contract.updated` restores the previous contract/tracker/history snapshot.
+- Focused runtime regression proving empty sessions without external user instructions do not create a contract when refreshed.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6230,7 +6261,50 @@ Evidence gates:
 - Confirmed this is not generic telemetry: the event explains a provider-visible harness resume note added to `messages.jsonl` before continuing a recovered session.
 - Confirmed the clean rollback boundary is the just-appended checkpoint note, so the minimal fix can reuse the existing tail-ID rollback helper without changing checkpoint generation or provider execution semantics.
 
+### Review 175
+
+- Confirmed FCA-20260527-182 against the `contract.created` / `contract.updated` event catalog in `spec/01-runtime-architecture.md` and the steer contract-sync requirement in `spec/13-live-input-and-steering.md`.
+- Confirmed the retry hazard is real because `contractsEquivalent` can suppress a later refresh once `contract.json` has already advanced, so a missing core contract event is not guaranteed to self-heal.
+- Confirmed `artifact.required` should remain best-effort in this slice: it is derived diagnostic visibility, while `contract.created` / `contract.updated` are the core durable fact events that must fail the refresh if unavailable.
+
 ## Update Log
+
+### FCA-20260527-182
+
+Slice: `fix(runtime): persist contract refresh events`
+
+Finding:
+
+- `refreshContractForSession` wrote `contract.json`, `artifact-tracker.json`, and `artifacts/contract-history.jsonl`.
+- It then emitted `contract.created` / `contract.updated` through a void callback backed by unchecked runtime emitters.
+- Before the fix, blocked `events.jsonl` could leave contract state advanced without the core contract event, and later refreshes could skip event recreation because the already-written contract looked equivalent.
+
+Changes:
+
+- Contract refresh callbacks now return errors, and Runner / Engine refresh paths record `contract.created` / `contract.updated` through checked `appendEvent`.
+- Added `Store.SnapshotContractRefresh`, `Store.RestoreContractRefreshSnapshot`, and `Store.LoadContractHistory` to capture and restore the contract snapshot, artifact tracker, and contract history around refresh mutations.
+- `refreshContractForSession` restores the prior contract/tracker/history snapshot on required write or core contract event append failure.
+- `artifact.required` remains best-effort because it is derived diagnostic visibility, not part of the core event catalog.
+- `Continue` refreshes contract state even when no new message is appended, while empty sessions without external user instructions remain a no-op.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestContractRefresh(ReportsContractEventAppendErrorAndRestoresSnapshot|RestoresPreviousSnapshotOnContractUpdatedEventError|SkipsEmptySessionWithoutExternalInstruction|EmitsArtifactRequiredEvent|ReportsHistoryAppendError|ResetsArtifactFreshnessForSamePathNewInstruction)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestStore' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/runtime/contract.go internal/runtime/engine.go internal/runtime/runner.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-181
 

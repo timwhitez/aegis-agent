@@ -1158,8 +1158,8 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 			return accepted, err
 		}
 		_, _ = e.store.RefreshPendingSteerCount(sessionID)
-		if err := refreshContractForSession(e.store, func(eventType string, data map[string]any) {
-			e.emit(sessionID, eventType, "control_drain", data)
+		if err := refreshContractForSession(e.store, func(eventType string, data map[string]any) error {
+			return e.appendEvent(sessionID, eventType, "control_drain", data)
 		}, meta); err != nil {
 			return accepted, err
 		}

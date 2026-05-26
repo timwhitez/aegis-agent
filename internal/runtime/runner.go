@@ -724,9 +724,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, extraUserMeta); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
-		if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
-			return r.failBeforeRun(meta.ID, state, "prepare", err)
-		}
+	}
+	if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	result, err := r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
 	if err != nil && result.SessionID == "" {

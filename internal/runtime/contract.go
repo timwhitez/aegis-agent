@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -189,16 +190,17 @@ func hashInstructionText(text string) string {
 }
 
 func (r *Runner) refreshContractFromMessages(meta session.SessionMetadata, phase string) error {
-	return refreshContractForSession(r.store, func(eventType string, data map[string]any) {
-		r.emit(meta.ID, eventType, phase, data)
+	return refreshContractForSession(r.store, func(eventType string, data map[string]any) error {
+		return r.appendEvent(meta.ID, eventType, phase, data)
 	}, meta)
 }
 
-func refreshContractForSession(store *session.Store, emit func(string, map[string]any), meta session.SessionMetadata) error {
+func refreshContractForSession(store *session.Store, emit func(string, map[string]any) error, meta session.SessionMetadata) error {
 	messages, err := store.LoadMessages(meta.ID)
 	if err != nil {
 		return err
 	}
+	hasExternalInstruction := latestExternalInstructionIndex(messages) >= 0
 	next := buildSessionContract(meta, messages)
 	existing, err := store.LoadContract(meta.ID)
 	if err == nil {
@@ -206,32 +208,43 @@ func refreshContractForSession(store *session.Store, emit func(string, map[strin
 		if contractsEquivalent(existing, next) {
 			return nil
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if errors.Is(err, os.ErrNotExist) {
+		if !hasExternalInstruction {
+			return nil
+		}
+	} else {
 		return err
 	}
 	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := store.SaveContract(meta.ID, next); err != nil {
+
+	rollback, err := store.SnapshotContractRefresh(meta.ID)
+	if err != nil {
 		return err
+	}
+	if err := store.SaveContract(meta.ID, next); err != nil {
+		return restoreContractRefreshAfterError(store, meta.ID, rollback, err)
 	}
 	if err := store.SaveArtifactTracker(meta.ID, next.RequiredArtifacts); err != nil {
-		return err
+		return restoreContractRefreshAfterError(store, meta.ID, rollback, err)
 	}
 	if err := store.AppendContractHistory(meta.ID, next); err != nil {
-		return err
+		return restoreContractRefreshAfterError(store, meta.ID, rollback, err)
 	}
 	eventType := "contract.created"
 	if existing.ContractID != "" {
 		eventType = "contract.updated"
 	}
 	if emit != nil {
-		emit(eventType, map[string]any{
+		if err := emit(eventType, map[string]any{
 			"contract_id":        next.ContractID,
 			"profile":            next.Profile,
 			"required_artifacts": len(next.RequiredArtifacts),
 			"completion_gates":   append([]string(nil), next.CompletionGates...),
-		})
+		}); err != nil {
+			return restoreContractRefreshAfterError(store, meta.ID, rollback, fmt.Errorf("record %s event: %w", eventType, err))
+		}
 		if len(next.RequiredArtifacts) > 0 {
-			emit("artifact.required", map[string]any{
+			_ = emit("artifact.required", map[string]any{
 				"contract_id": next.ContractID,
 				"artifacts":   requiredArtifactEventPayload(next.RequiredArtifacts),
 				"count":       len(next.RequiredArtifacts),
@@ -241,6 +254,13 @@ func refreshContractForSession(store *session.Store, emit func(string, map[strin
 	_ = writeSessionSummary(store, meta.ID)
 	_ = writeLongRunCheckpoint(store, meta.ID)
 	return nil
+}
+
+func restoreContractRefreshAfterError(store *session.Store, sessionID string, rollback session.ContractRefreshSnapshot, err error) error {
+	if rollbackErr := store.RestoreContractRefreshSnapshot(sessionID, rollback); rollbackErr != nil {
+		return fmt.Errorf("restore contract refresh snapshot after %v: %w", err, rollbackErr)
+	}
+	return err
 }
 
 func requiredArtifactEventPayload(artifacts []session.RequiredArtifact) []map[string]any {

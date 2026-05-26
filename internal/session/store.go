@@ -369,6 +369,123 @@ func (s *Store) AppendContractHistory(sessionID string, contract SessionContract
 	return nil
 }
 
+type ContractRefreshSnapshot struct {
+	Contract           SessionContract
+	HasContract        bool
+	ArtifactTracker    []RequiredArtifact
+	HasArtifactTracker bool
+	ContractHistory    []SessionContract
+	HasContractHistory bool
+}
+
+func (s *Store) SnapshotContractRefresh(sessionID string) (ContractRefreshSnapshot, error) {
+	var snapshot ContractRefreshSnapshot
+	contractPath, err := s.sessionPath(sessionID, "contract.json")
+	if err != nil {
+		return snapshot, err
+	}
+	trackerPath, err := s.sessionPath(sessionID, "artifact-tracker.json")
+	if err != nil {
+		return snapshot, err
+	}
+	historyPath, err := s.sessionPath(sessionID, "artifacts", "contract-history.jsonl")
+	if err != nil {
+		return snapshot, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := readJSONFile(contractPath, &snapshot.Contract); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return snapshot, fmt.Errorf("load contract snapshot %s: %w", contractPath, err)
+		}
+	} else {
+		snapshot.HasContract = true
+	}
+	if err := readJSONFile(trackerPath, &snapshot.ArtifactTracker); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return snapshot, fmt.Errorf("load artifact tracker snapshot %s: %w", trackerPath, err)
+		}
+	} else {
+		snapshot.HasArtifactTracker = true
+	}
+	if err := readJSONL(historyPath, &snapshot.ContractHistory); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return snapshot, fmt.Errorf("load contract history snapshot %s: %w", historyPath, err)
+		}
+	} else {
+		snapshot.HasContractHistory = true
+	}
+	return snapshot, nil
+}
+
+func (s *Store) RestoreContractRefreshSnapshot(sessionID string, snapshot ContractRefreshSnapshot) error {
+	contractPath, err := s.sessionPath(sessionID, "contract.json")
+	if err != nil {
+		return err
+	}
+	trackerPath, err := s.sessionPath(sessionID, "artifact-tracker.json")
+	if err != nil {
+		return err
+	}
+	historyPath, err := s.sessionPath(sessionID, "artifacts", "contract-history.jsonl")
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snapshot.HasContract {
+		if err := s.writeJSONFile(contractPath, snapshot.Contract); err != nil {
+			return err
+		}
+	} else if err := fileutil.RemoveFileNoSymlink(contractPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if snapshot.HasArtifactTracker {
+		if err := s.writeJSONFile(trackerPath, snapshot.ArtifactTracker); err != nil {
+			return err
+		}
+	} else if err := fileutil.RemoveFileNoSymlink(trackerPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if snapshot.HasContractHistory {
+		if err := s.writeContractHistoryLocked(historyPath, snapshot.ContractHistory); err != nil {
+			return err
+		}
+	} else if err := fileutil.RemoveFileNoSymlink(historyPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) LoadContractHistory(sessionID string) ([]SessionContract, error) {
+	path, err := s.sessionPath(sessionID, "artifacts", "contract-history.jsonl")
+	if err != nil {
+		return nil, err
+	}
+	var out []SessionContract
+	err = readJSONL(path, &out)
+	if errors.Is(err, os.ErrNotExist) {
+		return []SessionContract{}, nil
+	}
+	return out, err
+}
+
+func (s *Store) writeContractHistoryLocked(path string, contracts []SessionContract) error {
+	var data bytes.Buffer
+	enc := json.NewEncoder(&data)
+	for _, contract := range contracts {
+		if err := enc.Encode(contract); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
+}
+
 func (s *Store) LoadArtifactTracker(sessionID string) ([]RequiredArtifact, error) {
 	var artifacts []RequiredArtifact
 	path, err := s.sessionPath(sessionID, "artifact-tracker.json")

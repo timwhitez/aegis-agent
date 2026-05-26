@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -65,16 +66,124 @@ func TestContractRefreshEmitsArtifactRequiredEvent(t *testing.T) {
 		t.Fatalf("append message: %v", err)
 	}
 	var events []string
-	if err := refreshContractForSession(store, func(eventType string, data map[string]any) {
+	if err := refreshContractForSession(store, func(eventType string, data map[string]any) error {
 		events = append(events, eventType)
 		if eventType == "artifact.required" && data["count"] != 1 {
 			t.Fatalf("expected one required artifact event, got %#v", data)
 		}
+		return nil
 	}, meta); err != nil {
 		t.Fatalf("refresh contract: %v", err)
 	}
 	if !containsString(events, "contract.created") || !containsString(events, "artifact.required") {
 		t.Fatalf("expected contract.created and artifact.required events, got %#v", events)
+	}
+}
+
+func TestContractRefreshReportsContractEventAppendErrorAndRestoresSnapshot(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	blockRuntimeEventsPath(t, store, meta.ID)
+
+	err := refreshContractForSession(store, func(eventType string, data map[string]any) error {
+		return store.AppendEvent(meta.ID, events.New(meta.ID, eventType, "prepare", data))
+	}, meta)
+	if err == nil || !strings.Contains(err.Error(), "contract.created") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected contract.created events.jsonl error, got %v", err)
+	}
+	if _, loadErr := store.LoadContract(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("expected contract rollback to remove new contract, got %v", loadErr)
+	}
+	tracker, loadErr := store.LoadArtifactTracker(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load artifact tracker after rollback: %v", loadErr)
+	}
+	if len(tracker) != 0 {
+		t.Fatalf("expected artifact tracker rollback, got %#v", tracker)
+	}
+	history, loadErr := store.LoadContractHistory(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load contract history after rollback: %v", loadErr)
+	}
+	if len(history) != 0 {
+		t.Fatalf("expected contract history rollback, got %#v", history)
+	}
+}
+
+func TestContractRefreshRestoresPreviousSnapshotOnContractUpdatedEventError(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	firstInstruction := session.NewMessage("user", "Write reports/final.md with the final implementation summary.")
+	if err := store.AppendMessage(meta.ID, firstInstruction); err != nil {
+		t.Fatalf("append first instruction: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh first contract: %v", err)
+	}
+	previousContract, err := store.LoadContract(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous contract: %v", err)
+	}
+	previousTracker, err := store.LoadArtifactTracker(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous tracker: %v", err)
+	}
+	previousHistory, err := store.LoadContractHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous history: %v", err)
+	}
+
+	secondInstruction := session.NewMessage("user", "Write reports/second.md with updated release notes.")
+	if err := store.AppendMessage(meta.ID, secondInstruction); err != nil {
+		t.Fatalf("append second instruction: %v", err)
+	}
+	blockRuntimeEventsPath(t, store, meta.ID)
+	err = refreshContractForSession(store, func(eventType string, data map[string]any) error {
+		return store.AppendEvent(meta.ID, events.New(meta.ID, eventType, "prepare", data))
+	}, meta)
+	if err == nil || !strings.Contains(err.Error(), "contract.updated") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected contract.updated events.jsonl error, got %v", err)
+	}
+
+	contract, err := store.LoadContract(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored contract: %v", err)
+	}
+	if contract.SourceMessageID != previousContract.SourceMessageID || contract.SourceMessageID == secondInstruction.ID {
+		t.Fatalf("expected previous contract source %q restored, got %#v", previousContract.SourceMessageID, contract)
+	}
+	tracker, err := store.LoadArtifactTracker(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored tracker: %v", err)
+	}
+	if !reflect.DeepEqual(tracker, previousTracker) {
+		t.Fatalf("expected previous tracker restored, got %#v want %#v", tracker, previousTracker)
+	}
+	history, err := store.LoadContractHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored history: %v", err)
+	}
+	if !reflect.DeepEqual(history, previousHistory) {
+		t.Fatalf("expected previous history restored, got %#v want %#v", history, previousHistory)
+	}
+}
+
+func TestContractRefreshSkipsEmptySessionWithoutExternalInstruction(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh empty contract: %v", err)
+	}
+	if _, err := store.LoadContract(meta.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no contract without external instruction, got %v", err)
+	}
+	history, err := store.LoadContractHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load contract history: %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("expected no contract history without external instruction, got %#v", history)
 	}
 }
 
