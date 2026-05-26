@@ -3037,6 +3037,36 @@ Validation:
 - Adjacent Plan Mode creation/revision/input runtime tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-110: Linked mission approval retry duplicates history
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` require mission plan approval to synchronize through linked Plan Mode facts and leave durable approval evidence.
+- `internal/runtime/runner.go` `approveLinkedMissionPlan` called `ApproveMissionPlan`, which mutates `goal.json` and appends `mission.plan.approved` to `goal-history.jsonl`, then appended a required `mission.plan.approved` runtime event.
+- If `events.jsonl` append failed after the goal mutation/history append, the mission plan was already approved and history-backed.
+- Retrying the same linked mission approval called `ApproveMissionPlan` again, adding a second `mission.plan.approved` history row before restoring the missing event.
+- A focused regression blocked `events.jsonl`, retried after restoring the path, and observed duplicate mission approval history before the fix.
+
+Impact:
+
+A retry after transient event failure could make a single linked Plan Mode approval appear as multiple mission approvals in durable goal history. That pollutes audit history and can mislead Web/session summaries about operator approval actions.
+
+Minimal fix:
+
+- Treat linked mission approval as idempotent when the current mission is already approved and goal history already records the same Plan Mode id and approved version.
+- Re-append the missing `mission.plan.approved` runtime event once without re-running the goal store mutation.
+- De-duplicate the runtime event by goal id, Plan Mode id, and approved version.
+- Add focused runtime coverage for blocked `events.jsonl`, retry after restoring the path, one mission approval history row, and one restored mission approval event.
+
+Validation:
+
+- Focused pre-fix runtime regression proving retry duplicated `mission.plan.approved` history.
+- Focused post-fix runtime regression for the same path.
+- Adjacent Plan Mode approval/mission runtime tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3702,6 +3732,12 @@ Evidence gates:
 - Confirmed FCA-20260526-109 against Plan Mode durable gate requirements in `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, and continue-time Plan Mode creation in `internal/runtime/runner.go`.
 - Confirmed this is a gate identity issue rather than a provider replay issue: retry can replace `planmode.json` before any provider turn is needed.
 - Confirmed the minimal fix should only reuse a current planning Plan Mode whose objective/source match the requested draft, preserving normal creation semantics for different drafts.
+
+### Review 103
+
+- Confirmed FCA-20260526-110 against linked mission approval requirements in `spec/01-runtime-architecture.md`, `spec/18-durable-contract-and-completion.md`, and runtime `approveLinkedMissionPlan` ordering.
+- Confirmed this is separate from Plan Mode approval replay: Plan Mode approval/execution can be idempotent while linked Goal/Mission history still duplicates after an event append failure.
+- Confirmed the minimal fix should require matching goal id, Plan Mode id, and approved version before treating a mission approval retry as recovered.
 
 ## Update Log
 
@@ -6001,6 +6037,43 @@ Validation:
 - `go test -timeout 120s ./internal/runtime -run 'Test(ContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage)' -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'Test(ContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode|PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|CancelPlanModeReportsCancelledEventAppendError|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage)' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-110
+
+Slice: `fix(runtime): retry failed linked mission approval event`
+
+Finding:
+
+- Linked mission plan approval could persist approved mission state and `mission.plan.approved` goal history before failing to append the required runtime event.
+- Retrying the same approval duplicated `mission.plan.approved` history instead of only restoring the missing event.
+
+Changes:
+
+- Added idempotent linked mission approval recovery when the current mission is already approved and goal history records the same goal id, Plan Mode id, and approved version.
+- Re-appends the missing `mission.plan.approved` event once without re-running the goal store mutation.
+- De-duplicates the runtime event by goal id, Plan Mode id, and approved version.
+- Added focused runtime coverage for blocked `events.jsonl`, retry after restoring the path, one mission approval history row, and one restored mission approval event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestApproveLinkedMissionPlanRetryAfterEventFailureDoesNotDuplicateHistory -count=1`: failed before the fix because retry duplicated `mission.plan.approved` history.
+- `go test -timeout 120s ./internal/runtime -run TestApproveLinkedMissionPlanRetryAfterEventFailureDoesNotDuplicateHistory -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ApproveLinkedMissionPlanRetryAfterEventFailureDoesNotDuplicateHistory|ApproveLinkedMissionPlanReportsEventAppendError|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApproveLinkedPlanModeMarksMissionPlanApproved|ApproveLinkedPlanModeBlocksUncoveredMissionValidation)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ApproveLinkedMissionPlanRetryAfterEventFailureDoesNotDuplicateHistory|ApproveLinkedMissionPlanReportsEventAppendError|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApproveLinkedPlanModeMarksMissionPlanApproved|ApproveLinkedPlanModeBlocksUncoveredMissionValidation|ContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode|PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode|ApproveMissionPlanReturnsHistoryAppendError)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.

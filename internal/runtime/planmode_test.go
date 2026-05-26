@@ -1213,6 +1213,16 @@ func countRuntimeToolResults(messages []session.Message, toolCallID, name string
 	return count
 }
 
+func countRuntimeGoalHistoryType(items []session.GoalHistoryEntry, target string) int {
+	var count int
+	for _, item := range items {
+		if item.Type == target {
+			count++
+		}
+	}
+	return count
+}
+
 func countPlanModeApprovalMessages(messages []session.Message) int {
 	var count int
 	for _, msg := range messages {
@@ -1369,6 +1379,94 @@ func TestApproveLinkedMissionPlanReportsEventAppendError(t *testing.T) {
 	}
 	if loaded.Mission == nil || loaded.Mission.PlanStatus != session.MissionPlanStatusApproved || loaded.Mission.ApprovedAt == "" {
 		t.Fatalf("mission approval history-backed snapshot should remain approved, got %#v", loaded.Mission)
+	}
+}
+
+func TestApproveLinkedMissionPlanRetryAfterEventFailureDoesNotDuplicateHistory(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := runner.store.CreateGoal(sessionID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Retry linked mission approval event",
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, _, err := runner.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := runner.store.ApprovePlanMode(sessionID, session.PlanModeSourceCLI); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	executing, err := runner.store.MarkPlanModeExecuting(sessionID, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	if executing.PlanModeID != planMode.PlanModeID {
+		t.Fatalf("unexpected executing plan mode: %#v", executing)
+	}
+	blockRuntimeEventsPath(t, runner.store, sessionID)
+
+	err = runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI, false)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected mission approval event append error, got %v", err)
+	}
+	history, err := runner.store.LoadGoalHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load goal history after failed event append: %v", err)
+	}
+	if count := countRuntimeGoalHistoryType(history, "mission.plan.approved"); count != 1 {
+		t.Fatalf("expected one mission approval history row after failed event append, got %d history=%#v", count, history)
+	}
+
+	eventsPath := filepath.Join(runner.store.SessionDir(sessionID), "events.jsonl")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatalf("remove blocked events path: %v", err)
+	}
+	if err := runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI, false); err != nil {
+		t.Fatalf("retry linked mission approval event: %v", err)
+	}
+	history, err = runner.store.LoadGoalHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load goal history after retry: %v", err)
+	}
+	if count := countRuntimeGoalHistoryType(history, "mission.plan.approved"); count != 1 {
+		t.Fatalf("retry should not duplicate mission approval history, got %d history=%#v", count, history)
+	}
+	events, err := runner.store.LoadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("load events after retry: %v", err)
+	}
+	if count := countRuntimeEventType(events, "mission.plan.approved"); count != 1 {
+		t.Fatalf("retry should append one mission approval event, got %d events=%#v", count, events)
 	}
 }
 

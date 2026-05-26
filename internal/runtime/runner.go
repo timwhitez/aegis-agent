@@ -1011,6 +1011,9 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 		return err
 	}
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if missionPlanApprovalMatches(goal, planMode) && r.hasMissionPlanApprovedHistory(sessionID, goal.GoalID, planMode) {
+		return r.appendMissionPlanApprovedEventOnce(sessionID, goal.GoalID, planMode, goal.Mission.ApprovedAt, overrideCoverage)
+	}
 	goal, err = r.store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
 		Source:           session.GoalSourceSystem,
 		ApprovedSource:   source,
@@ -1022,16 +1025,85 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 	if err != nil {
 		return err
 	}
-	if err := r.appendEvent(sessionID, "mission.plan.approved", "planmode", map[string]any{
-		"goal_id":           goal.GoalID,
+	return r.appendMissionPlanApprovedEventOnce(sessionID, goal.GoalID, planMode, approvedAt, overrideCoverage)
+}
+
+func missionPlanApprovalMatches(goal session.SessionGoal, planMode session.PlanModeState) bool {
+	if goal.Mission == nil || session.NormalizeMissionPlanStatus(goal.Mission.PlanStatus) != session.MissionPlanStatusApproved {
+		return false
+	}
+	if strings.TrimSpace(goal.Mission.ApprovedAt) == "" {
+		return false
+	}
+	return strings.TrimSpace(planMode.PlanModeID) != "" && planMode.ApprovedVersion > 0
+}
+
+func (r *Runner) hasMissionPlanApprovedHistory(sessionID, goalID string, planMode session.PlanModeState) bool {
+	history, err := r.store.LoadGoalHistory(sessionID)
+	if err != nil {
+		return false
+	}
+	goalID = strings.TrimSpace(goalID)
+	planModeID := strings.TrimSpace(planMode.PlanModeID)
+	for i := len(history) - 1; i >= 0; i-- {
+		item := history[i]
+		if item.Type != "mission.plan.approved" {
+			continue
+		}
+		if strings.TrimSpace(item.GoalID) != goalID {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["plan_mode_id"])) != planModeID {
+			continue
+		}
+		if intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (r *Runner) appendMissionPlanApprovedEventOnce(sessionID, goalID string, planMode session.PlanModeState, approvedAt string, overrideCoverage bool) error {
+	recorded, err := r.hasMissionPlanApprovedEvent(sessionID, goalID, planMode)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return nil
+	}
+	return r.appendEvent(sessionID, "mission.plan.approved", "planmode", map[string]any{
+		"goal_id":           goalID,
 		"plan_mode_id":      planMode.PlanModeID,
 		"approved_version":  planMode.ApprovedVersion,
 		"approved_at":       approvedAt,
 		"coverage_override": overrideCoverage,
-	}); err != nil {
-		return err
+	})
+}
+
+func (r *Runner) hasMissionPlanApprovedEvent(sessionID, goalID string, planMode session.PlanModeState) (bool, error) {
+	items, err := r.store.LoadEvents(sessionID)
+	if err != nil {
+		return false, err
 	}
-	return nil
+	goalID = strings.TrimSpace(goalID)
+	planModeID := strings.TrimSpace(planMode.PlanModeID)
+	for _, item := range items {
+		if item.Type != "mission.plan.approved" {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["goal_id"])) != goalID {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["plan_mode_id"])) != planModeID {
+			continue
+		}
+		if intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error {
