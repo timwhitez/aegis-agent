@@ -4154,6 +4154,36 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-149: Terminal queue reconciliation ignores parent-visible fact write failures
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires queue workers to deliver child completion/failure results back to the parent session as durable control notifications and queue lifecycle events.
+- `spec/17-web-console.md` requires parent Background inspector / timeline visibility for queue job completion and failure, including background notifications and selected job facts.
+- `internal/session/store.go` `ensureTerminalQueueJobParentState` updated parent coordination, then called `ensureBackgroundNotification` and `ensureQueueLifecycleEvent`.
+- `ensureBackgroundNotification` discarded the `EnsureBackgroundNotification` error, and `ensureQueueLifecycleEvent` discarded both `LoadEvents` and `AppendEvent` errors.
+- Focused pre-fix store regressions replaced `control/background.jsonl` or `events.jsonl` with a directory before `LoadJob` reconciled a terminal parent queue job; before the fix, `LoadJob` returned nil error even though required parent-visible facts could not be written.
+
+Impact:
+
+Queue reconciliation could report terminal job repair success while the parent session lacked the durable background notification or timeline event needed for Web/CLI recovery and parent completion gating. That creates false-success queue repair and makes child/queue results less observable to the parent.
+
+Minimal fix:
+
+- Return `EnsureBackgroundNotification` failures from terminal queue parent-state reconciliation.
+- Return `LoadEvents` / `AppendEvent` failures from queue lifecycle event reconciliation.
+- Preserve event idempotency by returning nil when the matching queue lifecycle event already exists.
+- Add focused store coverage for blocked background notification and event writes during terminal queue reconciliation.
+
+Validation:
+
+- Focused pre-fix store regressions proving blocked parent notification/event writes returned nil from terminal queue reconciliation.
+- Focused post-fix store regressions proving those write failures are reported.
+- Existing terminal queue completion/failure and duplicate-status reconciliation regressions remain green.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -5054,7 +5084,47 @@ Evidence gates:
 - Confirmed this is not the same as invalid scratch files in queue directories: invalid filenames and mismatched valid JSON are still skipped for diagnostics, but a valid `<job_id>.json` queue fact that cannot be read must be reported.
 - Confirmed the minimal fix belongs in `listQueueJobCopies` and `ClaimNextQueuedJob` because those are the shared Web/CLI list path and worker claim path that were turning unreadable queue facts into no visible work.
 
+### Review 142
+
+- Confirmed FCA-20260526-149 against parent notification and queue lifecycle durability requirements in `spec/01-runtime-architecture.md`, plus Web Background inspector / timeline visibility requirements in `spec/17-web-console.md`.
+- Confirmed this is not a cosmetic event-only issue: `control/background.jsonl` is a parent completion-gate input and Web Background inspector source, while `queue.job.completed` / `queue.job.failed` timeline events are required operator facts.
+- Confirmed the minimal fix belongs in `ensureTerminalQueueJobParentState` and its helper writes because that is the path that turns terminal queue jobs into parent-visible durable facts.
+
 ## Update Log
+
+### FCA-20260526-149
+
+Slice: `fix(session): report parent queue fact write failures`
+
+Finding:
+
+- `ensureTerminalQueueJobParentState` ignored failures while writing parent background notifications and queue lifecycle events.
+- Before the fix, `LoadJob` could return nil after terminal queue reconciliation even when `control/background.jsonl` or `events.jsonl` could not be written.
+
+Changes:
+
+- Changed terminal parent background notification writes to return `EnsureBackgroundNotification` errors.
+- Changed queue lifecycle event reconciliation to return `LoadEvents` / `AppendEvent` errors while preserving idempotent success when a matching event already exists.
+- Added focused store coverage for blocked parent notification and event writes during terminal queue reconciliation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobReportsTerminalParent(Notification|Event)AppendError' -count=1`: failed before the fix because terminal reconciliation returned nil while parent-visible fact writes were blocked.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobReportsTerminalParent(Notification|Event)AppendError|TestReconcileCompletedSessionCompletesJob|TestReconcileFailedJobUpdatesLinkedRunningSession|TestLoadAndListJobsPreferTerminalDuplicateStatusFile' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-148
 

@@ -2168,8 +2168,8 @@ func (s *Store) findSessionForQueueJob(jobID string) (SessionMetadata, State, []
 	return SessionMetadata{}, State{}, nil, false, nil
 }
 
-func (s *Store) ensureBackgroundNotification(job QueueJob) {
-	_ = s.EnsureBackgroundNotification(job.ParentSessionID, NewBackgroundNotification(job))
+func (s *Store) ensureBackgroundNotification(job QueueJob) error {
+	return s.EnsureBackgroundNotification(job.ParentSessionID, NewBackgroundNotification(job))
 }
 
 func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
@@ -2179,20 +2179,22 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 	if err := s.reconcileParentQueueJobStatus(job); err != nil {
 		return err
 	}
-	s.ensureBackgroundNotification(job)
-	s.ensureQueueLifecycleEvent(job, "queue.job.notified")
-	if job.Status == QueueStatusFailed {
-		s.ensureQueueLifecycleEvent(job, "queue.job.failed")
-		return nil
+	if err := s.ensureBackgroundNotification(job); err != nil {
+		return err
 	}
-	s.ensureQueueLifecycleEvent(job, "queue.job.completed")
-	return nil
+	if err := s.ensureQueueLifecycleEvent(job, "queue.job.notified"); err != nil {
+		return err
+	}
+	if job.Status == QueueStatusFailed {
+		return s.ensureQueueLifecycleEvent(job, "queue.job.failed")
+	}
+	return s.ensureQueueLifecycleEvent(job, "queue.job.completed")
 }
 
-func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) {
+func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) error {
 	eventsList, err := s.LoadEvents(job.ParentSessionID)
 	if err != nil {
-		return
+		return err
 	}
 	for _, evt := range eventsList {
 		if evt.Type != eventType {
@@ -2200,7 +2202,7 @@ func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) {
 		}
 		jobID, _ := evt.Data["job_id"].(string)
 		if jobID == job.ID {
-			return
+			return nil
 		}
 	}
 	data := map[string]any{
@@ -2209,7 +2211,7 @@ func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) {
 		"status":     job.Status,
 		"agent_role": job.AgentRole,
 	}
-	_ = s.AppendEvent(job.ParentSessionID, events.New(job.ParentSessionID, eventType, "queue", data))
+	return s.AppendEvent(job.ParentSessionID, events.New(job.ParentSessionID, eventType, "queue", data))
 }
 
 func collectQueueVisiblePaths(effectiveWorkdir string, messages []Message) []string {

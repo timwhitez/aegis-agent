@@ -3045,6 +3045,101 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
+func TestLoadJobReportsTerminalParentNotificationAppendError(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_notification_append_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_notification_append_error",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_notification_append_error",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusCompleted,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "done",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save completed job: %v", err)
+	}
+	backgroundPath := filepath.Join(store.SessionDir(parentMeta.ID), "control", "background.jsonl")
+	if err := os.Remove(backgroundPath); err != nil {
+		t.Fatalf("remove background notifications: %v", err)
+	}
+	if err := os.Mkdir(backgroundPath, 0o700); err != nil {
+		t.Fatalf("replace background notifications with directory: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(job.ID)
+	if err == nil || !strings.Contains(err.Error(), "background.jsonl") {
+		t.Fatalf("expected background notification append error, got job=%#v err=%v", reconciled, err)
+	}
+}
+
+func TestLoadJobReportsTerminalParentEventAppendError(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_event_append_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_event_append_error",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_event_append_error",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusCompleted,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "done",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save completed job: %v", err)
+	}
+	if err := store.EnsureBackgroundNotification(parentMeta.ID, NewBackgroundNotification(job)); err != nil {
+		t.Fatalf("prewrite background notification: %v", err)
+	}
+	eventsPath := filepath.Join(store.SessionDir(parentMeta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("replace events with directory: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(job.ID)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected queue lifecycle event append error, got job=%#v err=%v", reconciled, err)
+	}
+}
+
 func TestLoadAndListJobsPreferTerminalDuplicateStatusFile(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	if err := store.ensureQueueDirs(); err != nil {
