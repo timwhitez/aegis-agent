@@ -2497,6 +2497,35 @@ Validation:
 - Adjacent Web mission-plan task-sync, approval-reset, and no-op approval regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-091: Web mission-plan task sync failures can orphan tasks
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines durable `tasks/task_*.json` files, while `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` make Goal facts durable through `goal.json` plus `artifacts/goal-history.jsonl`.
+- Web `handleMissionPlanPatch` can call `SyncMissionPlanTasks`, which creates task files and writes task IDs into `goal.json`, before appending the required `mission.plan.updated` history/event facts.
+- A focused HTTP regression blocked `artifacts/goal-history.jsonl` for a mission-plan patch with `create_tasks_from_plan=true`. Before this fix, Web `PATCH /api/sessions/{id}/mission/plan` returned an internal server error while leaving the patched mission feature, `create_tasks_from_plan`, the generated `task_id`, and the new task file persisted.
+- Existing `SaveTasks` rewrote provided task files but did not remove stale task files, so restoring a pre-mutation task snapshot would not delete orphan task files.
+
+Impact:
+
+The Web console could report that a required `mission.plan.updated` durable history fact failed while later refreshes and recovery observed both the rejected mission patch and generated durable task graph entries as current state.
+
+Minimal fix:
+
+- Snapshot the task list before Web mission-plan task sync.
+- On `mission.plan.updated` history/event failure with no newly-created linked Plan Mode, restore both the exact previous task set and previous Goal snapshot.
+- Make `SaveTasks` persist the provided task set exactly by deleting stale `task_*.json` files that are no longer present in the snapshot.
+- Keep newly-created linked Plan Mode rollback out of this slice; that requires separate Plan Mode side-fact handling.
+
+Validation:
+
+- Focused Web task-sync history-failure regression asserting both Goal rollback and task cleanup.
+- Focused store regression proving `SaveTasks` removes stale task files.
+- Adjacent Web mission-plan task-sync and simple rollback regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3048,6 +3077,12 @@ Evidence gates:
 - Confirmed FCA-20260526-090 against Goal durable fact requirements, Web `handleMissionPlanPatch`, and a focused blocked-history HTTP regression for a feature-only mission-plan patch.
 - Confirmed this is not a duplicate of FCA-20260526-089: the mission plan endpoint has separate JSON shape, event type, task sync, and plan-mode creation behavior.
 - Confirmed the fix is intentionally scoped to mission-plan mutations with no created tasks and no newly-created linked Plan Mode; task and plan-mode side-fact paths still need separate proof.
+
+### Review 84
+
+- Confirmed FCA-20260526-091 against durable Goal and Task facts, Web `handleMissionPlanPatch`, `SyncMissionPlanTasks`, and a focused blocked-history HTTP regression for task sync.
+- Confirmed this extends but does not duplicate FCA-20260526-090: the simple mission-plan rollback did not cover generated task files.
+- Confirmed `SaveTasks` needed exact-set semantics for rollback because rewriting only the supplied tasks would leave stale `tasks/task_*.json` files behind.
 
 ## Update Log
 
@@ -5316,6 +5351,42 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionPlanPatchReportsHistoryAppendError|TestServiceMissionPlanPatchTaskSyncPreservesRuntimeProgressFacts|TestServiceMissionPlanPatchResetsApprovedPlanToPendingGate|TestServiceMissionPlanPatchNoopKeepsApprovedPlan' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-091
+
+Slice: `fix(webconsole): roll back failed mission task sync`
+
+Finding:
+
+- Web mission-plan task sync returned required `goal-history.jsonl` append errors, but left generated task files and mission task IDs applied.
+- A focused regression blocked `goal-history.jsonl`; before the fix, failed Web task-sync patch left `create_tasks_from_plan`, a generated `task_id`, and `task_0001.json` persisted.
+- Store `SaveTasks` could not be used for exact rollback because it did not remove task files absent from the supplied snapshot.
+
+Changes:
+
+- Snapshotted tasks before Web mission-plan task sync.
+- Restored the previous task set and previous Goal snapshot when `mission.plan.updated` history or event append fails and no linked Plan Mode was created.
+- Made `SaveTasks` remove stale `task_*.json` files before writing the supplied task set.
+- Added focused store and Web regressions for exact task snapshot rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanPatchTaskSyncReportsHistoryAppendError -count=1`: failed before the fix because the failed task-sync patch left the mission feature and generated task persisted.
+- `go test -timeout 120s ./internal/session -run TestStoreSaveTasksRemovesStaleTaskFiles -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionPlanPatchTaskSyncReportsHistoryAppendError|TestServiceMissionPlanPatchReportsHistoryAppendError|TestServiceMissionPlanPatchTaskSyncPreservesRuntimeProgressFacts' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.

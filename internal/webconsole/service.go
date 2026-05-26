@@ -1219,6 +1219,16 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	if req.CreateTasksFromPlan != nil {
 		mission.CreateTasksFromPlan = *req.CreateTasksFromPlan
 	}
+	var previousTasks []session.Task
+	tasksSnapshotLoaded := false
+	if mission.CreateTasksFromPlan {
+		previousTasks, err = s.store.ListTasks(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		tasksSnapshotLoaded = true
+	}
 	goal, err := s.store.PatchGoal(sessionID, session.GoalPatchInput{Mission: mission})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1256,7 +1266,13 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		"created_task_ids":  webTaskIDs(createdTasks),
 		"plan_mode_created": planModeCreated,
 	}); err != nil {
-		if len(createdTasks) == 0 && !planModeCreated {
+		if !planModeCreated {
+			if tasksSnapshotLoaded {
+				if restoreErr := s.store.SaveTasks(sessionID, previousTasks); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("restore tasks after mission plan mutation error %v: %w", err, restoreErr))
+					return
+				}
+			}
 			if restoreErr := s.store.SaveGoal(sessionID, current); restoreErr != nil {
 				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after mission plan mutation error %v: %w", err, restoreErr))
 				return

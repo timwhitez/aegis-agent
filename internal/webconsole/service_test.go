@@ -554,6 +554,54 @@ func TestServiceMissionPlanPatchReportsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestServiceMissionPlanPatchTaskSyncReportsHistoryAppendError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_plan_task_history_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Patch mission plan tasks with history",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebGoalHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"create_tasks_from_plan": true,
+		"features":               []map[string]any{{"id": "feature_web", "title": "Web feature", "status": "pending"}},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Mission != nil && (len(loaded.Mission.Features) != 0 || loaded.Mission.CreateTasksFromPlan) {
+		t.Fatalf("failed mission plan task patch should not advance goal snapshot, got %#v", loaded.Mission)
+	}
+	tasks, taskErr := svc.store.ListTasks(meta.ID)
+	if taskErr != nil {
+		t.Fatalf("list tasks: %v", taskErr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed mission plan task patch should not create tasks, got %#v", tasks)
+	}
+}
+
 func TestServiceMissionPatchCannotApproveWithoutApprovalEndpoint(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

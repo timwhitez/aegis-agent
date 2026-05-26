@@ -1415,6 +1415,52 @@ func TestStoreRejectsPathLikeRecordIDs(t *testing.T) {
 	}
 }
 
+func TestStoreSaveTasksRemovesStaleTaskFiles(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "save_tasks_exact_set",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "first"}); err != nil {
+		t.Fatalf("create first task: %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "second"}); err != nil {
+		t.Fatalf("create second task: %v", err)
+	}
+
+	if err := store.SaveTasks(meta.ID, []Task{{
+		ID:        "task_0001",
+		Subject:   "first",
+		Status:    "pending",
+		Priority:  "medium",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}}); err != nil {
+		t.Fatalf("save tasks: %v", err)
+	}
+
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "task_0001" {
+		t.Fatalf("expected stale task file removed, got %#v", tasks)
+	}
+	if _, err := store.GetTask(meta.ID, "task_0002"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale task file missing, got %v", err)
+	}
+}
+
 func TestDeleteSessionTreeRemovesRootLinkedDescendants(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

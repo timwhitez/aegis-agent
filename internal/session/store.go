@@ -1063,10 +1063,33 @@ func (s *Store) saveTasksLocked(sessionID string, tasks []Task) error {
 	if err := s.ensureDir(dir); err != nil {
 		return err
 	}
+	desired := make(map[string]struct{}, len(tasks))
 	for _, task := range tasks {
 		if err := validateStoreID("task", task.ID); err != nil {
 			return err
 		}
+		desired[task.ID] = struct{}{}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		entries = nil
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		taskID := strings.TrimSuffix(entry.Name(), ".json")
+		if _, ok := desired[taskID]; ok {
+			continue
+		}
+		if err := fileutil.RemoveFileNoSymlink(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	for _, task := range tasks {
 		path := filepath.Join(dir, task.ID+".json")
 		if err := s.writeJSONFile(path, task); err != nil {
 			return err
