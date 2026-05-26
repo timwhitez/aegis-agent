@@ -2446,6 +2446,32 @@ Validation:
 - Adjacent Web goal-patch and mission-gate regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-089: Web validation-plan history failures can leave updates applied
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` define `goal.json` plus `artifacts/goal-history.jsonl` as durable Goal facts.
+- Web `handleMissionValidationPatch` saved `goal.json` before appending the required `mission.validation.updated` history/event facts through `appendGoalMutation`.
+- A focused HTTP regression blocked `artifacts/goal-history.jsonl` for a `validation_plan`-only patch. Before this fix, Web `PATCH /api/sessions/{id}/mission/validation` returned an internal server error while leaving the new validation plan entry in `goal.json`.
+
+Impact:
+
+The Web console could report that a required `mission.validation.updated` durable history fact failed while later refreshes, recovery, provider prompt construction, and Mission Control panels observed the rejected validation-plan patch as current state.
+
+Minimal fix:
+
+- Snapshot the previous Goal before Web mission validation patch writes.
+- Restore the previous Goal when `mission.validation.updated` history/event append fails and the patch did not create a linked Plan Mode side fact.
+- Keep validation-contract patches that create linked Plan Mode state out of this slice; those require separate proof and side-fact rollback.
+
+Validation:
+
+- Focused Web validation-plan history-failure regression asserting snapshot rollback.
+- Adjacent Web validation-contract approval-reset regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2985,6 +3011,12 @@ Evidence gates:
 - Confirmed FCA-20260526-088 against Goal durable fact requirements, Web `handleGoalPatch`, and a focused blocked-history HTTP regression for a simple success-criteria patch.
 - Confirmed this is not a duplicate of FCA-20260526-087: status/clear handlers and the generic patch handler have separate mutation flows and response payloads.
 - Confirmed the fix is intentionally scoped to patches with no created tasks and no newly-created linked Plan Mode, because those side-fact paths need a broader rollback design.
+
+### Review 82
+
+- Confirmed FCA-20260526-089 against Goal durable fact requirements, Web `handleMissionValidationPatch`, and a focused blocked-history HTTP regression for a validation-plan-only patch.
+- Confirmed this is not a duplicate of FCA-20260526-088: the mission validation endpoint has separate JSON shape, event type, and plan-mode creation condition.
+- Confirmed the fix is intentionally scoped to validation mutations with no newly-created linked Plan Mode; validation-contract gate-reset paths still need separate side-fact proof.
 
 ## Update Log
 
@@ -5186,6 +5218,39 @@ Validation:
 
 - `go test -timeout 120s ./internal/webconsole -run TestServiceGoalPatchReportsHistoryAppendError -count=1`: failed before the fix because the failed patch left the new success criterion in `goal.json`.
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalPatchReportsHistoryAppendError|TestServiceGoalPatchPreservesRuntimeProgressFacts|TestServiceGoalPatchMissionResetsApprovedPlanToPendingGate' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-089
+
+Slice: `fix(webconsole): roll back failed validation mutations`
+
+Finding:
+
+- Web mission validation patch returned required `goal-history.jsonl` append errors, but left simple current `goal.json` validation-plan data applied.
+- A focused regression blocked `goal-history.jsonl`; before the fix, failed Web validation-plan patch left the new validation in `goal.json`.
+
+Changes:
+
+- Snapshotted the previous Goal before Web mission validation patch writes.
+- Restored the previous Goal snapshot when `mission.validation.updated` history or event append fails and no linked Plan Mode was created.
+- Extended focused Web validation-plan history-failure regression to assert rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionValidationPlanPatchReportsHistoryAppendError -count=1`: failed before the fix because the failed validation-plan patch left the new validation in `goal.json`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionValidationPlanPatchReportsHistoryAppendError|TestServiceMissionValidationPatchResetsApprovedPlanToPendingGate' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.

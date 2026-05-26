@@ -1381,6 +1381,7 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 		writeError(w, goalStoreStatus(err), err)
 		return
 	}
+	previous := goal
 	if req.ValidationPlan != nil {
 		goal.ValidationPlan = append([]session.GoalValidation(nil), req.ValidationPlan...)
 	}
@@ -1417,6 +1418,12 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 	if err := s.appendGoalMutation(sessionID, goal, "mission.validation.updated", map[string]any{
 		"plan_mode_created": planModeCreated,
 	}); err != nil {
+		if !planModeCreated {
+			if restoreErr := s.store.SaveGoal(sessionID, previous); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after validation mutation error %v: %w", err, restoreErr))
+				return
+			}
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

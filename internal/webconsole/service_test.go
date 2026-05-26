@@ -868,6 +868,45 @@ func TestServiceMissionValidationPatchResetsApprovedPlanToPendingGate(t *testing
 	}
 }
 
+func TestServiceMissionValidationPlanPatchReportsHistoryAppendError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_validation_plan_history_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Patch validation with history",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebGoalHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/validation", map[string]any{
+		"validation_plan": []map[string]any{{"id": "validation_web", "kind": "manual", "description": "web validation", "status": "pending"}},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if len(loaded.ValidationPlan) != 0 {
+		t.Fatalf("failed validation plan patch should not advance goal snapshot, got %#v", loaded.ValidationPlan)
+	}
+}
+
 func TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
