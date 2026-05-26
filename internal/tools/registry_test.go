@@ -2529,6 +2529,63 @@ func TestLoadSkillReturnsAlreadyLoadedOnRepeatAndForceReload(t *testing.T) {
 	}
 }
 
+func TestLoadSkillReportsLoadedSkillStateSaveError(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nFULL SKILL BODY\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	steerPath := filepath.Join(store.SessionDir(meta.ID), "control", "steer.jsonl")
+	if err := os.Remove(steerPath); err != nil {
+		t.Fatalf("remove steer.jsonl: %v", err)
+	}
+	if err := os.Mkdir(steerPath, 0o700); err != nil {
+		t.Fatalf("replace steer.jsonl with directory: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "load_skill", ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		Catalog:   catalog,
+	}, json.RawMessage(`{"name":"helpers"}`))
+	if err != nil {
+		t.Fatalf("load_skill execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "steer.jsonl") {
+		t.Fatalf("expected state save error result, got %#v", result)
+	}
+	if strings.Contains(result.LLMOutput, "FULL SKILL BODY") {
+		t.Fatalf("load_skill must not return full body after failing to record loaded skill state: %q", result.LLMOutput)
+	}
+}
+
 func TestReadFileRepeatObservation(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()

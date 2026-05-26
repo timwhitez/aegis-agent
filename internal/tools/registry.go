@@ -1585,7 +1585,9 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 				}
 				return errorResult("load_skill", err), nil
 			}
-			markSkillLoaded(execCtx, input.Name)
+			if err := markSkillLoaded(execCtx, input.Name); err != nil {
+				return errorResult("load_skill", err), nil
+			}
 			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect referenced skill files, call read_file with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
 			return session.ToolResult{
 				Name:          "load_skill",
@@ -2272,21 +2274,21 @@ func skillLoaded(execCtx ExecContext, name string) bool {
 	return false
 }
 
-func markSkillLoaded(execCtx ExecContext, name string) {
+func markSkillLoaded(execCtx ExecContext, name string) error {
 	if execCtx.Store == nil || strings.TrimSpace(execCtx.SessionID) == "" {
-		return
+		return nil
 	}
 	state, err := execCtx.Store.LoadState(execCtx.SessionID)
 	if err != nil {
-		return
+		return err
 	}
 	for _, loaded := range state.LoadedSkills {
 		if loaded == name {
-			return
+			return nil
 		}
 	}
 	state.LoadedSkills = append(state.LoadedSkills, name)
-	_ = execCtx.Store.SaveState(execCtx.SessionID, state)
+	return execCtx.Store.SaveState(execCtx.SessionID, state)
 }
 
 func validateTodoSnapshot(todos []session.TodoItem) error {

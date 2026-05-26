@@ -2064,6 +2064,34 @@ Validation:
 - Focused embedded asset contract regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-075: load_skill hides loaded-skill state failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `load_skill` idempotency as session-state backed: once a skill is loaded, later calls return the compact `already_loaded` result unless `force_reload=true`.
+- FCA-20260525-032 established `loaded_skills` as a monotonic durable session fact used by idempotency, session summary, compaction, and operator recovery context.
+- Before this slice, `load_skill` loaded the full skill body and then called `markSkillLoaded`, but that helper ignored `LoadState` and `SaveState` failures.
+- A focused tool regression blocked `control/steer.jsonl` so `SaveState` failed while recording the loaded skill. The tool still returned the full skill body and success metadata, leaving `state.json` without the loaded skill fact.
+
+Impact:
+
+The model could receive full skill instructions while the durable session says no skill was loaded. Later turns, compaction summaries, session summaries, and recovery prompts could miss the loaded-skill context, and repeated `load_skill` calls would re-inject the full body instead of returning the compact already-loaded result.
+
+Minimal fix:
+
+- Make `markSkillLoaded` return `LoadState` and `SaveState` errors when a session store/context is available.
+- Make `load_skill` return a model-visible error instead of the full skill body when the loaded-skill state fact cannot be persisted.
+- Preserve no-op behavior for registry uses without a session store or session id.
+- Add a focused blocked-state regression.
+
+Validation:
+
+- Focused `load_skill` loaded-skill state failure regression.
+- Adjacent `load_skill` repeat / force-reload regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2519,6 +2547,12 @@ Evidence gates:
 - Confirmed FCA-20260526-074 against `spec/17-web-console.md`, the `skill-upload` file input change handler, `handleSkillAction`, and focused frontend pending-state regressions.
 - Confirmed this is not a backend upload validation issue: upload size, zip entry, path safety, duplicate target, audit preflight, and uninstall mutation safety are already covered, while the missing behavior is the browser-side pending/disabled state during a real multipart mutation.
 - Confirmed the fix should preserve existing backend error toast behavior while making all upload entry points visibly pending and non-repeatable until the request settles.
+
+### Review 68
+
+- Confirmed FCA-20260526-075 against `spec/01-runtime-architecture.md`, prior FCA-20260525-032 loaded-skill durability evidence, `defLoadSkill`, `skillLoaded`, `markSkillLoaded`, and a focused blocked-state regression.
+- Confirmed this is not just a cache optimization: `loaded_skills` feeds idempotent tool behavior, compaction/session summary context, and recovery-visible operator facts.
+- Confirmed the fix should fail the `load_skill` tool before returning the full skill body when the loaded-skill state fact cannot be persisted.
 
 ## Update Log
 
@@ -4287,6 +4321,39 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/utils.js`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-075
+
+Slice: `fix(tools): report load_skill state failures`
+
+Finding:
+
+- `load_skill` returned the full skill body and success result even when recording `state.loaded_skills` failed.
+- A blocked `control/steer.jsonl` regression forced `SaveState` to fail through the pending-steer refresh path; before the fix, `load_skill` still returned the full skill body while the durable loaded-skill fact was missing.
+
+Changes:
+
+- Changed `markSkillLoaded` to return `LoadState` and `SaveState` failures when a session store/id is present.
+- Changed `load_skill` to return a model-visible error instead of the full skill body when the loaded-skill state fact cannot be persisted.
+- Preserved no-op behavior for registry uses without a session store or session id.
+- Added a focused blocked-state regression for loaded-skill fact persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestLoadSkillReportsLoadedSkillStateSaveError -count=1`: failed before the fix with a successful full skill body.
+- `go test -timeout 120s ./internal/tools -run 'TestLoadSkillReportsLoadedSkillStateSaveError|TestLoadSkillReturnsAlreadyLoadedOnRepeatAndForceReload' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run TestEnginePreservesLoadedSkillStateAcrossNextTurn -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
