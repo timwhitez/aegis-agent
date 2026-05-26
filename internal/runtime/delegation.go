@@ -398,16 +398,26 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	job.FinalText = result.FinalText
 	job.LastError = result.LastError
 	queueReconcileErr := runErr != nil && result.SessionID != "" && result.Status != "" && isLinkedQueueJobReconcileError(runErr)
+	var handoffErr error
 	if result.SessionID != "" {
 		if meta, err := childRunner.store.LoadMetadata(result.SessionID); err == nil {
 			job.EffectiveWorkdir = meta.Workdir
+		} else {
+			handoffErr = fmt.Errorf("load child session metadata for queue job %s: %w", job.ID, err)
 		}
-		if messages, err := childRunner.store.LoadMessages(result.SessionID); err == nil {
-			job.VisiblePaths = collectVisibleSessionOutputs(job.EffectiveWorkdir, messages)
-			job.VisiblePaths = syncVisibleSessionOutputs(job.RequestedWorkdir, job.EffectiveWorkdir, job.VisiblePaths)
+		if handoffErr == nil {
+			if messages, err := childRunner.store.LoadMessages(result.SessionID); err == nil {
+				job.VisiblePaths = collectVisibleSessionOutputs(job.EffectiveWorkdir, messages)
+				job.VisiblePaths = syncVisibleSessionOutputs(job.RequestedWorkdir, job.EffectiveWorkdir, job.VisiblePaths)
+			} else {
+				handoffErr = fmt.Errorf("load child session messages.jsonl for queue job %s: %w", job.ID, err)
+			}
 		}
 	}
-	if (runErr != nil && !queueReconcileErr) || result.Status == session.StatusFailed {
+	if handoffErr != nil {
+		job.Status = session.QueueStatusFailed
+		job.LastError = handoffErr.Error()
+	} else if (runErr != nil && !queueReconcileErr) || result.Status == session.StatusFailed {
 		job.Status = session.QueueStatusFailed
 		if job.LastError == "" && runErr != nil {
 			job.LastError = runErr.Error()

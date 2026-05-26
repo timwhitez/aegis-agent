@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-167: Queue worker completes child jobs after corrupt handoff logs
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires child handoff to depend on visible file facts, and `QueueStore And Worker` must write child completion results back to parent session control notifications.
+- `spec/09-phase-plan.md` says the large-project queue profile requires real job/session association and background notification evidence rather than compatibility shells.
+- `internal/runtime/delegation.go` `ProcessNextJob` reloaded the child session metadata and messages after `childRunner.Start` so it could populate `EffectiveWorkdir` and `VisiblePaths`, but it discarded both load errors.
+- `internal/session/store.go` queue reconciliation already treats corrupt linked child `messages.jsonl` as an error, showing that malformed child logs are not a valid no-output case.
+- A focused pre-fix runtime regression used a real `session.complete` hook to corrupt the child `messages.jsonl` after the child wrote its final tool result but before the parent queue job derived handoff facts. Before the fix, the queue job was marked `completed` with empty `VisiblePaths` and no error.
+
+Impact:
+
+A queue worker could report a child job as completed even though the child session facts needed for parent handoff were corrupt. Parent sessions and WebConsole notifications could then receive a successful background result without the visible output paths that prove what the child produced, weakening large-project handoff recovery.
+
+Minimal fix:
+
+- Treat child metadata reload failures after `childRunner.Start` as queue handoff failures.
+- Treat child `messages.jsonl` reload failures after `childRunner.Start` as queue handoff failures, with the corrupt source filename in `LastError`.
+- Persist the queue job as `failed` and propagate the failure through the existing background notification path rather than returning a worker-level error.
+- Add focused runtime coverage that corrupts child `messages.jsonl` and `session.json` through real session-complete hooks and proves the queue job/background notification record the failure.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt child `messages.jsonl` was hidden and the queue job completed with missing visible paths.
+- Focused post-fix runtime regression proving corrupt child handoff logs fail the queue job and persist a background notification with a `messages.jsonl` error.
+- Focused post-fix runtime regression proving corrupt child metadata fails the queue job and persists a background notification with a `session.json` error.
+- Existing queue visible-output copy and failed-job lifecycle regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5706,7 +5737,50 @@ Evidence gates:
 - Confirmed this is a diagnostics hardening issue rather than an unsafe mutation: `requireSession` already blocks the Web route before the mission plan patch executes, but the returned error lacked the corrupt fact filename.
 - Confirmed the minimal fix belongs in `Store.LoadMetadata`, because it is the shared loader for `session.json` and wrapping only read errors preserves existing missing-session and invalid-ID classification.
 
+### Review 160
+
+- Confirmed FCA-20260526-167 against the child handoff and queue notification requirements in `spec/01-runtime-architecture.md` and the large-project queue evidence boundary in `spec/09-phase-plan.md`.
+- Confirmed this is not a legitimate no-output child case: the child session had a completed run and a present but malformed `messages.jsonl`, so empty visible paths would hide corrupt source facts rather than report an empty handoff.
+- Confirmed the minimal fix belongs in `ProcessNextJob`, because that is the post-run materialization point that turns child facts into queue job fields and parent background notifications.
+
 ## Update Log
+
+### FCA-20260526-167
+
+Slice: `fix(runtime): fail corrupt queue handoffs`
+
+Finding:
+
+- `ProcessNextJob` discarded child metadata and message load errors while deriving queue handoff fields after `childRunner.Start`.
+- Before the fix, a child session with corrupt `messages.jsonl` after completion still produced a `completed` queue job with empty `VisiblePaths` and no error.
+
+Changes:
+
+- Queue child handoff now fails the queue job if the child metadata cannot be reloaded after execution.
+- Queue child handoff now fails the queue job if child `messages.jsonl` cannot be reloaded after execution.
+- The failure is persisted through the existing queue job and background notification lifecycle, with the corrupt child fact named in `LastError`.
+- Added focused runtime regressions that corrupt child `messages.jsonl` and `session.json` through real session-complete hooks.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobReportsCorruptChildHandoffMessages -count=1`: failed before the fix because the queue job completed with empty visible paths.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobReportsCorruptChildHandoffMessages -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerProcessNextJobReportsCorruptChildHandoff(Messages|Metadata)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerProcessNextJob(ReportsCorruptChildHandoff(Messages|Metadata)|CopiesVisibleOutputsIntoRequestedWorkspace)|TestRunnerQueueSubmitResolvesRelativeWorkdirAgainstParent|TestProcessNextJobMarksFailedJobWithoutReturningError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/delegation.go internal/runtime/delegation_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-166
 

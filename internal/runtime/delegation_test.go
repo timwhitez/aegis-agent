@@ -1029,6 +1029,108 @@ func TestRunnerProcessNextJobCopiesVisibleOutputsIntoRequestedWorkspace(t *testi
 	}
 }
 
+func TestRunnerProcessNextJobReportsCorruptChildHandoffMessages(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	escapedSessionRoot := strings.ReplaceAll(cfg.Session.Dir, "'", "'\"'\"'")
+	cfg.Hooks.SessionComplete = []config.HookDefinition{
+		{
+			Name:    "corrupt-child-messages",
+			Command: []string{"/bin/sh", "-c", "printf '{' > '" + escapedSessionRoot + "'/\"$SESSION_ID\"/messages.jsonl"},
+		},
+	}
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "Finish the queued task.",
+		AgentName:       "batch",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil {
+		t.Fatalf("process next job: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected queued job to be processed")
+	}
+	if processed.ID != job.ID {
+		t.Fatalf("processed unexpected job: %#v", processed)
+	}
+	if processed.Status != session.QueueStatusFailed {
+		t.Fatalf("expected corrupt child messages to fail queue handoff, got %#v", processed)
+	}
+	if !strings.Contains(processed.LastError, "messages.jsonl") {
+		t.Fatalf("expected child messages error, got %#v", processed)
+	}
+	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 {
+		t.Fatalf("expected one failure notification, got %#v", notifications)
+	}
+	if notifications[0].Status != session.QueueStatusFailed || !strings.Contains(notifications[0].LastError, "messages.jsonl") {
+		t.Fatalf("expected persisted corrupt handoff notification, got %#v", notifications[0])
+	}
+}
+
+func TestRunnerProcessNextJobReportsCorruptChildHandoffMetadata(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	escapedSessionRoot := strings.ReplaceAll(cfg.Session.Dir, "'", "'\"'\"'")
+	cfg.Hooks.SessionComplete = []config.HookDefinition{
+		{
+			Name:    "corrupt-child-metadata",
+			Command: []string{"/bin/sh", "-c", "printf '{' > '" + escapedSessionRoot + "'/\"$SESSION_ID\"/session.json"},
+		},
+	}
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "Finish the queued task.",
+		AgentName:       "batch",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil {
+		t.Fatalf("process next job: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected queued job to be processed")
+	}
+	if processed.ID != job.ID {
+		t.Fatalf("processed unexpected job: %#v", processed)
+	}
+	if processed.Status != session.QueueStatusFailed {
+		t.Fatalf("expected corrupt child metadata to fail queue handoff, got %#v", processed)
+	}
+	if !strings.Contains(processed.LastError, "session.json") {
+		t.Fatalf("expected child metadata error, got %#v", processed)
+	}
+	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 {
+		t.Fatalf("expected one failure notification, got %#v", notifications)
+	}
+	if notifications[0].Status != session.QueueStatusFailed || !strings.Contains(notifications[0].LastError, "session.json") {
+		t.Fatalf("expected persisted corrupt handoff notification, got %#v", notifications[0])
+	}
+}
+
 func TestSyncVisibleSessionOutputsRejectsDeniedSymlinkAlias(t *testing.T) {
 	requestedWorkdir := t.TempDir()
 	effectiveWorkdir := t.TempDir()
