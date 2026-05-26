@@ -2062,6 +2062,48 @@ func TestServiceGoalFactsAndMissionCoverageApproval(t *testing.T) {
 	}
 }
 
+func TestServiceSessionDetailReportsGoalHistoryLoadError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_detail_goal_history_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Expose goal facts",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	historyPath := filepath.Join(svc.store.SessionDir(meta.ID), "artifacts", "goal-history.jsonl")
+	if err := os.WriteFile(historyPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write invalid goal history: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions/" + meta.ID)
+	if err != nil {
+		t.Fatalf("get session detail: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected goal history load error to return 500, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), "goal-history.jsonl") {
+		t.Fatalf("expected goal history path in response, got body=%s", string(body))
+	}
+}
+
 func TestServicePlanModeGetAndParentQueueGate(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

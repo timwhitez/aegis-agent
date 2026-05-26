@@ -899,7 +899,10 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	var goalFacts *GoalFactsResponse
 	if goal, err := s.store.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
 		goalPtr = &goal
-		goalFacts = s.goalFacts(sessionID, goal, children, background)
+		goalFacts, err = s.goalFacts(sessionID, goal, children, background)
+		if err != nil {
+			return SessionDetailResponse{}, err
+		}
 	}
 	var planModePtr *session.PlanModeState
 	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.PlanModeID != "" {
@@ -4596,8 +4599,11 @@ func missionPlanApprovalStatus(err error) int {
 	return http.StatusBadRequest
 }
 
-func (s *Service) goalFacts(sessionID string, goal session.SessionGoal, children ChildrenResponse, background []session.BackgroundNotification) *GoalFactsResponse {
-	history, _ := s.store.LoadGoalHistory(sessionID)
+func (s *Service) goalFacts(sessionID string, goal session.SessionGoal, children ChildrenResponse, background []session.BackgroundNotification) (*GoalFactsResponse, error) {
+	history, err := s.store.LoadGoalHistory(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("load goal-history.jsonl: %w", err)
+	}
 	if len(history) > 20 {
 		history = history[len(history)-20:]
 	}
@@ -4633,7 +4639,7 @@ func (s *Service) goalFacts(sessionID string, goal session.SessionGoal, children
 		UnresolvedQueueJobIDs:     unresolvedJobs,
 		EvaluatorEvidenceCount:    evaluatorCount,
 		LatestBlocker:             latestBlocker,
-	}
+	}, nil
 }
 
 func linkedGoalFacts(goal session.SessionGoal) ([]string, []string, int, string) {

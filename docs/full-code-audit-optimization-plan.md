@@ -3630,6 +3630,35 @@ Validation:
 - Focused post-fix WebConsole regression proving corrupt provider attempts return HTTP 500 with the ledger filename in the response.
 - Standard grouped validation before commit.
 
+### FCA-20260526-131: Session detail hides corrupt goal history facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md` define `goal.json` plus `artifacts/goal-history.jsonl` as durable Goal facts, with Goal history feeding recovery and operator traceability.
+- `spec/17-web-console.md` requires session detail to return Goal facts derived from `goal.json` / `goal-history.jsonl`, including recent history and coverage.
+- `internal/session/goal.go` `LoadGoalHistory` treats a missing history ledger as an empty optional list but returns JSONL parse/read errors for corrupt or unreadable history ledgers.
+- `internal/webconsole/service.go` `goalFacts` discarded the error with `history, _ := s.store.LoadGoalHistory(sessionID)`.
+- A focused pre-fix WebConsole regression wrote invalid JSON to `artifacts/goal-history.jsonl`; `GET /api/sessions/{id}` returned HTTP 200 with empty Goal history facts instead of surfacing the corrupt durable fact file.
+
+Impact:
+
+The Web console could render a normal-looking Goal inspector while hiding corrupt Goal history. Operators could not distinguish "no history" from "history unreadable", weakening mission approval, progress/handoff, budget, and completion-audit traceability.
+
+Minimal fix:
+
+- Make `goalFacts` return `LoadGoalHistory` errors while preserving missing-file-as-empty store behavior.
+- Propagate the error through `sessionDetail`.
+- Wrap the error with `goal-history.jsonl` so the Web API response points at the corrupt fact file.
+- Add focused WebConsole coverage for corrupt `artifacts/goal-history.jsonl`.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving corrupt Goal history returned HTTP 200 with empty history facts.
+- Focused post-fix WebConsole regression proving corrupt Goal history returns HTTP 500 with the ledger filename in the response.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4421,6 +4450,12 @@ Evidence gates:
 - Confirmed FCA-20260526-130 against the provider-attempt ledger requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`, plus the Web Summary requirement in `spec/17-web-console.md`.
 - Confirmed this is not a missing optional-file issue: `LoadProviderAttempts` and `LoadArtifactTracker` already return empty lists for absent files, so propagating errors only affects corrupt or unreadable fact files.
 - Confirmed the minimal fix belongs in Web `sessionDetail` because the store already exposes the correct absent-versus-corrupt distinction; the Web adapter should not collapse that distinction into an empty display.
+
+### Review 124
+
+- Confirmed FCA-20260526-131 against the durable Goal fact requirements in `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md`, plus the Goal facts requirement in `spec/17-web-console.md`.
+- Confirmed this is not a missing optional-file issue: `LoadGoalHistory` already returns an empty slice for absent `artifacts/goal-history.jsonl`, so propagating errors only affects corrupt or unreadable ledgers.
+- Confirmed the minimal fix belongs in the Web detail path. The store already exposes the correct absent-versus-corrupt distinction, and Web should not render a clean Goal facts panel when the history ledger is unreadable.
 
 ## Update Log
 
@@ -7406,6 +7441,42 @@ Validation:
 
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsProviderAttemptsLoadError -count=1`: failed before the fix because corrupt provider attempts returned HTTP 200 and hidden ledger facts.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsProviderAttemptsLoadError -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-131
+
+Slice: `fix(webconsole): report goal history load errors`
+
+Finding:
+
+- Session detail silently ignored Goal history load errors even though the store already returns an empty list for a missing history ledger and real errors for corrupt/unreadable ledgers.
+- Before the fix, invalid JSON in `artifacts/goal-history.jsonl` made `GET /api/sessions/{id}` return HTTP 200 with an empty Goal facts history, hiding the corrupt durable Goal fact file.
+
+Changes:
+
+- Changed `goalFacts` to return `LoadGoalHistory` errors instead of discarding them.
+- Propagated Goal facts load errors through `sessionDetail`.
+- Wrapped the error with `goal-history.jsonl` for actionable Web API responses.
+- Added focused WebConsole regression coverage for corrupt `artifacts/goal-history.jsonl`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsGoalHistoryLoadError -count=1`: failed before the fix because corrupt Goal history returned HTTP 200 with empty history facts.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsGoalHistoryLoadError -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(SessionDetailReportsGoalHistoryLoadError|GoalFactsAndMissionCoverageApproval)' -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
