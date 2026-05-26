@@ -4355,6 +4355,33 @@ Validation:
 - Existing provider stop failure and failed-event append regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-174: Session completion can lose durable completed events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `session.completed` as a core session event and defines `state.json` / `events.jsonl` as session facts managed by `SessionStore`.
+- `internal/runtime/engine.go` `complete` saved `state.json` as `completed`, then emitted `session.completed` through unchecked `e.emit`.
+- A focused pre-fix runtime regression blocked `events.jsonl` after the provider returned a `finish` tool call. Before the fix, `Engine.Run` returned `completed` even though the required completion event was unwritable.
+
+Impact:
+
+A session could become durably completed in `state.json` while the timeline lacked the `session.completed` event. That weakens Web-first completion auditing, recovery diagnostics, and queue/child traceability for sessions whose terminal state must be explainable from local file facts.
+
+Minimal fix:
+
+- Use checked `appendEvent` for the `session.completed` lifecycle event.
+- Include `session.completed` in the returned append error context.
+- Preserve existing successful finish behavior and parent queue reconciliation ordering.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `events.jsonl` was ignored during session completion.
+- Focused post-fix runtime regression proving the same blocked event append returns an `events.jsonl` error with completion context.
+- Existing finish and tool-hook completion regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5949,7 +5976,47 @@ Evidence gates:
 - Confirmed this is distinct from provider transport failures: the provider returned a successful response envelope with a failure stop reason, so the engine-owned stop-decision branch must persist the matching failed lifecycle event.
 - Confirmed the minimal fix belongs in the provider stop-failure branch in `Engine.Run`, because that is where `state.json` is marked failed and returned as a resumable provider stop failure.
 
+### Review 167
+
+- Confirmed FCA-20260526-174 against the session lifecycle event catalog in `spec/01-runtime-architecture.md` and the Web-first local fact-source boundary in `spec/00-product.md`.
+- Confirmed this is not diagnostic-only telemetry: `session.completed` is the terminal lifecycle event matching a durable `state.json` terminal transition and is relied on by timelines and recovery evidence.
+- Confirmed the minimal fix belongs in `complete`, because that is the single helper that records successful `finish` completion and then reconciles linked queue facts.
+
 ## Update Log
+
+### FCA-20260526-174
+
+Slice: `fix(runtime): persist completed lifecycle events`
+
+Finding:
+
+- `complete` saved `state.json` as completed, but emitted the matching `session.completed` event through unchecked `e.emit`.
+- Before the fix, a blocked `events.jsonl` still let `Engine.Run` return `completed` after a `finish` tool call.
+
+Changes:
+
+- Session completion now uses checked `appendEvent` for `session.completed`.
+- The returned event append error includes `session.completed` context.
+- Added focused runtime coverage proving blocked `events.jsonl` is reported during completion.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineCompleteReportsCompletedEventAppendError -count=1`: failed before the fix because completion returned success with a missing event.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineCompleteReportsCompletedEventAppendError|TestEngineDoesNotHardBlockNormalFinishOnStaleFeatureList|TestEngineToolBeforeHookCanRewriteArguments' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-173
 

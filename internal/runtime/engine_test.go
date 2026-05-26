@@ -2897,6 +2897,37 @@ func TestEngineToolBeforeHookCanRewriteArguments(t *testing.T) {
 	}
 }
 
+func TestEngineCompleteReportsCompletedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove events: %v", err)
+		}
+		if err := os.Mkdir(eventsPath, 0o700); err != nil {
+			t.Fatalf("block events path: %v", err)
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected session.completed event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "session.completed") {
+		t.Fatalf("expected completed event context, got %v", err)
+	}
+}
+
 func TestEngineMarksInterruptSteerDeferredWhenToolIgnoresCancel(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	release := make(chan struct{})

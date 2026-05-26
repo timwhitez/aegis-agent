@@ -844,7 +844,9 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
 	}
-	e.emit(meta.ID, "session.completed", state.Phase, map[string]any{})
+	if err := e.appendEvent(meta.ID, "session.completed", state.Phase, map[string]any{}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.completed event: %w", err)
+	}
 	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
 		return result, err
