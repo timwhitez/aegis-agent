@@ -92,6 +92,26 @@ func TestPlanModeSubmitApproveAndHistory(t *testing.T) {
 	}
 }
 
+func TestCreatePlanModeReportsCorruptLinkedGoalSnapshot(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	goalPath := filepath.Join(store.SessionDir(sessionID), "goal.json")
+	if err := os.WriteFile(goalPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt goal: %v", err)
+	}
+
+	_, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Plan with corrupt goal",
+		Source:    PlanModeSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal.json") {
+		t.Fatalf("expected corrupt goal snapshot error, got %v", err)
+	}
+	if _, loadErr := store.LoadPlanMode(sessionID); !os.IsNotExist(loadErr) {
+		t.Fatalf("failed create should not leave plan mode, got %v", loadErr)
+	}
+}
+
 func TestSubmitPlanModeReturnsHistoryAppendError(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{

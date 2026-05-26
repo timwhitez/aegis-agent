@@ -269,6 +269,8 @@ func (s *Store) CreatePlanMode(sessionID string, draft PlanModeDraft) (PlanModeS
 	linkedGoalID := ""
 	if goal, err := s.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
 		linkedGoalID = goal.GoalID
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return PlanModeState{}, fmt.Errorf("load goal.json: %w", err)
 	}
 	rollback, err := s.planModeRollbackSnapshot(sessionID)
 	if err != nil {

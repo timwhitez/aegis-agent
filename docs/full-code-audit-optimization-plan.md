@@ -3946,6 +3946,32 @@ Validation:
 - Focused post-fix runtime regression proving corrupt `goal.json` during steer returns an actionable `goal.json` error before provider execution.
 - Standard grouped validation before commit.
 
+### FCA-20260526-142: Plan Mode creation ignores corrupt linked Goal snapshot
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` require Goal/mission plan approval to reuse linked Plan Mode gates; `planmode.json` may carry `linked_goal_id` pointing to the current Goal.
+- `internal/session/planmode.go` `CreatePlanMode` attempted to discover the current Goal by loading `goal.json`, but only used the success case and ignored every load error.
+- A focused pre-fix store regression wrote invalid JSON to `goal.json` and called `CreatePlanMode`; the call returned nil error and created an unlinked `planmode.json`.
+
+Impact:
+
+Plan Mode creation could proceed as if no Goal existed while the current Goal snapshot was actually corrupt. That can create an unlinked approval gate, weakening Goal/Plan traceability and making recovery harder because the durable Goal authority was unreadable at the moment a new gate was created.
+
+Minimal fix:
+
+- Keep missing `goal.json` as the optional no-Goal case.
+- Return `load goal.json` for corrupt or unreadable Goal snapshots before writing `planmode.json`.
+- Add focused store coverage proving failed creation does not leave a Plan Mode snapshot.
+
+Validation:
+
+- Focused pre-fix store regression proving corrupt `goal.json` allowed unlinked Plan Mode creation.
+- Focused post-fix store regression proving corrupt `goal.json` is reported and no Plan Mode snapshot is left behind.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4803,6 +4829,12 @@ Evidence gates:
 - Confirmed FCA-20260526-141 against steer Goal-update requirements in `spec/13-live-input-and-steering.md` and current Goal fact-source requirements in `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is not provider execution bypass: the pre-fix regression already stopped before provider execution, but it skipped the Goal-history decision point and reported only a raw JSON parse error.
 - Confirmed the minimal fix belongs in `appendGoalHistoryForSteer` because that helper is where accepted steer decides whether a current Goal requires `goal.updated` history.
+
+### Review 135
+
+- Confirmed FCA-20260526-142 against linked Goal/Plan Mode requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a no-goal session issue: missing `goal.json` remains optional, but a malformed existing Goal snapshot must not be treated as no Goal when creating a gate that might need `linked_goal_id`.
+- Confirmed the minimal fix belongs in `Store.CreatePlanMode` because the store owns Plan Mode snapshot creation and linked Goal discovery for CLI/Web/runtime callers.
 
 ## Update Log
 
@@ -6354,6 +6386,41 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-142
+
+Slice: `fix(session): report corrupt goal during plan mode creation`
+
+Finding:
+
+- `CreatePlanMode` ignored `LoadGoal` errors while discovering whether the new Plan Mode should be linked to the current Goal.
+- Before the fix, corrupt `goal.json` allowed creation of an unlinked `planmode.json`.
+
+Changes:
+
+- Changed `CreatePlanMode` to ignore only missing `goal.json`.
+- Returned `load goal.json` for corrupt/unreadable Goal snapshots before writing Plan Mode state.
+- Added focused store coverage proving failed creation does not leave `planmode.json`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestCreatePlanModeReportsCorruptLinkedGoalSnapshot -count=1`: failed before the fix because corrupt `goal.json` was ignored.
+- `go test -timeout 120s ./internal/session -run 'Test(CreatePlanModeReportsCorruptLinkedGoalSnapshot|PlanModeSubmitApproveAndHistory|StoreGoalApprovalRelinksExistingPendingPlanMode)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/planmode.go internal/session/planmode_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
