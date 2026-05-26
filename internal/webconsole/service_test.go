@@ -3812,6 +3812,48 @@ func TestUpdateConfigRejectsConfigPathAsAuditLog(t *testing.T) {
 	}
 }
 
+func TestAPIKeyWriteRejectsEnvFileAsAuditLog(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	cfg := testConfig(t, "")
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", auditPath)
+	t.Setenv("OPENAI_API_KEY", "")
+	provider := cfg.Providers["openai"]
+	provider.APIKeyEnv = "OPENAI_API_KEY"
+	cfg.Providers["openai"] = provider
+	configPath := filepath.Join(cwd, "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"model":    "should-not-persist",
+		"api_key":  "sk-should-not-persist",
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "env file and audit log must be separate") {
+		t.Fatalf("expected env/audit alias preflight error, got %#v", errResp)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed API key preflight should not persist config; stat err=%v", err)
+	}
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "sk-should-not-persist") {
+		t.Fatalf("failed API key preflight should not persist secret to audit log, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "" {
+		t.Fatalf("failed API key preflight should not mutate process API key, got %q", got)
+	}
+}
+
 func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})

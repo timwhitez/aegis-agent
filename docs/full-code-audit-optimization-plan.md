@@ -3405,6 +3405,33 @@ Validation:
 - Focused post-fix WebConsole regression proving invalid env values are rejected before persistence.
 - Standard grouped validation before commit.
 
+### FCA-20260526-123: Web API-key env file can alias the audit log
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires API-key writes to avoid recording secret values in audit events, while still writing auditable Settings events.
+- `internal/webconsole/service.go` `handleUpdateConfig` rejected config/env and config/audit aliases, but did not reject the API-key env file matching the Web audit log path.
+- The handler writes the submitted API key through `config.UpsertEnvFile` before appending `web.config.write` and `web.config.api_key_write` audit events.
+- A focused WebConsole regression set `GO_CLI_AGENT_ENV_FILE` to `webAuditLogPath(cfg.Session.Dir)`. Before the fix, `/api/config` returned HTTP 200 and left the submitted secret in the audit log file before JSONL audit events were appended.
+
+Impact:
+
+A misconfigured env-file target could place API-key material directly into the Web audit log despite the audit event payload intentionally omitting the secret. The resulting audit file would mix env assignments and JSONL events, breaking audit readability and leaking sensitive local credentials.
+
+Minimal fix:
+
+- Add a Web Settings preflight that rejects API-key env-file targets whose cleaned absolute path matches the Web audit log path.
+- Run this preflight before config persistence, env-file persistence, process environment mutation, or audit append.
+- Add focused WebConsole coverage asserting no config file, audit secret, or process env mutation occurs when env-file and audit-log targets alias.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving the aliased env/audit target returned HTTP 200.
+- Focused post-fix WebConsole regression proving the alias is rejected before persistence.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4148,6 +4175,12 @@ Evidence gates:
 - Confirmed FCA-20260526-122 against Settings API-key sensitivity requirements in `spec/17-web-console.md` and provider API-key configuration behavior in `spec/03-provider-contracts.md`.
 - Confirmed this is distinct from FCA-20260526-119: that issue validates the env key name, while this issue validates the env value before the same late `os.Setenv` failure point.
 - Confirmed the minimal fix should stay in Web Settings API-key preflight; config/env-file formatting, Settings UI behavior, and provider adapters do not need to change for this slice.
+
+### Review 116
+
+- Confirmed FCA-20260526-123 against API-key audit sensitivity requirements in `spec/17-web-console.md` and local file-fact consistency requirements in `spec/01-runtime-architecture.md`.
+- Confirmed this is distinct from FCA-20260526-120 and FCA-20260526-121: those cover config/env and config/audit aliases, while this path aliases the API-key env file with the audit log and can leak a secret into the audit file despite sanitized audit event payloads.
+- Confirmed the minimal fix should stay in Web Settings target preflight. The audit writer, env-file writer, Settings UI payload, and audit event schema do not need to change for this slice.
 
 ## Update Log
 
@@ -6862,6 +6895,40 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence -count=1`: failed before the fix with late `setenv: invalid argument`.
 - `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|RejectsInvalidEnvKeyBeforePersistence|RejectsInvalidEnvValueBeforePersistence|RejectsConfigPathAsEnvFile|DoesNotLogSecretValue)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-123
+
+Slice: `fix(webconsole): reject API key audit target alias`
+
+Finding:
+
+- Web Settings allowed `GO_CLI_AGENT_ENV_FILE` to point at `webconsole-audit.jsonl`.
+- Before the fix, `/api/config` returned HTTP 200 and persisted the submitted API key into the audit log file before appending JSONL audit records.
+
+Changes:
+
+- Added a Web Settings preflight that rejects API-key env-file paths matching the cleaned absolute Web audit log path.
+- Ran the alias preflight before config persistence, env-file persistence, process env mutation, or audit append.
+- Added focused WebConsole coverage proving no config file, audit secret, or process env mutation occurs for the env/audit alias case.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsEnvFileAsAuditLog -count=1`: failed before the fix with HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsEnvFileAsAuditLog -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(APIKeyWriteRejectsEnvFileAsAuditLog|APIKeyWriteRejectsConfigPathAsEnvFile|UpdateConfigRejectsConfigPathAsAuditLog)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.

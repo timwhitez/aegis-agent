@@ -2761,6 +2761,10 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		if err := preflightWebAPIKeyAuditTarget(apiKeyUpdate.envFile, webAuditLogPath(s.store.Root())); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	configSnapshot, err := snapshotWebConfigFile(configPath)
 	if err != nil {
@@ -2876,6 +2880,17 @@ func preflightWebConfigAuditTarget(configPath, auditPath string) error {
 	}
 	if same {
 		return fmt.Errorf("config file and audit log must be separate: %s", configPath)
+	}
+	return nil
+}
+
+func preflightWebAPIKeyAuditTarget(envFile, auditPath string) error {
+	same, err := sameWebPath(envFile, auditPath)
+	if err != nil {
+		return err
+	}
+	if same {
+		return fmt.Errorf("API key env file and audit log must be separate: %s", envFile)
 	}
 	return nil
 }
