@@ -3752,6 +3752,48 @@ func TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence(t *testing.T) {
 	}
 }
 
+func TestAPIKeyWriteRejectsBlankEnvValueBeforePersistence(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	envPath := filepath.Join(cwd, ".env")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("OPENAI_API_KEY", "")
+
+	cfg := testConfig(t, "")
+	provider := cfg.Providers["openai"]
+	provider.APIKeyEnv = "OPENAI_API_KEY"
+	cfg.Providers["openai"] = provider
+	configPath := filepath.Join(cwd, "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"model":    "should-not-persist",
+		"api_key":  "   \t  ",
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "blank env value") {
+		t.Fatalf("expected blank env value preflight error, got %#v", errResp)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed API key preflight should not persist config; stat err=%v", err)
+	}
+	if data, err := os.ReadFile(envPath); err == nil && strings.Contains(string(data), "OPENAI_API_KEY") {
+		t.Fatalf("failed API key preflight should not persist API key, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read env file: %v", err)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "" {
+		t.Fatalf("failed API key preflight should not mutate process API key, got %q", got)
+	}
+}
+
 func TestAPIKeyWriteRejectsConfigPathAsEnvFile(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)

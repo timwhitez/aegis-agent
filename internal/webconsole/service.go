@@ -2854,6 +2854,9 @@ func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
 	if !config.AllowedEnvFileKey(update.envKey) {
 		return fmt.Errorf("invalid env key: %s", update.envKey)
 	}
+	if strings.TrimSpace(update.value) == "" {
+		return fmt.Errorf("blank env value for %s", update.envKey)
+	}
 	if strings.ContainsRune(update.value, 0) {
 		return fmt.Errorf("invalid env value for %s", update.envKey)
 	}

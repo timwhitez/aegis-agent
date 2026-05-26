@@ -3432,6 +3432,34 @@ Validation:
 - Focused post-fix WebConsole regression proving the alias is rejected before persistence.
 - Standard grouped validation before commit.
 
+### FCA-20260526-124: Web API-key blank env values persist unusable credentials
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` treats Settings API-key writes as sensitive local mutations that should give the operator clear success/failure behavior.
+- `internal/webconsole/service.go` `handleUpdateConfig` treated any non-empty `api_key` string as a new API-key update, including whitespace-only values.
+- The existing API-key preflight rejected malformed keys and NUL-containing values, but did not reject values whose trimmed form was empty.
+- `config.Provider.ResolvedAPIKey` trims environment values before treating a key as usable, so a persisted whitespace-only key is later read as no key.
+- A focused WebConsole regression submitted `api_key: "   \t  "`. Before the fix, `/api/config` returned HTTP 200, wrote the Settings config, and persisted an `OPENAI_API_KEY` entry that backend provider resolution treats as empty.
+
+Impact:
+
+Operators could receive a successful Settings save for an API key that the runtime later treats as missing. The env file and UI/action result imply a credential was written, while provider execution still fails as unauthenticated after reload or subsequent use.
+
+Minimal fix:
+
+- Reject API-key values whose trimmed form is empty in the existing Web API-key preflight.
+- Keep the check before config persistence, env-file persistence, process environment mutation, or audit append.
+- Add focused WebConsole coverage asserting blank values leave no config file, env file API-key entry, or process env mutation.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving whitespace-only API keys returned HTTP 200 and persisted.
+- Focused post-fix WebConsole regression proving blank API-key values are rejected before persistence.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4181,6 +4209,12 @@ Evidence gates:
 - Confirmed FCA-20260526-123 against API-key audit sensitivity requirements in `spec/17-web-console.md` and local file-fact consistency requirements in `spec/01-runtime-architecture.md`.
 - Confirmed this is distinct from FCA-20260526-120 and FCA-20260526-121: those cover config/env and config/audit aliases, while this path aliases the API-key env file with the audit log and can leak a secret into the audit file despite sanitized audit event payloads.
 - Confirmed the minimal fix should stay in Web Settings target preflight. The audit writer, env-file writer, Settings UI payload, and audit event schema do not need to change for this slice.
+
+### Review 117
+
+- Confirmed FCA-20260526-124 against Settings API-key sensitivity requirements in `spec/17-web-console.md` and provider credential resolution in `internal/config/config.go`.
+- Confirmed this is distinct from FCA-20260526-122: NUL-containing values fail at `os.Setenv`, while whitespace-only values were accepted as a successful save but are later trimmed to an unusable credential.
+- Confirmed the minimal fix should stay in Web Settings API-key preflight. The env-file formatter, Settings UI confirmation, provider adapters, and credential loader do not need to change for this slice.
 
 ## Update Log
 
@@ -6929,6 +6963,40 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsEnvFileAsAuditLog -count=1`: failed before the fix with HTTP 200.
 - `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsEnvFileAsAuditLog -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'Test(APIKeyWriteRejectsEnvFileAsAuditLog|APIKeyWriteRejectsConfigPathAsEnvFile|UpdateConfigRejectsConfigPathAsAuditLog)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-124
+
+Slice: `fix(webconsole): preflight blank API key values`
+
+Finding:
+
+- Web Settings accepted whitespace-only API-key values.
+- Before the fix, `/api/config` returned HTTP 200, persisted config changes, and wrote an `OPENAI_API_KEY` entry that `Provider.ResolvedAPIKey` later trims to empty.
+
+Changes:
+
+- Added a blank-value check to the existing Web API-key preflight.
+- Kept the check before config, env-file, process environment, or audit mutation.
+- Added focused WebConsole coverage proving blank values leave no config file, env file API-key entry, or process env mutation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsBlankEnvValueBeforePersistence -count=1`: failed before the fix with HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsBlankEnvValueBeforePersistence -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RejectsBlankEnvValueBeforePersistence|RejectsInvalidEnvValueBeforePersistence|RejectsInvalidEnvKeyBeforePersistence|RejectsEnvFileAsAuditLog|RejectsConfigPathAsEnvFile|RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|DoesNotLogSecretValue)|TestUpdateConfigRejectsConfigPathAsAuditLog' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.
