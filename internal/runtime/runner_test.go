@@ -494,6 +494,59 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestRunnerStartReportsStartedEventAppendError(t *testing.T) {
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_started_event",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"should not run"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider: "openai-compatible",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     server.URL + "/v1",
+		Model:       "gpt-5.4",
+		TimeoutSec:  30,
+		WireAPI:     "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	escapedSessionRoot := strings.ReplaceAll(cfg.Session.Dir, "'", "'\"'\"'")
+	cfg.Hooks.UserMessage = []config.HookDefinition{{
+		Name:    "block-events-before-run",
+		Command: []string{"/bin/sh", "-c", "rm -f '" + escapedSessionRoot + "'/\"$SESSION_ID\"/events.jsonl && mkdir -p '" + escapedSessionRoot + "'/\"$SESSION_ID\"/events.jsonl"},
+	}}
+	runner := NewRunner(cfg)
+
+	result, err := runner.Start(context.Background(), StartRequest{
+		Prompt:   "Return a done candidate.",
+		Provider: "openai-compatible",
+		Workdir:  t.TempDir(),
+		Mode:     session.ModeRun,
+	})
+	if err == nil {
+		t.Fatalf("expected session.started event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "session.started") {
+		t.Fatalf("expected started event context, got %v", err)
+	}
+	if calls := providerCalls.Load(); calls != 0 {
+		t.Fatalf("provider should not run after missing started event, got %d calls", calls)
+	}
+}
+
 func TestRunnerStartGoalPlanApprovalCreatesLinkedPlanModeGate(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1462,10 +1462,12 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 	}()
 	r.setPlanInputHandler(meta.ID, planInputHandler)
 	defer r.clearPlanInputHandler(meta.ID)
-	r.emit(meta.ID, "session.started", "prepare", map[string]any{
+	if err := r.appendEvent(meta.ID, "session.started", "prepare", map[string]any{
 		"provider": meta.Provider,
 		"model":    meta.Model,
-	})
+	}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.started event: %w", err)
+	}
 	return r.engine.Run(ctx, meta, state, systemOverride, adapter, catalog, registry, hookManager)
 }
 

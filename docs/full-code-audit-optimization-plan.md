@@ -4468,6 +4468,34 @@ Validation:
 - Existing exec no-finish and interrupted-tool pause regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-178: Runner start can proceed without durable started event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `session.started` as a core session event and defines `events.jsonl` as a `SessionStore` fact.
+- `spec/00-product.md` requires all key state changes to be written to disk before returning, and keeps session/state/messages/events as the local file facts for Web-first operation.
+- `internal/runtime/runner.go` `runExisting` emitted `session.started` through unchecked `r.emit` immediately before calling `engine.Run`.
+- A focused pre-fix runtime regression blocked `events.jsonl` after session creation but before `runExisting`. Before the fix, `Runner.Start` reached the provider and failed later on a different lifecycle append instead of reporting the missing `session.started` event.
+
+Impact:
+
+A session could enter provider execution without durable evidence that the run actually started. That weakens Web timeline reconstruction, recovery diagnostics, and the local file-fact contract for start/resume boundaries, especially when later lifecycle events are also affected by the same event-log write failure.
+
+Minimal fix:
+
+- Use checked `appendEvent` for `session.started` in `runExisting`.
+- Return an error that names `session.started` when the start event cannot be appended.
+- Stop before provider execution if the started event is not durable.
+- Preserve existing provider setup, hook setup, steer watcher setup, and engine execution behavior when event persistence succeeds.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `events.jsonl` let execution reach the provider and failed later without `session.started` context.
+- Focused post-fix runtime regression proving blocked `events.jsonl` returns a `session.started` append error before provider execution.
+- Existing runtime/session and Web-first validation matrix before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6086,7 +6114,47 @@ Evidence gates:
 - Confirmed this does not promote diagnostic event writes globally: it only hardens the two remaining session lifecycle events that must explain a durable `state.json` transition.
 - Confirmed the minimal fix belongs in the `incomplete_no_finish` branch and `pause` helper, preserving existing tool-result replay and pause semantics.
 
+### Review 171
+
+- Confirmed FCA-20260526-178 against the session lifecycle event catalog in `spec/01-runtime-architecture.md` and the file-fact durability requirement in `spec/00-product.md`.
+- Confirmed this is a runner-owned lifecycle boundary, not a provider or engine decision: the event is emitted after start setup and before `Engine.Run`.
+- Confirmed the minimal fix belongs in `runExisting` and does not promote diagnostic-only events globally.
+
 ## Update Log
+
+### FCA-20260526-178
+
+Slice: `fix(runtime): persist started lifecycle events`
+
+Finding:
+
+- `runExisting` emitted `session.started` through unchecked `r.emit`.
+- Before the fix, blocked `events.jsonl` after session creation still let execution reach the provider and only failed later on a different lifecycle event.
+
+Changes:
+
+- `runExisting` now uses checked `appendEvent` for `session.started`.
+- Returned event append errors include `session.started` context.
+- Added focused runtime coverage proving provider execution does not begin when the started event cannot be persisted.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerStartReportsStartedEventAppendError -count=1`: failed before the fix because execution reached the provider and failed later without `session.started` context.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerStartReportsStartedEventAppendError -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/runner_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-177
 
