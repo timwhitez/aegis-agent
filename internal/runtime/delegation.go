@@ -165,22 +165,35 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		AgentRole: req.AgentRole,
 	}
 	requestedChildWorkdir := workdir
+	coordinationStatus := result.Status
+	var handoffErr error
 	if result.SessionID != "" {
 		if meta, loadErr := childRunner.store.LoadMetadata(result.SessionID); loadErr == nil {
 			out.Workdir = meta.Workdir
 			out.AgentRole = meta.AgentRole
 			requestedChildWorkdir = firstNonEmpty(meta.RequestedWorkdir, requestedChildWorkdir)
+		} else {
+			handoffErr = fmt.Errorf("load child session metadata for delegate handoff %s: %w", result.SessionID, loadErr)
 		}
-		if messages, loadErr := childRunner.store.LoadMessages(result.SessionID); loadErr == nil {
-			effectiveWorkdir := firstNonEmpty(out.Workdir, requestedChildWorkdir)
-			out.VisiblePaths = collectVisibleSessionOutputs(effectiveWorkdir, messages)
-			out.VisiblePaths = syncVisibleSessionOutputs(requestedChildWorkdir, effectiveWorkdir, out.VisiblePaths)
+		if handoffErr == nil {
+			if messages, loadErr := childRunner.store.LoadMessages(result.SessionID); loadErr == nil {
+				effectiveWorkdir := firstNonEmpty(out.Workdir, requestedChildWorkdir)
+				out.VisiblePaths = collectVisibleSessionOutputs(effectiveWorkdir, messages)
+				out.VisiblePaths = syncVisibleSessionOutputs(requestedChildWorkdir, effectiveWorkdir, out.VisiblePaths)
+			} else {
+				handoffErr = fmt.Errorf("load child session messages.jsonl for delegate handoff %s: %w", result.SessionID, loadErr)
+			}
 		}
+	}
+	if handoffErr != nil {
+		coordinationStatus = session.StatusFailed
+		out.Status = session.StatusFailed
+		out.LastError = handoffErr.Error()
 	}
 	if result.SessionID != "" {
 		r.emit(req.ParentSessionID, "session.child.spawned", "delegate", map[string]any{
 			"session_id": result.SessionID,
-			"status":     result.Status,
+			"status":     out.Status,
 			"agent_name": req.AgentName,
 			"agent_role": out.AgentRole,
 			"wait_mode":  normalizeParentWaitMode(req.WaitMode),
@@ -191,7 +204,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			}
 			return out, coordinationErr
 		}
-		if coordinationErr := resolveParentChildSession(r.store, req.ParentSessionID, result.SessionID, result.Status); coordinationErr != nil {
+		if coordinationErr := resolveParentChildSession(r.store, req.ParentSessionID, result.SessionID, coordinationStatus); coordinationErr != nil {
 			if err != nil {
 				return out, err
 			}

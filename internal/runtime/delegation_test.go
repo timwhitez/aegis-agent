@@ -1249,6 +1249,51 @@ func TestRunnerDelegateCopiesVisibleOutputsIntoRequestedWorkspace(t *testing.T) 
 	}
 }
 
+func TestRunnerDelegateReportsCorruptChildHandoffMessages(t *testing.T) {
+	assertRunnerDelegateReportsCorruptChildHandoffFact(t, "messages.jsonl")
+}
+
+func assertRunnerDelegateReportsCorruptChildHandoffFact(t *testing.T, factName string) {
+	t.Helper()
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	escapedSessionRoot := strings.ReplaceAll(cfg.Session.Dir, "'", "'\"'\"'")
+	cfg.Hooks.SessionComplete = []config.HookDefinition{
+		{
+			Name:    "corrupt-child-" + strings.ReplaceAll(factName, ".", "-"),
+			Command: []string{"/bin/sh", "-c", "printf '{' > '" + escapedSessionRoot + "'/\"$SESSION_ID\"/" + factName},
+		},
+	}
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "Finish the delegated task.",
+		AgentName:       "reviewer",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if result.SessionID == "" {
+		t.Fatalf("expected child session id, got %#v", result)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected corrupt child handoff to fail delegate result, got %#v", result)
+	}
+	if !strings.Contains(result.LastError, factName) {
+		t.Fatalf("expected corrupt %s error, got %#v", factName, result)
+	}
+	coordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if !slices.Contains(coordination.FailedChildSessions, result.SessionID) {
+		t.Fatalf("expected failed child coordination for corrupt handoff, got %#v", coordination)
+	}
+}
+
 func TestRunnerDelegateRejectsDepthLimit(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

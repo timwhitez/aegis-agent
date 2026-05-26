@@ -4185,6 +4185,36 @@ Validation:
 - Existing queue visible-output copy and failed-job lifecycle regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-168: Direct delegate reports success after corrupt child handoff logs
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires child handoff to depend on visible file facts rather than process-local context.
+- `spec/11-spec-audit-and-traceability.md` says structured handoff depends on durable artifacts being complete and fresh, and `agent_role` / child linkage must remain traceable through session metadata and results.
+- `internal/runtime/delegation.go` `SpawnAgent` reloaded the child session metadata and messages after synchronous `childRunner.Start` so direct `agent_spawn` / `Delegate` results could include the child workdir, role, and visible output paths, but it discarded child `messages.jsonl` load errors.
+- The queue worker handoff path now treats corrupt child logs as a failed handoff, so direct synchronous delegation had weaker durable-fact handling than background queue delegation.
+- A focused pre-fix runtime regression used a real `session.complete` hook to corrupt the child `messages.jsonl` after the child completed. Before the fix, `Delegate` returned `completed` with empty `VisiblePaths` and no error.
+
+Impact:
+
+A parent agent could receive a successful synchronous delegate result even though the child session log needed to derive visible outputs was corrupt. Parent synthesis could then proceed without the artifacts or diagnostics that prove what the child produced, and parent coordination could classify the child as completed.
+
+Minimal fix:
+
+- Treat direct delegate child `messages.jsonl` reload failures after `childRunner.Start` as child handoff failures.
+- Return the child session ID with `Status=failed` and `LastError` naming `messages.jsonl`, so operators can inspect or repair the child session.
+- Resolve parent child coordination as failed for corrupt direct-delegate handoff results.
+- Keep existing successful visible-output sync behavior unchanged.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt direct-delegate `messages.jsonl` was hidden and the delegate result completed with empty visible paths.
+- Focused post-fix runtime regression proving corrupt direct-delegate handoff logs fail the delegate result, name `messages.jsonl`, and mark parent coordination failed.
+- Existing direct-delegate visible-output sync, parent-coordination error, and queue corrupt-handoff regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5743,7 +5773,48 @@ Evidence gates:
 - Confirmed this is not a legitimate no-output child case: the child session had a completed run and a present but malformed `messages.jsonl`, so empty visible paths would hide corrupt source facts rather than report an empty handoff.
 - Confirmed the minimal fix belongs in `ProcessNextJob`, because that is the post-run materialization point that turns child facts into queue job fields and parent background notifications.
 
+### Review 161
+
+- Confirmed FCA-20260526-168 against the direct child handoff requirements in `spec/01-runtime-architecture.md` and the durable structured handoff guidance in `spec/11-spec-audit-and-traceability.md`.
+- Confirmed this is not a child execution failure: the child completed and then a completion hook corrupted the durable `messages.jsonl` fact, so the parent-side handoff materialization is the failing boundary.
+- Confirmed the minimal fix belongs in `SpawnAgent`, because synchronous `agent_spawn` / `Delegate` results are materialized there before parent coordination records the child as completed or failed.
+
 ## Update Log
+
+### FCA-20260526-168
+
+Slice: `fix(runtime): fail corrupt delegate handoffs`
+
+Finding:
+
+- `SpawnAgent` discarded child `messages.jsonl` load errors while deriving direct delegate handoff fields after `childRunner.Start`.
+- Before the fix, a synchronous delegate whose child `messages.jsonl` was corrupted after completion still returned `completed` with empty `VisiblePaths` and no error.
+
+Changes:
+
+- Direct delegate handoff now fails the delegate result if child metadata or `messages.jsonl` cannot be reloaded after execution.
+- Corrupt direct-delegate handoff results keep the child session ID and report the corrupt child fact in `LastError`.
+- Parent child coordination now records corrupt direct-delegate handoffs as failed instead of completed.
+- Added focused runtime coverage that corrupts child `messages.jsonl` through a real session-complete hook.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerDelegateReportsCorruptChildHandoff(Messages|Metadata)' -count=1`: failed before the fix; `messages.jsonl` corruption returned a completed delegate result with empty visible paths, while `session.json` corruption was already surfaced by linked queue reconciliation.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerDelegateReportsCorruptChildHandoffMessages|TestRunnerDelegateCopiesVisibleOutputsIntoRequestedWorkspace|TestRunnerDelegateReportsParentCoordinationError|TestRunnerProcessNextJobReportsCorruptChildHandoff(Messages|Metadata)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/delegation.go internal/runtime/delegation_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-167
 
