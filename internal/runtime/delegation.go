@@ -185,8 +185,18 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			"agent_role": out.AgentRole,
 			"wait_mode":  normalizeParentWaitMode(req.WaitMode),
 		})
-		_ = addParentChildSession(r.store, req.ParentSessionID, result.SessionID, req.WaitMode)
-		_ = resolveParentChildSession(r.store, req.ParentSessionID, result.SessionID, result.Status)
+		if coordinationErr := addParentChildSession(r.store, req.ParentSessionID, result.SessionID, req.WaitMode); coordinationErr != nil {
+			if err != nil {
+				return out, err
+			}
+			return out, coordinationErr
+		}
+		if coordinationErr := resolveParentChildSession(r.store, req.ParentSessionID, result.SessionID, result.Status); coordinationErr != nil {
+			if err != nil {
+				return out, err
+			}
+			return out, coordinationErr
+		}
 		_ = writeSessionSummary(r.store, req.ParentSessionID)
 		_ = writeLongRunCheckpoint(r.store, req.ParentSessionID)
 	}

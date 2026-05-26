@@ -2155,6 +2155,33 @@ Validation:
 - Adjacent queue / parent coordination regression group.
 - Standard grouped validation before commit.
 
+### FCA-20260526-078: synchronous delegate hides parent child coordination failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` defines `parent-coordination.json` as the source fact for parent sessions that wait on explicit child work.
+- Synchronous `Delegate` ran the child session, emitted `session.child.spawned`, then ignored `addParentChildSession` and `resolveParentChildSession` errors.
+- A focused regression blocked the parent `parent-coordination.json` path with a directory. Before the fix, `Delegate` returned a completed child result even though parent coordination could not record or resolve that child work.
+
+Impact:
+
+Parent sessions could report a synchronous child as completed while the parent coordination source fact was missing or stale. That makes the parent completion gate and recovery summary diverge from child execution facts.
+
+Minimal fix:
+
+- Return parent coordination add/resolve errors from synchronous delegate after a child session id is known.
+- Preserve the original child runner error if the child itself failed and a later best-effort coordination attempt also fails.
+- Keep parent transition event appends best-effort; the source fact is `parent-coordination.json`.
+- Add a focused delegate regression for blocked parent coordination writes.
+
+Validation:
+
+- Focused synchronous delegate parent coordination error regression.
+- Adjacent synchronous delegate regression group.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2628,6 +2655,12 @@ Evidence gates:
 - Confirmed FCA-20260526-077 against `spec/18-durable-contract-and-completion.md`, `QueueSubmit`, `SpawnAgent` background queue mode, `ProcessNextJob`, `addParentQueueJob`, `resolveParentQueueJob`, `reconcileParentQueueJobStatus`, and focused blocked-parent-coordination regressions.
 - Confirmed this is a source-fact issue because `parent-coordination.json` feeds the parent completion gate; missing or stale unresolved queue facts are not just diagnostic event loss.
 - Confirmed the event append in `emitParentCoordinationTransition` remains best-effort in this slice, because parked/resumed events are timeline facts while `parent-coordination.json` is the gate source.
+
+### Review 71
+
+- Confirmed FCA-20260526-078 against `spec/18-durable-contract-and-completion.md`, synchronous `Delegate`, `addParentChildSession`, `resolveParentChildSession`, and focused blocked-parent-coordination regression evidence.
+- Confirmed this is distinct from FCA-20260526-077: this path is non-queued child delegation and uses child-session coordination lists rather than queue-job coordination lists.
+- Confirmed returning the child runner's original error remains higher priority if both child execution and later coordination fail.
 
 ## Update Log
 
@@ -4504,5 +4537,35 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-078
+
+Slice: `fix(runtime): report delegate coordination failures`
+
+Finding:
+
+- Synchronous delegate ignored parent child coordination write failures.
+- A focused regression blocked `parent-coordination.json`; before the fix, `Delegate` returned a completed child result even though parent coordination could not record or resolve the child session.
+
+Changes:
+
+- Propagated `addParentChildSession` and `resolveParentChildSession` errors from synchronous delegate after the child session id is known.
+- Preserved the child runner's original error if child execution and later coordination both fail.
+- Added a focused delegate regression for blocked parent coordination writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerDelegateReportsParentCoordinationError -count=1`: failed before the fix with a completed child result.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerDelegateReportsParentCoordinationError|TestRunnerDelegateCreatesChildSessionWithIsolation|TestRunnerDelegateTreatsNoneIsolationModeAsOff' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test --timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

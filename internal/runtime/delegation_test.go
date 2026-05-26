@@ -57,6 +57,31 @@ func TestRunnerDelegateCreatesChildSessionWithIsolation(t *testing.T) {
 	}
 }
 
+func TestRunnerDelegateReportsParentCoordinationError(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	coordinationPath := filepath.Join(runner.store.SessionDir(parentID), "parent-coordination.json")
+	if err := os.Mkdir(coordinationPath, 0o700); err != nil {
+		t.Fatalf("block parent coordination path: %v", err)
+	}
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		IsolationMode:   "off",
+	})
+	if err == nil {
+		t.Fatalf("expected parent coordination error, got result %#v", result)
+	}
+	if !strings.Contains(err.Error(), "parent-coordination.json") {
+		t.Fatalf("expected parent coordination path error, got %v", err)
+	}
+}
+
 func TestRunnerDelegateTreatsNoneIsolationModeAsOff(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
