@@ -1074,12 +1074,14 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		goal = syncedGoal
 		createdTasks = tasks
 	}
+	planModeCreated := false
 	if session.GoalRequiresPlanApproval(goal) {
 		planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		planModeCreated = created
 		if created {
 			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
 				"plan_mode_id":   planMode.PlanModeID,
@@ -1091,6 +1093,12 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 	if err := s.appendGoalMutation(sessionID, goal, "goal.updated", map[string]any{
 		"created_task_ids": webTaskIDs(createdTasks),
 	}); err != nil {
+		if len(createdTasks) == 0 && !planModeCreated {
+			if restoreErr := s.store.SaveGoal(sessionID, current); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after patch mutation error %v: %w", err, restoreErr))
+				return
+			}
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
