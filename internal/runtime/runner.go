@@ -897,6 +897,14 @@ func (r *Runner) hasToolResult(sessionID, toolCallID, name string) (bool, error)
 }
 
 func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, answers []session.PlanModeInputAnswer) error {
+	planModeSnapshot, err := r.store.SnapshotPlanMode(sessionID)
+	if err != nil {
+		return err
+	}
+	planModeHistory, err := r.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		return err
+	}
 	planMode, request, err := r.store.AnswerPlanModeInput(sessionID, requestID, source, answers)
 	if err != nil {
 		return err
@@ -914,6 +922,9 @@ func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, 
 		},
 	}
 	if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
+		if restoreErr := r.restorePlanInputAnswerAfterMessageError(sessionID, planModeSnapshot, planModeHistory, err); restoreErr != nil {
+			return restoreErr
+		}
 		return err
 	}
 	if err := r.appendEvent(sessionID, "planmode.input_answered", "plan_input", map[string]any{
@@ -923,6 +934,16 @@ func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, 
 		"recovered":    true,
 	}); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (r *Runner) restorePlanInputAnswerAfterMessageError(sessionID string, snapshot session.PlanModeSnapshot, history []session.PlanModeHistoryEntry, cause error) error {
+	if err := r.store.RestorePlanModeSnapshot(sessionID, snapshot); err != nil {
+		return fmt.Errorf("restore plan mode after input tool result append error %v: %w", cause, err)
+	}
+	if err := r.store.RestorePlanModeHistory(sessionID, history); err != nil {
+		return fmt.Errorf("restore plan mode history after input tool result append error %v: %w", cause, err)
 	}
 	return nil
 }

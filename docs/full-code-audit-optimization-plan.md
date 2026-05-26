@@ -2826,6 +2826,35 @@ Validation:
 - Adjacent Web goal / mission rollback tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-103: Recovered Plan Mode input can clear pending request without replay result
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/18-durable-contract-and-completion.md` require recovered `request_user_input` answers to append the matching tool result using the stored `tool_call_id`, so provider replay has a result for the original tool call.
+- `internal/runtime/runner.go` `appendPlanInputToolResult` called `AnswerPlanModeInput`, which clears `planmode.json.pending_request` and appends `planmode.input_answered` history, before appending the recovered `request_user_input` tool result to `messages.jsonl`.
+- If `messages.jsonl` append failed after the Plan Mode mutation, `appendPlanInputToolResult` returned an error while leaving `planmode.json` back in `planning` with no pending request and no replayable tool result.
+- A focused regression replaced `messages.jsonl` with a directory. Before the fix, the call failed but `planmode.json` had already cleared the pending request and `artifacts/planmode-history.jsonl` contained `planmode.input_answered`.
+
+Impact:
+
+Crash/restart fallback and Web recovered input could lose the only replay result required to satisfy the provider's pending `request_user_input` call, while durable Plan Mode state claimed the input was answered. The session would be harder to recover correctly because the operator could not answer the same pending request again and provider replay would still be missing the tool result.
+
+Minimal fix:
+
+- Snapshot Plan Mode state and Plan Mode history before answering recovered Plan Mode input.
+- Restore both snapshots if the recovered `request_user_input` tool-result message cannot be appended.
+- Add a store helper for restoring `artifacts/planmode-history.jsonl`.
+- Add focused runtime coverage that blocks `messages.jsonl` and verifies the pending request and Plan Mode history are restored.
+
+Validation:
+
+- Focused pre-fix runtime regression proving pending input was cleared after message append failure.
+- Focused post-fix runtime regression for the same path.
+- Adjacent Plan Mode runtime/session tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3449,6 +3478,12 @@ Evidence gates:
 - Confirmed FCA-20260526-102 against the durable Goal / Plan Mode fact requirements in `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is distinct from runtime approval event reporting: these Web endpoints explicitly roll back the current goal snapshot on missing `events.jsonl`, so the matching Goal history and any Plan Mode link created by the same failed operator mutation must roll back too.
 - Confirmed the minimal fix should not weaken history append errors or treat all diagnostic events as transactional; it only restores history when `appendGoalMutation` has already written history and then fails on the required session event append.
+
+### Review 96
+
+- Confirmed FCA-20260526-103 against recovered Plan Mode input replay requirements in `spec/01-runtime-architecture.md`, provider tool-result replay rules in `spec/03-provider-contracts.md`, and Plan Mode recovery requirements in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is a replay-safety issue rather than a display-only history gap: the failure path clears the stored pending request before writing the `request_user_input` tool result required for provider replay.
+- Confirmed the minimal fix belongs around the runtime recovered input composition; the store-level `AnswerPlanModeInput` transition is valid by itself, but runtime composes it with a required message append and must roll both durable Plan Mode facts back when the replay message write fails.
 
 ## Update Log
 
@@ -5499,6 +5534,42 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-103
+
+Slice: `fix(runtime): roll back failed plan input replay`
+
+Finding:
+
+- Runtime recovered Plan Mode input answers cleared the pending request and appended `planmode.input_answered` history before appending the required recovered `request_user_input` tool result to `messages.jsonl`.
+- With `messages.jsonl` blocked, the runtime returned an error but left Plan Mode in `planning` with no pending request and no replayable tool result.
+
+Changes:
+
+- Snapshotted Plan Mode state and history before recovered Plan Mode input answers.
+- Restored both snapshots if appending the recovered tool-result message fails.
+- Added `Store.RestorePlanModeHistory` for restoring `artifacts/planmode-history.jsonl` as part of composed runtime rollback.
+- Added a focused runtime regression for blocked `messages.jsonl` during recovered Plan Mode input answer.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestPlanInputAnswerRollsBackWhenToolResultAppendFails -count=1`: failed before the fix because failed message append cleared the pending request.
+- `go test -timeout 120s ./internal/runtime -run TestPlanInputAnswerRollsBackWhenToolResultAppendFails -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|CancelPlanModeReportsCancelledEventAppendError|ApprovePlanModeReportsPlanApprovedEventAppendError|ApproveLinkedMissionPlanReportsEventAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/planmode.go internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.

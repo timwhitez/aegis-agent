@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -423,6 +424,26 @@ func (s *Store) LoadPlanModeHistory(sessionID string) ([]PlanModeHistoryEntry, e
 		return []PlanModeHistoryEntry{}, nil
 	}
 	return out, err
+}
+
+func (s *Store) RestorePlanModeHistory(sessionID string, entries []PlanModeHistoryEntry) error {
+	path, err := s.sessionPath(sessionID, "artifacts", "planmode-history.jsonl")
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var data bytes.Buffer
+	enc := json.NewEncoder(&data)
+	for _, entry := range entries {
+		if err := enc.Encode(entry); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
 }
 
 func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (PlanModeState, error) {

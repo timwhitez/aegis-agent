@@ -304,6 +304,75 @@ func TestPlanInputCancelReturnsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestPlanInputAnswerRollsBackWhenToolResultAppendFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Answer plan input"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	request := session.PlanModeInputRequest{
+		RequestID:  "pmq_answer_messages",
+		ToolCallID: "call_answer_messages",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := runner.store.SetPlanModePendingRequest(sessionID, request, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+	beforeHistory, err := runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	blockRuntimeMessagesPath(t, runner.store, sessionID)
+
+	err = runner.appendPlanInputToolResult(sessionID, request.RequestID, session.PlanModeSourceWeb, []session.PlanModeInputAnswer{{
+		QuestionID: "scope_choice",
+		Label:      "Narrow (Recommended)",
+		Value:      "Narrow (Recommended)",
+	}})
+	if err == nil {
+		t.Fatal("expected messages append error")
+	}
+	planMode, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil || planMode.PendingRequest.RequestID != request.RequestID {
+		t.Fatalf("failed tool result append should restore pending input, got %#v", planMode)
+	}
+	history, err := runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode history after failed answer: %v", err)
+	}
+	if len(history) != len(beforeHistory) || hasRuntimePlanModeHistoryType(history, "planmode.input_answered") {
+		t.Fatalf("failed tool result append should restore plan mode history, before=%#v after=%#v", beforeHistory, history)
+	}
+}
+
 func TestCancelPlanModeReportsCancelledEventAppendError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
@@ -502,6 +571,26 @@ func blockRuntimeEventsPath(t *testing.T, store *session.Store, sessionID string
 	if err := os.Mkdir(eventsPath, 0o700); err != nil {
 		t.Fatalf("block events path: %v", err)
 	}
+}
+
+func blockRuntimeMessagesPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	messagesPath := filepath.Join(store.SessionDir(sessionID), "messages.jsonl")
+	if err := os.Remove(messagesPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove messages: %v", err)
+	}
+	if err := os.Mkdir(messagesPath, 0o700); err != nil {
+		t.Fatalf("block messages path: %v", err)
+	}
+}
+
+func hasRuntimePlanModeHistoryType(items []session.PlanModeHistoryEntry, target string) bool {
+	for _, item := range items {
+		if item.Type == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestApproveLinkedPlanModeMarksMissionPlanApproved(t *testing.T) {
