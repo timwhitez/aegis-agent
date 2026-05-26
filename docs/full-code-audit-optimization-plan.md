@@ -2631,6 +2631,32 @@ Validation:
 - Adjacent Goal lifecycle and task snapshot regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-096: Web goal creation event failures can leave created side facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `events.jsonl` as a session fact source, and `spec/17-web-console.md` defines Web goal creation as a local REST control operation backed by the session store.
+- Web `handleGoalCreate` created the goal through `CreateGoal`, optionally created a linked Plan Mode gate through `EnsurePlanModeForGoal`, and then returned an error when the final `goal.created` event append failed.
+- A focused HTTP regression blocked `events.jsonl` for `POST /api/sessions/{id}/goal` with a mission draft using `create_tasks_from_plan=true` and `require_plan_approval=true`. Before this fix, Web returned an internal server error while leaving `goal.json`, `artifacts/goal-history.jsonl`, generated task files, and linked `planmode.json` persisted.
+
+Impact:
+
+An operator could see Web goal creation fail, then refresh into a session that nevertheless had a current goal, generated task graph, and Plan Mode approval gate. Retrying creation would then fail as a duplicate current goal, and the Web event timeline would still miss the user control action that caused those facts.
+
+Minimal fix:
+
+- Snapshot tasks, Goal history, and Plan Mode state before Web goal creation side effects.
+- If the required `goal.created` event append fails, restore the previous Plan Mode snapshot, task set, Goal snapshot, and Goal history.
+- Keep the store-owned `goal.created` history append requirement from FCA-095 intact; this slice only handles the Web adapter event failure after store create succeeds.
+
+Validation:
+
+- Focused Web goal-create blocked-event regression asserting Goal, history, task, and Plan Mode rollback.
+- Adjacent Web goal endpoint and session store creation regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3212,6 +3238,12 @@ Evidence gates:
 - Confirmed FCA-20260526-095 against durable Goal, Goal history, and Task facts, store `CreateGoal`, `syncMissionPlanTasks`, and a focused blocked-history regression during create-time mission task sync.
 - Confirmed this is not a duplicate of FCA-20260526-084: that slice covered established Goal transition helpers, while `CreateGoal` had a separate create-time ordering and task generation path.
 - Confirmed the fix belongs in the session store helper so Web, CLI, runtime start, SDK, and future callers share the same rollback behavior.
+
+### Review 89
+
+- Confirmed FCA-20260526-096 against Web `handleGoalCreate`, store `CreateGoal`, `EnsurePlanModeForGoal`, and a focused blocked-`events.jsonl` HTTP regression.
+- Confirmed this is not a duplicate of FCA-20260526-095: the store helper now rolls back when `goal.created` history fails, while this Web adapter path failed after that history already succeeded and the matching Web event append failed.
+- Confirmed rollback needs to include created task files, Goal history, and linked Plan Mode state because all three can be introduced before the failed event append.
 
 ## Update Log
 
@@ -5652,6 +5684,42 @@ Validation:
 - `go test -timeout 120s ./internal/session -run 'TestCreateGoalReturnsHistoryAppendErrorAndRollsBack|TestStoreGoalLifecycleAccountingAndSummary|TestStoreSaveTasksRemovesStaleTaskFiles|TestUpdateGoalAccountingReturnsHistoryAppendError|TestCompleteGoalReturnsHistoryAppendError|TestRecordGoalProgressReturnsHistoryAppendError|TestApproveMissionPlanReturnsHistoryAppendError' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/session/goal.go internal/session/store_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-096
+
+Slice: `fix(webconsole): roll back failed goal creation`
+
+Finding:
+
+- Web goal creation returned required `goal.created` event append errors, but left newly-created current Goal facts applied.
+- A focused Web regression blocked `events.jsonl`; before the fix, failed goal creation left `goal.json`, `goal-history.jsonl`, generated mission task files, and linked `planmode.json` persisted.
+
+Changes:
+
+- Snapshotted tasks, Goal history, and Plan Mode before Web goal creation side effects.
+- Restored linked Plan Mode, task set, current Goal, and Goal history when the required `goal.created` event append fails after store creation succeeds.
+- Added a focused Web regression proving blocked `events.jsonl` rolls back goal creation side facts.
+- Added `Store.RestoreGoalHistory` so adapter rollback can restore the pre-create Goal history stream after store creation appended `goal.created`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceGoalCreateReportsEventAppendErrorAndRollsBack -count=1`: failed before the fix because failed create left `goal.json` persisted.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceGoalCreateReportsEventAppendErrorAndRollsBack -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/goal.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalCreateReportsEventAppendErrorAndRollsBack|TestServiceGoalEndpointsMutateDurableGoal|TestServiceGoalPatchReportsHistoryAppendError|TestServiceMissionPlanPatchPlanModeReportsHistoryAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestCreateGoalReturnsHistoryAppendErrorAndRollsBack|TestStoreGoalLifecycleAccountingAndSummary|TestStoreSaveTasksRemovesStaleTaskFiles' -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.

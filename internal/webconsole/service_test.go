@@ -201,6 +201,61 @@ func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
 	}
 }
 
+func TestServiceGoalCreateReportsEventAppendErrorAndRollsBack(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_create_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	eventsPath := filepath.Join(svc.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"objective":              "Create goal with required event",
+		"mode":                   "mission",
+		"require_plan_approval":  true,
+		"create_tasks_from_plan": true,
+		"features":               []string{"created task should roll back"},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "events.jsonl") {
+		t.Fatalf("expected event append error, got %#v", apiErr)
+	}
+	if _, loadErr := svc.store.LoadGoal(meta.ID); !errors.Is(loadErr, fs.ErrNotExist) {
+		t.Fatalf("failed goal create should not leave goal snapshot, got %v", loadErr)
+	}
+	history, historyErr := svc.store.LoadGoalHistory(meta.ID)
+	if historyErr != nil {
+		t.Fatalf("load goal history: %v", historyErr)
+	}
+	if len(history) != 0 {
+		t.Fatalf("failed goal create should remove created history, got %#v", history)
+	}
+	tasks, taskErr := svc.store.ListTasks(meta.ID)
+	if taskErr != nil {
+		t.Fatalf("list tasks: %v", taskErr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed goal create should not leave generated tasks, got %#v", tasks)
+	}
+	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
+		t.Fatalf("failed goal create should not leave linked plan mode, got plan=%#v err=%v", planMode, planErr)
+	}
+}
+
 func TestServiceGoalStatusPreservesAccountingAndProgressFacts(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

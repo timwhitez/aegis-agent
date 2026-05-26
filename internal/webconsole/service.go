@@ -998,6 +998,21 @@ func (s *Service) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessi
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	previousTasks, err := s.store.ListTasks(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	previousHistory, err := s.store.LoadGoalHistory(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	previousPlanMode, err := s.store.SnapshotPlanMode(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	goal, err := s.store.CreateGoal(sessionID, *draft)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -1009,17 +1024,39 @@ func (s *Service) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessi
 		writeError(w, status, err)
 		return
 	}
+	planModeChanged := false
 	if planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	} else if created {
+		planModeChanged = true
 		_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
 			"plan_mode_id":   planMode.PlanModeID,
 			"status":         planMode.Status,
 			"linked_goal_id": planMode.LinkedGoalID,
 		}))
+	} else if planMode.PlanModeID != "" && planMode.LinkedGoalID == goal.GoalID && previousPlanMode.State.LinkedGoalID != goal.GoalID {
+		planModeChanged = true
 	}
 	if err := s.store.AppendEvent(sessionID, events.New(sessionID, "goal.created", "goal", webGoalEventData(goal))); err != nil {
+		if planModeChanged {
+			if restoreErr := s.store.RestorePlanModeSnapshot(sessionID, previousPlanMode); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore plan mode after goal create event error %v: %w", err, restoreErr))
+				return
+			}
+		}
+		if restoreErr := s.store.SaveTasks(sessionID, previousTasks); restoreErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore tasks after goal create event error %v: %w", err, restoreErr))
+			return
+		}
+		if _, clearErr := s.store.ClearGoal(sessionID); clearErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after goal create event error %v: %w", err, clearErr))
+			return
+		}
+		if restoreErr := s.store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal history after goal create event error %v: %w", err, restoreErr))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

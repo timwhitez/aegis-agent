@@ -1,12 +1,15 @@
 package session
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1008,6 +1011,26 @@ func (s *Store) LoadGoalHistory(sessionID string) ([]GoalHistoryEntry, error) {
 		return []GoalHistoryEntry{}, nil
 	}
 	return out, err
+}
+
+func (s *Store) RestoreGoalHistory(sessionID string, entries []GoalHistoryEntry) error {
+	path, err := s.sessionPath(sessionID, "artifacts", "goal-history.jsonl")
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var data bytes.Buffer
+	enc := json.NewEncoder(&data)
+	for _, entry := range entries {
+		if err := enc.Encode(entry); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
 }
 
 func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (SessionGoal, bool, error) {
