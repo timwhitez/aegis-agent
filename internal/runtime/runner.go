@@ -1845,7 +1845,12 @@ func (r *Runner) appendUserMessage(ctx context.Context, meta session.SessionMeta
 	for key, value := range extraMeta {
 		data[key] = value
 	}
-	r.emit(meta.ID, "user.message", phase, data)
+	if err := r.appendEvent(meta.ID, "user.message", phase, data); err != nil {
+		if rollbackErr := r.store.RemoveLastMessageIfID(meta.ID, msg.ID); rollbackErr != nil {
+			return fmt.Errorf("record user.message event after rolling back message failed with %v: %w", rollbackErr, err)
+		}
+		return fmt.Errorf("record user.message event: %w", err)
+	}
 	return nil
 }
 

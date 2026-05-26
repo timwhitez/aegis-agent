@@ -1729,6 +1729,35 @@ func TestEngineAllowsDisablingHardTurnLimit(t *testing.T) {
 	}
 }
 
+func TestEngineAppendHarnessReminderReportsEventAppendErrorAndRollsBackMessage(t *testing.T) {
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeExec)
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+
+	_, err := engine.appendHarnessReminder(meta, "prepare", "Harness reminder: stop here.", "test")
+	if err == nil {
+		t.Fatal("expected user.message event append error")
+	}
+	if !strings.Contains(err.Error(), "user.message") {
+		t.Fatalf("expected user.message event context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("event append failure should roll back harness reminder, got %#v", messages)
+	}
+}
+
 func TestEngineAppendsRetrievalTailHarnessReminderBeforeProviderCall(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Inspect README.md and AGENTS.md and summarize the runtime surface.")); err != nil {

@@ -1036,12 +1036,17 @@ func (e *Engine) appendHarnessReminder(meta session.SessionMetadata, phase, text
 	if err := e.store.AppendMessage(meta.ID, msg); err != nil {
 		return session.Message{}, err
 	}
-	e.emit(meta.ID, "user.message", phase, map[string]any{
+	if err := e.appendEvent(meta.ID, "user.message", phase, map[string]any{
 		"text":   text,
 		"mode":   meta.Mode,
 		"source": "harness_reminder",
 		"kind":   kind,
-	})
+	}); err != nil {
+		if rollbackErr := e.store.RemoveLastMessageIfID(meta.ID, msg.ID); rollbackErr != nil {
+			return session.Message{}, fmt.Errorf("record user.message event after rolling back harness reminder failed with %v: %w", rollbackErr, err)
+		}
+		return session.Message{}, fmt.Errorf("record user.message event: %w", err)
+	}
 	return msg, nil
 }
 

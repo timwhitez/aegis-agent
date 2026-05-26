@@ -4527,6 +4527,37 @@ Validation:
 - Adjacent budget wrap-up accounting and awaiting-input regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260527-180: Direct user-message appends can outlive missing `user.message` events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `user.message` in the core event model and defines `messages.jsonl` / `events.jsonl` as session facts.
+- `spec/13-live-input-and-steering.md` requires accepted user input and harness reminders to become real user messages with event evidence, not just in-memory prompt view.
+- `internal/runtime/runner.go` `appendUserMessage` appended direct Start / Continue / Plan Mode approval-revision user messages to `messages.jsonl`, then emitted the matching `user.message` event through unchecked `r.emit`.
+- `internal/runtime/engine.go` `appendHarnessReminder` appended synthetic harness-reminder user messages to `messages.jsonl`, then emitted the matching `user.message` event through unchecked `e.emit`.
+- Focused pre-fix regressions blocked `events.jsonl` after the message append point. Before the fix, both helpers returned success and left a durable message without the corresponding durable `user.message` event.
+
+Impact:
+
+Direct user input and pre-turn harness reminders could advance `messages.jsonl` while the event timeline stayed behind. On retry or recovery, operators could see replayable user messages without the event evidence Web timelines and diagnostics expect; failed Start / Continue attempts could also leave dangling direct user messages that the caller did not know were persisted.
+
+Minimal fix:
+
+- Add a narrow session-store rollback helper that removes only the just-appended tail message by message ID.
+- Use checked `appendEvent` for `user.message` in `Runner.appendUserMessage`.
+- Use checked `appendEvent` for harness-reminder `user.message` events in `Engine.appendHarnessReminder`.
+- Roll back the just-appended message when the required event append fails, and report error context naming `user.message`.
+- Keep steer/background control-drain acceptance sequencing out of this slice; those paths couple messages, control records, and accepted events and need a separate transaction design if audited further.
+
+Validation:
+
+- Focused pre-fix runtime regressions proving blocked `events.jsonl` was ignored for direct runner user messages and harness reminders.
+- Focused post-fix runtime regressions proving blocked `events.jsonl` returns `user.message` context and leaves no dangling message.
+- Focused session-store regression proving stale rollback IDs cannot remove a non-tail message.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6157,7 +6188,52 @@ Evidence gates:
 - Confirmed this is not cosmetic telemetry: `updateGoalAccounting` has already mutated `goal.json` and goal history, so missing runtime events leave timelines and recovery views behind the authoritative Goal facts.
 - Confirmed the minimal fix belongs in `updateGoalAccounting`, and the generic `Engine.fail` wrapper should preserve the original accounting event context if the failure event append also hits the blocked `events.jsonl` path.
 
+### Review 173
+
+- Confirmed FCA-20260527-180 against the core `user.message` event catalog in `spec/01-runtime-architecture.md` and the durable user-message evidence requirements in `spec/13-live-input-and-steering.md`.
+- Confirmed the clean rollback boundary only covers direct runner messages and engine harness reminders because no other durable control record is advanced in those helpers.
+- Confirmed steer/background control-drain acceptance should remain a separate audit slice: those paths combine message append, control status mutation, accepted events, and optional Goal/background facts.
+
 ## Update Log
+
+### FCA-20260527-180
+
+Slice: `fix(runtime): roll back user messages on event failure`
+
+Finding:
+
+- `Runner.appendUserMessage` appended direct Start / Continue / Plan Mode user messages before best-effort `user.message` event emission.
+- `Engine.appendHarnessReminder` appended harness-reminder user messages before best-effort `user.message` event emission.
+- Before the fix, blocked `events.jsonl` at either point returned success and left a durable `messages.jsonl` entry without matching event evidence.
+
+Changes:
+
+- Added `Store.RemoveLastMessageIfID`, which only removes the current tail message when its ID matches the just-appended message.
+- `Runner.appendUserMessage` now records `user.message` through checked `appendEvent`, rolls back the appended message on event failure, and returns error context naming `user.message`.
+- `Engine.appendHarnessReminder` now records harness-reminder `user.message` events through checked `appendEvent`, rolls back the appended reminder on event failure, and returns error context naming `user.message`.
+- Added focused runtime and session-store regressions for event failure rollback and stale rollback protection.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerAppendUserMessageReportsEventAppendErrorAndRollsBackMessage -count=1`: failed before the fix because the helper returned nil and kept the user message.
+- `go test -timeout 120s ./internal/runtime -run TestEngineAppendHarnessReminderReportsEventAppendErrorAndRollsBackMessage -count=1`: failed before the fix because the helper returned nil and kept the harness reminder.
+- `go test -timeout 120s ./internal/runtime -run 'Test(RunnerAppendUserMessageReportsEventAppendErrorAndRollsBackMessage|EngineAppendHarnessReminderReportsEventAppendErrorAndRollsBackMessage)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run TestStoreRemoveLastMessageIfIDOnlyRemovesMatchingTail -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(RunnerStartReportsStartedEventAppendError|RunnerAppendUserMessageReportsEventAppendErrorAndRollsBackMessage|EngineAppendHarnessReminderReportsEventAppendErrorAndRollsBackMessage)' -count=1`: passed after retargeting the older started-event regression to block `events.jsonl` directly before `runExisting`.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/runner.go internal/runtime/runner_test.go internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-179
 

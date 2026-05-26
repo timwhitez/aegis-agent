@@ -520,19 +520,35 @@ func TestRunnerStartReportsStartedEventAppendError(t *testing.T) {
 		WireAPI:     "responses",
 	}
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	escapedSessionRoot := strings.ReplaceAll(cfg.Session.Dir, "'", "'\"'\"'")
-	cfg.Hooks.UserMessage = []config.HookDefinition{{
-		Name:    "block-events-before-run",
-		Command: []string{"/bin/sh", "-c", "rm -f '" + escapedSessionRoot + "'/\"$SESSION_ID\"/events.jsonl && mkdir -p '" + escapedSessionRoot + "'/\"$SESSION_ID\"/events.jsonl"},
-	}}
 	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	eventsPath := filepath.Join(runner.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
 
-	result, err := runner.Start(context.Background(), StartRequest{
-		Prompt:   "Return a done candidate.",
-		Provider: "openai-compatible",
-		Workdir:  t.TempDir(),
-		Mode:     session.ModeRun,
-	})
+	result, err := runner.runExisting(context.Background(), meta, state, "", nil)
 	if err == nil {
 		t.Fatalf("expected session.started event append error, got result=%#v", result)
 	}
@@ -1140,6 +1156,55 @@ func TestRunnerAppendUserMessageAppliesUserHook(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].Text != "[interactive] hello" {
 		t.Fatalf("unexpected messages: %#v", messages)
+	}
+}
+
+func TestRunnerAppendUserMessageReportsEventAppendErrorAndRollsBackMessage(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	eventsPath := filepath.Join(runner.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+
+	err := runner.appendUserMessage(context.Background(), meta, "prepare", "hello", nil)
+	if err == nil {
+		t.Fatal("expected user.message event append error")
+	}
+	if !strings.Contains(err.Error(), "user.message") {
+		t.Fatalf("expected user.message event context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	messages, loadErr := runner.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("event append failure should roll back user message, got %#v", messages)
 	}
 }
 

@@ -123,6 +123,53 @@ func TestStoreAppendMessageRejectsSymlinkJSONL(t *testing.T) {
 	}
 }
 
+func TestStoreRemoveLastMessageIfIDOnlyRemovesMatchingTail(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	first := NewMessage("user", "first")
+	second := NewMessage("user", "second")
+	if err := store.AppendMessage(meta.ID, first); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if err := store.AppendMessage(meta.ID, second); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if err := store.RemoveLastMessageIfID(meta.ID, first.ID); err == nil {
+		t.Fatal("expected stale tail rollback to fail")
+	}
+	messages, err := store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("stale rollback should preserve both messages, got %#v", messages)
+	}
+	if err := store.RemoveLastMessageIfID(meta.ID, second.ID); err != nil {
+		t.Fatalf("remove matching tail: %v", err)
+	}
+	messages, err = store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages after remove: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != first.ID {
+		t.Fatalf("expected only first message to remain, got %#v", messages)
+	}
+}
+
 func TestStoreFeatureListRejectsSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

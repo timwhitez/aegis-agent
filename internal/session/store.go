@@ -296,6 +296,23 @@ func (s *Store) AppendMessage(sessionID string, message Message) error {
 	return s.appendJSONL(path, message)
 }
 
+func (s *Store) RemoveLastMessageIfID(sessionID, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "messages.jsonl")
+	if err != nil {
+		return err
+	}
+	var messages []Message
+	if err := readJSONL(path, &messages); err != nil {
+		return err
+	}
+	if len(messages) == 0 || messages[len(messages)-1].ID != messageID {
+		return fmt.Errorf("cannot roll back message %s: last message changed", messageID)
+	}
+	return s.writeJSONL(path, messages[:len(messages)-1])
+}
+
 func (s *Store) LoadMessages(sessionID string) ([]Message, error) {
 	path, err := s.sessionPath(sessionID, "messages.jsonl")
 	if err != nil {
