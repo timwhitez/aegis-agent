@@ -2238,6 +2238,8 @@ func (s *Service) handleShowJob(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusInternalServerError
 		if errors.Is(err, fs.ErrNotExist) {
 			status = http.StatusNotFound
+		} else if isStoreIDClientError(err) {
+			status = http.StatusBadRequest
 		}
 		writeError(w, status, err)
 		return

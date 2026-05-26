@@ -4578,6 +4578,32 @@ func TestServiceQueueJobDetailRequiresGet(t *testing.T) {
 	}
 }
 
+func TestServiceQueueJobDetailRejectsMalformedJobID(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/queue/jobs/bad%2Fjob", nil)
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d want %d body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "path separators and traversal") {
+		t.Fatalf("expected malformed job id error, got body=%s", recorder.Body.String())
+	}
+
+	missing := httptest.NewRecorder()
+	missingReq := httptest.NewRequest(http.MethodGet, "/api/queue/jobs/missing_job_detail", nil)
+	svc.ServeHTTP(missing, missingReq)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unexpected missing-job status: %d want %d body=%s", missing.Code, http.StatusNotFound, missing.Body.String())
+	}
+}
+
 func TestServiceParallelQueueWorkersPersistAllJobs(t *testing.T) {
 	server := newDelayedFinishServer(150 * time.Millisecond)
 	defer server.Close()

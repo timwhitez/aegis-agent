@@ -3546,6 +3546,34 @@ Validation:
 - Focused post-fix WebConsole regression proving unknown session subresources return HTTP 404 and no orphan session directory is created by goal creation.
 - Standard grouped validation before commit.
 
+### FCA-20260526-128: Queue job detail treats malformed IDs as server failures
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires Web API errors to distinguish operator input errors from local infrastructure or durable-store failures.
+- `internal/session/store.go` validates queue job IDs in `LoadJob` with `validateStoreID("queue job", jobID)`, rejecting path separators and traversal before any queue file lookup.
+- `internal/webconsole/service.go` `handleShowJob` only mapped `fs.ErrNotExist` to HTTP 404; all other `LoadJob` errors fell through to HTTP 500.
+- A focused pre-fix WebConsole regression showed `GET /api/queue/jobs/bad%2Fjob` returned HTTP 500 with `invalid queue job id "bad/job": path separators and traversal are not allowed`.
+
+Impact:
+
+Malformed queue job links or mistyped job IDs looked like WebConsole or local queue-store failures. That points operator recovery toward repairing durable queue state even though the request was invalid, and it makes the advanced queue REST surface inconsistent with the session route status mapper that already treats malformed store IDs as HTTP 400.
+
+Minimal fix:
+
+- Reuse the existing store-ID client error classifier in `handleShowJob`.
+- Keep missing queue job facts mapped to HTTP 404.
+- Keep queue store, reconciliation, and filesystem failures mapped to HTTP 500.
+- Add focused WebConsole coverage for malformed job IDs and preserve missing-job `404` behavior.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving malformed queue job IDs returned HTTP 500.
+- Focused post-fix WebConsole regression proving malformed queue job IDs return HTTP 400 while missing queue jobs still return HTTP 404.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4319,6 +4347,12 @@ Evidence gates:
 - Confirmed FCA-20260526-127 against the WebConsole session-file authority requirements in `spec/01-runtime-architecture.md` and the session-scoped API contract in `spec/17-web-console.md`.
 - Confirmed this is not a general queue/children empty-state issue: existing sessions with no children, tasks, messages, or goal may still return empty data, but unknown session IDs must fail before subresource dispatch.
 - Confirmed the minimal fix should stay at the Web session route boundary. Store helpers should continue to treat optional per-session files like `goal.json`, `todo.json`, `tasks/`, and message/event logs as optional once the enclosing session metadata fact exists.
+
+### Review 121
+
+- Confirmed FCA-20260526-128 against the Web API error-classification requirements in `spec/17-web-console.md` and the queue job ID validation in `internal/session/store.go`.
+- Confirmed this is not a missing-job or queue-reconciliation issue: a syntactically valid missing job should remain HTTP 404, while store/reconciliation failures should remain HTTP 500.
+- Confirmed the minimal fix belongs in the Web HTTP adapter. The store should continue returning validation errors, and the queue store layout, worker behavior, and advanced queue API contract do not need to change for this slice.
 
 ## Update Log
 
@@ -7200,6 +7234,41 @@ Validation:
 
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionSubresourcesRejectUnknownSession -count=1`: failed before the fix because unknown-session children returned HTTP 200.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionSubresourcesRejectUnknownSession -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-128
+
+Slice: `fix(webconsole): classify queue job id errors`
+
+Finding:
+
+- Web queue job detail only mapped missing job facts to HTTP 404; malformed queue job IDs rejected by the session store were reported as HTTP 500.
+- Before the fix, `GET /api/queue/jobs/bad%2Fjob` returned HTTP 500 with an invalid queue job id message even though no durable queue-store failure occurred.
+
+Changes:
+
+- Reused the Web store-ID client error classifier in `handleShowJob`.
+- Kept valid but missing queue jobs mapped to HTTP 404.
+- Kept queue store, reconciliation, and filesystem failures mapped to HTTP 500.
+- Added focused WebConsole regression coverage for malformed job IDs plus adjacent missing-job behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceQueueJobDetailRejectsMalformedJobID -count=1`: failed before the fix because malformed job IDs returned HTTP 500.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceQueueJobDetailRejectsMalformedJobID -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
