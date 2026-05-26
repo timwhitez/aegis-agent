@@ -367,7 +367,10 @@ func (s *Store) SaveArtifactTracker(sessionID string, artifacts []RequiredArtifa
 	if err != nil {
 		return err
 	}
-	return s.writeJSONFile(path, artifacts)
+	if err := s.writeJSONFile(path, artifacts); err != nil {
+		return fmt.Errorf("save artifact tracker %s: %w", path, err)
+	}
+	return nil
 }
 
 func (s *Store) AppendProviderAttempt(sessionID string, attempt ProviderAttempt) error {

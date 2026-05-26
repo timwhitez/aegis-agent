@@ -517,7 +517,19 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					annotateExactArtifactLiteralResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateTargetConsistencyResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateReviewArtifactResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
-					controller.TrackToolResult(call.Name, toolResult, state.Turn)
+					toolResult.ToolCallID = call.ID
+					toolResult.Name = call.Name
+					if err := controller.TrackToolResult(call.Name, toolResult, state.Turn); err != nil {
+						toolResult.IsError = true
+						toolResult.LLMOutput = "Error: artifact tracker update failed after tool execution: " + err.Error()
+						toolResult.DisplayOutput = toolResult.LLMOutput
+						toolResults = append(toolResults, toolResult)
+						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: artifact tracker update failed before this call ran: "+err.Error())...)
+						if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+							return RunResult{}, appendErr
+						}
+						return e.fail(ctx, meta, state, err, hookManager)
+					}
 					if call.Name == "record_goal_progress" && !toolResult.IsError {
 						_ = writeSessionSummary(e.store, meta.ID)
 						_ = writeLongRunCheckpoint(e.store, meta.ID)

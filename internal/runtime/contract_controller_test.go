@@ -133,6 +133,35 @@ func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 	}
 }
 
+func TestCompletionControllerTrackToolResultReportsArtifactTrackerError(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh contract: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("new content"), 0o600); err != nil {
+		t.Fatalf("update artifact: %v", err)
+	}
+	blockRuntimeArtifactTrackerPath(t, store, meta.ID)
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	err := controller.TrackToolResult("write_file", session.ToolResult{
+		Name:          "write_file",
+		LLMOutput:     "wrote reports/final.md",
+		DisplayOutput: "wrote reports/final.md",
+		Metadata:      map[string]any{"path": artifactPath},
+	}, 2)
+	if err == nil || !strings.Contains(err.Error(), "artifact-tracker.json") {
+		t.Fatalf("expected artifact tracker error, got %v", err)
+	}
+}
+
 func TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
@@ -696,6 +725,17 @@ func blockRuntimeContractHistoryPath(t *testing.T, store *session.Store, session
 	}
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block contract history path: %v", err)
+	}
+}
+
+func blockRuntimeArtifactTrackerPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	trackerPath := filepath.Join(store.SessionDir(sessionID), "artifact-tracker.json")
+	if err := os.Remove(trackerPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove artifact tracker: %v", err)
+	}
+	if err := os.Mkdir(trackerPath, 0o700); err != nil {
+		t.Fatalf("block artifact tracker path: %v", err)
 	}
 }
 

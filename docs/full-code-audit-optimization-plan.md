@@ -1892,6 +1892,34 @@ Validation:
 - Adjacent budget wrap-up and completion-gate regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-069: Required-artifact tracking hides durable update failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md`, `spec/12-task-system.md`, and `spec/18-durable-contract-and-completion.md` make explicit required-artifact completion depend on `artifact-tracker.json`, `contract.json`, and `CompletionController`.
+- Before this slice, `CompletionController.TrackToolResult` had no error return even though it updated `artifact-tracker.json` after successful `write_file` / `edit_file`, and it silently ignored `contract.json` sync failures.
+- A focused controller regression showed that replacing `artifact-tracker.json` with a directory made tracking return no error even after a successful write/edit should have updated the required-artifact fact.
+- A focused engine regression covered the post-side-effect case: after `write_file` successfully wrote `reports/final.md`, the blocked tracker path needed a replay-complete error tool result before the session failed, so provider replay would not be left with an assistant tool call and no matching tool result.
+
+Impact:
+
+The model and operator could see a successful file-write tool result while the required-artifact gate fact was not updated. Later `finish` attempts could still be blocked as stale, or recovery could see file side effects without the durable tracker evidence explaining that the session touched the required artifact.
+
+Minimal fix:
+
+- Make `TrackToolResult` return artifact tracker and contract sync errors.
+- Add path context to `SaveArtifactTracker` errors.
+- In the engine, stamp tool result id/name before artifact tracking and, on tracking failure, append a replay-complete error tool result plus synthetic skipped results for remaining same-turn calls before failing the session.
+- Add focused controller and engine regressions for blocked `artifact-tracker.json`.
+
+Validation:
+
+- Focused artifact-tracking failure regressions.
+- Existing required-artifact gate and contract freshness regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2317,6 +2345,12 @@ Evidence gates:
 - Confirmed FCA-20260526-068 against `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, engine budget wrap-up preparation, `UpdateGoalAccounting`, and focused blocked-history regression.
 - Confirmed this is distinct from the previous Goal store transition fixes: the ignored history append is in runtime prepare logic after accounting already requested a stop-on-budget wrap-up and before provider execution.
 - Confirmed the fix should report the durable fact failure before emitting `goal.budget_wrapup_turn_started` or sending the model a wrap-up turn.
+
+### Review 63
+
+- Confirmed FCA-20260526-069 against `spec/01-runtime-architecture.md`, `spec/12-task-system.md`, `spec/18-durable-contract-and-completion.md`, `CompletionController.TrackToolResult`, engine tool execution, and focused blocked-tracker regressions.
+- Confirmed this is not a derived-summary issue: `artifact-tracker.json` is the durable required-artifact gate fact, and a failed tracker update after successful file write must be visible to runtime and recovery.
+- Confirmed the fix must preserve provider replay completeness after the file side effect, so the engine appends the failed tool result and synthetic skipped results before failing.
 
 ## Update Log
 
@@ -3891,6 +3925,38 @@ Validation:
 
 - `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError' -count=1`: failed before the fix by reaching the provider.
 - `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError|TestEngineBudgetWrapUpThenFinishAwaitsInput|TestGoalCompletionGateRequiresBudgetWrapUpWhenStopOnBudget' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-069
+
+Slice: `fix(runtime): report artifact tracking failures`
+
+Finding:
+
+- Required-artifact tracking updated `artifact-tracker.json` after successful `write_file` / `edit_file`, but `TrackToolResult` could not return tracker write failures and ignored `contract.json` sync failures.
+- A blocked `artifact-tracker.json` path reproduced a silent tracking failure after the required artifact file had been written.
+- The engine also needed to keep provider replay complete when this post-side-effect failure occurred, by appending an error tool result for the executed write and synthetic skipped results for later same-turn calls.
+
+Changes:
+
+- Changed `TrackToolResult` to return artifact tracker and contract sync errors.
+- Added path context to `SaveArtifactTracker` errors.
+- Changed engine tool execution to stamp tool result id/name before artifact tracking, append replay-complete error results on tracking failure, and fail the session.
+- Added focused controller and engine regressions for blocked `artifact-tracker.json`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerTrackToolResultReportsArtifactTrackerError' -count=1`: failed before the fix because `TrackToolResult` had no error return.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerTrackToolResultReportsArtifactTrackerError|TestEngineArtifactTrackingFailureWritesReplayCompleteToolResult|TestCompletionControllerRequiresSessionTouchedArtifact|TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction|TestSessionContractTracksRequiredArtifactAndCompletionGate' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

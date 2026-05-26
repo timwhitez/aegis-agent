@@ -107,29 +107,31 @@ func (c *CompletionController) EvaluatePreCompletionFeatures(enabled bool) GateD
 	return c.block("pre_completion_check", text, map[string]any{"source": "feature_list", "path": featureListPath})
 }
 
-func (c *CompletionController) TrackToolResult(toolName string, result session.ToolResult, turn int) {
+func (c *CompletionController) TrackToolResult(toolName string, result session.ToolResult, turn int) error {
 	if result.IsError || (toolName != "write_file" && toolName != "edit_file") {
-		return
+		return nil
 	}
 	path, _ := result.Metadata["path"].(string)
 	if strings.TrimSpace(path) == "" {
-		return
+		return nil
 	}
 	artifacts, err := c.store.LoadArtifactTracker(c.sessionID)
 	if err != nil || len(artifacts) == 0 {
-		return
+		return err
 	}
 	updated, changed := markArtifactWrite(artifacts, path, toolName, turn)
 	if !changed {
-		return
+		return nil
 	}
 	if err := c.store.SaveArtifactTracker(c.sessionID, updated); err != nil {
-		return
+		return err
 	}
 	if contract, err := c.store.LoadContract(c.sessionID); err == nil {
 		contract.RequiredArtifacts = updated
 		contract.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		_ = c.store.SaveContract(c.sessionID, contract)
+		if err := c.store.SaveContract(c.sessionID, contract); err != nil {
+			return err
+		}
 	}
 	c.emitCompletion("artifact.tracked", map[string]any{
 		"path":      path,
@@ -138,6 +140,7 @@ func (c *CompletionController) TrackToolResult(toolName string, result session.T
 	})
 	_ = writeSessionSummary(c.store, c.sessionID)
 	_ = writeLongRunCheckpoint(c.store, c.sessionID)
+	return nil
 }
 
 func (c *CompletionController) requiredArtifactGate(toolName string) (string, string) {
