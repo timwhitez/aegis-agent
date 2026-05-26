@@ -4064,6 +4064,36 @@ Validation:
 - Existing linked mission approval retry regression proving readable history still prevents duplicate approval history.
 - Standard grouped validation before commit.
 
+### FCA-20260526-146: Session lists hide corrupt state snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `state.json` as a core `SessionStore` fact alongside `session.json`, `messages.jsonl`, and `events.jsonl`.
+- `spec/09-phase-plan.md` includes the `sessions` command in Phase 3 and requires Web-first v1 to validate session start / steer / continue and Web session views against the same local session facts.
+- `internal/session/store.go` `listAllSessions` loaded `session.json`, then silently `continue`d on `LoadState` errors, so `List` and `ListPage` skipped real sessions whose metadata was readable but whose `state.json` was corrupt.
+- `internal/session/store.go` `ListChildren` used the same pattern after matching a readable child `session.json` by `parent_session_id`, so corrupt child state was hidden from parent/child views.
+- A focused pre-fix store regression corrupted `state.json` after creating a valid parent-linked session; before the fix, `List(10)` returned nil error instead of reporting the unreadable state snapshot.
+
+Impact:
+
+Web and CLI session lists could disappear a real session when only its durable state snapshot was unreadable. That weakens recovery and operator diagnosis because a corrupt `state.json` looked like no session or no child existed, while adjacent corrupt summary facts (`goal.json` / `planmode.json`) were already reported.
+
+Minimal fix:
+
+- Keep skipping unreadable metadata so stray directories under the session root are not treated as sessions.
+- After `session.json` loads successfully, report `state.json` load failures from `List`, `ListPage`, and `ListChildren`.
+- Preserve existing corrupt `goal.json` / `planmode.json` summary reporting.
+- Add focused store coverage for corrupt state snapshots across root list, paged list, and child list paths.
+
+Validation:
+
+- Focused pre-fix store regression proving corrupt `state.json` was hidden by `List`.
+- Focused post-fix store regression proving corrupt `state.json` is reported by `List`, `ListPage`, and `ListChildren`.
+- Existing corrupt Goal/Plan summary snapshot regression remains green.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4946,7 +4976,47 @@ Evidence gates:
 - Confirmed this is not a no-history fresh approval issue: a readable history without matching approval may still proceed through `ApproveMissionPlan`, but an unreadable existing Goal history ledger must stop the retry path because it may contain the already-written mission approval fact.
 - Confirmed the minimal fix belongs in `approveLinkedMissionPlan` / `hasMissionPlanApprovedHistory` because that is the recovery path that decides whether to append only the missing session event or perform another mission approval write.
 
+### Review 139
+
+- Confirmed FCA-20260526-146 against `state.json` durability in `spec/01-runtime-architecture.md` and Web/CLI session observability in `spec/09-phase-plan.md`.
+- Confirmed this is not a stray-directory issue: unreadable `session.json` is still skipped, but once metadata loads successfully the directory is a real session and an unreadable `state.json` must be surfaced.
+- Confirmed the minimal fix belongs in `Store.listAllSessions` and `Store.ListChildren` because those are the shared session-summary paths used by root lists, paged lists, and child-session views.
+
 ## Update Log
+
+### FCA-20260526-146
+
+Slice: `fix(session): report corrupt state snapshots`
+
+Finding:
+
+- `listAllSessions` and `ListChildren` treated every `LoadState` error as a skipped entry after metadata had already loaded.
+- Before the fix, corrupt `state.json` made `List`, `ListPage`, and `ListChildren` hide a real session instead of reporting the unreadable state snapshot.
+
+Changes:
+
+- Changed root and child session summary listing to return `state.json` load errors after a valid `session.json` establishes the directory as a real session.
+- Preserved the existing behavior that skips directories with unreadable metadata, so stray session-root entries are not promoted into errors.
+- Added focused store coverage for corrupt `state.json` across root list, paged list, and child list paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestStoreListReportsCorruptStateSnapshot -count=1`: failed before the fix because `List` returned nil error while `state.json` was corrupt.
+- `go test -timeout 120s ./internal/session -run 'TestStoreListReportsCorrupt(State|Summary)Snapshots' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-145
 

@@ -814,7 +814,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 		}
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("state.json: %w", err)
 		}
 		summary := SessionSummary{
 			ID:              meta.ID,
@@ -872,7 +872,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		}
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("state.json: %w", err)
 		}
 		summary := SessionSummary{
 			ID:              meta.ID,
