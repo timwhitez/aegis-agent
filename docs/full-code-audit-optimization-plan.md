@@ -3212,6 +3212,34 @@ Validation:
 - Focused post-fix runtime regression for rollback on parent coordination failure.
 - Standard grouped validation before commit.
 
+### FCA-20260526-116: Web mission validation reports durable goal write failures as client errors
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires Web control actions to distinguish operator request errors from local durable store failures.
+- `spec/01-runtime-architecture.md` requires `goal.json` to remain the session-scoped Goal fact source shared by Web, CLI, and runtime paths.
+- `internal/webconsole/service.go` `handleMissionValidationPatch` loads the current goal and history, applies the requested validation plan or validation contract patch in memory, then writes the new snapshot with `s.store.SaveGoal`.
+- `SaveGoal` uses the session `goal.lock` and `goal.json` file facts; failures there are durable store failures, not malformed validation payloads.
+- A focused WebConsole regression blocked `goal.lock` by replacing it with a directory. Before the fix, `/api/sessions/{id}/mission/validation` returned HTTP 400 even though the snapshot was not persisted and the existing validation plan remained unchanged.
+
+Impact:
+
+Operators could receive a bad-request response for local Goal store corruption or filesystem failure. That points recovery at editing the validation payload, while the correct remediation is to repair the local session store or retry after storage recovery.
+
+Minimal fix:
+
+- Map `SaveGoal` failure in `handleMissionValidationPatch` to HTTP 500.
+- Keep request JSON decode failures as HTTP 400 and existing `goalStoreStatus` behavior for missing or invalid current goal loads.
+- Add focused WebConsole coverage for blocked `goal.lock`, server-error status, and unchanged durable Goal snapshot.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving blocked `goal.lock` returned HTTP 400.
+- Focused post-fix WebConsole regression for the same path.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3913,6 +3941,12 @@ Evidence gates:
 - Confirmed FCA-20260526-115 against parent coordination requirements in `spec/18-durable-contract-and-completion.md`, queue durability requirements in `spec/01-runtime-architecture.md`, and `QueueSubmit` ordering in `internal/runtime/delegation.go`.
 - Confirmed this is not a Web status classification issue: even direct runtime queue submit could return an error after leaving a durable queued job available for workers.
 - Confirmed the minimal fix should roll back only the just-created queue job on the parent-link failure path, without changing worker processing, queue status precedence, or parent coordination semantics.
+
+### Review 109
+
+- Confirmed FCA-20260526-116 against Web error-class requirements in `spec/17-web-console.md`, Goal durability requirements in `spec/01-runtime-architecture.md`, and `handleMissionValidationPatch` write ordering in `internal/webconsole/service.go`.
+- Confirmed this is distinct from earlier Goal history/event rollback fixes: the failure occurs before history or event append, while persisting `goal.json` itself.
+- Confirmed the minimal fix should stay in the Web service status mapping for this endpoint; session store `SaveGoal` and Goal validation semantics do not need to change for this slice.
 
 ## Update Log
 
@@ -6395,6 +6429,39 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-116
+
+Slice: `fix(webconsole): classify mission validation store errors`
+
+Finding:
+
+- Web mission validation patch persisted the patched Goal snapshot through `SaveGoal`, but reported that write failure as HTTP 400.
+- Blocking the durable `goal.lock` path made `/api/sessions/{id}/mission/validation` return a client error even though the existing Goal snapshot remained unchanged and the problem was local store persistence.
+
+Changes:
+
+- Mapped `SaveGoal` failure in `handleMissionValidationPatch` to HTTP 500.
+- Added a focused WebConsole regression that blocks `goal.lock`, expects a server error, and asserts the validation plan was not advanced.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionValidationPatchReportsGoalWriteFailureAsServerError -count=1`: failed before the fix with HTTP 400.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionValidationPatchReportsGoalWriteFailureAsServerError -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionValidation(PatchReportsGoalWriteFailureAsServerError|PlanPatchReportsHistoryAppendError|ContractPatchReportsHistoryAppendError|PatchResetsApprovedPlanToPendingGate)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.

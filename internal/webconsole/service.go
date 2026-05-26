@@ -1559,7 +1559,7 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 		goal.Mission = mission
 	}
 	if err := s.store.SaveGoal(sessionID, goal); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	previousPlanMode, err := s.store.SnapshotPlanMode(sessionID)
