@@ -4002,6 +4002,37 @@ Validation:
 - Existing symlink/path-safety regression proving symlinked feature-list state remains ignored.
 - Standard grouped validation before commit.
 
+### FCA-20260526-144: Plan Mode revision retry hides corrupt revision history
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `planmode.json` and `artifacts/planmode-history.jsonl` as Plan Mode session facts and requires Plan Mode transitions to be recoverable across restart/fallback paths.
+- `spec/11-spec-audit-and-traceability.md` states Plan Mode status, approval, revision, and execution transitions must be recorded as durable facts rather than inferred from transient process state.
+- `internal/runtime/runner.go` `ensurePlanModeRevisedForMessage` handles the recovery case where `RevisePlanMode` already wrote `planmode.plan_revised` history but appending the replay user message failed. In the `planning` state, it calls `hasMatchingPlanModeRevisionHistory` to decide whether a repeated `continue --message` should be reclassified as the missing `planmode_revision` replay message.
+- `hasMatchingPlanModeRevisionHistory` returned `false` for every `LoadPlanModeHistory` error, collapsing "no matching revision history" and corrupt existing `artifacts/planmode-history.jsonl`.
+- A focused pre-fix runtime regression reproduced the sequence: block `messages.jsonl` during revision, retry after unblocking messages, corrupt `artifacts/planmode-history.jsonl`, then retry the same message. Before the fix, the provider ran and the session reached `awaiting_input` with the revision text treated as an ordinary user message.
+
+Impact:
+
+Plan Mode revision recovery could lose the semantic replay fact required by provider history and operator traceability. When the revision history ledger was corrupt, the retry path treated the repeated revision text as a normal continuation, allowing provider execution while the durable fact needed to recover the missing `planmode_revision` message was unreadable.
+
+Minimal fix:
+
+- Change `hasMatchingPlanModeRevisionHistory` to return `(bool, error)` instead of hiding load failures.
+- Propagate corrupt or unreadable `planmode-history.jsonl` from `ensurePlanModeRevisedForMessage` before appending a continuation message or running the provider.
+- Add filename context to the reported error.
+- Keep the normal no-matching-history path as an ordinary planning continuation.
+- Add focused runtime coverage for corrupt history during Plan Mode revision retry and keep the existing successful retry coverage green.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `planmode-history.jsonl` allowed provider execution with an ordinary continuation message.
+- Focused post-fix runtime regression proving corrupt `planmode-history.jsonl` stops retry before provider execution.
+- Existing Plan Mode revision retry regression proving missing replay user messages are still recovered when history is readable.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4872,7 +4903,49 @@ Evidence gates:
 - Confirmed this is not an optional no-feature-list issue: absent `feature_list.json` remains allowed, but malformed existing feature-list state must not be treated as if no feature list existed.
 - Confirmed the minimal fix belongs in `CompletionController.EvaluatePreCompletionFeatures` because it is the finish-gate path that turns durable feature-list facts into an allow/block decision.
 
+### Review 137
+
+- Confirmed FCA-20260526-144 against Plan Mode transition durability in `spec/01-runtime-architecture.md` and the Plan Mode fact-source traceability requirements in `spec/11-spec-audit-and-traceability.md`.
+- Confirmed this is not a no-history ordinary continuation issue: readable history without a matching revision remains an ordinary planning continuation, but unreadable existing history must stop recovery because it may contain the durable revision fact needed to reconstruct the missing replay message.
+- Confirmed the minimal fix belongs in `Runner.ensurePlanModeRevisedForMessage` / `hasMatchingPlanModeRevisionHistory` because that is the continuation recovery path that decides whether the repeated message is a missing `planmode_revision` replay fact or ordinary user input.
+
 ## Update Log
+
+### FCA-20260526-144
+
+Slice: `fix(runtime): report corrupt plan revision history`
+
+Finding:
+
+- `hasMatchingPlanModeRevisionHistory` treated every `LoadPlanModeHistory` error as no matching Plan Mode revision.
+- Before the fix, a retry after a failed Plan Mode revision replay-message append could run the provider with an ordinary continuation message while `artifacts/planmode-history.jsonl` was corrupt.
+
+Changes:
+
+- Changed `hasMatchingPlanModeRevisionHistory` to return load errors instead of collapsing them into `false`.
+- Propagated corrupt history from `ensurePlanModeRevisedForMessage` before appending retry user input or running the provider.
+- Added `planmode-history.jsonl` filename context to the recovery error.
+- Added focused runtime coverage for corrupt Plan Mode revision history during retry.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRevisePlanModeRetryReportsCorruptHistory -count=1`: failed before the fix because corrupt `planmode-history.jsonl` allowed provider execution and returned `awaiting_input`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRevisePlanModeRetry(ReportsCorruptHistory|AfterRevisionMessageFailureAppendsRevisionMessage)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRevisePlanModeRetry(ReportsCorruptHistory|AfterRevisionMessageFailureAppendsRevisionMessage)|TestContinueMessageReportsCorruptPlanModeSnapshot|TestApprovePlanModeReportsPlanApprovedEventAppendError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-143
 

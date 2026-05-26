@@ -1089,6 +1089,99 @@ func TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage(t 
 	}
 }
 
+func TestRevisePlanModeRetryReportsCorruptHistory(t *testing.T) {
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_planmode_revision_corrupt_history",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"should not run"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        3,
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		Retry:             config.Retry{MaxAttempts: 1},
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Retry corrupt history", Source: session.PlanModeSourceCLI}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+
+	revisionMessage := "Use the recovery plan."
+	blockRuntimeMessagesPath(t, runner.store, sessionID)
+	if result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, Message: revisionMessage, Source: session.PlanModeSourceCLI}); err == nil {
+		t.Fatalf("expected revision replay message append error, got result=%#v", result)
+	}
+	if calls := providerCalls.Load(); calls != 0 {
+		t.Fatalf("provider should not run while revision replay message is missing, got %d calls", calls)
+	}
+
+	messagesPath := filepath.Join(runner.store.SessionDir(sessionID), "messages.jsonl")
+	if err := os.RemoveAll(messagesPath); err != nil {
+		t.Fatalf("remove blocked messages path: %v", err)
+	}
+	historyPath := filepath.Join(runner.store.SessionDir(sessionID), "artifacts", "planmode-history.jsonl")
+	if err := os.WriteFile(historyPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt plan mode history: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, Message: revisionMessage, Source: session.PlanModeSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "planmode-history.jsonl") {
+		t.Fatalf("expected corrupt plan mode history error, got result=%#v err=%v", result, err)
+	}
+	if calls := providerCalls.Load(); calls != 0 {
+		t.Fatalf("provider must not run while planmode-history.jsonl is corrupt, got %d calls", calls)
+	}
+	messages, loadErr := runner.store.LoadMessages(sessionID)
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("load messages after corrupt history retry: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Text == revisionMessage {
+			t.Fatalf("corrupt plan mode history should fail before appending retry message, got %#v", messages)
+		}
+	}
+}
+
 func TestContinueMessageReportsCorruptPlanModeSnapshot(t *testing.T) {
 	var providerCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

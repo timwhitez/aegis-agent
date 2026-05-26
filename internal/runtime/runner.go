@@ -788,7 +788,11 @@ func (r *Runner) ensurePlanModeRevisedForMessage(sessionID string, planMode sess
 		}
 		return revised, true, nil
 	case session.PlanModeStatusPlanning:
-		if !r.hasMatchingPlanModeRevisionHistory(sessionID, planMode, message) {
+		matchesHistory, err := r.hasMatchingPlanModeRevisionHistory(sessionID, planMode, message)
+		if err != nil {
+			return session.PlanModeState{}, false, err
+		}
+		if !matchesHistory {
 			return planMode, false, nil
 		}
 		recorded, err := r.hasPlanModeRevisionMessage(sessionID, planMode)
@@ -807,10 +811,10 @@ func (r *Runner) ensurePlanModeRevisedForMessage(sessionID string, planMode sess
 	}
 }
 
-func (r *Runner) hasMatchingPlanModeRevisionHistory(sessionID string, planMode session.PlanModeState, message string) bool {
+func (r *Runner) hasMatchingPlanModeRevisionHistory(sessionID string, planMode session.PlanModeState, message string) (bool, error) {
 	history, err := r.store.LoadPlanModeHistory(sessionID)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("load planmode-history.jsonl: %w", err)
 	}
 	message = strings.TrimSpace(message)
 	for i := len(history) - 1; i >= 0; i-- {
@@ -819,11 +823,11 @@ func (r *Runner) hasMatchingPlanModeRevisionHistory(sessionID string, planMode s
 			continue
 		}
 		if item.PlanModeID != planMode.PlanModeID || item.PlanVersion != planMode.PlanVersion {
-			return false
+			return false, nil
 		}
-		return strings.TrimSpace(fmt.Sprint(item.Data["message"])) == message
+		return strings.TrimSpace(fmt.Sprint(item.Data["message"])) == message, nil
 	}
-	return false
+	return false, nil
 }
 
 func (r *Runner) hasPlanModeRevisionMessage(sessionID string, planMode session.PlanModeState) (bool, error) {
