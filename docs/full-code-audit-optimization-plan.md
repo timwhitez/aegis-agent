@@ -3097,6 +3097,34 @@ Validation:
 - Adjacent Web mission approval tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-112: Web mission approval reports durable history load failures as client errors
+
+Severity: Low
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/17-web-console.md` require Web Goal controls to operate on the local session file facts rather than a second Web state source.
+- After FCA-20260526-111, `internal/webconsole/service.go` `approveMissionPlanWithEvent` loads `goal.json` and `artifacts/goal-history.jsonl` before mutating approval state so it can roll back event-stage failures.
+- `handleMissionPlanApprove` mapped any error from that helper through `missionPlanApprovalStatus`, which returned HTTP 400 unless the error was the event-stage wrapper.
+- A focused WebConsole regression replaced `goal-history.jsonl` with a directory. Before the fix, `/mission/plan/approve` returned HTTP 400 even though the failure was an unreadable local durable fact, not a malformed operator request.
+
+Impact:
+
+The Web API could misclassify local session-store corruption or filesystem failure as a client request problem. That weakens operator remediation because the correct action is to repair the local session facts or retry after storage recovery, not to change the approval request.
+
+Minimal fix:
+
+- Wrap pre-mutation mission approval snapshot/load failures in a store-error type.
+- Map mission approval store and event failures to HTTP 500 while preserving HTTP 400 for store-level approval validation errors such as missing mission plans.
+- Add focused WebConsole coverage for unreadable Goal history returning server error and adjacent coverage for validation/error paths.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving unreadable Goal history returned HTTP 400.
+- Focused post-fix WebConsole regression for the same path.
+- Adjacent Web mission approval error tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3774,6 +3802,12 @@ Evidence gates:
 - Confirmed FCA-20260526-111 against Web Goal control requirements in `spec/17-web-console.md`, durable Goal/Event fact requirements in `spec/01-runtime-architecture.md`, and mission approval evidence requirements in `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is distinct from FCA-20260526-110: the runtime linked Plan Mode approval path is now idempotent, while the Web direct mission approval path could still leave an approved snapshot after a failed event append.
 - Confirmed the minimal fix should keep Web mutation semantics transactional instead of adding a second Web-owned approval state or moving approval logic into the frontend.
+
+### Review 105
+
+- Confirmed FCA-20260526-112 against Web local file fact requirements in `spec/17-web-console.md` and durable Goal fact requirements in `spec/01-runtime-architecture.md`.
+- Confirmed this is a status classification issue rather than another rollback issue: no approval mutation occurs when Goal history cannot be loaded, but the API incorrectly tells the operator the request is bad.
+- Confirmed the minimal fix should only classify the helper's pre-mutation store loads as server failures while leaving approval validation errors on the existing client-error path.
 
 ## Update Log
 
@@ -6119,6 +6153,40 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-112
+
+Slice: `fix(webconsole): classify mission approval store errors`
+
+Finding:
+
+- Web mission plan approval loaded `goal.json` and `goal-history.jsonl` before mutating approval state, but reported pre-mutation durable-fact load failures as HTTP 400.
+- A blocked `goal-history.jsonl` path was therefore reported as a bad operator request instead of a local session-store failure.
+
+Changes:
+
+- Wrapped mission approval pre-mutation store load failures in a store-error type.
+- Mapped mission approval store and event failures to HTTP 500.
+- Preserved HTTP 400 for approval validation errors such as attempting to approve a goal without a mission plan.
+- Added focused WebConsole coverage for unreadable Goal history during mission plan approval.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanApproveReportsHistoryLoadErrorAsServerError -count=1`: failed before the fix because unreadable Goal history returned HTTP 400.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionPlanApprove(ReportsHistoryLoadErrorAsServerError|RejectsGoalWithoutMissionPlan|RollsBackHistoryWhenEventAppendFails)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.

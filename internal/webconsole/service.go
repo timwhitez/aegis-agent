@@ -4361,11 +4361,11 @@ func (s *Service) appendGoalEvent(sessionID string, goal session.SessionGoal, ev
 func (s *Service) approveMissionPlanWithEvent(sessionID string, input session.MissionPlanApprovalInput, eventExtra map[string]any) (session.SessionGoal, error) {
 	previousGoal, err := s.store.LoadGoal(sessionID)
 	if err != nil {
-		return session.SessionGoal{}, err
+		return session.SessionGoal{}, missionPlanApprovalStoreError{err: err}
 	}
 	previousHistory, err := s.store.LoadGoalHistory(sessionID)
 	if err != nil {
-		return session.SessionGoal{}, err
+		return session.SessionGoal{}, missionPlanApprovalStoreError{err: err}
 	}
 	goal, err := s.store.ApproveMissionPlan(sessionID, input)
 	if err != nil {
@@ -4383,6 +4383,18 @@ func (s *Service) approveMissionPlanWithEvent(sessionID string, input session.Mi
 	return goal, nil
 }
 
+type missionPlanApprovalStoreError struct {
+	err error
+}
+
+func (e missionPlanApprovalStoreError) Error() string {
+	return e.err.Error()
+}
+
+func (e missionPlanApprovalStoreError) Unwrap() error {
+	return e.err
+}
+
 type missionPlanApprovalEventError struct {
 	err error
 }
@@ -4396,6 +4408,10 @@ func (e missionPlanApprovalEventError) Unwrap() error {
 }
 
 func missionPlanApprovalStatus(err error) int {
+	var storeErr missionPlanApprovalStoreError
+	if errors.As(err, &storeErr) {
+		return http.StatusInternalServerError
+	}
 	var eventErr missionPlanApprovalEventError
 	if errors.As(err, &eventErr) {
 		return http.StatusInternalServerError
