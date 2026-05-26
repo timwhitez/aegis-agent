@@ -4732,6 +4732,36 @@ Validation:
 - Existing successful steer/background injection regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260527-187: Task-system tools can mutate durable state without required events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines `todo_write`, `task_create`, and `task_update` as durable task-system tools that write `todo.updated`, `task.created`, and `task.updated` events.
+- `spec/01-runtime-architecture.md` lists those same events in the runtime event catalog and frames session files/events as the recovery and WebConsole fact source.
+- `internal/tools/registry.go` wrote `todo.json` or `tasks/task_*.json`, then called `execCtx.Emit(...)` for the matching task-system event.
+- `internal/runtime/engine.go` wired `ExecContext.Emit` to `e.emit`, and `e.emit` ignored `Store.AppendEvent` errors.
+- Focused regressions showed a failed task-system event append could otherwise leave the tool result looking successful while the event timeline lacked the required mutation fact.
+
+Impact:
+
+Recovery, Web timelines, and context-loaded evidence could observe changed `todo.json` or task graph state without the event that explains when and why the model changed it. For long-running sessions, that makes task/todo state harder to audit and can make a retry path look like the task system advanced without a corresponding timeline fact.
+
+Minimal fix:
+
+- Add an error-returning `EmitRequired` callback to tool execution context and wire it to checked `appendEvent` in `Engine.Run`.
+- Keep existing best-effort `Emit` available for non-contract telemetry.
+- Route `todo.updated`, `task.created`, and `task.updated` through `EmitRequired`.
+- If the required event cannot be written after a state mutation, restore the previous todo/task snapshot and return an error tool result instead of reporting a successful task-system update.
+
+Validation:
+
+- Focused registry regressions proving `todo_write` reports `todo.updated` failures and restores the previous todo snapshot, including semantic no-op writes.
+- Focused registry regression proving `task_create` and `task_update` report required event failures and restore the previous task graph.
+- Focused engine regression proving built-in `todo_write` receives the checked runtime event path and does not leave changed todo state when `events.jsonl` is blocked.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6404,7 +6434,51 @@ Evidence gates:
 - Confirmed this is not a generic retry nicety. Without rollback, a failed local event write leaves `messages.jsonl` ahead of steer/background control facts and can duplicate the same input after recovery.
 - Confirmed the minimal fix should be local to `drainSteer` and `drainBackground`, using existing `RemoveLastMessageIfID` rollback and preserving the model-led runtime loop.
 
+### Review 180
+
+- Confirmed FCA-20260527-187 against `spec/12-task-system.md`: the task-system tool contract explicitly includes `todo.updated`, `task.created`, and `task.updated`, so these are required mutation facts rather than optional tool telemetry.
+- Confirmed the owning runtime path still used best-effort `e.emit` through `ExecContext.Emit`, which ignored `events.jsonl` append failures after tool state mutations.
+- Confirmed the minimal fix should stay tool-contract scoped: add a checked callback for required task-system events and roll back the affected todo/task snapshot on event failure, without changing other diagnostic tool events or imposing a workflow engine.
+
 ## Update Log
+
+### FCA-20260527-187
+
+Slice: `fix(runtime): require task-system events`
+
+Finding:
+
+- `todo_write`, `task_create`, and `task_update` persisted task-system state and then emitted required task-system events through unchecked `ExecContext.Emit`.
+- `Engine.Run` wired that callback to `e.emit`, which ignored `Store.AppendEvent` failures.
+- A blocked `events.jsonl` path could therefore leave changed todo/task files without the required event timeline fact.
+
+Changes:
+
+- Added `ExecContext.EmitRequired` for tool events that must be durably recorded.
+- Wired `Engine.Run` `EmitRequired` to checked `appendEvent`.
+- Switched `todo.updated`, `task.created`, and `task.updated` to the checked callback while keeping existing `Emit` available for best-effort telemetry.
+- Restored the previous todo snapshot when a changed `todo_write` cannot persist `todo.updated`.
+- Restored the previous task graph when `task_create` or `task_update` cannot persist `task.created` / `task.updated`.
+- Added focused registry and engine regressions for blocked required-event persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'Test(TodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot|TodoWriteNoopReportsRequiredEventError|TaskToolsReportRequiredEventErrorAndRestoreTaskGraph|TodoAndTaskToolsPersistSessionFiles)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(TodoWriteReportsRequiredEventAppendError|ReportsContextLoadedEventAppendError)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go internal/tools/registry.go internal/tools/registry_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-186
 

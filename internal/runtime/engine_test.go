@@ -3396,6 +3396,64 @@ func TestEngineReportsContextLoadedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineTodoWriteReportsRequiredEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "write todo")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	turns := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			turns++
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_todo", Name: "todo_write", Arguments: json.RawMessage(`{"todos":[{"content":"New work","status":"in_progress","priority":"high"}]}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			t.Fatal("provider should stop before a second turn when todo.updated cannot be persisted")
+			return provider.TurnResult{}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "session.context.loaded") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected next-turn context-loaded event error, result=%#v err=%v", result, err)
+	}
+	if turns != 1 {
+		t.Fatalf("expected one provider turn, got %d", turns)
+	}
+	todo, err := engine.store.LoadTodo(meta.ID)
+	if err != nil {
+		t.Fatalf("load todo: %v", err)
+	}
+	if len(todo) != 0 {
+		t.Fatalf("expected failed todo.updated append to restore empty todo snapshot, got %#v", todo)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var toolResult *session.ToolResult
+	for _, msg := range messages {
+		for i := range msg.ToolResults {
+			if msg.ToolResults[i].Name == "todo_write" {
+				toolResult = &msg.ToolResults[i]
+			}
+		}
+	}
+	if toolResult == nil || !toolResult.IsError || !strings.Contains(toolResult.DisplayOutput, "todo.updated") || !strings.Contains(toolResult.DisplayOutput, "events.jsonl") {
+		t.Fatalf("expected persisted todo_write error result with event context, got %#v in messages %#v", toolResult, messages)
+	}
+}
+
 func newTestEngine(t *testing.T, mode string) (*Engine, session.SessionMetadata, session.State, *tools.Registry, *hooks.Manager, *skills.Catalog) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"

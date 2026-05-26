@@ -45,6 +45,7 @@ type ExecContext struct {
 	Config             *config.Config
 	Catalog            *skills.Catalog
 	Emit               func(string, map[string]any)
+	EmitRequired       func(string, map[string]any) error
 	PlanInputResponder PlanInputResponder
 }
 
@@ -2155,12 +2156,12 @@ func defTodoWrite() Definition {
 			}
 			changed := !normalizedTodosEqual(existing, input.Todos)
 			if !changed {
-				if execCtx.Emit != nil {
-					execCtx.Emit("todo.updated", map[string]any{
-						"count":   len(existing),
-						"changed": false,
-						"noop":    true,
-					})
+				if err := emitToolEvent(execCtx, "todo.updated", map[string]any{
+					"count":   len(existing),
+					"changed": false,
+					"noop":    true,
+				}); err != nil {
+					return errorResult("todo_write", fmt.Errorf("record todo.updated event: %w", err)), nil
 				}
 				data, _ := json.MarshalIndent(existing, "", "  ")
 				return session.ToolResult{
@@ -2178,12 +2179,15 @@ func defTodoWrite() Definition {
 			if err := execCtx.Store.SaveTodo(execCtx.SessionID, input.Todos); err != nil {
 				return errorResult("todo_write", err), nil
 			}
-			if execCtx.Emit != nil {
-				execCtx.Emit("todo.updated", map[string]any{
-					"count":   len(input.Todos),
-					"changed": true,
-					"noop":    false,
-				})
+			if err := emitToolEvent(execCtx, "todo.updated", map[string]any{
+				"count":   len(input.Todos),
+				"changed": true,
+				"noop":    false,
+			}); err != nil {
+				if rollbackErr := execCtx.Store.SaveTodo(execCtx.SessionID, existing); rollbackErr != nil {
+					return errorResult("todo_write", fmt.Errorf("restore todo after todo.updated event failure %v: %w", err, rollbackErr)), nil
+				}
+				return errorResult("todo_write", fmt.Errorf("record todo.updated event: %w", err)), nil
 			}
 			data, _ := json.MarshalIndent(input.Todos, "", "  ")
 			return session.ToolResult{
@@ -2362,15 +2366,22 @@ func defTaskCreate() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("task_create", err), nil
 			}
+			existing, err := execCtx.Store.ListTasks(execCtx.SessionID)
+			if err != nil {
+				return errorResult("task_create", err), nil
+			}
 			task, err := session.CreateTask(execCtx.Store, execCtx.SessionID, input)
 			if err != nil {
 				return errorResult("task_create", err), nil
 			}
-			if execCtx.Emit != nil {
-				execCtx.Emit("task.created", map[string]any{
-					"task_id": task.ID,
-					"status":  task.Status,
-				})
+			if err := emitToolEvent(execCtx, "task.created", map[string]any{
+				"task_id": task.ID,
+				"status":  task.Status,
+			}); err != nil {
+				if rollbackErr := execCtx.Store.SaveTasks(execCtx.SessionID, existing); rollbackErr != nil {
+					return errorResult("task_create", fmt.Errorf("restore tasks after task.created event failure %v: %w", err, rollbackErr)), nil
+				}
+				return errorResult("task_create", fmt.Errorf("record task.created event: %w", err)), nil
 			}
 			data, _ := json.MarshalIndent(task, "", "  ")
 			return session.ToolResult{
@@ -2413,15 +2424,22 @@ func defTaskUpdate() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("task_update", err), nil
 			}
+			existing, err := execCtx.Store.ListTasks(execCtx.SessionID)
+			if err != nil {
+				return errorResult("task_update", err), nil
+			}
 			task, err := session.UpdateTask(execCtx.Store, execCtx.SessionID, input)
 			if err != nil {
 				return errorResult("task_update", err), nil
 			}
-			if execCtx.Emit != nil {
-				execCtx.Emit("task.updated", map[string]any{
-					"task_id": task.ID,
-					"status":  task.Status,
-				})
+			if err := emitToolEvent(execCtx, "task.updated", map[string]any{
+				"task_id": task.ID,
+				"status":  task.Status,
+			}); err != nil {
+				if rollbackErr := execCtx.Store.SaveTasks(execCtx.SessionID, existing); rollbackErr != nil {
+					return errorResult("task_update", fmt.Errorf("restore tasks after task.updated event failure %v: %w", err, rollbackErr)), nil
+				}
+				return errorResult("task_update", fmt.Errorf("record task.updated event: %w", err)), nil
 			}
 			data, _ := json.MarshalIndent(task, "", "  ")
 			return session.ToolResult{
@@ -2525,6 +2543,16 @@ func taskDirPath(execCtx ExecContext) string {
 
 func taskFilePath(execCtx ExecContext, taskID string) string {
 	return filepath.Join(taskDirPath(execCtx), taskID+".json")
+}
+
+func emitToolEvent(execCtx ExecContext, eventType string, data map[string]any) error {
+	if execCtx.EmitRequired != nil {
+		return execCtx.EmitRequired(eventType, data)
+	}
+	if execCtx.Emit != nil {
+		execCtx.Emit(eventType, data)
+	}
+	return nil
 }
 
 func defAgentSpawn(control ControlPlane) Definition {

@@ -537,6 +537,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						Emit: func(eventType string, data map[string]any) {
 							e.emit(meta.ID, eventType, "tool_execute", data)
 						},
+						EmitRequired: func(eventType string, data map[string]any) error {
+							return e.appendEvent(meta.ID, eventType, "tool_execute", data)
+						},
 					}, toolArgs)
 					e.control.clearCancel(cancel)
 					annotateExactArtifactTemplateResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)

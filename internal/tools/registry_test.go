@@ -2760,3 +2760,195 @@ func TestTodoWriteReportsLoadErrorBeforeNoop(t *testing.T) {
 		t.Fatalf("expected todo load error, got %#v", result)
 	}
 }
+
+func TestTodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	initial := []session.TodoItem{{Content: "Keep original", Status: "in_progress", Priority: "high", UpdatedAt: "original"}}
+	if err := store.SaveTodo(meta.ID, initial); err != nil {
+		t.Fatalf("save initial todo: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	eventErr := errors.New("events.jsonl blocked")
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		EmitRequired: func(eventType string, _ map[string]any) error {
+			if eventType != "todo.updated" {
+				t.Fatalf("unexpected required event %q", eventType)
+			}
+			return eventErr
+		},
+	}
+
+	result, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"New work","status":"in_progress","priority":"medium"}]}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "todo.updated") || !strings.Contains(result.DisplayOutput, eventErr.Error()) {
+		t.Fatalf("expected todo.updated error result, got %#v", result)
+	}
+	todo, err := store.LoadTodo(meta.ID)
+	if err != nil {
+		t.Fatalf("load todo: %v", err)
+	}
+	if !normalizedTodosEqual(todo, initial) || todo[0].UpdatedAt != "original" {
+		t.Fatalf("expected failed event append to restore initial todo, got %#v", todo)
+	}
+}
+
+func TestTodoWriteNoopReportsRequiredEventError(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	initial := []session.TodoItem{{Content: "Do work", Status: "in_progress", Priority: "high", UpdatedAt: "original"}}
+	if err := store.SaveTodo(meta.ID, initial); err != nil {
+		t.Fatalf("save initial todo: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		EmitRequired: func(string, map[string]any) error {
+			return errors.New("events.jsonl blocked")
+		},
+	}
+
+	result, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high"}]}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "todo.updated") || !strings.Contains(result.DisplayOutput, "events.jsonl blocked") {
+		t.Fatalf("expected todo.updated event error, got %#v", result)
+	}
+	todo, err := store.LoadTodo(meta.ID)
+	if err != nil {
+		t.Fatalf("load todo: %v", err)
+	}
+	if !normalizedTodosEqual(todo, initial) || todo[0].UpdatedAt != "original" {
+		t.Fatalf("expected no-op event failure to preserve initial todo, got %#v", todo)
+	}
+}
+
+func TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	eventErr := errors.New("events.jsonl blocked")
+	createCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		EmitRequired: func(eventType string, _ map[string]any) error {
+			if eventType != "task.created" {
+				t.Fatalf("unexpected create event %q", eventType)
+			}
+			return eventErr
+		},
+	}
+	createResult, err := registry.Execute(context.Background(), "task_create", createCtx, json.RawMessage(`{"subject":"Should roll back","priority":"high"}`))
+	if err != nil {
+		t.Fatalf("task_create execute: %v", err)
+	}
+	if !createResult.IsError || !strings.Contains(createResult.DisplayOutput, "task.created") || !strings.Contains(createResult.DisplayOutput, eventErr.Error()) {
+		t.Fatalf("expected task.created event error, got %#v", createResult)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks after failed create: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("expected failed task_create to restore empty graph, got %#v", tasks)
+	}
+
+	createOK, err := registry.Execute(context.Background(), "task_create", ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}, json.RawMessage(`{"subject":"Keep original","priority":"high"}`))
+	if err != nil || createOK.IsError {
+		t.Fatalf("successful task_create err=%v result=%#v", err, createOK)
+	}
+	beforeUpdate, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks before update: %v", err)
+	}
+	updateCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		EmitRequired: func(eventType string, _ map[string]any) error {
+			if eventType != "task.updated" {
+				t.Fatalf("unexpected update event %q", eventType)
+			}
+			return eventErr
+		},
+	}
+	updateResult, err := registry.Execute(context.Background(), "task_update", updateCtx, json.RawMessage(`{"task_id":"task_0001","status":"completed","append_note":"done"}`))
+	if err != nil {
+		t.Fatalf("task_update execute: %v", err)
+	}
+	if !updateResult.IsError || !strings.Contains(updateResult.DisplayOutput, "task.updated") || !strings.Contains(updateResult.DisplayOutput, eventErr.Error()) {
+		t.Fatalf("expected task.updated event error, got %#v", updateResult)
+	}
+	afterUpdate, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks after update: %v", err)
+	}
+	if fmt.Sprintf("%#v", afterUpdate) != fmt.Sprintf("%#v", beforeUpdate) {
+		t.Fatalf("expected failed task_update to restore graph\nbefore=%#v\nafter=%#v", beforeUpdate, afterUpdate)
+	}
+}
