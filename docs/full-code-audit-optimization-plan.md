@@ -2124,6 +2124,37 @@ Validation:
 - Full `internal/session` regression suite.
 - Standard grouped validation before commit.
 
+### FCA-20260526-077: queue parent coordination write failures are hidden
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` defines `parent-coordination.json` as the parent session fact source for unresolved child / queue work, and the completion controller blocks parent `finish` from that file.
+- `QueueSubmit` enqueued a parent-linked job and then ignored `addParentQueueJob` errors, so the API could return a queued job while `parent-coordination.json` did not record the unresolved queue work.
+- `ProcessNextJob` saved a terminal job and background notification, then ignored `resolveParentQueueJob` errors, so the worker could return a completed job while `parent-coordination.json` still listed the job as unresolved.
+- Store-level queue repair also ignored `MutateParentCoordination` errors through `reconcileParentQueueJobStatus`, so `LoadJob` / list repair could show terminal queue facts without updating the parent completion gate facts.
+- Focused regressions blocked `parent-coordination.json` with a directory. Before the fix, `QueueSubmit` returned a queued job and `ProcessNextJob` returned a completed job instead of reporting the parent coordination write failure.
+
+Impact:
+
+Parent sessions could retain stale unresolved queue work or miss newly submitted parent-linked queue work while Web/CLI/runtime reported the child queue operation as accepted or completed. That makes the parent completion gate and operator recovery view diverge from queue facts.
+
+Minimal fix:
+
+- Return `addParentQueueJob` errors from `SpawnAgent` background queue mode and `QueueSubmit`.
+- Return `resolveParentQueueJob` errors from `ProcessNextJob` after terminal job persistence and background notification persistence.
+- Make store queue repair return `MutateParentCoordination` failures when syncing terminal or status-changed queue jobs.
+- Keep parent coordination transition event append best-effort; the source fact is `parent-coordination.json`.
+- Add focused queue submit and queue worker regressions.
+
+Validation:
+
+- Focused queue submit parent coordination error regression.
+- Focused queue worker parent coordination error regression.
+- Adjacent queue / parent coordination regression group.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2591,6 +2622,12 @@ Evidence gates:
 - Confirmed FCA-20260526-076 against `spec/01-runtime-architecture.md`, `spec/18-durable-contract-and-completion.md`, `LoadJob`, `ListJobs`, `ListPage`, `ListChildren`, `Engine.reconcileLinkedQueueJob`, `reconcileQueueJobSession`, and focused blocked-state regression evidence.
 - Confirmed this is a source-fact issue because queue/job reconciliation changes both queue job status facts and linked child `state.json`; returning repaired job data without the matching state write creates contradictory durable recovery state.
 - Confirmed parent queue lifecycle event repair remains best-effort in this slice; the promoted failure is the ignored write to `state.json` / queue job files, not missing diagnostic events.
+
+### Review 70
+
+- Confirmed FCA-20260526-077 against `spec/18-durable-contract-and-completion.md`, `QueueSubmit`, `SpawnAgent` background queue mode, `ProcessNextJob`, `addParentQueueJob`, `resolveParentQueueJob`, `reconcileParentQueueJobStatus`, and focused blocked-parent-coordination regressions.
+- Confirmed this is a source-fact issue because `parent-coordination.json` feeds the parent completion gate; missing or stale unresolved queue facts are not just diagnostic event loss.
+- Confirmed the event append in `emitParentCoordinationTransition` remains best-effort in this slice, because parked/resumed events are timeline facts while `parent-coordination.json` is the gate source.
 
 ## Update Log
 
@@ -4430,6 +4467,39 @@ Validation:
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-077
+
+Slice: `fix(runtime): report parent coordination write failures`
+
+Finding:
+
+- Parent-linked queue operations ignored `parent-coordination.json` write failures.
+- A focused `QueueSubmit` regression blocked `parent-coordination.json`; before the fix, the API returned a queued job while the parent coordination source fact was not written.
+- A focused `ProcessNextJob` regression blocked `parent-coordination.json` after queue submission; before the fix, the worker returned a completed job while the parent coordination source fact stayed stale/unwritable.
+
+Changes:
+
+- Propagated `addParentQueueJob` errors from `SpawnAgent` background mode and `QueueSubmit`.
+- Propagated `resolveParentQueueJob` errors from `ProcessNextJob` after terminal job and background notification persistence.
+- Changed store queue repair to return parent coordination mutation failures while keeping queue lifecycle event repair best-effort.
+- Added focused queue submit and worker regressions for blocked parent coordination writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerQueueSubmitReportsParentCoordinationError|TestRunnerProcessNextJobReportsParentCoordinationError' -count=1`: failed before the fix with successful queued/completed jobs.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerQueueSubmitReportsParentCoordinationError|TestRunnerProcessNextJobReportsParentCoordinationError|TestRunnerQueueSubmitAndWorkerCompletesJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -run 'TestReconcileFailedJobUpdatesLinkedRunningSession|TestReconcileCompletedSessionCompletesJob|TestLoadJobRepairsMissingTerminalBackgroundNotification|TestRunnerQueueSubmit|TestRunnerProcessNextJob|TestProcessNextJob|TestParentCoordination' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.

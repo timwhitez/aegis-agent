@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -443,6 +444,60 @@ func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	}
 	if notifications[0].AgentRole != "planner" {
 		t.Fatalf("expected planner role on background notification, got %#v", notifications[0].AgentRole)
+	}
+}
+
+func TestRunnerQueueSubmitReportsParentCoordinationError(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	coordinationPath := filepath.Join(runner.store.SessionDir(parentID), "parent-coordination.json")
+	if err := os.Mkdir(coordinationPath, 0o700); err != nil {
+		t.Fatalf("block parent coordination path: %v", err)
+	}
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		IsolationMode:   "off",
+	})
+	if err == nil {
+		t.Fatalf("expected parent coordination error, got job %#v", job)
+	}
+	if !strings.Contains(err.Error(), "parent-coordination.json") {
+		t.Fatalf("expected parent coordination path error, got %v", err)
+	}
+}
+
+func TestRunnerProcessNextJobReportsParentCoordinationError(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	if _, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		IsolationMode:   "off",
+	}); err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	coordinationPath := filepath.Join(runner.store.SessionDir(parentID), "parent-coordination.json")
+	if err := os.Remove(coordinationPath); err != nil {
+		t.Fatalf("remove parent coordination: %v", err)
+	}
+	if err := os.Mkdir(coordinationPath, 0o700); err != nil {
+		t.Fatalf("block parent coordination path: %v", err)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err == nil {
+		t.Fatalf("expected parent coordination error, got ok=%t job %#v", ok, processed)
+	}
+	if !strings.Contains(err.Error(), "parent-coordination.json") {
+		t.Fatalf("expected parent coordination path in error, got %v", err)
 	}
 }
 

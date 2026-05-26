@@ -1794,7 +1794,9 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	if !ok {
 		if job.Status != QueueStatusRunning {
 			if isTerminalQueueStatus(job.Status) {
-				s.ensureTerminalQueueJobParentState(job)
+				if err := s.ensureTerminalQueueJobParentState(job); err != nil {
+					return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
+				}
 			}
 			return job, false, nil
 		}
@@ -1808,9 +1810,13 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			return job, false, fmt.Errorf("persist stale queue job repair %s: %w", job.ID, err)
 		}
 		if isTerminalQueueStatus(job.Status) {
-			s.ensureTerminalQueueJobParentState(job)
+			if err := s.ensureTerminalQueueJobParentState(job); err != nil {
+				return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
+			}
 		} else if job.Status != originalStatus {
-			s.reconcileParentQueueJobStatus(job)
+			if err := s.reconcileParentQueueJobStatus(job); err != nil {
+				return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
+			}
 		}
 		return job, true, nil
 	}
@@ -1869,7 +1875,9 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	}
 	if !changed {
 		if isTerminalQueueStatus(job.Status) {
-			s.ensureTerminalQueueJobParentState(job)
+			if err := s.ensureTerminalQueueJobParentState(job); err != nil {
+				return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
+			}
 		}
 		return job, false, nil
 	}
@@ -1877,9 +1885,13 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
 	}
 	if isTerminalQueueStatus(job.Status) {
-		s.ensureTerminalQueueJobParentState(job)
+		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
+			return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
+		}
 	} else if job.Status != originalStatus {
-		s.reconcileParentQueueJobStatus(job)
+		if err := s.reconcileParentQueueJobStatus(job); err != nil {
+			return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
+		}
 	}
 	return job, true, nil
 }
@@ -1939,11 +1951,11 @@ func reconcileStateFromTerminalQueueJob(state State, job QueueJob) (State, bool)
 	}
 }
 
-func (s *Store) reconcileParentQueueJobStatus(job QueueJob) {
+func (s *Store) reconcileParentQueueJobStatus(job QueueJob) error {
 	if strings.TrimSpace(job.ParentSessionID) == "" || strings.TrimSpace(job.ID) == "" {
-		return
+		return nil
 	}
-	_, _, _ = s.MutateParentCoordination(job.ParentSessionID, func(coordination *ParentCoordination) error {
+	_, _, err := s.MutateParentCoordination(job.ParentSessionID, func(coordination *ParentCoordination) error {
 		if coordination.ParentSessionID == "" {
 			return nil
 		}
@@ -1961,6 +1973,7 @@ func (s *Store) reconcileParentQueueJobStatus(job QueueJob) {
 		coordination.Parked = shouldParkParentCoordination(*coordination)
 		return nil
 	})
+	return err
 }
 
 func shouldParkParentCoordination(coordination ParentCoordination) bool {
@@ -2104,18 +2117,21 @@ func (s *Store) ensureBackgroundNotification(job QueueJob) {
 	_ = s.EnsureBackgroundNotification(job.ParentSessionID, NewBackgroundNotification(job))
 }
 
-func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) {
+func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 	if strings.TrimSpace(job.ParentSessionID) == "" || !isTerminalQueueStatus(job.Status) {
-		return
+		return nil
 	}
-	s.reconcileParentQueueJobStatus(job)
+	if err := s.reconcileParentQueueJobStatus(job); err != nil {
+		return err
+	}
 	s.ensureBackgroundNotification(job)
 	s.ensureQueueLifecycleEvent(job, "queue.job.notified")
 	if job.Status == QueueStatusFailed {
 		s.ensureQueueLifecycleEvent(job, "queue.job.failed")
-		return
+		return nil
 	}
 	s.ensureQueueLifecycleEvent(job, "queue.job.completed")
+	return nil
 }
 
 func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) {

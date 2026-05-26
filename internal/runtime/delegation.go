@@ -130,7 +130,9 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			"agent_role": job.AgentRole,
 			"wait_mode":  job.WaitMode,
 		})
-		_ = addParentQueueJob(r.store, req.ParentSessionID, job.ID, req.WaitMode)
+		if err := addParentQueueJob(r.store, req.ParentSessionID, job.ID, req.WaitMode); err != nil {
+			return tools.AgentSpawnResult{}, err
+		}
 		_ = writeSessionSummary(r.store, req.ParentSessionID)
 		_ = writeLongRunCheckpoint(r.store, req.ParentSessionID)
 		return tools.AgentSpawnResult{
@@ -323,7 +325,9 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		return session.QueueJob{}, err
 	}
 	if job.ParentSessionID != "" {
-		_ = addParentQueueJob(r.store, job.ParentSessionID, job.ID, job.WaitMode)
+		if err := addParentQueueJob(r.store, job.ParentSessionID, job.ID, job.WaitMode); err != nil {
+			return session.QueueJob{}, err
+		}
 		_ = writeSessionSummary(r.store, job.ParentSessionID)
 		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
 	}
@@ -417,7 +421,9 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			"agent_role": job.AgentRole,
 		})
 		if isTerminalQueueStatus(job.Status) {
-			_ = resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status)
+			if err := resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status); err != nil {
+				return job, true, err
+			}
 		}
 		_ = writeSessionSummary(r.store, job.ParentSessionID)
 		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
