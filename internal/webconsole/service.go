@@ -2839,6 +2839,9 @@ func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
 	if strings.TrimSpace(update.envKey) == "" {
 		return fmt.Errorf("env key is required")
 	}
+	if !config.AllowedEnvFileKey(update.envKey) {
+		return fmt.Errorf("invalid env key: %s", update.envKey)
+	}
 	if info, err := os.Lstat(update.envFile); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to update symlinked env file: %s", update.envFile)

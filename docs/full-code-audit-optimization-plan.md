@@ -3296,6 +3296,34 @@ Validation:
 - Focused post-fix WebConsole regression proving config changes roll back on env write failure.
 - Standard grouped validation before commit.
 
+### FCA-20260526-119: Web API-key invalid env keys fail after writing secrets
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats Settings API-key writes as sensitive local Web actions that need clear failure behavior and auditability.
+- `internal/config/envfile.go` `LoadEnvFile` already ignores keys outside the project-managed env-file allowlist, but `UpsertEnvFile` only rejected an empty key before writing.
+- `internal/webconsole/service.go` `preflightWebAPIKeyUpdate` likewise checked for an empty provider `api_key_env`, then allowed config and `.env` persistence to proceed before the later `os.Setenv` call.
+- A focused WebConsole regression configured a provider with `APIKeyEnv: "BAD=KEY_API_KEY"`. Before the fix, `/api/config` returned HTTP 500 from the late `setenv: invalid argument` path after the secret had already been written into `.env` and the config file had already been persisted.
+
+Impact:
+
+A malformed provider `api_key_env` could make Settings report failure while leaving an invalid `.env` assignment containing the submitted secret, plus provider/model config changes on disk. The next service start would ignore that invalid `.env` key, so the operator would have both a leaked local secret and a persisted config that did not actually work.
+
+Minimal fix:
+
+- Expose the existing env-file key policy as `config.AllowedEnvFileKey`.
+- Require `UpsertEnvFile` to reject disallowed or syntactically invalid env keys before writing.
+- Have Web Settings API-key preflight call the same policy before `config.yaml`, `.env`, process environment, or audit mutation.
+- Add focused WebConsole and config-package regressions for invalid env keys.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving invalid env key failure occurred at late `os.Setenv`.
+- Focused post-fix WebConsole and config-package regressions proving invalid env keys are rejected before persistence.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4015,6 +4043,12 @@ Evidence gates:
 - Confirmed FCA-20260526-118 against Settings sensitivity requirements in `spec/17-web-console.md` and durable local file fact consistency from `spec/01-runtime-architecture.md`.
 - Confirmed the issue is not covered by the existing config-write-before-API-key test: that test blocks config persistence before env write, while this failure occurs after config persistence and before env/process key mutation.
 - Confirmed the minimal fix should be a local Web settings rollback helper, not a change to config package persistence semantics or audit-log ordering.
+
+### Review 112
+
+- Confirmed FCA-20260526-119 against Settings API-key sensitivity requirements in `spec/17-web-console.md`, provider API-key configuration behavior in `spec/03-provider-contracts.md`, and durable local fact consistency from `spec/01-runtime-architecture.md`.
+- Confirmed this is distinct from FCA-20260526-118: that issue covered env-file target failure after config persistence, while this one covers a malformed provider env key that reaches `.env` persistence and only fails at `os.Setenv`.
+- Confirmed the minimal fix should share the existing config env-file allowlist with Web preflight and `UpsertEnvFile`, without changing provider adapters, Settings UI payload shape, or audit event contents.
 
 ## Update Log
 
@@ -6598,6 +6632,44 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-119
+
+Slice: `fix(webconsole): preflight API key env names`
+
+Finding:
+
+- Web Settings accepted malformed provider API-key env names such as `BAD=KEY_API_KEY` during API-key preflight.
+- Before the fix, the route wrote `config.yaml` and `.env`, then failed at `os.Setenv` with `setenv: invalid argument`, leaving a secret in an invalid `.env` assignment and leaving config changes persisted.
+
+Changes:
+
+- Exposed the env-file key policy as `config.AllowedEnvFileKey`.
+- Made `config.UpsertEnvFile` reject invalid env keys before writing.
+- Made Web Settings API-key preflight reject invalid env keys before config, env-file, process env, or audit mutation.
+- Added focused regressions for the Web Settings route and config env-file write helper.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsInvalidEnvKeyBeforePersistence -count=1`: failed before the fix with late `setenv: invalid argument`.
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsInvalidEnvKeyBeforePersistence -count=1`: passed.
+- `go test -timeout 120s ./internal/config -run TestUpsertEnvFileRejectsInvalidKey -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|RejectsInvalidEnvKeyBeforePersistence|DoesNotLogSecretValue)' -count=1`: passed.
+- `go test -timeout 120s ./internal/config -run 'Test(UpsertEnvFile|LoadEnvFile)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/config/envfile.go internal/config/config_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/config -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.

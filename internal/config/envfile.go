@@ -59,6 +59,9 @@ func UpsertEnvFile(path, key, value string) error {
 	if key == "" {
 		return fmt.Errorf("env key is required")
 	}
+	if !AllowedEnvFileKey(key) {
+		return fmt.Errorf("invalid env key: %s", key)
+	}
 
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -103,8 +106,17 @@ func UpsertEnvFile(path, key, value string) error {
 	return fileutil.AtomicWriteFileNoSymlink(path, []byte(content), 0o600)
 }
 
+// AllowedEnvFileKey reports whether key is safe for project-managed env files.
+func AllowedEnvFileKey(key string) bool {
+	return allowedEnvFileKey(key)
+}
+
 func allowedEnvFileKey(key string) bool {
-	key = strings.ToUpper(strings.TrimSpace(key))
+	key = strings.TrimSpace(key)
+	if !validEnvFileKeyName(key) {
+		return false
+	}
+	key = strings.ToUpper(key)
 	if key == "" {
 		return false
 	}
@@ -116,6 +128,22 @@ func allowedEnvFileKey(key string) bool {
 		return false
 	}
 	return strings.HasSuffix(key, "_API_KEY") || strings.HasSuffix(key, "_ACCESS_TOKEN")
+}
+
+func validEnvFileKeyName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if r == '_' || ('A' <= r && r <= 'Z') || ('a' <= r && r <= 'z') {
+			continue
+		}
+		if i > 0 && '0' <= r && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseEnvAssignment(line string) (string, string, bool) {

@@ -3659,6 +3659,56 @@ func TestAPIKeyWriteRollsBackConfigWhenEnvWriteFails(t *testing.T) {
 	}
 }
 
+func TestAPIKeyWriteRejectsInvalidEnvKeyBeforePersistence(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	envPath := filepath.Join(cwd, ".env")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+
+	cfg := testConfig(t, "")
+	cfg.Providers["badkey"] = config.Provider{
+		APIProvider: "openai-compatible",
+		APIKeyEnv:   "BAD=KEY_API_KEY",
+		BaseURL:     "http://example.invalid/v1",
+		Model:       "badkey-model",
+		TimeoutSec:  3,
+	}
+	configPath := filepath.Join(cwd, "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "badkey",
+		"model":    "should-not-persist",
+		"api_key":  "sk-should-not-persist",
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "invalid env key") {
+		t.Fatalf("expected invalid env-key preflight error, got %#v", errResp)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed API key preflight should not persist config; stat err=%v", err)
+	}
+	if data, err := os.ReadFile(envPath); err == nil && strings.Contains(string(data), "sk-should-not-persist") {
+		t.Fatalf("failed API key preflight should not persist API key, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read env file: %v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil {
+		if strings.Contains(string(data), "web.config") || strings.Contains(string(data), "sk-should-not-persist") {
+			t.Fatalf("failed API key preflight should not append audit event or secret, got %q", string(data))
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
 func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})

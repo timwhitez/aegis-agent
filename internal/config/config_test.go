@@ -387,6 +387,16 @@ func TestUpsertEnvFileRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestUpsertEnvFileRejectsInvalidKey(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := UpsertEnvFile(envPath, "BAD=KEY_API_KEY", "new-secret"); err == nil || !strings.Contains(err.Error(), "invalid env key") {
+		t.Fatalf("expected invalid env key rejection, got %v", err)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("invalid env key should not create env file; stat err=%v", err)
+	}
+}
+
 func TestLoadExplicitConfigRejectsSymlink(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "external-config.yaml")
