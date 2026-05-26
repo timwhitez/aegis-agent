@@ -5435,6 +5435,39 @@ func TestServiceSessionListReportsSummarySnapshotLoadErrors(t *testing.T) {
 	}
 }
 
+func TestServiceTaskBoardReportsCorruptTaskFile(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "corrupt_task_board")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := session.CreateTask(svc.store, meta.ID, session.TaskCreateInput{Subject: "existing"}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	taskPath := filepath.Join(svc.store.SessionDir(meta.ID), "tasks", "task_0002.json")
+	if err := os.WriteFile(taskPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt task: %v", err)
+	}
+
+	for _, path := range []string{"/api/sessions/" + meta.ID, "/api/sessions/" + meta.ID + "/tasks"} {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		svc.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("expected corrupt task load error from %s, got %d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "tasks/task_0002.json") {
+			t.Fatalf("expected task filename in %s response, got body=%s", path, recorder.Body.String())
+		}
+	}
+}
+
 func TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

@@ -1,6 +1,9 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,6 +214,41 @@ func TestTaskMutationsReadLatestGraphUnderLock(t *testing.T) {
 	}
 	if len(tasks) != 2 || tasks[0].ID != "task_0001" || tasks[1].ID != "task_0002" {
 		t.Fatalf("expected both task mutations to persist in order, got %#v", tasks)
+	}
+}
+
+func TestTaskListAndMutationReportCorruptTaskFiles(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "existing"}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	corruptPath := filepath.Join(store.SessionDir(meta.ID), "tasks", "task_0002.json")
+	if err := os.WriteFile(corruptPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt task file: %v", err)
+	}
+
+	if _, err := store.ListTasks(meta.ID); err == nil || !strings.Contains(err.Error(), "task_0002.json") {
+		t.Fatalf("expected corrupt task file from ListTasks, got %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "new"}); err == nil || !strings.Contains(err.Error(), "task_0002.json") {
+		t.Fatalf("expected corrupt task file from CreateTask, got %v", err)
+	}
+	if _, err := os.Stat(corruptPath); err != nil {
+		t.Fatalf("corrupt task file should remain for recovery, got %v", err)
 	}
 }
 

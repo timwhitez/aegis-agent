@@ -3746,6 +3746,35 @@ Validation:
 - Focused post-fix WebConsole regression proving `/api/sessions` and `/api/history` return HTTP 500 with the corrupt snapshot filename.
 - Standard grouped validation before commit.
 
+### FCA-20260526-135: Task graph readers hide corrupt task files
+
+Severity: High
+
+Evidence:
+
+- `spec/12-task-system.md` defines `tasks/task_*.json` as the durable persistent task graph, and `spec/01-runtime-architecture.md` requires runtime context loading to read the current task graph from durable state.
+- `internal/session/store.go` `ListTasks` and `listTasksLocked` iterated `tasks/*.json`, called `readJSONFile`, and appended a task only when `err == nil`.
+- `MutateTasks` uses `listTasksLocked` before writing the exact task set through `SaveTasks`, so a corrupt task file was not only hidden from readers but could be omitted from the next task mutation snapshot.
+- A focused pre-fix store regression wrote invalid JSON to `tasks/task_0002.json`; `ListTasks` returned nil error, and the corrupt file was not reported to the caller.
+
+Impact:
+
+The runtime, CLI, SDK, Web session detail, Web task board, compaction context, and task mutations could treat a corrupt durable task graph as a smaller valid graph. A subsequent `task_create` / `task_update` / mission task sync could proceed from that incomplete snapshot and rewrite the task directory, making recovery harder and weakening long-task handoff evidence.
+
+Minimal fix:
+
+- Replace the duplicated task-directory loops with a shared `readTasks` helper.
+- Continue treating a missing `tasks/` directory as an empty optional task graph for sessions without durable tasks.
+- Return non-missing task file read/parse failures with the `tasks/<file>.json` filename.
+- Add store coverage for read and mutation paths, and WebConsole coverage for session detail and `GET /api/sessions/{id}/tasks`.
+
+Validation:
+
+- Focused pre-fix store regression proving corrupt `tasks/task_0002.json` returned nil error from `ListTasks`.
+- Focused post-fix store regression proving `ListTasks` and `CreateTask` report `tasks/task_0002.json` and preserve the corrupt file.
+- Focused post-fix WebConsole regression proving session detail and task-board endpoints return HTTP 500 with `tasks/task_0002.json`.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4561,6 +4590,12 @@ Evidence gates:
 - Confirmed FCA-20260526-134 against the durable Goal / Plan Mode fact-source requirements in `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is distinct from FCA-20260526-132: that fix covered session detail snapshot loading, while this issue covers summary/list enrichment through `SessionSummary`.
 - Confirmed the minimal fix belongs in the shared store list path so Web list/history, CLI session listing, children listing, and SDK callers observe the same absent-versus-corrupt distinction without creating a Web-specific authority.
+
+### Review 128
+
+- Confirmed FCA-20260526-135 against the persistent task graph requirements in `spec/12-task-system.md`, runtime context-loading requirements in `spec/01-runtime-architecture.md`, and Web task-board requirements in `spec/17-web-console.md`.
+- Confirmed this is not an optional missing-directory issue: sessions without `tasks/` may still have an empty durable task graph, but a present malformed `tasks/task_*.json` file is a corrupt fact that must be surfaced.
+- Confirmed the minimal fix belongs in the shared store task reader because the same hidden-error pattern affects Web detail, CLI/SDK `tasks`, runtime prompt context, compaction/checkpoint inputs, and mutating task operations.
 
 ## Update Log
 
@@ -7693,6 +7728,43 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionListReportsSummarySnapshotLoadErrors -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/session/store.go internal/session/store_test.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-135
+
+Slice: `fix(session): report corrupt task graph files`
+
+Finding:
+
+- Task graph readers silently ignored corrupt `tasks/task_*.json` files.
+- Before the fix, invalid JSON in `tasks/task_0002.json` made `ListTasks` return a smaller valid-looking graph, and task mutations could continue from that incomplete snapshot.
+
+Changes:
+
+- Added a shared `readTasks` helper for task graph file loading.
+- Preserved missing `tasks/` as an empty optional graph.
+- Changed corrupt task file reads to return an error that includes `tasks/<file>.json`.
+- Added focused store coverage for read and mutation paths.
+- Added focused WebConsole coverage for session detail and `GET /api/sessions/{id}/tasks`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestTaskListAndMutationReportCorruptTaskFiles -count=1`: failed before the fix because corrupt task files returned nil error.
+- `go test -timeout 120s ./internal/session -run TestTaskListAndMutationReportCorruptTaskFiles -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceTaskBoardReportsCorruptTaskFile -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/taskboard_test.go internal/webconsole/service_test.go`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.

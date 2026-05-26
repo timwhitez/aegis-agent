@@ -986,31 +986,7 @@ func (s *Store) GetTask(sessionID, taskID string) (Task, error) {
 }
 
 func (s *Store) ListTasks(sessionID string) ([]Task, error) {
-	dir, err := s.sessionPath(sessionID, "tasks")
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []Task{}, nil
-		}
-		return nil, err
-	}
-	var tasks []Task
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		var task Task
-		if err := readJSONFile(filepath.Join(dir, entry.Name()), &task); err == nil {
-			tasks = append(tasks, task)
-		}
-	}
-	sort.Slice(tasks, func(i, j int) bool {
-		return tasks[i].ID < tasks[j].ID
-	})
-	return tasks, nil
+	return s.readTasks(sessionID)
 }
 
 func (s *Store) SaveTasks(sessionID string, tasks []Task) error {
@@ -1050,6 +1026,10 @@ func (s *Store) MutateTasks(sessionID string, mutate func([]Task) ([]Task, error
 }
 
 func (s *Store) listTasksLocked(sessionID string) ([]Task, error) {
+	return s.readTasks(sessionID)
+}
+
+func (s *Store) readTasks(sessionID string) ([]Task, error) {
 	dir, err := s.sessionPath(sessionID, "tasks")
 	if err != nil {
 		return nil, err
@@ -1067,9 +1047,10 @@ func (s *Store) listTasksLocked(sessionID string) ([]Task, error) {
 			continue
 		}
 		var task Task
-		if err := readJSONFile(filepath.Join(dir, entry.Name()), &task); err == nil {
-			tasks = append(tasks, task)
+		if err := readJSONFile(filepath.Join(dir, entry.Name()), &task); err != nil {
+			return nil, fmt.Errorf("tasks/%s: %w", entry.Name(), err)
 		}
+		tasks = append(tasks, task)
 	}
 	sort.Slice(tasks, func(i, j int) bool {
 		return tasks[i].ID < tasks[j].ID
