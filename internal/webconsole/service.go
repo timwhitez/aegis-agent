@@ -1453,6 +1453,11 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	previousPlanMode, err := s.store.SnapshotPlanMode(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	planModeCreated := false
 	if req.ValidationContract != nil && session.GoalRequiresPlanApproval(goal) {
 		planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb)
@@ -1472,11 +1477,15 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 	if err := s.appendGoalMutation(sessionID, goal, "mission.validation.updated", map[string]any{
 		"plan_mode_created": planModeCreated,
 	}); err != nil {
-		if !planModeCreated {
-			if restoreErr := s.store.SaveGoal(sessionID, previous); restoreErr != nil {
-				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after validation mutation error %v: %w", err, restoreErr))
+		if planModeCreated {
+			if restoreErr := s.store.RestorePlanModeSnapshot(sessionID, previousPlanMode); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore plan mode after validation mutation error %v: %w", err, restoreErr))
 				return
 			}
+		}
+		if restoreErr := s.store.SaveGoal(sessionID, previous); restoreErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after validation mutation error %v: %w", err, restoreErr))
+			return
 		}
 		writeError(w, http.StatusInternalServerError, err)
 		return

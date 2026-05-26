@@ -1085,6 +1085,55 @@ func TestServiceMissionValidationPlanPatchReportsHistoryAppendError(t *testing.T
 	}
 }
 
+func TestServiceMissionValidationContractPatchReportsHistoryAppendError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_validation_contract_history_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Patch validation contract with history",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.PlanStatus = session.MissionPlanStatusApproved
+	goal.Mission.ApprovedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := svc.store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save approved goal: %v", err)
+	}
+	blockWebGoalHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/validation", map[string]any{
+		"validation_contract": []map[string]any{{"id": "validation_contract_web", "kind": "manual", "description": "web validation", "status": "pending"}},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Mission != nil && (len(loaded.Mission.ValidationContract) != 0 || loaded.Mission.PlanStatus != session.MissionPlanStatusApproved || loaded.Mission.ApprovedAt == "") {
+		t.Fatalf("failed validation contract patch should not advance goal snapshot, got %#v", loaded.Mission.ValidationContract)
+	}
+	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
+		t.Fatalf("failed validation contract patch should not create plan mode, got planMode=%#v err=%v", planMode, planErr)
+	}
+}
+
 func TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
