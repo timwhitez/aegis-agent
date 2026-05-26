@@ -878,6 +878,8 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	var contractPtr *session.SessionContract
 	if contract, err := s.store.LoadContract(sessionID); err == nil && contract.ContractID != "" {
 		contractPtr = &contract
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return SessionDetailResponse{}, fmt.Errorf("load contract.json: %w", err)
 	}
 	requiredArtifacts, err := s.store.LoadArtifactTracker(sessionID)
 	if err != nil {
@@ -890,10 +892,14 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	var checkpointPtr *session.LongRunCheckpoint
 	if checkpoint, err := s.store.LoadLongRunCheckpoint(sessionID); err == nil && checkpoint.SessionID != "" {
 		checkpointPtr = &checkpoint
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return SessionDetailResponse{}, fmt.Errorf("load longrun-latest.json: %w", err)
 	}
 	var parentCoordinationPtr *session.ParentCoordination
 	if coordination, err := s.store.LoadParentCoordination(sessionID); err == nil && coordination.ParentSessionID != "" {
 		parentCoordinationPtr = &coordination
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return SessionDetailResponse{}, fmt.Errorf("load parent-coordination.json: %w", err)
 	}
 	var goalPtr *session.SessionGoal
 	var goalFacts *GoalFactsResponse
@@ -903,10 +909,14 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		if err != nil {
 			return SessionDetailResponse{}, err
 		}
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return SessionDetailResponse{}, fmt.Errorf("load goal.json: %w", err)
 	}
 	var planModePtr *session.PlanModeState
 	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.PlanModeID != "" {
 		planModePtr = &planMode
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return SessionDetailResponse{}, fmt.Errorf("load planmode.json: %w", err)
 	}
 	ownerEvents := eventsList
 	hasMoreMessages := limit > 0 && len(messages) > limit

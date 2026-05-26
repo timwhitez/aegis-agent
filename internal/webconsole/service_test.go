@@ -2104,6 +2104,136 @@ func TestServiceSessionDetailReportsGoalHistoryLoadError(t *testing.T) {
 	}
 }
 
+func TestServiceSessionDetailReportsSnapshotLoadErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		pathParts []string
+		setup     func(t *testing.T, svc *Service, sessionID string)
+		wantPath  string
+	}{
+		{
+			name:      "contract",
+			pathParts: []string{"contract.json"},
+			setup: func(t *testing.T, svc *Service, sessionID string) {
+				t.Helper()
+				if err := svc.store.SaveContract(sessionID, session.SessionContract{
+					SchemaVersion: 1,
+					ContractID:    "contract_test",
+					Source:        "user_instruction",
+					TrustSource:   "builtin",
+					Profile:       "default",
+					CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+					UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+				}); err != nil {
+					t.Fatalf("save contract: %v", err)
+				}
+			},
+			wantPath: "contract.json",
+		},
+		{
+			name:      "checkpoint",
+			pathParts: []string{"checkpoints", "longrun-latest.json"},
+			setup: func(t *testing.T, svc *Service, sessionID string) {
+				t.Helper()
+				if err := svc.store.SaveLongRunCheckpoint(sessionID, session.LongRunCheckpoint{
+					SchemaVersion: 1,
+					SessionID:     sessionID,
+					Provider:      "openai",
+					Model:         "gpt-5.4",
+					Workdir:       t.TempDir(),
+					CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+				}); err != nil {
+					t.Fatalf("save checkpoint: %v", err)
+				}
+			},
+			wantPath: "longrun-latest.json",
+		},
+		{
+			name:      "parent_coordination",
+			pathParts: []string{"parent-coordination.json"},
+			setup: func(t *testing.T, svc *Service, sessionID string) {
+				t.Helper()
+				if err := svc.store.SaveParentCoordination(sessionID, session.ParentCoordination{
+					SchemaVersion:   1,
+					ParentSessionID: sessionID,
+					WaitMode:        "wait-all",
+					UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+				}); err != nil {
+					t.Fatalf("save parent coordination: %v", err)
+				}
+			},
+			wantPath: "parent-coordination.json",
+		},
+		{
+			name:      "goal",
+			pathParts: []string{"goal.json"},
+			setup: func(t *testing.T, svc *Service, sessionID string) {
+				t.Helper()
+				if _, err := svc.store.CreateGoal(sessionID, session.GoalDraft{
+					Enabled:   true,
+					Mode:      session.GoalModeGoal,
+					Objective: "Expose goal snapshot",
+					Source:    session.GoalSourceWeb,
+				}); err != nil {
+					t.Fatalf("create goal: %v", err)
+				}
+			},
+			wantPath: "goal.json",
+		},
+		{
+			name:      "planmode",
+			pathParts: []string{"planmode.json"},
+			setup: func(t *testing.T, svc *Service, sessionID string) {
+				t.Helper()
+				if _, err := svc.store.CreatePlanMode(sessionID, session.PlanModeDraft{
+					Enabled:   true,
+					Objective: "Plan the next step",
+					Source:    session.PlanModeSourceWeb,
+				}); err != nil {
+					t.Fatalf("create plan mode: %v", err)
+				}
+			},
+			wantPath: "planmode.json",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "")
+			svc, err := New(cfg, Options{WorkerCount: 0})
+			if err != nil {
+				t.Fatalf("new service: %v", err)
+			}
+			defer svc.Close()
+
+			meta := testSessionMetadata(t, "session_detail_"+tc.name+"_load_error")
+			if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			tc.setup(t, svc, meta.ID)
+			corruptPath := filepath.Join(append([]string{svc.store.SessionDir(meta.ID)}, tc.pathParts...)...)
+			if err := os.WriteFile(corruptPath, []byte("{not-json}\n"), 0o600); err != nil {
+				t.Fatalf("write invalid snapshot: %v", err)
+			}
+
+			ts := httptest.NewServer(svc)
+			defer ts.Close()
+
+			resp, err := http.Get(ts.URL + "/api/sessions/" + meta.ID)
+			if err != nil {
+				t.Fatalf("get session detail: %v", err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("expected snapshot load error to return 500, got %d body=%s", resp.StatusCode, string(body))
+			}
+			if !strings.Contains(string(body), tc.wantPath) {
+				t.Fatalf("expected %s in response, got body=%s", tc.wantPath, string(body))
+			}
+		})
+	}
+}
+
 func TestServicePlanModeGetAndParentQueueGate(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

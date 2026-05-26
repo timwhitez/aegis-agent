@@ -3659,6 +3659,35 @@ Validation:
 - Focused post-fix WebConsole regression proving corrupt Goal history returns HTTP 500 with the ledger filename in the response.
 - Standard grouped validation before commit.
 
+### FCA-20260526-132: Session detail hides corrupt optional snapshot facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` defines session detail as returning contract, long-run checkpoint, parent coordination, current Goal snapshot, and current Plan Mode snapshot facts.
+- `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md` make those snapshots durable session facts rather than Web-maintained state.
+- `internal/session/store.go`, `internal/session/goal.go`, and `internal/session/planmode.go` return `fs.ErrNotExist` for absent optional snapshot files but return parse/read errors for corrupt JSON snapshots.
+- `internal/webconsole/service.go` `sessionDetail` collapsed both cases with `if snapshot, err := Load...; err == nil ...`, silently omitting corrupt `contract.json`, `checkpoints/longrun-latest.json`, `parent-coordination.json`, `goal.json`, and `planmode.json`.
+- A focused pre-fix WebConsole table regression wrote invalid JSON to each snapshot path; every `GET /api/sessions/{id}` returned HTTP 200 and omitted the corresponding fact instead of surfacing the corrupt local file.
+
+Impact:
+
+The Web console could hide corrupt session authority facts and render a clean-looking detail page. That weakens recovery and operator traceability for contract/completion gates, long-run resume hints, parent child/queue waits, Goal state, and Plan Mode execution gates.
+
+Minimal fix:
+
+- In `sessionDetail`, continue treating missing optional snapshot files as absent.
+- For non-missing snapshot load failures, return HTTP 500 through the existing detail error path.
+- Wrap each load error with the relevant fact filename.
+- Add focused table coverage for corrupt contract, checkpoint, parent coordination, Goal, and Plan Mode snapshots.
+
+Validation:
+
+- Focused pre-fix WebConsole table regression proving corrupt snapshot files returned HTTP 200 with omitted facts.
+- Focused post-fix WebConsole table regression proving corrupt snapshot files return HTTP 500 with the relevant fact filename.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4456,6 +4485,12 @@ Evidence gates:
 - Confirmed FCA-20260526-131 against the durable Goal fact requirements in `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md`, plus the Goal facts requirement in `spec/17-web-console.md`.
 - Confirmed this is not a missing optional-file issue: `LoadGoalHistory` already returns an empty slice for absent `artifacts/goal-history.jsonl`, so propagating errors only affects corrupt or unreadable ledgers.
 - Confirmed the minimal fix belongs in the Web detail path. The store already exposes the correct absent-versus-corrupt distinction, and Web should not render a clean Goal facts panel when the history ledger is unreadable.
+
+### Review 125
+
+- Confirmed FCA-20260526-132 against the session detail response contract in `spec/17-web-console.md` and the durable fact boundaries in `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is a snapshot-load issue, not an optional-file absence issue: the store returns `fs.ErrNotExist` for absent snapshots, and the Web adapter should ignore only that case.
+- Confirmed the minimal fix belongs in `sessionDetail`; it preserves Web's read-only adapter role and does not add a second authority for contract, checkpoint, parent coordination, Goal, or Plan Mode state.
 
 ## Update Log
 
@@ -7477,6 +7512,42 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsGoalHistoryLoadError -count=1`: failed before the fix because corrupt Goal history returned HTTP 200 with empty history facts.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsGoalHistoryLoadError -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(SessionDetailReportsGoalHistoryLoadError|GoalFactsAndMissionCoverageApproval)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-132
+
+Slice: `fix(webconsole): report snapshot load errors`
+
+Finding:
+
+- Session detail silently ignored corrupt optional snapshot files for contract, long-run checkpoint, parent coordination, Goal, and Plan Mode facts.
+- Before the fix, invalid JSON in any of those snapshot files made `GET /api/sessions/{id}` return HTTP 200 with the corresponding fact omitted, hiding corrupt durable session authority files.
+
+Changes:
+
+- Changed `sessionDetail` to ignore only `fs.ErrNotExist` from optional snapshot loaders.
+- Propagated non-missing load failures for `contract.json`, `checkpoints/longrun-latest.json`, `parent-coordination.json`, `goal.json`, and `planmode.json`.
+- Wrapped each load failure with the relevant fact filename for actionable Web API responses.
+- Added focused table-driven WebConsole coverage for corrupt optional snapshot files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsSnapshotLoadErrors -count=1`: failed before the fix because corrupt snapshot files returned HTTP 200 with omitted facts.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsSnapshotLoadErrors -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(SessionDetailReportsSnapshotLoadErrors|SessionDetailReportsGoalHistoryLoadError|GoalFactsAndMissionCoverageApproval)' -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
