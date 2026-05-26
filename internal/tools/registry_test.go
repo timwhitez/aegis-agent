@@ -2722,3 +2722,41 @@ func TestTodoWriteNoopDoesNotLookLikeProgress(t *testing.T) {
 		t.Fatalf("expected no-op write to preserve original timestamp, got %#v", todo)
 	}
 }
+
+func TestTodoWriteReportsLoadErrorBeforeNoop(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	todoPath := filepath.Join(store.SessionDir(meta.ID), "todo.json")
+	if err := os.Remove(todoPath); err != nil {
+		t.Fatalf("remove todo: %v", err)
+	}
+	if err := os.Mkdir(todoPath, 0o700); err != nil {
+		t.Fatalf("block todo path: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}
+	result, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[]}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "todo.json") {
+		t.Fatalf("expected todo load error, got %#v", result)
+	}
+}

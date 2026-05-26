@@ -2149,7 +2149,10 @@ func defTodoWrite() Definition {
 			if err := validateTodoSnapshot(input.Todos); err != nil {
 				return errorResult("todo_write", err), nil
 			}
-			existing, _ := execCtx.Store.LoadTodo(execCtx.SessionID)
+			existing, err := execCtx.Store.LoadTodo(execCtx.SessionID)
+			if err != nil {
+				return errorResult("todo_write", err), nil
+			}
 			changed := !normalizedTodosEqual(existing, input.Todos)
 			if !changed {
 				if execCtx.Emit != nil {

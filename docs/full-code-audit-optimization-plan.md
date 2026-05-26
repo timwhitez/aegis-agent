@@ -2710,6 +2710,32 @@ Validation:
 - Adjacent Plan Mode input cancellation and linked mission approval regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-099: todo_write hides unreadable todo snapshot failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines `todo.json` as the full session todo snapshot and `todo_write` as a full replacement tool that writes `todo.updated`.
+- `internal/tools/registry.go` loaded the existing todo snapshot with `existing, _ := execCtx.Store.LoadTodo(...)` before deciding whether the incoming normalized snapshot was a no-op.
+- A focused regression replaced `todo.json` with a directory and called `todo_write` with an empty list. Before this fix, the tool returned a successful no-op with `LLMOutput:"null"` and metadata `changed:false`, while the durable todo fact remained unreadable.
+
+Impact:
+
+An unreadable or corrupt todo snapshot could be hidden as a successful no-op whenever the requested normalized todo list matched the zero-value fallback. That weakens recovery and Web/task observability because the model and operator see a successful tool result while `todo.json` is still broken.
+
+Minimal fix:
+
+- Propagate `LoadTodo` errors before no-op comparison in `todo_write`.
+- Preserve the existing behavior where a missing todo file loads as an empty list through the store helper.
+- Add focused coverage for unreadable `todo.json` plus adjacent no-op and structured-event tests.
+
+Validation:
+
+- Focused pre-fix regression proving the false successful no-op.
+- Focused post-fix todo/tool tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3309,6 +3335,12 @@ Evidence gates:
 - Confirmed FCA-20260526-098 against the Plan Mode event catalog in `spec/01-runtime-architecture.md`, runtime `Continue`, and recovered Plan Mode input answer/cancel helpers.
 - Confirmed the approval bug is not only a missing timeline entry: with `events.jsonl` blocked, the pre-fix approval path continued into the provider turn after losing the approval event.
 - Confirmed this slice should not promote all runtime `emit` calls to hard failures; the minimal boundary is Plan Mode control events where store/history/replay facts represent an operator action or execution gate transition.
+
+### Review 92
+
+- Confirmed FCA-20260526-099 against `spec/12-task-system.md`, store `LoadTodo`, and tool `todo_write`.
+- Confirmed the finding is behavior-backed rather than schema-only: replacing `todo.json` with a directory made `todo_write` return a successful no-op with `null` output before the fix.
+- Confirmed the minimal fix belongs in the tool's existing snapshot load path; the store already treats a missing `todo.json` as an empty snapshot, so the fix only surfaces real load failures.
 
 ## Update Log
 
@@ -5863,4 +5895,37 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-099
+
+Slice: `fix(tools): report todo snapshot load errors`
+
+Finding:
+
+- `todo_write` ignored errors from `LoadTodo` while deciding whether the requested todo snapshot was a no-op.
+- A focused regression replaced `todo.json` with a directory; before the fix, `todo_write {"todos":[]}` returned a successful no-op with `LLMOutput:"null"` and left the durable todo snapshot unreadable.
+
+Changes:
+
+- Propagated `LoadTodo` errors from `todo_write` before normalized no-op comparison.
+- Preserved no-op timestamp behavior for readable existing todo snapshots.
+- Added focused regression coverage for unreadable `todo.json`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestTodoWriteReportsLoadErrorBeforeNoop -count=1`: failed before the fix because the tool returned a successful no-op against an unreadable `todo.json`.
+- `go test -timeout 120s ./internal/tools -run 'TestTodoWrite(ReportsLoadErrorBeforeNoop|NoopDoesNotLookLikeProgress)|TestTodoAndTaskToolsEmitStructuredEvents' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
