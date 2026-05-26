@@ -2235,6 +2235,34 @@ func TestEngineSteerAcceptanceReportsAcceptedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineDeferPendingInterruptReportsEventAppendError(t *testing.T) {
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
+	request := session.NewSteerRequest("switch later", true)
+	if err := engine.store.AppendSteerRequest(meta.ID, request); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	engine.control.requestSteerInterrupt()
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+
+	err := engine.deferPendingInterrupts(meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected deferred steer event append error, got %v", err)
+	}
+	requests, loadErr := engine.store.LoadSteerRequests(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load steer requests: %v", loadErr)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusPending {
+		t.Fatalf("event append failure should keep steer pending, got %#v", requests)
+	}
+}
+
 func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
 	engine, meta, state, registry, _, catalog := newTestEngine(t, session.ModeRun)
 	_ = state

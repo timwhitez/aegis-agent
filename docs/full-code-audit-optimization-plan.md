@@ -4619,6 +4619,34 @@ Validation:
 - Focused runtime regression proving empty sessions without external user instructions do not create a contract when refreshed.
 - Standard grouped validation before commit.
 
+### FCA-20260527-183: Deferred interrupt steer can lose its required event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` says an unsafe interrupt steer fallback writes `session.steer.deferred`, and lists `session.steer.deferred` in the live-input event model.
+- `internal/runtime/engine.go` `deferPendingInterrupts` consumed the in-memory interrupt flag, changed pending interrupt steer requests to `deferred`, and emitted `session.steer.deferred` through unchecked `e.emit`.
+- Unlike the already-hardened accepted-steer path, this deferred path could still mutate `control/steer.jsonl` without preserving the durable event that explains why the interrupt was not accepted immediately.
+- A focused pre-fix runtime regression blocked `events.jsonl` at `deferPendingInterrupts`. Before the fix, the helper returned nil and rewrote the pending interrupt steer as `deferred` without a matching durable event.
+
+Impact:
+
+An interrupt steer that could not be safely applied immediately could become deferred in the control queue while the operator timeline missed the required `session.steer.deferred` event. Recovery and Web views would see later acceptance or pending counts without the durable fact explaining the earlier fallback from interrupt to queue-first behavior.
+
+Minimal fix:
+
+- Use checked `appendEvent` for `session.steer.deferred`.
+- Append the deferred event before mutating the request status in memory.
+- If the event append fails, return the error and leave the durable steer request pending instead of writing a silent deferred state.
+- Keep accepted-steer logic unchanged; that path was already hardened in FCA-20260527-169.
+
+Validation:
+
+- Focused runtime regression proving blocked `events.jsonl` returns an error and keeps the interrupt steer request pending.
+- Adjacent interrupt-defer and accepted-steer regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6267,7 +6295,48 @@ Evidence gates:
 - Confirmed the retry hazard is real because `contractsEquivalent` can suppress a later refresh once `contract.json` has already advanced, so a missing core contract event is not guaranteed to self-heal.
 - Confirmed `artifact.required` should remain best-effort in this slice: it is derived diagnostic visibility, while `contract.created` / `contract.updated` are the core durable fact events that must fail the refresh if unavailable.
 
+### Review 176
+
+- Confirmed FCA-20260527-183 against the `session.steer.deferred` requirement in `spec/13-live-input-and-steering.md`; this event is the durable explanation for interrupt steer fallback.
+- Confirmed this is distinct from the accepted-steer fix: accepted steer already uses checked `user.message` and `session.steer.accepted` appends, while `deferPendingInterrupts` still used unchecked `e.emit`.
+- Confirmed the minimal ordering is event-first, status-second. If `events.jsonl` is unavailable, leaving the steer pending is safer than silently committing a deferred control state without the required event.
+
 ## Update Log
+
+### FCA-20260527-183
+
+Slice: `fix(runtime): persist deferred steer events`
+
+Finding:
+
+- `deferPendingInterrupts` changed pending interrupt steer requests to `deferred`.
+- It emitted `session.steer.deferred` through unchecked `e.emit`.
+- Before the fix, blocked `events.jsonl` left the control request deferred without the required deferred-event evidence.
+
+Changes:
+
+- `deferPendingInterrupts` now records `session.steer.deferred` through checked `appendEvent`.
+- The event append happens before changing the request status to `deferred`.
+- If event persistence fails, the helper returns the append error and leaves the durable steer request pending.
+- Added focused runtime coverage for the blocked-event case.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(DeferPendingInterruptReportsEventAppendError|MarksInterruptSteerDeferredWhenToolIgnoresCancel|SteerAcceptanceReportsAcceptedEventAppendError|RefreshesPendingSteerCountAfterConcurrentAppend)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-182
 

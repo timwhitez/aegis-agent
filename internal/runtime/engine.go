@@ -1075,12 +1075,14 @@ func (e *Engine) deferPendingInterrupts(sessionID string) error {
 		if requests[i].Status != session.SteerStatusPending || !requests[i].Interrupt {
 			continue
 		}
-		requests[i].Status = session.SteerStatusDeferred
-		changed = true
-		e.emit(sessionID, "session.steer.deferred", "control_drain", map[string]any{
+		if err := e.appendEvent(sessionID, "session.steer.deferred", "control_drain", map[string]any{
 			"id":        requests[i].ID,
 			"interrupt": true,
-		})
+		}); err != nil {
+			return err
+		}
+		requests[i].Status = session.SteerStatusDeferred
+		changed = true
 	}
 	if !changed {
 		return nil
