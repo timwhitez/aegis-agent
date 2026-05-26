@@ -3972,6 +3972,36 @@ Validation:
 - Focused post-fix store regression proving corrupt `goal.json` is reported and no Plan Mode snapshot is left behind.
 - Standard grouped validation before commit.
 
+### FCA-20260526-143: Pre-completion feature gate hides corrupt feature list
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` lists pre-completion feature checks as a `CompletionController` finish gate.
+- `spec/04-tools-and-skills.md` defines `feature_list_create` / `feature_list_update` / `feature_list_read` as durable feature-list tools for long-running feature convergence.
+- `internal/runtime/completion_controller.go` `EvaluatePreCompletionFeatures` called `LoadFeatureList` and returned `GateAllow` for every load error, collapsing an absent optional feature list, a path-safety rejection, and a corrupt existing `feature_list.json`.
+- A focused pre-fix runtime regression wrote invalid JSON to `feature_list.json`; `EvaluatePreCompletionFeatures(true)` returned `GateAllow`.
+
+Impact:
+
+In init-mode runs with pre-completion feature checks enabled, a session could call `finish` while its durable feature list was unreadable. That weakens the feature convergence gate and makes recovery treat a corrupt feature list like no feature list existed, even though the file was present and could contain unfinished feature state.
+
+Minimal fix:
+
+- Continue allowing absent `feature_list.json` because the feature list is optional.
+- Preserve the existing symlink/path-safety behavior that ignores symlinked session feature lists rather than treating unsafe external content as completion evidence.
+- Return a blocking `pre_completion_state` decision for corrupt or otherwise unreadable feature-list snapshots.
+- Include `feature_list.json` in the gate message.
+- Add focused runtime coverage for corrupt feature-list finish gating while keeping the symlink regression green.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `feature_list.json` allowed pre-completion `finish`.
+- Focused post-fix runtime regression proving corrupt `feature_list.json` blocks pre-completion `finish`.
+- Existing symlink/path-safety regression proving symlinked feature-list state remains ignored.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4836,7 +4866,49 @@ Evidence gates:
 - Confirmed this is not a no-goal session issue: missing `goal.json` remains optional, but a malformed existing Goal snapshot must not be treated as no Goal when creating a gate that might need `linked_goal_id`.
 - Confirmed the minimal fix belongs in `Store.CreatePlanMode` because the store owns Plan Mode snapshot creation and linked Goal discovery for CLI/Web/runtime callers.
 
+### Review 136
+
+- Confirmed FCA-20260526-143 against the pre-completion feature gate named in `spec/18-durable-contract-and-completion.md` and the durable feature-list tool contract in `spec/04-tools-and-skills.md`.
+- Confirmed this is not an optional no-feature-list issue: absent `feature_list.json` remains allowed, but malformed existing feature-list state must not be treated as if no feature list existed.
+- Confirmed the minimal fix belongs in `CompletionController.EvaluatePreCompletionFeatures` because it is the finish-gate path that turns durable feature-list facts into an allow/block decision.
+
 ## Update Log
+
+### FCA-20260526-143
+
+Slice: `fix(runtime): report corrupt pre-completion features`
+
+Finding:
+
+- `EvaluatePreCompletionFeatures` ignored all `LoadFeatureList` errors while deciding whether init-mode `finish` should be blocked.
+- Before the fix, corrupt `feature_list.json` made the pre-completion feature gate return `GateAllow`.
+
+Changes:
+
+- Changed pre-completion feature gating to ignore only absent `feature_list.json` and the existing symlink/path-safety rejection case.
+- Added a `pre_completion_state` block for corrupt or otherwise unreadable feature-list snapshots.
+- Included `feature_list.json` in the gate message.
+- Added focused runtime coverage for corrupt feature-list state and kept the existing symlink regression passing.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestPreCompletionFeatureGateBlocksCorruptFeatureList -count=1`: failed before the fix because corrupt `feature_list.json` allowed pre-completion `finish`.
+- `go test -timeout 120s ./internal/runtime -run 'TestPreCompletionFeatureGate(IgnoresSymlinkedFeatureList|BlocksCorruptFeatureList)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestPreCompletionFeatureGate(IgnoresSymlinkedFeatureList|BlocksCorruptFeatureList)|TestEngineFinishBlockedByPreCompletionFeatures' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/completion_controller.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260522-001
 

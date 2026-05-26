@@ -100,6 +100,13 @@ func (c *CompletionController) EvaluatePreCompletionFeatures(enabled bool) GateD
 	featureListPath := filepath.Join(c.store.SessionDir(c.sessionID), "feature_list.json")
 	featureList, err := c.store.LoadFeatureList(c.sessionID)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || isSymlinkedSessionPathError(err) {
+			return GateDecision{Status: GateAllow}
+		}
+		text := "Pre-completion check could not load feature_list.json: " + err.Error()
+		return c.block("pre_completion_state", text, map[string]any{"source": "feature_list", "path": featureListPath})
+	}
+	if featureList.Features == nil {
 		return GateDecision{Status: GateAllow}
 	}
 	var incomplete []string
@@ -113,6 +120,10 @@ func (c *CompletionController) EvaluatePreCompletionFeatures(enabled bool) GateD
 	}
 	text := fmt.Sprintf("Pre-completion check failed: %d feature(s) not completed:\n%s\n\nPlease complete all features before calling finish.", len(incomplete), strings.Join(incomplete, "\n"))
 	return c.block("pre_completion_check", text, map[string]any{"source": "feature_list", "path": featureListPath})
+}
+
+func isSymlinkedSessionPathError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "symlinked session path")
 }
 
 func (c *CompletionController) TrackToolResult(toolName string, result session.ToolResult, turn int) error {

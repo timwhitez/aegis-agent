@@ -676,6 +676,23 @@ func TestPreCompletionFeatureGateIgnoresSymlinkedFeatureList(t *testing.T) {
 	}
 }
 
+func TestPreCompletionFeatureGateBlocksCorruptFeatureList(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	featureListPath := filepath.Join(store.SessionDir(meta.ID), "feature_list.json")
+	if err := os.WriteFile(featureListPath, []byte(`{"features":[`), 0o600); err != nil {
+		t.Fatalf("write corrupt feature list: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluatePreCompletionFeatures(true)
+	if decision.Status != GateBlock || decision.GateID != "pre_completion_state" {
+		t.Fatalf("expected corrupt feature list to block, got %#v", decision)
+	}
+	if !strings.Contains(decision.ModelMessage, "feature_list.json") {
+		t.Fatalf("expected feature_list.json in block message, got %q", decision.ModelMessage)
+	}
+}
+
 func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := store.AppendBackgroundNotification(meta.ID, session.NewBackgroundNotification(session.QueueJob{
