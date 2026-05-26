@@ -666,6 +666,13 @@ func TestGoalStatusCommandReportsHistoryAppendError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
 		t.Fatalf("expected goal history append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal pause should not advance goal snapshot, got %#v", loaded)
+	}
 }
 
 func TestGoalClearCommandReportsHistoryAppendError(t *testing.T) {
@@ -695,6 +702,13 @@ func TestGoalClearCommandReportsHistoryAppendError(t *testing.T) {
 	err := Run(context.Background(), []string{"goal", "clear", meta.ID, "--json"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
 		t.Fatalf("expected goal history append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("failed goal clear should restore goal snapshot, got load error: %v", loadErr)
+	}
+	if loaded.GoalID == "" || loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal clear should restore active goal snapshot, got %#v", loaded)
 	}
 }
 

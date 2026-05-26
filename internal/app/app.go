@@ -663,12 +663,18 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 					"previous_status": goal.Status,
 				},
 			}); err != nil {
+				if restoreErr := store.SaveGoal(sessionID, goal); restoreErr != nil {
+					return fmt.Errorf("restore goal after clear history error %v: %w", err, restoreErr)
+				}
 				return err
 			}
 			if err := store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
 				"goal_id":         goal.GoalID,
 				"previous_status": goal.Status,
 			})); err != nil {
+				if restoreErr := store.SaveGoal(sessionID, goal); restoreErr != nil {
+					return fmt.Errorf("restore goal after clear event error %v: %w", err, restoreErr)
+				}
 				return err
 			}
 		}
@@ -860,6 +866,10 @@ func approveMissionCoverage(goal session.SessionGoal, override bool) error {
 }
 
 func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status, eventType, label string, jsonMode bool) error {
+	previous, err := store.LoadGoal(sessionID)
+	if err != nil {
+		return err
+	}
 	goal, err := store.SetGoalStatus(sessionID, status, session.GoalSourceCLI)
 	if err != nil {
 		return err
@@ -870,6 +880,9 @@ func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status,
 		Source: session.GoalSourceCLI,
 		Status: goal.Status,
 	}); err != nil {
+		if restoreErr := store.SaveGoal(sessionID, previous); restoreErr != nil {
+			return fmt.Errorf("restore goal after status history error %v: %w", err, restoreErr)
+		}
 		return err
 	}
 	if err := store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", map[string]any{
@@ -878,6 +891,9 @@ func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status,
 		"mode":      goal.Mode,
 		"objective": goal.Objective,
 	})); err != nil {
+		if restoreErr := store.SaveGoal(sessionID, previous); restoreErr != nil {
+			return fmt.Errorf("restore goal after status event error %v: %w", err, restoreErr)
+		}
 		return err
 	}
 	if jsonMode {
