@@ -3488,6 +3488,33 @@ Validation:
 - Focused post-fix Node renderer regression proving empty API-key fields remain empty after save.
 - Standard grouped validation before commit.
 
+### FCA-20260526-126: Settings save clears existing-key mask after unchanged key save
+
+Severity: Low
+
+Evidence:
+
+- `internal/webconsole/service.go` treats an empty `api_key` payload as "do not change the existing persisted key"; only a non-empty, non-mask value writes a new key.
+- `internal/webconsole/assets/settings-view.js` allowed the user to clear the masked API-key input visually, then save other settings.
+- After the previous FCA-20260526-125 fix, a successful save with `apiKey: ""` and `dataset.originalHasKey = "true"` left the field empty even though the backend did not delete the existing key.
+- A focused Node renderer regression loaded Settings with `has_key: true`, cleared the API-key input, clicked Save, and observed the field remained empty instead of returning to the existing-key mask.
+
+Impact:
+
+The Settings screen could imply that an existing API key had been removed even though the backend retained it. Operators could believe credentials were cleared and later be surprised that provider probes or sessions still use the old key from the local environment.
+
+Minimal fix:
+
+- Keep the existing-key mask after successful saves where no new API key was submitted and the field originally represented an existing key.
+- Preserve the FCA-20260526-125 behavior where providers with no key remain blank after non-key saves.
+- Add focused Node renderer coverage for the "clear existing mask but leave key unchanged" path.
+
+Validation:
+
+- Focused pre-fix Node renderer regression proving the existing-key mask stayed empty after save.
+- Focused post-fix Node renderer regression proving the existing-key mask is restored after unchanged-key saves.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4249,6 +4276,12 @@ Evidence gates:
 - Confirmed FCA-20260526-125 against Settings API-key operator-state requirements in `spec/17-web-console.md`.
 - Confirmed this is distinct from FCA-20260526-124: that slice blocks backend persistence of blank key values, while this one fixes the frontend state after a successful save that intentionally submits no key.
 - Confirmed the minimal fix should stay in the Settings renderer post-save state update. Backend config persistence, API-key preflight, env-file formatting, and provider probes do not need to change for this slice.
+
+### Review 119
+
+- Confirmed FCA-20260526-126 against the Settings backend API-key unchanged semantics in `internal/webconsole/service.go` and operator-state requirements in `spec/17-web-console.md`.
+- Confirmed this is distinct from FCA-20260526-125: that path had no existing key and should stay blank, while this path starts with an existing key and an empty payload means unchanged.
+- Confirmed the minimal fix should stay in the Settings renderer post-save state update. Backend clear-key semantics are not currently exposed, so the backend should not reinterpret empty `api_key` as deletion in this slice.
 
 ## Update Log
 
@@ -7065,6 +7098,38 @@ Validation:
 
 - `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the empty API-key field became the mask.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 15/15 tests.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-126
+
+Slice: `fix(webconsole): preserve unchanged API key mask`
+
+Finding:
+
+- Settings UI could leave the API-key field empty after saving an unchanged existing key.
+- Before the fix, loading Settings with `has_key=true`, clearing the masked field, and saving sent `apiKey: ""` but left the field blank even though the backend kept the existing key unchanged.
+
+Changes:
+
+- Preserved the existing-key mask after successful saves where no new API key was submitted and the field originally represented an existing key.
+- Kept the no-key behavior from FCA-20260526-125: providers with no existing key remain blank after non-key saves.
+- Added focused Node renderer coverage for the clear-existing-mask / unchanged-key path.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the existing-key mask stayed empty after save.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
 - `git diff --check`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

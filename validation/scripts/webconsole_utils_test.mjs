@@ -368,28 +368,58 @@ test('summary panel renders provider attempt ledger facts', () => {
 });
 
 test('settings save keeps empty API key fields unmasked after success', async () => {
-  function fakeElement(initial = {}) {
-    return {
-      value: initial.value || '',
-      checked: Boolean(initial.checked),
-      disabled: false,
-      dataset: {},
-      listeners: {},
-      innerHTML: '',
-      innerText: initial.innerText || '',
-      textContent: initial.textContent || '',
-      addEventListener(event, callback) {
-        this.listeners[event] = callback;
-      },
-      querySelector() {
-        return null;
-      },
-      querySelectorAll() {
-        return [];
-      }
-    };
+  const { elements, savedPayloads, toasts, restore } = await renderSettingsHarness({ hasKey: false });
+  try {
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    restore();
   }
 
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].apiKey, '');
+  assert.equal(elements['settings-apikey'].value, '');
+  assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'false');
+  assert.equal(toasts.at(-1)?.tone, 'success');
+});
+
+test('settings save keeps existing API key mask when cleared field means unchanged', async () => {
+  const { elements, savedPayloads, restore } = await renderSettingsHarness({ hasKey: true });
+  try {
+    elements['settings-apikey'].value = '';
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    restore();
+  }
+
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].apiKey, '');
+  assert.equal(elements['settings-apikey'].value, '••••••••••••••••');
+  assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'true');
+});
+
+function fakeRendererElement(initial = {}) {
+  return {
+    value: initial.value || '',
+    checked: Boolean(initial.checked),
+    disabled: false,
+    dataset: {},
+    listeners: {},
+    innerHTML: '',
+    innerText: initial.innerText || '',
+    textContent: initial.textContent || '',
+    addEventListener(event, callback) {
+      this.listeners[event] = callback;
+    },
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+}
+
+async function renderSettingsHarness({ hasKey }) {
   const previousNodes = context.nodes;
   const previousDocument = context.document;
   const previousRequestJSON = context.requestJSON;
@@ -398,23 +428,23 @@ test('settings save keeps empty API key fields unmasked after success', async ()
   const previousShowToast = context.showToast;
   const previousConfirm = context.window.confirm;
 
-  const container = fakeElement();
+  const container = fakeRendererElement();
   const elements = {
-    'settings-provider': fakeElement({ value: 'openai' }),
-    'settings-api-provider': fakeElement(),
-    'settings-api-provider-help': fakeElement(),
-    'settings-guardrails': fakeElement({ value: 'standard' }),
-    'settings-max-turns-hard': fakeElement(),
-    'settings-disable-hard-turn-limit': fakeElement(),
-    'settings-baseurl': fakeElement(),
-    'settings-model': fakeElement(),
-    'settings-reasoning-mode': fakeElement(),
-    'settings-reasoning-help': fakeElement(),
-    'settings-reasoning-summary': fakeElement(),
-    'settings-reasoning-summary-help': fakeElement(),
-    'settings-apikey': fakeElement(),
-    'settings-test-btn': fakeElement({ innerText: 'Test Settings' }),
-    'settings-save-btn': fakeElement({ innerText: 'Save Changes' })
+    'settings-provider': fakeRendererElement({ value: 'openai' }),
+    'settings-api-provider': fakeRendererElement(),
+    'settings-api-provider-help': fakeRendererElement(),
+    'settings-guardrails': fakeRendererElement({ value: 'standard' }),
+    'settings-max-turns-hard': fakeRendererElement(),
+    'settings-disable-hard-turn-limit': fakeRendererElement(),
+    'settings-baseurl': fakeRendererElement(),
+    'settings-model': fakeRendererElement(),
+    'settings-reasoning-mode': fakeRendererElement(),
+    'settings-reasoning-help': fakeRendererElement(),
+    'settings-reasoning-summary': fakeRendererElement(),
+    'settings-reasoning-summary-help': fakeRendererElement(),
+    'settings-apikey': fakeRendererElement(),
+    'settings-test-btn': fakeRendererElement({ innerText: 'Test Settings' }),
+    'settings-save-btn': fakeRendererElement({ innerText: 'Save Changes' })
   };
   const savedPayloads = [];
   const toasts = [];
@@ -433,7 +463,7 @@ test('settings save keeps empty API key fields unmasked after success', async ()
     role_providers: {},
     providers: {
       openai: {
-        has_key: false,
+        has_key: hasKey,
         api_provider: '',
         effective_api_provider: 'openai-compatible',
         base_url: 'https://example.invalid/v1',
@@ -453,22 +483,20 @@ test('settings save keeps empty API key fields unmasked after success', async ()
   };
   context.window.confirm = () => true;
 
-  try {
-    await context.renderSettings();
-    await elements['settings-save-btn'].listeners.click();
-  } finally {
-    context.nodes = previousNodes;
-    context.document = previousDocument;
-    context.requestJSON = previousRequestJSON;
-    context.saveConfig = previousSaveConfig;
-    context.testConfig = previousTestConfig;
-    context.showToast = previousShowToast;
-    context.window.confirm = previousConfirm;
-  }
+  await context.renderSettings();
 
-  assert.equal(savedPayloads.length, 1);
-  assert.equal(savedPayloads[0].apiKey, '');
-  assert.equal(elements['settings-apikey'].value, '');
-  assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'false');
-  assert.equal(toasts.at(-1)?.tone, 'success');
-});
+  return {
+    elements,
+    savedPayloads,
+    toasts,
+    restore() {
+      context.nodes = previousNodes;
+      context.document = previousDocument;
+      context.requestJSON = previousRequestJSON;
+      context.saveConfig = previousSaveConfig;
+      context.testConfig = previousTestConfig;
+      context.showToast = previousShowToast;
+      context.window.confirm = previousConfirm;
+    }
+  };
+}

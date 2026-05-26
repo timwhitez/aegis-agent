@@ -375,6 +375,8 @@ async function renderSettings() {
         if (submittedAPIKey !== '') {
           apiKeyInput.value = maskedKey;
           apiKeyInput.dataset.originalHasKey = 'true';
+        } else if (apiKeyInput.dataset.originalHasKey === 'true') {
+          apiKeyInput.value = maskedKey;
         } else if (apiKeyInput.value !== maskedKey) {
           apiKeyInput.value = '';
           apiKeyInput.dataset.originalHasKey = 'false';
