@@ -501,19 +501,38 @@ func (s *Store) CreateGoal(sessionID string, draft GoalDraft) (SessionGoal, erro
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return SessionGoal{}, err
 	}
+	rollback, err := s.goalRollbackSnapshot(sessionID)
+	if err != nil {
+		return SessionGoal{}, err
+	}
 	goal, err := NewSessionGoalFromDraft(sessionID, draft)
 	if err != nil {
 		return SessionGoal{}, err
+	}
+	var tasksRollback []Task
+	tasksSnapshotLoaded := false
+	if goal.Mission != nil && goal.Mission.CreateTasksFromPlan {
+		tasksRollback, err = s.ListTasks(sessionID)
+		if err != nil {
+			return SessionGoal{}, err
+		}
+		tasksSnapshotLoaded = true
 	}
 	if err := s.SaveGoal(sessionID, goal); err != nil {
 		return SessionGoal{}, err
 	}
 	createdTasks, changed, err := syncMissionPlanTasks(s, sessionID, &goal)
 	if err != nil {
+		if rollbackErr := s.rollbackGoalCreateAfterError(sessionID, rollback, tasksRollback, tasksSnapshotLoaded); rollbackErr != nil {
+			return SessionGoal{}, fmt.Errorf("restore goal create after %v: %w", err, rollbackErr)
+		}
 		return SessionGoal{}, err
 	}
 	if changed {
 		if err := s.SaveGoal(sessionID, goal); err != nil {
+			if rollbackErr := s.rollbackGoalCreateAfterError(sessionID, rollback, tasksRollback, tasksSnapshotLoaded); rollbackErr != nil {
+				return SessionGoal{}, fmt.Errorf("restore goal create after %v: %w", err, rollbackErr)
+			}
 			return SessionGoal{}, err
 		}
 	}
@@ -529,9 +548,21 @@ func (s *Store) CreateGoal(sessionID string, draft GoalDraft) (SessionGoal, erro
 			"created_task_ids": taskIDs(createdTasks),
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackGoalCreateAfterError(sessionID, rollback, tasksRollback, tasksSnapshotLoaded); rollbackErr != nil {
+			return SessionGoal{}, fmt.Errorf("restore goal create after %v: %w", err, rollbackErr)
+		}
 		return SessionGoal{}, err
 	}
 	return goal, nil
+}
+
+func (s *Store) rollbackGoalCreateAfterError(sessionID string, rollback goalRollback, tasks []Task, hasTasksSnapshot bool) error {
+	if hasTasksSnapshot {
+		if err := s.SaveTasks(sessionID, tasks); err != nil {
+			return err
+		}
+	}
+	return s.rollbackGoalAfterHistoryError(sessionID, rollback)
 }
 
 func GoalRequiresPlanApproval(goal SessionGoal) bool {

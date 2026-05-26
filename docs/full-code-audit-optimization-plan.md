@@ -2605,6 +2605,32 @@ Validation:
 - Adjacent Web validation-plan and approval-reset regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-095: Goal creation history failures can leave new goal and task facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/00-product.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md` define `goal.json`, `artifacts/goal-history.jsonl`, and durable task files as session facts for goals, mission plans, recovery, Web inspection, and checkpoints.
+- `internal/session/goal.go` `CreateGoal` saved `goal.json`, optionally generated mission feature task files through `syncMissionPlanTasks`, and only then appended the required `goal.created` history fact.
+- A focused store regression blocked `artifacts/goal-history.jsonl` before `CreateGoal` for a mission draft with `create_tasks_from_plan=true`. Before this fix, `CreateGoal` returned the history append error while leaving both `goal.json` and generated `tasks/task_*.json` files persisted.
+
+Impact:
+
+A caller could observe a failed goal-create operation, then later reload a current goal and generated mission task graph that had no matching required `goal.created` history fact. Retrying the create could also fail as a duplicate current goal even though the first API/CLI/runtime caller saw an error.
+
+Minimal fix:
+
+- Snapshot the previous Goal and task set before create-time side effects.
+- If mission task sync, the post-task goal save, or the required `goal.created` history append fails after `goal.json` is written, restore the previous task set and previous Goal snapshot.
+- Reuse existing exact task snapshot restore and Goal rollback helpers.
+
+Validation:
+
+- Focused store regression for blocked `goal-history.jsonl` during create-time mission task sync.
+- Adjacent Goal lifecycle and task snapshot regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3180,6 +3206,12 @@ Evidence gates:
 - Confirmed FCA-20260526-094 against durable Goal and Plan Mode facts, Web `handleMissionValidationPatch`, and a focused blocked-history HTTP regression for an approved mission validation-contract patch.
 - Confirmed this extends but does not duplicate FCA-20260526-093: the mission validation endpoint has separate request shape, event type, and gate creation condition.
 - Confirmed the fix reuses the existing Plan Mode snapshot restore and does not add validation-specific filesystem operations.
+
+### Review 88
+
+- Confirmed FCA-20260526-095 against durable Goal, Goal history, and Task facts, store `CreateGoal`, `syncMissionPlanTasks`, and a focused blocked-history regression during create-time mission task sync.
+- Confirmed this is not a duplicate of FCA-20260526-084: that slice covered established Goal transition helpers, while `CreateGoal` had a separate create-time ordering and task generation path.
+- Confirmed the fix belongs in the session store helper so Web, CLI, runtime start, SDK, and future callers share the same rollback behavior.
 
 ## Update Log
 
@@ -5585,6 +5617,41 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionValidationContractPatchReportsHistoryAppendError|TestServiceMissionValidationPlanPatchReportsHistoryAppendError|TestServiceMissionValidationPatchResetsApprovedPlanToPendingGate' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-095
+
+Slice: `fix(session): roll back failed goal creation`
+
+Finding:
+
+- Goal creation returned required `goal-history.jsonl` append errors, but left newly-created `goal.json` and generated mission task files applied.
+- A focused regression blocked `goal-history.jsonl`; before the fix, failed mission goal creation left the current goal snapshot and generated task persisted.
+
+Changes:
+
+- Snapshotted the previous Goal before create-time side effects.
+- Snapshotted tasks before create-time mission task sync when `create_tasks_from_plan` is enabled.
+- Restored the previous task set and previous Goal snapshot if mission task sync, post-sync goal save, or the required `goal.created` history append fails.
+- Added focused store coverage proving blocked goal history during creation rolls back both Goal and generated task facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestCreateGoalReturnsHistoryAppendErrorAndRollsBack -count=1`: failed before the fix because failed create left `goal.json` persisted.
+- `go test -timeout 120s ./internal/session -run 'TestCreateGoalReturnsHistoryAppendErrorAndRollsBack|TestStoreGoalLifecycleAccountingAndSummary|TestStoreSaveTasksRemovesStaleTaskFiles' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestCreateGoalReturnsHistoryAppendErrorAndRollsBack|TestStoreGoalLifecycleAccountingAndSummary|TestStoreSaveTasksRemovesStaleTaskFiles|TestUpdateGoalAccountingReturnsHistoryAppendError|TestCompleteGoalReturnsHistoryAppendError|TestRecordGoalProgressReturnsHistoryAppendError|TestApproveMissionPlanReturnsHistoryAppendError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/goal.go internal/session/store_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.

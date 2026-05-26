@@ -589,6 +589,45 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	}
 }
 
+func TestCreateGoalReturnsHistoryAppendErrorAndRollsBack(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	blockGoalHistoryPath(t, store, meta.ID)
+	_, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:             true,
+		Mode:                GoalModeMission,
+		Objective:           "Create with required history",
+		Features:            []string{"generated task must roll back"},
+		CreateTasksFromPlan: true,
+		Source:              GoalSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v", err)
+	}
+	if _, loadErr := store.LoadGoal(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("failed create should not leave goal snapshot, got %v", loadErr)
+	}
+	tasks, listErr := store.ListTasks(meta.ID)
+	if listErr != nil {
+		t.Fatalf("list tasks: %v", listErr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed create should not leave generated tasks, got %#v", tasks)
+	}
+}
+
 func TestUpdateGoalAccountingReturnsHistoryAppendError(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
