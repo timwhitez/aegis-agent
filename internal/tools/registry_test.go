@@ -25,6 +25,19 @@ func (f failingPlanInputResponder) RequestPlanInput(context.Context, string, ses
 	return nil, f.err
 }
 
+type recordingPlanInputResponder struct {
+	calls int
+}
+
+func (r *recordingPlanInputResponder) RequestPlanInput(context.Context, string, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
+	r.calls++
+	return []session.PlanModeInputAnswer{{
+		QuestionID: "scope_choice",
+		Label:      "Narrow (Recommended)",
+		Value:      "Keep the implementation focused.",
+	}}, nil
+}
+
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
@@ -292,6 +305,136 @@ func TestRequestUserInputResponderErrorKeepsRecoverablePendingRequest(t *testing
 	}
 	if loadedState.Status != session.StatusAwaitingInput || loadedState.Phase != "plan_input" {
 		t.Fatalf("expected plan input awaiting state, got %#v", loadedState)
+	}
+}
+
+func TestRequestUserInputReportsStateLoadErrorBeforeResponder(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Resolve one planning decision"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	statePath := filepath.Join(store.SessionDir(meta.ID), "state.json")
+	if err := os.Remove(statePath); err != nil {
+		t.Fatalf("remove state.json: %v", err)
+	}
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatalf("replace state.json with directory: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	responder := &recordingPlanInputResponder{}
+	result, err := registry.Execute(context.Background(), "request_user_input", ExecContext{
+		SessionID:          meta.ID,
+		ToolCallID:         "call_plan_input",
+		Workdir:            meta.Workdir,
+		Store:              store,
+		Config:             cfg,
+		PlanInputResponder: responder,
+	}, json.RawMessage(`{
+		"questions":[{
+			"id":"scope_choice",
+			"header":"Scope",
+			"question":"Which scope should the plan use?",
+			"options":[
+				{"label":"Narrow (Recommended)","description":"Keep the implementation focused."},
+				{"label":"Broad","description":"Include adjacent cleanup."}
+			]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("request_user_input execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "state.json") {
+		t.Fatalf("expected state load error result, got %#v", result)
+	}
+	if responder.calls != 0 {
+		t.Fatalf("responder must not be called after state load failure, got %d calls", responder.calls)
+	}
+}
+
+func TestRequestUserInputReportsStateSaveErrorBeforeResponder(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Resolve one planning decision"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	steerPath := filepath.Join(store.SessionDir(meta.ID), "control", "steer.jsonl")
+	if err := os.Remove(steerPath); err != nil {
+		t.Fatalf("remove steer.jsonl: %v", err)
+	}
+	if err := os.Mkdir(steerPath, 0o700); err != nil {
+		t.Fatalf("replace steer.jsonl with directory: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	responder := &recordingPlanInputResponder{}
+	result, err := registry.Execute(context.Background(), "request_user_input", ExecContext{
+		SessionID:          meta.ID,
+		ToolCallID:         "call_plan_input",
+		Workdir:            meta.Workdir,
+		Store:              store,
+		Config:             cfg,
+		PlanInputResponder: responder,
+	}, json.RawMessage(`{
+		"questions":[{
+			"id":"scope_choice",
+			"header":"Scope",
+			"question":"Which scope should the plan use?",
+			"options":[
+				{"label":"Narrow (Recommended)","description":"Keep the implementation focused."},
+				{"label":"Broad","description":"Include adjacent cleanup."}
+			]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("request_user_input execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "steer.jsonl") {
+		t.Fatalf("expected state save error result, got %#v", result)
+	}
+	if responder.calls != 0 {
+		t.Fatalf("responder must not be called after state save failure, got %d calls", responder.calls)
 	}
 }
 

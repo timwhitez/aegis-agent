@@ -2006,6 +2006,35 @@ Validation:
 - Adjacent provider retry/failure/auto-resume/success regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-073: Plan Mode input hides awaiting-state write failures
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` make `state.json` and `planmode.json` durable session facts, and `request_user_input` must persist the pending request so active Web runners and recovery can complete provider replay.
+- `spec/17-web-console.md` requires Web Plan Mode to show and answer pending `request_user_input` questions from the backend facts, not a second browser-owned state source.
+- Before this slice, `request_user_input` persisted `planmode.json` as `awaiting_user_input`, then ignored `LoadState` errors and ignored `SaveState` errors while trying to mark `state.json` as `awaiting_input` / `plan_input`.
+- Focused tool regressions replaced `state.json` with a directory and replaced `control/steer.jsonl` with a directory to force `LoadState` and `SaveState` failures. In both cases the tool still called the Plan Mode responder and returned a successful answer payload.
+
+Impact:
+
+A live Plan Mode runner could block on or consume interactive input while the durable session state was unreadable or still `running`. Web polling, CLI recovery, and restart fallback could then disagree about whether the session is waiting for input, making the pending planning decision depend on an in-memory handle instead of the session file facts.
+
+Minimal fix:
+
+- Return a model-visible `request_user_input` error when `state.json` cannot be loaded.
+- Return a model-visible `request_user_input` error when the `awaiting_input` / `plan_input` state save fails.
+- Do not emit `planmode.input_requested` or call the interactive responder until both the pending request and the awaiting-input session state are durable.
+- Preserve the already-written pending Plan Mode request as a recovery fact when the later state transition fails.
+- Add focused tool regressions for state load and state save failure paths.
+
+Validation:
+
+- Focused `request_user_input` state load/save failure regressions.
+- Adjacent Plan Mode input responder and no-responder regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2449,6 +2478,12 @@ Evidence gates:
 - Confirmed FCA-20260526-071 against `spec/01-runtime-architecture.md`, CLI `goalPlanApproveCommand`, `ApproveMissionPlan`, `AppendEvent`, and focused blocked-event regression.
 - Confirmed this is not a duplicate of the goal-history fixes: `ApproveMissionPlan` already reports history failures, while the CLI adapter separately ignored the session event append failure.
 - Confirmed the fix belongs in the CLI adapter for propagation plus the session store for event path context.
+
+### Review 66
+
+- Confirmed FCA-20260526-073 against `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, `defRequestUserInput`, `Store.LoadState`, `Store.SaveState`, and focused blocked-state regressions.
+- Confirmed this is a source-fact issue, not a derived summary issue: Plan Mode pending input needs both `planmode.json` and `state.json` to agree before Web/CLI recovery can treat the session as waiting for operator input.
+- Confirmed the fix should stop before emitting `planmode.input_requested` or calling the interactive responder when the awaiting-input state transition cannot be durably written, while preserving the already-written pending request as a recovery fact.
 
 ## Update Log
 
@@ -4150,6 +4185,39 @@ Validation:
 - `go test -timeout 120s ./internal/runtime -run 'TestRunnerFailBeforeRunReports(StateSave|FailedEventAppend)Error|TestEngineProviderFailureReports(StateSave|FailedEventAppend)Error|TestEngineFailReportsFailedEventAppendError' -count=1`: failed before the fix with original hook/provider errors and missing durable failure fact diagnostics.
 - `go test -timeout 120s ./internal/runtime -run 'TestRunnerFailBeforeRunReports(StateSave|FailedEventAppend)Error|TestEngineProviderFailureReports(StateSave|FailedEventAppend)Error|TestEngineFailReportsFailedEventAppendError' -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinueClaimsSessionBeforeUserMessageHook|TestRunnerFailBeforeRunReports(StateSave|FailedEventAppend)Error|TestEngineProvider(FailureReportsProviderAttemptAppendError|FailureReportsStateSaveError|FailureReportsFailedEventAppendError|RetryReportsProviderAttemptAppendError|AutoResumeReportsProviderAttemptAppendError|SuccessReportsProviderAttemptAppendError)|TestEngineProviderParseErrorFailsBeforeAssistantPersist|TestEngineAutoResumesProviderTimeoutBeforeFailing' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-073
+
+Slice: `fix(runtime): report plan input state failures`
+
+Finding:
+
+- `request_user_input` persisted the Plan Mode pending request, then ignored failures loading `state.json` and ignored failures saving `state.status=awaiting_input` / `phase=plan_input`.
+- Blocked `state.json` and blocked `control/steer.jsonl` regressions reproduced false success: the tool still called the interactive responder and returned a successful answer payload even though the durable awaiting-input state transition had failed.
+
+Changes:
+
+- Changed `request_user_input` to return a model-visible tool error when `LoadState` fails after the pending request is persisted.
+- Changed `request_user_input` to return a model-visible tool error when saving the awaiting-input state fails.
+- Moved `planmode.input_requested` emission and responder invocation after the pending request and awaiting-input session state are both durable.
+- Added focused Plan Mode input regressions for state load and state save failures before responder invocation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInputReportsState(Load|Save)ErrorBeforeResponder' -count=1`: failed before the fix with successful answer payloads.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInputReportsState(Load|Save)ErrorBeforeResponder|TestRequestUserInputResponderErrorKeepsRecoverablePendingRequest|TestRequestUserInputWithoutResponderFailsBeforePendingRequest' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools -run 'TestRequestUserInput|TestRunnerFailBeforeRunReports|TestEngineProviderFailureReports|TestEngineFailReportsFailedEventAppendError|TestPlanMode' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

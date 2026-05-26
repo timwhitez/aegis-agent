@@ -2043,10 +2043,13 @@ func defRequestUserInput() Definition {
 				return errorResult("request_user_input", err), nil
 			}
 			state, stateErr := execCtx.Store.LoadState(execCtx.SessionID)
-			if stateErr == nil {
-				state.Status = session.StatusAwaitingInput
-				state.Phase = "plan_input"
-				_ = execCtx.Store.SaveState(execCtx.SessionID, state)
+			if stateErr != nil {
+				return errorResult("request_user_input", stateErr), nil
+			}
+			state.Status = session.StatusAwaitingInput
+			state.Phase = "plan_input"
+			if err := execCtx.Store.SaveState(execCtx.SessionID, state); err != nil {
+				return errorResult("request_user_input", err), nil
 			}
 			if execCtx.Emit != nil {
 				execCtx.Emit("planmode.input_requested", map[string]any{
