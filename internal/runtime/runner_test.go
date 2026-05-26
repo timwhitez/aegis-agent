@@ -1452,6 +1452,56 @@ func TestRunnerSteerReturnsQueuedBehaviorForRunningSession(t *testing.T) {
 	}
 }
 
+func TestRunnerSteerReportsCorruptMetadataBeforeQueueing(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runner.store.SessionDir(meta.ID), "session.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("corrupt session metadata: %v", err)
+	}
+
+	result, err := runner.Steer(context.Background(), SteerRequest{
+		SessionID: meta.ID,
+		Message:   "focus on tests",
+		Interrupt: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "session.json") {
+		t.Fatalf("expected corrupt metadata error, result=%#v err=%v", result, err)
+	}
+	requests, err := runner.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("corrupt metadata should not queue steer request, got %#v", requests)
+	}
+	events, err := runner.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("corrupt metadata should not emit steer events, got %#v", events)
+	}
+}
+
 func TestRunnerSteerReportsQueuedEventAppendError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

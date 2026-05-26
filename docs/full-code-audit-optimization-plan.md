@@ -4243,6 +4243,34 @@ Validation:
 - Existing budget wrap-up success and goal-history rollback regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-170: Steer queues control records without valid session metadata
+
+Severity: Medium
+
+Evidence:
+
+- `spec/00-product.md` and `spec/01-runtime-architecture.md` define `session.json`, `state.json`, messages, and events as the local session fact sources for both CLI and Web control paths.
+- `spec/13-live-input-and-steering.md` requires external steer to enter the same `control/steer.jsonl` fact and then become replayable user messages, not to create orphaned control state.
+- `internal/runtime/runner.go` `Steer` loaded only `state.json` before appending to `control/steer.jsonl` and emitting steer events; it loaded `session.json` afterward only for best-effort `session.md` refresh and ignored errors.
+- A focused pre-fix regression corrupted `session.json` while leaving `state.json` running. Before the fix, `Steer` returned accepted/queued and wrote a pending steer request despite unreadable session metadata.
+
+Impact:
+
+A deleted or corrupt session metadata fact could still accumulate new steer control records and events as long as `state.json` said running. That splits live input away from a valid session identity/provider/workdir fact and makes recovery depend on stale partial state.
+
+Minimal fix:
+
+- Load `session.json` before accepting a steer request, so missing or corrupt metadata blocks the operation before any control record or event is written.
+- Reuse the validated metadata for the post-queue session summary refresh instead of reloading and ignoring errors.
+- Preserve existing running-state validation and event rollback behavior.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `session.json` still accepted and queued steer.
+- Focused post-fix runtime regression proving corrupt `session.json` returns an error and leaves steer/events empty.
+- Existing successful steer, running-state guard, and event-append rollback regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5813,7 +5841,47 @@ Evidence gates:
 - Confirmed this is not only cosmetic text selection: `awaitingBudgetWrapUp` mutates `state.json` to `awaiting_input` / `goal_budget_limited`, so hiding a corrupt current goal snapshot can leave durable state inconsistent with unreadable goal facts.
 - Confirmed the minimal fix belongs in `awaitingBudgetWrapUp`, because that is the state-transition boundary after budget wrap-up execution and before the session returns to the operator.
 
+### Review 163
+
+- Confirmed FCA-20260526-170 against the steer durable-control requirements in `spec/13-live-input-and-steering.md` and the session fact-source requirements in `spec/00-product.md` / `spec/01-runtime-architecture.md`.
+- Confirmed this is not just a derived-summary refresh issue: `Steer` writes `control/steer.jsonl` and events before the ignored metadata reload, so unreadable `session.json` can leave accepted control input attached to an invalid session identity fact.
+- Confirmed the minimal fix belongs at the start of `Steer`, because that is the control-plane admission boundary before the pending steer request is persisted.
+
 ## Update Log
+
+### FCA-20260526-170
+
+Slice: `fix(runtime): validate steer metadata`
+
+Finding:
+
+- `Steer` validated `state.json` but did not validate `session.json` until after it had already queued the steer request and emitted events.
+- Before the fix, a session with corrupt `session.json` and running `state.json` accepted a new steer request into `control/steer.jsonl`.
+
+Changes:
+
+- `Steer` now loads session metadata before state validation and before writing any steer control facts.
+- The validated metadata is reused for the best-effort session summary refresh after the steer events are recorded.
+- Added focused runtime coverage proving corrupt metadata blocks steer queueing before any control request or event is written.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerSteerReportsCorruptMetadataBeforeQueueing -count=1`: failed before the fix because steer returned accepted/queued.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerSteer(ReportsCorruptMetadataBeforeQueueing|ReturnsQueuedBehaviorForRunningSession|ReportsQueuedEventAppendError|RequiresRunningSession)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/runner_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-169
 

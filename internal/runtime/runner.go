@@ -1481,6 +1481,10 @@ func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error)
 			ActualChars: actualChars,
 		}
 	}
+	meta, err := r.store.LoadMetadata(req.SessionID)
+	if err != nil {
+		return SteerResult{}, err
+	}
 	state, err := r.store.LoadState(req.SessionID)
 	if err != nil {
 		return SteerResult{}, err
@@ -1516,9 +1520,7 @@ func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error)
 		}
 		return SteerResult{}, err
 	}
-	if meta, err := r.store.LoadMetadata(req.SessionID); err == nil {
-		_ = writeSessionSummary(r.store, meta.ID)
-	}
+	_ = writeSessionSummary(r.store, meta.ID)
 	return SteerResult{
 		SessionID: req.SessionID,
 		Accepted:  true,
