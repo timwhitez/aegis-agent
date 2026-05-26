@@ -345,7 +345,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		return err
 	}
 	contract, contractErr := store.LoadContract(sessionID)
-	artifacts, _ := store.LoadArtifactTracker(sessionID)
+	artifacts, err := store.LoadArtifactTracker(sessionID)
+	if err != nil {
+		return fmt.Errorf("load artifact-tracker.json for long-run checkpoint: %w", err)
+	}
 	goal, goalErr := store.LoadGoal(sessionID)
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
 	todo, err := store.LoadTodo(sessionID)

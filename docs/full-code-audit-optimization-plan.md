@@ -4154,6 +4154,35 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-160: Long-run checkpoint hides corrupt artifact tracker
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` defines `artifact-tracker.json` as the required-artifact status source and says long-run checkpoints record artifact status as a resume index, not a replacement for source facts.
+- Prior required-artifact gate fixes already make corrupt `artifact-tracker.json` block finish/state tracking, and `FCA-20260526-156` hardened `session.md` to display corrupt artifact tracker state.
+- `internal/runtime/session_summary.go` `writeLongRunCheckpoint` still called `artifacts, _ := store.LoadArtifactTracker(sessionID)`, discarding corrupt tracker load errors before writing `checkpoints/longrun-latest.json`.
+- A focused pre-fix regression corrupted `artifact-tracker.json` in a parent-linked session. Before the fix, `writeLongRunCheckpoint` returned nil and could write a checkpoint with an empty `required_artifact_status`.
+
+Impact:
+
+Long-running recovery could create or overwrite a checkpoint that omits required-artifact status while the real `artifact-tracker.json` snapshot is corrupt. That weakens resume guidance around required artifact completion and can make recovery artifacts diverge from the same durable tracker that completion gates rely on.
+
+Minimal fix:
+
+- Propagate `LoadArtifactTracker` errors from `writeLongRunCheckpoint` with `load artifact-tracker.json for long-run checkpoint` context.
+- Preserve missing or empty tracker compatibility because `LoadArtifactTracker` already returns an empty list for the optional missing-file case.
+- Do not write a misleading long-run checkpoint when the artifact tracker is corrupt.
+- Add focused runtime coverage proving corrupt `artifact-tracker.json` stops checkpoint writing and no checkpoint artifact is left behind.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `artifact-tracker.json` was hidden by checkpoint writing.
+- Focused post-fix runtime regression proving corrupt artifact tracker state is reported with `artifact-tracker.json` and no checkpoint is written.
+- Existing corrupt todo, corrupt task graph, cancelled-task checkpoint, and provider-attempt checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-159: Long-run checkpoint hides corrupt todo state
 
 Severity: Medium
@@ -5452,7 +5481,48 @@ Evidence gates:
 - Confirmed this is not a missing optional todo compatibility issue: `LoadTodo` still returns an empty list for absent or empty todo state, while malformed present `todo.json` is corrupt recovery state.
 - Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because store and summary paths already report corrupt todo state and only the checkpoint writer was still discarding that error.
 
+### Review 153
+
+- Confirmed FCA-20260526-160 against the required-artifact tracker source requirements and checkpoint resume-index boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a missing optional tracker compatibility issue: `LoadArtifactTracker` still returns an empty list for absent tracker state, while malformed present `artifact-tracker.json` is corrupt recovery state.
+- Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because completion gates and `session.md` already report corrupt artifact tracker state and only the checkpoint writer was still discarding that error.
+
 ## Update Log
+
+### FCA-20260526-160
+
+Slice: `fix(runtime): report corrupt checkpoint artifacts`
+
+Finding:
+
+- `writeLongRunCheckpoint` discarded `LoadArtifactTracker` errors while building `checkpoints/longrun-latest.json`.
+- Before the fix, corrupt `artifact-tracker.json` in a parent-linked session returned nil from checkpoint writing and could produce a checkpoint with an empty `required_artifact_status`.
+
+Changes:
+
+- Propagated `LoadArtifactTracker` errors from `writeLongRunCheckpoint` as `load artifact-tracker.json for long-run checkpoint`.
+- Preserved empty/missing artifact-tracker compatibility through the store's existing missing-file empty-list behavior.
+- Added focused runtime coverage proving corrupt artifact tracker state prevents a misleading checkpoint artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptArtifactTracker -count=1`: failed before the fix because corrupt artifact tracker state returned nil from checkpoint writing.
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptArtifactTracker -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsCorrupt(ArtifactTracker|TodoState|TaskGraph)|TestSessionSummaryAndCheckpointSeparateCancelledTasks|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-159
 

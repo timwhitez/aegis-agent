@@ -728,6 +728,25 @@ func TestLongRunCheckpointReportsCorruptTodoState(t *testing.T) {
 	}
 }
 
+func TestLongRunCheckpointReportsCorruptArtifactTracker(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	meta.ParentSessionID = "parent-session"
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "artifact-tracker.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt artifact tracker: %v", err)
+	}
+
+	err := writeLongRunCheckpoint(store, meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "artifact-tracker.json") {
+		t.Fatalf("expected corrupt artifact tracker error, got %v", err)
+	}
+	if _, loadErr := store.LoadLongRunCheckpoint(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("expected no misleading checkpoint after corrupt artifact tracker, got %v", loadErr)
+	}
+}
+
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"
