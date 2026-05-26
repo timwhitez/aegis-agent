@@ -21,8 +21,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	todo, _ := store.LoadTodo(sessionID)
-	tasks, _ := store.ListTasks(sessionID)
+	todo, todoErr := store.LoadTodo(sessionID)
+	tasks, tasksErr := store.ListTasks(sessionID)
 	contract, contractErr := store.LoadContract(sessionID)
 	artifacts, _ := store.LoadArtifactTracker(sessionID)
 	attempts, _ := store.LoadProviderAttempts(sessionID)
@@ -188,7 +188,14 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	}
 
 	b.WriteString("\n## Task State\n\n")
-	if len(todo) == 0 && len(tasks) == 0 {
+	if todoErr != nil || tasksErr != nil {
+		if todoErr != nil {
+			b.WriteString(fmt.Sprintf("- todo.json load error: `%s`\n", todoErr.Error()))
+		}
+		if tasksErr != nil {
+			b.WriteString(fmt.Sprintf("- tasks load error: `%s`\n", tasksErr.Error()))
+		}
+	} else if len(todo) == 0 && len(tasks) == 0 {
 		b.WriteString("not recorded\n")
 	} else {
 		if len(todo) > 0 {

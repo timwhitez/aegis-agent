@@ -454,6 +454,44 @@ func TestSessionSummaryReportsCorruptOptionalFacts(t *testing.T) {
 	}
 }
 
+func TestSessionSummaryReportsCorruptTaskStateFacts(t *testing.T) {
+	t.Run("todo", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "todo.json"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt todo: %v", err)
+		}
+		if err := writeSessionSummary(store, meta.ID); err != nil {
+			t.Fatalf("write summary: %v", err)
+		}
+		summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+		if err != nil {
+			t.Fatalf("read summary: %v", err)
+		}
+		if !strings.Contains(string(summary), "todo.json load error") {
+			t.Fatalf("expected todo load error in summary, got:\n%s", string(summary))
+		}
+	})
+	t.Run("tasks", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		if _, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "preserve corrupt task evidence"}); err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "tasks", "task_0001.json"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt task: %v", err)
+		}
+		if err := writeSessionSummary(store, meta.ID); err != nil {
+			t.Fatalf("write summary: %v", err)
+		}
+		summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+		if err != nil {
+			t.Fatalf("read summary: %v", err)
+		}
+		if !strings.Contains(string(summary), "tasks load error") || !strings.Contains(string(summary), "tasks/task_0001.json") {
+			t.Fatalf("expected task load error in summary, got:\n%s", string(summary))
+		}
+	})
+}
+
 func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

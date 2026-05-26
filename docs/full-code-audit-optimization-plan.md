@@ -4154,6 +4154,36 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-155: Session summary hides corrupt task-state facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines `todo.json` as the session todo snapshot and `tasks/task_*.json` as the durable persistent task graph.
+- `spec/18-durable-contract-and-completion.md` says `session.md` summarizes todo and task state as an operator-readable derived view, while the task files remain the source facts.
+- `FCA-20260526-099` hardened `todo_write` to report unreadable `todo.json`, and `FCA-20260526-135` hardened `ListTasks` to report corrupt task files.
+- `internal/runtime/session_summary.go` still loaded task state with `todo, _ := store.LoadTodo(sessionID)` and `tasks, _ := store.ListTasks(sessionID)`, discarding those meaningful errors before rendering the Task State section.
+- A focused pre-fix regression corrupted `todo.json` and `tasks/task_0001.json`. Before the fix, `session.md` rendered `## Task State` as `not recorded` in both cases.
+
+Impact:
+
+Operators and recovery prompts could read `session.md` and conclude there was no todo or durable task graph, while the real issue was corrupt task-state files. This weakens long-running handoff and recovery diagnostics, especially after the store/tool paths already distinguish missing optional task state from corrupt present task facts.
+
+Minimal fix:
+
+- Preserve `not recorded` for genuinely empty todo/task state.
+- Render non-missing `todo.json` and task graph load failures in the Task State section.
+- Keep `session.md` derived-only: summary write failures still do not become runtime authority.
+- Add focused summary coverage for corrupt `todo.json` and corrupt `tasks/task_*.json`.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt todo/task facts were rendered as `Task State: not recorded`.
+- Focused post-fix runtime regression proving `session.md` names `todo.json` and `tasks/task_0001.json` load errors.
+- Existing optional-fact and cancelled-task summary regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-154: Long-run checkpoint hides corrupt task graph facts
 
 Severity: Medium
@@ -5269,7 +5299,47 @@ Evidence gates:
 - Confirmed this is not a missing optional taskboard issue: `ListTasks` still returns an empty graph when no durable task files exist, while a present malformed `tasks/task_*.json` is corrupt recovery state.
 - Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because the shared store already reports corrupt task files and only the checkpoint writer was still discarding that error.
 
+### Review 148
+
+- Confirmed FCA-20260526-155 against `SessionSummaryWriter` requirements in `spec/01-runtime-architecture.md`, task-state source facts in `spec/12-task-system.md`, and the derived-view boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not an authority/gate change: missing or empty todo/task state still renders as `not recorded`, while malformed present task-state facts should be visible in `session.md` as diagnostics.
+- Confirmed the minimal fix belongs in `writeSessionSummary`; the store and model tool paths already report corrupt todo/task files, and only the Markdown summary was still collapsing those errors into absence.
+
 ## Update Log
+
+### FCA-20260526-155
+
+Slice: `fix(runtime): surface corrupt task state in session summary`
+
+Finding:
+
+- `writeSessionSummary` discarded `LoadTodo` and `ListTasks` errors while rendering the Task State section.
+- Before the fix, corrupt `todo.json` and corrupt `tasks/task_0001.json` were both displayed as `Task State: not recorded`.
+
+Changes:
+
+- Rendered non-missing todo and task graph load failures in the `session.md` Task State section.
+- Preserved `not recorded` for genuinely empty todo/task state.
+- Added focused runtime coverage for corrupt `todo.json` and `tasks/task_0001.json`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptTaskStateFacts -count=1`: failed before the fix because corrupt task-state facts rendered as `not recorded`.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionSummaryReportsCorruptTaskStateFacts|TestSessionSummaryReportsCorruptOptionalFacts|TestSessionSummaryAndCheckpointSeparateCancelledTasks' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-154
 
