@@ -469,6 +469,54 @@ func TestServiceGoalClearReportsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestServiceGoalClearRollsBackHistoryWhenEventAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_clear_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Clear goal with blocked events",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	beforeHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	requestJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "events.jsonl") {
+		t.Fatalf("expected event append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("failed goal clear should restore goal snapshot, got load error: %v", loadErr)
+	}
+	if loaded.GoalID == "" || loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal clear should restore active goal snapshot, got %#v", loaded)
+	}
+	afterHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history after failed clear: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || goalHistoryContainsType(afterHistory, "goal.cleared") {
+		t.Fatalf("failed goal clear should restore goal history, before=%#v after=%#v", beforeHistory, afterHistory)
+	}
+}
+
 func TestServiceGoalStatusReportsHistoryAppendError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -503,6 +551,54 @@ func TestServiceGoalStatusReportsHistoryAppendError(t *testing.T) {
 	}
 	if loaded.Status != session.GoalStatusActive {
 		t.Fatalf("failed goal pause should not advance goal snapshot, got %#v", loaded)
+	}
+}
+
+func TestServiceGoalStatusRollsBackHistoryWhenEventAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_status_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Pause goal with blocked events",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	beforeHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal/pause", map[string]any{}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "events.jsonl") {
+		t.Fatalf("expected event append error, got %#v", apiErr)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal pause should not advance goal snapshot, got %#v", loaded)
+	}
+	afterHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history after failed pause: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || goalHistoryContainsType(afterHistory, "goal.paused") {
+		t.Fatalf("failed goal pause should restore goal history, before=%#v after=%#v", beforeHistory, afterHistory)
 	}
 }
 
@@ -614,6 +710,64 @@ func TestServiceGoalPatchReportsHistoryAppendError(t *testing.T) {
 	}
 	if len(loaded.SuccessCriteria) != 0 {
 		t.Fatalf("failed goal patch should not advance goal snapshot, got %#v", loaded.SuccessCriteria)
+	}
+}
+
+func TestServiceGoalPatchRollsBackLinkedPlanModeWhenEventAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_patch_link_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planMode, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Existing pending plan",
+		Source:    session.PlanModeSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if planMode.LinkedGoalID != "" {
+		t.Fatalf("expected unlinked plan mode before goal create, got %#v", planMode)
+	}
+	goal, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Patch goal with existing plan mode",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"control": map[string]any{"require_plan_approval": true},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "events.jsonl") {
+		t.Fatalf("expected event append error, got %#v", apiErr)
+	}
+	loadedGoal, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loadedGoal.GoalID != goal.GoalID || loadedGoal.Control.RequirePlanApproval {
+		t.Fatalf("failed goal patch should restore goal control, got %#v", loadedGoal.Control)
+	}
+	loadedPlanMode, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if loadedPlanMode.PlanModeID != planMode.PlanModeID || loadedPlanMode.LinkedGoalID != "" {
+		t.Fatalf("failed goal patch should restore unlinked plan mode, got %#v", loadedPlanMode)
 	}
 }
 
@@ -6149,6 +6303,17 @@ func blockWebGoalHistoryPath(t *testing.T, store *session.Store, sessionID strin
 	}
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block goal history path: %v", err)
+	}
+}
+
+func blockWebEventsPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	eventsPath := filepath.Join(store.SessionDir(sessionID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
 	}
 }
 

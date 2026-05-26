@@ -2795,6 +2795,37 @@ Validation:
 - Adjacent Web goal / mission rollback tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-102: Web goal event rollback leaves history and Plan Mode side facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md` require Web Goal / Plan Mode controls to reuse durable `goal.json`, `goal-history.jsonl`, `planmode.json`, and `events.jsonl` facts rather than a second Web state source.
+- `internal/webconsole/service.go` `handleGoalClear` removed `goal.json`, appended `goal.cleared` to `goal-history.jsonl`, then appended `goal.cleared` to `events.jsonl`.
+- `handleGoalStatus` and other `appendGoalMutation` callers restored `goal.json` when the required session event append failed, but did not restore the just-appended Goal history row.
+- `handleGoalPatch` restored Plan Mode only when `EnsurePlanModeForGoal` created a new Plan Mode; linking an existing pending Plan Mode returned `created=false`, so a later event-stage failure could roll back the goal while leaving `planmode.json.linked_goal_id` advanced.
+- Focused regressions blocked `events.jsonl`. Before the fix, failed goal clear left `goal.cleared` history, failed goal pause left `goal.paused` history, and failed approval-gated goal patch left an existing pending Plan Mode linked to the rolled-back goal.
+
+Impact:
+
+Web operators could receive a failed mutation response while durable side facts claimed the mutation happened. Recovery, Goal inspector history, linked Plan Mode display, and future execution gates could then disagree with the restored current goal snapshot.
+
+Minimal fix:
+
+- Snapshot Goal history before rollback-capable Web Goal mutations.
+- Distinguish `appendGoalMutation` history-stage failures from event-stage failures.
+- Restore Goal history only when history append succeeded and the subsequent required session event append failed.
+- Treat existing Plan Mode relinks as rollback-relevant Plan Mode changes, not only newly-created Plan Modes.
+- Add focused WebConsole regressions for blocked-event rollback of goal clear, goal status, and goal patch Plan Mode linking.
+
+Validation:
+
+- Focused pre-fix WebConsole regressions proving history and Plan Mode side facts advanced after event-stage failure.
+- Focused post-fix WebConsole regressions for the same paths.
+- Adjacent Web goal / mission rollback tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3412,6 +3443,12 @@ Evidence gates:
 - Confirmed FCA-20260526-101 against `spec/12-task-system.md`, `spec/17-web-console.md`, Web `handleGoalPatch`, Web `handleMissionPlanPatch`, and `SyncMissionPlanTasks`.
 - Confirmed this is distinct from FCA-20260526-100: the failing durable fact is task synchronization after a goal patch, not linked Plan Mode gate creation.
 - Confirmed the minimal fix belongs in the Web handlers because the store-level `PatchGoal` and `SyncMissionPlanTasks` operations are individually valid, while the Web endpoint composes them into one operator mutation that must roll back on partial failure.
+
+### Review 95
+
+- Confirmed FCA-20260526-102 against the durable Goal / Plan Mode fact requirements in `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is distinct from runtime approval event reporting: these Web endpoints explicitly roll back the current goal snapshot on missing `events.jsonl`, so the matching Goal history and any Plan Mode link created by the same failed operator mutation must roll back too.
+- Confirmed the minimal fix should not weaken history append errors or treat all diagnostic events as transactional; it only restores history when `appendGoalMutation` has already written history and then fails on the required session event append.
 
 ## Update Log
 
@@ -6056,6 +6093,41 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)RollsBackWhenTaskSyncFails' -count=1`: failed before the fix because failed task sync left mutated goal facts.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch)RollsBackWhenTaskSyncFails' -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatchReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|GoalPatchRollsBackWhenTaskSyncFails|MissionPlanPatchReportsHistoryAppendError|MissionPlanPatchTaskSyncReportsHistoryAppendError|MissionPlanPatchRollsBackWhenTaskSyncFails|MissionPlanPatchTaskSyncPreservesRuntimeProgressFacts|GoalCreateRollsBackWhenLinkedPlanModeCreationFails|MissionPlanPatchRollsBackWhenLinkedPlanModeCreationFails)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-102
+
+Slice: `fix(webconsole): roll back failed goal event state`
+
+Finding:
+
+- Web goal clear/status/patch rollback paths could return HTTP 500 on blocked `events.jsonl` while leaving Goal history or a linked pending Plan Mode advanced past the rolled-back `goal.json`.
+
+Changes:
+
+- Snapshotted Goal history before rollback-capable Web goal mutations.
+- Restored Goal history for event-stage `appendGoalMutation` failures without masking genuine history append failures.
+- Restored linked Plan Mode snapshots when `EnsurePlanModeForGoal` linked an existing pending Plan Mode and a later required goal event append failed.
+- Added focused regressions for failed goal clear/status event rollback and goal patch linked Plan Mode rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoal(Clear|Status)RollsBackHistoryWhenEventAppendFails' -count=1`: failed before the fix because failed event append left rolled-back goal history entries.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceGoalPatchRollsBackLinkedPlanModeWhenEventAppendFails -count=1`: failed before the fix because failed event append left an existing pending Plan Mode linked to the rolled-back goal.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoal(Clear|Status)RollsBackHistoryWhenEventAppendFails|TestServiceGoalPatchRollsBackLinkedPlanModeWhenEventAppendFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalClearReportsHistoryAppendError|GoalStatusReportsHistoryAppendError|GoalPatchReportsHistoryAppendError|GoalPatchRollsBackLinkedPlanModeWhenEventAppendFails|MissionPlanPatchReportsHistoryAppendError|MissionPlanPatchTaskSyncReportsHistoryAppendError|MissionPlanPatchPlanModeReportsHistoryAppendError|MissionValidationPatchReportsHistoryAppendError|MissionValidationContractPatchReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|MissionPlanPatchRollsBackWhenLinkedPlanModeCreationFails|GoalCreateRollsBackWhenLinkedPlanModeCreationFails)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
