@@ -527,6 +527,90 @@ func TestSessionSummaryReportsCorruptTaskStateFacts(t *testing.T) {
 	})
 }
 
+func TestSessionSummaryReportsCorruptChildrenQueueFacts(t *testing.T) {
+	t.Run("child sessions", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		child := session.SessionMetadata{
+			SchemaVersion:    1,
+			ID:               session.NewSessionID(),
+			CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+			Workdir:          t.TempDir(),
+			Mode:             session.ModeRun,
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			CompletionPolicy: session.CompletionPolicyInteractive,
+			ParentSessionID:  meta.ID,
+			RootSessionID:    meta.ID,
+			Depth:            1,
+		}
+		if err := store.Create(child, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+			t.Fatalf("create child session: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(store.SessionDir(child.ID), "state.json"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt child state: %v", err)
+		}
+		if err := writeSessionSummary(store, meta.ID); err != nil {
+			t.Fatalf("write summary: %v", err)
+		}
+		summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+		if err != nil {
+			t.Fatalf("read summary: %v", err)
+		}
+		if !strings.Contains(string(summary), "child sessions load error") || !strings.Contains(string(summary), "state.json") {
+			t.Fatalf("expected child session load error in summary, got:\n%s", string(summary))
+		}
+	})
+	t.Run("queue jobs", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		job := session.QueueJob{
+			SchemaVersion:   1,
+			ID:              "job_corrupt_summary",
+			Status:          session.QueueStatusQueued,
+			ParentSessionID: meta.ID,
+			RootSessionID:   meta.ID,
+			Prompt:          "queued work",
+			Mode:            session.ModeExec,
+			Background:      true,
+		}
+		if err := store.EnqueueJob(job); err != nil {
+			t.Fatalf("enqueue job: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(store.Root(), "_queue", session.QueueStatusQueued, job.ID+".json"), []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt queue job: %v", err)
+		}
+		if err := writeSessionSummary(store, meta.ID); err != nil {
+			t.Fatalf("write summary: %v", err)
+		}
+		summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+		if err != nil {
+			t.Fatalf("read summary: %v", err)
+		}
+		if !strings.Contains(string(summary), "queue jobs load error") || !strings.Contains(string(summary), "job_corrupt_summary.json") {
+			t.Fatalf("expected queue job load error in summary, got:\n%s", string(summary))
+		}
+	})
+	t.Run("background notifications", func(t *testing.T) {
+		store, meta := newRuntimeTestSession(t)
+		backgroundPath := filepath.Join(store.SessionDir(meta.ID), "control", "background.jsonl")
+		if err := os.MkdirAll(filepath.Dir(backgroundPath), 0o700); err != nil {
+			t.Fatalf("create control dir: %v", err)
+		}
+		if err := os.WriteFile(backgroundPath, []byte("{not-json}\n"), 0o600); err != nil {
+			t.Fatalf("corrupt background notifications: %v", err)
+		}
+		if err := writeSessionSummary(store, meta.ID); err != nil {
+			t.Fatalf("write summary: %v", err)
+		}
+		summary, err := os.ReadFile(filepath.Join(store.SessionDir(meta.ID), "session.md"))
+		if err != nil {
+			t.Fatalf("read summary: %v", err)
+		}
+		if !strings.Contains(string(summary), "background notifications load error") || !strings.Contains(string(summary), "background.jsonl") {
+			t.Fatalf("expected background notification load error in summary, got:\n%s", string(summary))
+		}
+	})
+}
+
 func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

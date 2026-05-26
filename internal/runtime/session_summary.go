@@ -28,9 +28,9 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	attempts, attemptsErr := store.LoadProviderAttempts(sessionID)
 	goal, goalErr := store.LoadGoal(sessionID)
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
-	children, _ := store.ListChildren(sessionID, 100)
-	jobs, _ := store.ListJobsByParent(sessionID, 100)
-	notifications, _ := store.LoadBackgroundNotifications(sessionID)
+	children, childrenErr := store.ListChildren(sessionID, 100)
+	jobs, jobsErr := store.ListJobsByParent(sessionID, 100)
+	notifications, notificationsErr := store.LoadBackgroundNotifications(sessionID)
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	checkpoint, checkpointErr := store.LoadLongRunCheckpoint(sessionID)
 	messages, _ := store.LoadMessages(sessionID)
@@ -251,7 +251,7 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	}
 
 	b.WriteString("\n## Children And Queue\n\n")
-	if len(children) == 0 && len(jobs) == 0 && len(notifications) == 0 && coordinationErr != nil && errors.Is(coordinationErr, os.ErrNotExist) {
+	if len(children) == 0 && len(jobs) == 0 && len(notifications) == 0 && childrenErr == nil && jobsErr == nil && notificationsErr == nil && coordinationErr != nil && errors.Is(coordinationErr, os.ErrNotExist) {
 		b.WriteString("not recorded\n")
 	} else {
 		if coordinationErr == nil && coordination.ParentSessionID != "" {
@@ -272,13 +272,19 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 		} else if coordinationErr != nil && !errors.Is(coordinationErr, os.ErrNotExist) {
 			b.WriteString(fmt.Sprintf("- parent-coordination.json load error: `%s`\n", coordinationErr.Error()))
 		}
-		if len(children) > 0 {
+		if childrenErr != nil {
+			b.WriteString(fmt.Sprintf("- child sessions load error: `%s`\n", childrenErr.Error()))
+		} else if len(children) > 0 {
 			b.WriteString(fmt.Sprintf("- child sessions: `%d`\n", len(children)))
 		}
-		if len(jobs) > 0 {
+		if jobsErr != nil {
+			b.WriteString(fmt.Sprintf("- queue jobs load error: `%s`\n", jobsErr.Error()))
+		} else if len(jobs) > 0 {
 			b.WriteString(fmt.Sprintf("- queue jobs: `%d`\n", len(jobs)))
 		}
-		if len(notifications) > 0 {
+		if notificationsErr != nil {
+			b.WriteString(fmt.Sprintf("- background notifications load error: `control/background.jsonl: %s`\n", notificationsErr.Error()))
+		} else if len(notifications) > 0 {
 			b.WriteString(fmt.Sprintf("- background notifications: `%d`\n", len(notifications)))
 		}
 	}

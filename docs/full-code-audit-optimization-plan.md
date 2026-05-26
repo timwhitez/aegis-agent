@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-157: Session summary hides corrupt child and queue facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` says `SessionSummaryWriter` aggregates children, queue, background notifications, and parent coordination facts into `session.md`.
+- `spec/18-durable-contract-and-completion.md` says `session.md` summarizes child sessions, queue jobs, and background notifications as an operator-readable derived view, while it is never a fact source.
+- `FCA-20260526-146` hardened child session listing to report corrupt child `state.json`, `FCA-20260526-148` hardened queue list readers to report corrupt job files, and `FCA-20260526-139` hardened parent-background gates to report corrupt `control/background.jsonl`.
+- `internal/runtime/session_summary.go` still loaded child, queue, and notification facts with `children, _ := store.ListChildren(sessionID, 100)`, `jobs, _ := store.ListJobsByParent(sessionID, 100)`, and `notifications, _ := store.LoadBackgroundNotifications(sessionID)`, discarding meaningful errors before rendering the Children And Queue section.
+- A focused pre-fix regression corrupted a child session `state.json`, a parent queue job JSON file, and `control/background.jsonl`. Before the fix, `session.md` rendered Children And Queue as `not recorded` for all three cases.
+
+Impact:
+
+Operators and recovery prompts could read `session.md` and conclude there was no child, queue, or background-notification state while the real issue was unreadable durable child/queue state. That weakens parent/child recovery, background-result acceptance, queue diagnostics, and long-running handoff, especially after store and gate paths already distinguish absent optional state from corrupt present files.
+
+Minimal fix:
+
+- Preserve `not recorded` for genuinely absent child/queue/notification state.
+- Render non-missing child list, parent queue job list, and background-notification load failures in the Children And Queue section.
+- Include the known `control/background.jsonl` fact filename when the background notification loader returns a raw JSONL parse error.
+- Keep `session.md` derived-only: summary write failures still do not become runtime authority.
+- Add focused runtime coverage for corrupt child-session, queue-job, and background-notification summary rendering.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt child/queue/background facts were rendered as `not recorded`.
+- Focused post-fix runtime regression proving `session.md` names child-session, queue-job, and `control/background.jsonl` load errors.
+- Existing optional-fact, task-state, artifact/provider, parent-background gate, and owner-clue summary/checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-156: Session summary hides corrupt artifact and provider-attempt facts
 
 Severity: Medium
@@ -5342,7 +5373,49 @@ Evidence gates:
 - Confirmed this is not an authority/gate change: missing or empty artifact/provider-attempt facts still render as `not recorded`, while malformed present fact files should be visible in `session.md` as diagnostics.
 - Confirmed the minimal fix belongs in `writeSessionSummary`; store loaders, Web detail, and completion/provider paths already distinguish absent versus corrupt fact files, and only the Markdown summary was still collapsing those errors into absence.
 
+### Review 150
+
+- Confirmed FCA-20260526-157 against `SessionSummaryWriter` requirements in `spec/01-runtime-architecture.md`, parent child/queue coordination requirements in `spec/18-durable-contract-and-completion.md`, and task/queue recovery hardening already completed in `FCA-20260526-146`, `FCA-20260526-148`, and `FCA-20260526-139`.
+- Confirmed this is not an authority/gate change: missing child/queue/background state still renders as `not recorded`, while malformed present files should be visible in `session.md` as diagnostics.
+- Confirmed the minimal fix belongs in `writeSessionSummary`; store loaders and completion gates already report corrupt child/queue/background facts, and only the Markdown summary was still collapsing those errors into absence.
+
 ## Update Log
+
+### FCA-20260526-157
+
+Slice: `fix(runtime): surface corrupt queue facts in session summary`
+
+Finding:
+
+- `writeSessionSummary` discarded `ListChildren`, `ListJobsByParent`, and `LoadBackgroundNotifications` errors while rendering the Children And Queue section.
+- Before the fix, corrupt child `state.json`, corrupt queue job JSON, and corrupt `control/background.jsonl` all rendered as `Children And Queue: not recorded`.
+
+Changes:
+
+- Rendered child-session list, parent queue job list, and background-notification load failures in the `session.md` Children And Queue section.
+- Preserved `not recorded` for genuinely absent child/queue/notification state.
+- Added the known `control/background.jsonl` label to background notification load errors so raw JSONL parse failures remain actionable.
+- Added focused runtime coverage for corrupt child-session, queue-job, and background-notification facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptChildrenQueueFacts -count=1`: failed before the fix because corrupt child/queue/background facts rendered as `not recorded`.
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptChildrenQueueFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionSummaryReportsCorrupt(ChildrenQueueFacts|ArtifactAndProviderAttemptFacts|OptionalFacts|TaskStateFacts)|TestParentCoordinationGateReportsCorruptBackgroundNotifications|TestSessionSummaryAndCheckpointRecordRecentOwnerClue' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-156
 
