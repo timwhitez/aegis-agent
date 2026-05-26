@@ -2553,6 +2553,32 @@ Validation:
 - Adjacent Web mission-plan approval-gate regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-093: Web generic goal patch gate failures can orphan Plan Mode state
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` and `spec/18-durable-contract-and-completion.md` make Plan Mode, Task, and Goal state durable facts.
+- Web `handleGoalPatch` can patch a mission goal, sync tasks, and call `EnsurePlanModeForGoal` before appending the required `goal.updated` history/event facts.
+- A focused HTTP regression blocked `artifacts/goal-history.jsonl` for a generic Goal patch containing a mission plan with `plan_status=needs_approval`. Before this fix, Web `PATCH /api/sessions/{id}/goal` returned an internal server error while leaving the patched mission plan and a new linked `planmode.json` persisted.
+
+Impact:
+
+The Web console could report that a required `goal.updated` durable history fact failed while later refreshes, recovery, and Mission Control observed both the rejected mission patch and the newly-created Plan Mode approval gate as current state.
+
+Minimal fix:
+
+- Snapshot task and Plan Mode state before generic Web goal patch side effects.
+- On `goal.updated` history/event failure, restore the previous Plan Mode snapshot when a gate was created, restore the task snapshot when captured, and restore the previous Goal snapshot.
+- Reuse the Plan Mode and task snapshot infrastructure introduced by FCA-091 and FCA-092.
+
+Validation:
+
+- Focused Web generic goal-patch Plan Mode history-failure regression asserting Goal rollback and Plan Mode cleanup.
+- Adjacent Web goal-patch simple, runtime-fact, and mission approval-gate regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3116,6 +3142,12 @@ Evidence gates:
 - Confirmed FCA-20260526-092 against durable Goal and Plan Mode facts, Web `handleMissionPlanPatch`, `EnsurePlanModeForGoal`, and a focused blocked-history HTTP regression for an approval-gated mission-plan patch.
 - Confirmed this extends but does not duplicate FCA-20260526-091: task sync rollback did not cover Plan Mode side facts.
 - Confirmed the store-level Plan Mode snapshot helpers reuse the existing private rollback machinery, including plan Markdown restoration/removal.
+
+### Review 86
+
+- Confirmed FCA-20260526-093 against durable Goal, Task, and Plan Mode facts, Web `handleGoalPatch`, and a focused blocked-history HTTP regression for a generic mission goal patch.
+- Confirmed this extends but does not duplicate FCA-20260526-092: the generic Goal patch endpoint has separate request shape, event type, and rollback branch.
+- Confirmed the fix reuses the existing exact task-set restore and Plan Mode snapshot restore rather than adding endpoint-specific filesystem operations.
 
 ## Update Log
 
@@ -5455,6 +5487,39 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionPlanPatchPlanModeReportsHistoryAppendError|TestServiceMissionPlanPatchResetsApprovedPlanToPendingGate|TestServiceMissionPlanPatchNoopKeepsApprovedPlan' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/session/planmode.go internal/session/planmode_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-093
+
+Slice: `fix(webconsole): roll back failed generic goal gates`
+
+Finding:
+
+- Web generic goal patch could return required `goal-history.jsonl` append errors after applying mission patch side effects, including a newly-created Plan Mode gate.
+- A focused regression blocked `goal-history.jsonl`; before the fix, failed Web generic mission patch left the mission feature and linked Plan Mode gate persisted.
+
+Changes:
+
+- Snapshotted tasks and Plan Mode before generic Web goal patch side effects.
+- Restored Plan Mode, task snapshot when captured, and Goal snapshot when `goal.updated` history or event append fails.
+- Added focused Web regression for generic goal-patch Plan Mode rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceGoalPatchMissionPlanModeReportsHistoryAppendError -count=1`: failed before the fix because the failed generic mission patch left the mission patch and `planmode.json` persisted.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalPatchMissionPlanModeReportsHistoryAppendError|TestServiceGoalPatchReportsHistoryAppendError|TestServiceGoalPatchPreservesRuntimeProgressFacts|TestServiceGoalPatchMissionResetsApprovedPlanToPendingGate' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.

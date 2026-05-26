@@ -1065,7 +1065,15 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		return
 	}
 	createdTasks := []session.Task{}
+	var previousTasks []session.Task
+	tasksSnapshotLoaded := false
 	if goal.Mission != nil && goal.Mission.CreateTasksFromPlan {
+		previousTasks, err = s.store.ListTasks(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		tasksSnapshotLoaded = true
 		syncedGoal, tasks, _, err := s.store.SyncMissionPlanTasks(sessionID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -1073,6 +1081,11 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		}
 		goal = syncedGoal
 		createdTasks = tasks
+	}
+	previousPlanMode, err := s.store.SnapshotPlanMode(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
 	}
 	planModeCreated := false
 	if session.GoalRequiresPlanApproval(goal) {
@@ -1093,11 +1106,21 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 	if err := s.appendGoalMutation(sessionID, goal, "goal.updated", map[string]any{
 		"created_task_ids": webTaskIDs(createdTasks),
 	}); err != nil {
-		if len(createdTasks) == 0 && !planModeCreated {
-			if restoreErr := s.store.SaveGoal(sessionID, current); restoreErr != nil {
-				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after patch mutation error %v: %w", err, restoreErr))
+		if planModeCreated {
+			if restoreErr := s.store.RestorePlanModeSnapshot(sessionID, previousPlanMode); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore plan mode after patch mutation error %v: %w", err, restoreErr))
 				return
 			}
+		}
+		if tasksSnapshotLoaded {
+			if restoreErr := s.store.SaveTasks(sessionID, previousTasks); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore tasks after patch mutation error %v: %w", err, restoreErr))
+				return
+			}
+		}
+		if restoreErr := s.store.SaveGoal(sessionID, current); restoreErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after patch mutation error %v: %w", err, restoreErr))
+			return
 		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
