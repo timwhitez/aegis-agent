@@ -472,6 +472,59 @@ func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	}
 }
 
+func TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_events","name":"shell","arguments":"{\"command\":\"rm events.jsonl && mkdir events.jsonl\"}"},
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"queued done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+	cfg := config.Default()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIKeyEnv:  "OPENAI_API_KEY",
+		BaseURL:    server.URL,
+		Model:      "gpt-5.4",
+		TimeoutSec: 30,
+		WireAPI:    "responses",
+	}
+	cfg.Session.Dir = t.TempDir()
+	cfg.Runtime.Isolation.RootDir = t.TempDir()
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		Workdir:         filepath.Join(runner.store.SessionDir(parentID), "..", parentID),
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected parent queue lifecycle event append error, got job=%#v ok=%v err=%v", processed, ok, err)
+	}
+	if !ok || processed.ID != job.ID {
+		t.Fatalf("expected the claimed job to be returned, got job=%#v ok=%v", processed, ok)
+	}
+	if processed.Status != session.QueueStatusCompleted || processed.LastError != "" {
+		t.Fatalf("expected event append error not to turn completed child into failed job, got %#v", processed)
+	}
+}
+
 func TestRunnerQueueSubmitReportsParentCoordinationError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

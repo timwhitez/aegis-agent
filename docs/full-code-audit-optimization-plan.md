@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-150: Queue worker treats parent fact persistence failure as child failure
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires the queue worker to write real child results back to the parent through durable notifications and queue job/session facts.
+- `spec/17-web-console.md` requires queue job completion/failure to be observable through the parent Background inspector / timeline and selected job facts.
+- `internal/runtime/delegation.go` `ProcessNextJob` used best-effort `r.emit` for `queue.job.claimed`, `queue.job.notified`, and terminal queue lifecycle events, so parent `events.jsonl` append failures were not reported.
+- When a completed child session later failed inside `Engine.reconcileLinkedQueueJob` because the parent queue notification/event facts could not be persisted, `ProcessNextJob` treated that `runErr` as a normal child failure and rewrote the completed queue job as failed.
+- A focused pre-fix runtime regression had the child block the parent `events.jsonl` before calling `finish`; before the fix, `ProcessNextJob` returned nil error for best-effort worker events, or after event errors were surfaced, returned a failed queue job with a parent persistence error as `LastError` instead of preserving the completed child result.
+
+Impact:
+
+A queue worker could lose or misclassify a successful child result when parent-visible queue facts were temporarily unwritable. That conflates infrastructure/file-fact persistence errors with child/provider failure, pollutes queue failure summaries, and weakens Web/CLI recovery because the queue job no longer reflects the child session's true terminal state.
+
+Minimal fix:
+
+- Make queue worker lifecycle events use error-returning durable appends with the same queue persistence retry wrapper used for queue job and parent notification writes.
+- Return the already-persisted child terminal `RunResult` alongside linked queue reconciliation errors from the engine.
+- Wrap linked queue reconciliation failures in a typed runtime error so `ProcessNextJob` can distinguish parent/queue persistence errors from normal child/provider failures.
+- Preserve normal queue failure behavior for genuine child/provider errors.
+- Add focused runtime coverage proving a parent queue lifecycle event append failure is reported without turning a completed child into a failed job.
+
+Validation:
+
+- Focused pre-fix runtime regression proving parent event append failure during queue processing either disappeared as a best-effort event loss or was converted into a false failed queue job.
+- Focused post-fix runtime regression proving the queue worker reports the parent event append error while returning the completed job result.
+- Existing normal child/provider failure regression remains green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-149: Terminal queue reconciliation ignores parent-visible fact write failures
 
 Severity: High
@@ -5090,7 +5121,50 @@ Evidence gates:
 - Confirmed this is not a cosmetic event-only issue: `control/background.jsonl` is a parent completion-gate input and Web Background inspector source, while `queue.job.completed` / `queue.job.failed` timeline events are required operator facts.
 - Confirmed the minimal fix belongs in `ensureTerminalQueueJobParentState` and its helper writes because that is the path that turns terminal queue jobs into parent-visible durable facts.
 
+### Review 143
+
+- Confirmed FCA-20260526-150 against queue worker result-delivery requirements in `spec/01-runtime-architecture.md` and Web Background/timeline observability requirements in `spec/17-web-console.md`.
+- Confirmed this is not the same as a normal failed child job: a linked child session had already persisted `StatusCompleted`, and the remaining error was a parent queue fact append failure, so the queue job should preserve the child terminal result and report infrastructure persistence failure to the worker.
+- Confirmed the minimal fix belongs across `Engine.reconcileLinkedQueueJob` result/error propagation and `Runner.ProcessNextJob` because the engine is the source of the linked queue reconciliation error, while the worker decides whether `runErr` is normal child failure or queue persistence failure.
+
 ## Update Log
+
+### FCA-20260526-150
+
+Slice: `fix(runtime): report queue worker event write failures`
+
+Finding:
+
+- `ProcessNextJob` used best-effort event writes for queue worker claimed/notified/terminal lifecycle events.
+- When linked queue reconciliation failed while persisting parent queue facts after a completed child, the worker treated the reconciliation error as a child failure and rewrote the job to failed.
+
+Changes:
+
+- Changed queue worker claimed/notified/terminal lifecycle events to use retry-wrapped `appendEvent` and return write failures.
+- Changed engine terminal/awaiting/paused/failed paths to return the child `RunResult` together with linked queue reconciliation errors.
+- Added a typed linked-queue reconciliation error so `ProcessNextJob` preserves completed/blocked child status when the error is parent queue fact persistence, while keeping normal child/provider failures as failed jobs.
+- Preserved existing atomic queue claim semantics by continuing on `os.ErrNotExist` when a valid queue job file disappears after directory enumeration, while still reporting corrupt queue job JSON.
+- Added focused runtime coverage for a blocked parent `events.jsonl` during queue worker completion.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError|TestProcessNextJobMarksFailedJobWithoutReturningError' -count=1`: failed before the fix because a parent event append failure after child completion became a failed queue job.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError|TestProcessNextJobMarksFailedJobWithoutReturningError|TestRunnerQueueSubmitAndWorkerCompletesJob|TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestEngineReportsLinkedQueueJobReconcileSaveError' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestStoreClaimNextQueuedJobIsAtomicAcrossStores|Test(ClaimNextQueuedJobReportsCorruptQueuedJob|ListJobsReportsCorruptQueueJob)' -count=1`: passed after preserving the concurrent claim `os.ErrNotExist` skip without weakening corrupt queue job reporting.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/runtime/engine.go internal/runtime/delegation.go internal/runtime/delegation_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-149
 

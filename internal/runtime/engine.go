@@ -754,12 +754,13 @@ func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{})
+	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
-		return RunResult{}, err
+		return result, err
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
+	return result, nil
 }
 
 func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
@@ -777,12 +778,13 @@ func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionM
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "goal_budget_limited"})
+	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
-		return RunResult{}, err
+		return result, err
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
+	return result, nil
 }
 
 func (e *Engine) awaitingPlanApproval(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
@@ -796,12 +798,13 @@ func (e *Engine) awaitingPlanApproval(ctx context.Context, meta session.SessionM
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_approval"})
+	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode is awaiting approval."}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
-		return RunResult{}, err
+		return result, err
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode is awaiting approval."}, nil
+	return result, nil
 }
 
 func (e *Engine) awaitingPlanCancelled(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
@@ -815,12 +818,13 @@ func (e *Engine) awaitingPlanCancelled(ctx context.Context, meta session.Session
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_cancelled"})
+	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode cancelled."}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
-		return RunResult{}, err
+		return result, err
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode cancelled."}, nil
+	return result, nil
 }
 
 func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager) (RunResult, error) {
@@ -837,12 +841,13 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.completed", state.Phase, map[string]any{})
+	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
-		return RunResult{}, err
+		return result, err
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
+	return result, nil
 }
 
 func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager) (RunResult, error) {
@@ -856,12 +861,13 @@ func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state 
 		return RunResult{}, err
 	}
 	e.emit(meta.ID, "session.paused", state.Phase, map[string]any{"reason": reason})
+	result := RunResult{SessionID: meta.ID, Status: state.Status}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
-		return RunResult{}, err
+		return result, err
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	return RunResult{SessionID: meta.ID, Status: state.Status}, nil
+	return result, nil
 }
 
 func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state session.State, err error, hookManager *hooks.Manager) (RunResult, error) {
@@ -879,12 +885,13 @@ func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state s
 	if appendErr := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"error": state.LastError}); appendErr != nil {
 		return RunResult{}, appendErr
 	}
+	result := RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}
 	if reconcileErr := e.reconcileLinkedQueueJob(meta.ID); reconcileErr != nil {
-		return RunResult{}, reconcileErr
+		return result, reconcileErr
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, err
+	return result, err
 }
 
 func (e *Engine) reconcileLinkedQueueJob(sessionID string) error {
@@ -893,13 +900,31 @@ func (e *Engine) reconcileLinkedQueueJob(sessionID string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return err
+		return &linkedQueueJobReconcileError{sessionID: sessionID, err: err}
 	}
 	if ok && strings.TrimSpace(job.ParentSessionID) != "" {
 		_ = writeSessionSummary(e.store, job.ParentSessionID)
 		_ = writeLongRunCheckpoint(e.store, job.ParentSessionID)
 	}
 	return nil
+}
+
+type linkedQueueJobReconcileError struct {
+	sessionID string
+	err       error
+}
+
+func (e *linkedQueueJobReconcileError) Error() string {
+	return fmt.Sprintf("reconcile linked queue job for session %s: %v", e.sessionID, e.err)
+}
+
+func (e *linkedQueueJobReconcileError) Unwrap() error {
+	return e.err
+}
+
+func isLinkedQueueJobReconcileError(err error) bool {
+	var target *linkedQueueJobReconcileError
+	return errors.As(err, &target)
 }
 
 func (e *Engine) emit(sessionID, eventType, phase string, data map[string]any) {

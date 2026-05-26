@@ -361,12 +361,16 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		return job, ok, err
 	}
 	if job.ParentSessionID != "" {
-		r.emit(job.ParentSessionID, "queue.job.claimed", "queue", map[string]any{
-			"job_id":           job.ID,
-			"claimed_by":       job.ClaimedBy,
-			"process_start_id": job.ProcessStartID,
-			"worker_pid":       job.WorkerPID,
-		})
+		if err := retryQueuePersistence("append queue claimed event for job "+job.ID, func() error {
+			return r.appendEvent(job.ParentSessionID, "queue.job.claimed", "queue", map[string]any{
+				"job_id":           job.ID,
+				"claimed_by":       job.ClaimedBy,
+				"process_start_id": job.ProcessStartID,
+				"worker_pid":       job.WorkerPID,
+			})
+		}); err != nil {
+			return job, ok, err
+		}
 	}
 	childRunner := NewRunner(r.cfg)
 	stopHeartbeat := r.startQueueJobHeartbeat(ctx, job.ID)
@@ -393,6 +397,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	job.SessionStatus = result.Status
 	job.FinalText = result.FinalText
 	job.LastError = result.LastError
+	queueReconcileErr := runErr != nil && result.SessionID != "" && result.Status != "" && isLinkedQueueJobReconcileError(runErr)
 	if result.SessionID != "" {
 		if meta, err := childRunner.store.LoadMetadata(result.SessionID); err == nil {
 			job.EffectiveWorkdir = meta.Workdir
@@ -402,7 +407,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			job.VisiblePaths = syncVisibleSessionOutputs(job.RequestedWorkdir, job.EffectiveWorkdir, job.VisiblePaths)
 		}
 	}
-	if runErr != nil || result.Status == session.StatusFailed {
+	if (runErr != nil && !queueReconcileErr) || result.Status == session.StatusFailed {
 		job.Status = session.QueueStatusFailed
 		if job.LastError == "" && runErr != nil {
 			job.LastError = runErr.Error()
@@ -427,12 +432,16 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		}); err != nil {
 			return job, true, err
 		}
-		r.emit(job.ParentSessionID, "queue.job.notified", "queue", map[string]any{
-			"job_id":     job.ID,
-			"session_id": job.SessionID,
-			"status":     job.Status,
-			"agent_role": job.AgentRole,
-		})
+		if err := retryQueuePersistence("append queue notified event for job "+job.ID, func() error {
+			return r.appendEvent(job.ParentSessionID, "queue.job.notified", "queue", map[string]any{
+				"job_id":     job.ID,
+				"session_id": job.SessionID,
+				"status":     job.Status,
+				"agent_role": job.AgentRole,
+			})
+		}); err != nil {
+			return job, true, err
+		}
 		if isTerminalQueueStatus(job.Status) {
 			if err := resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status); err != nil {
 				return job, true, err
@@ -449,12 +458,16 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		if job.Status == session.QueueStatusFailed {
 			eventType = "queue.job.failed"
 		}
-		r.emit(job.ParentSessionID, eventType, "queue", map[string]any{
-			"job_id":     job.ID,
-			"session_id": job.SessionID,
-			"status":     job.Status,
-			"agent_role": job.AgentRole,
-		})
+		if err := retryQueuePersistence("append queue lifecycle event for job "+job.ID, func() error {
+			return r.appendEvent(job.ParentSessionID, eventType, "queue", map[string]any{
+				"job_id":     job.ID,
+				"session_id": job.SessionID,
+				"status":     job.Status,
+				"agent_role": job.AgentRole,
+			})
+		}); err != nil {
+			return job, true, err
+		}
 	}
 	// Failed jobs are part of normal queue lifecycle. Persist the failure on the
 	// job record and let the worker keep polling unless queue I/O itself failed.

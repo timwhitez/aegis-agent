@@ -1300,6 +1300,9 @@ func (s *Store) listQueueJobCopies() ([]queueJobCopy, error) {
 			var job QueueJob
 			path := filepath.Join(dir, entry.Name())
 			if err := readJSONFile(path, &job); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
 				return nil, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 			}
 			if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" || !isQueueStatus(job.Status) {
@@ -1545,6 +1548,9 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 		}
 		var job QueueJob
 		if err := readJSONFile(filepath.Join(dir, entry.Name()), &job); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return QueueJob{}, false, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 		}
 		if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" {
