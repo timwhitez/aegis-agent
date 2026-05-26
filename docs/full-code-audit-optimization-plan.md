@@ -3918,6 +3918,34 @@ Validation:
 - Focused post-fix runtime regression proving corrupt `goal.json` blocks `finish`.
 - Standard grouped validation before commit.
 
+### FCA-20260526-141: Steer Goal-history path hides corrupt Goal snapshot filename
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` requires accepted steer input to append a real user message, refresh contract/artifact facts, and, when a session has a current Goal, write `goal.updated` history and emit Goal-related events.
+- `spec/18-durable-contract-and-completion.md` and `spec/11-spec-audit-and-traceability.md` define `goal.json` as the current Goal snapshot required for completion evidence and recovery.
+- `internal/runtime/goal.go` `appendGoalHistoryForSteer` called `LoadGoal` but returned nil for every error, treating corrupt `goal.json` the same as no current Goal.
+- A focused pre-fix runtime regression wrote invalid JSON to `goal.json` and accepted a steer. The provider was not reached, but the failure surfaced later as a raw JSON parser error without `goal.json`, after the steer message had already been appended and the Goal-history path skipped the corrupt snapshot.
+
+Impact:
+
+Accepted steer recovery could obscure the corrupt Goal fact that prevented Goal-history recording. Operators saw a non-actionable JSON parser error instead of the unreadable `goal.json` snapshot, and the runtime skipped the Goal update/history decision point before failing later during contract refresh. This weakens steer/Goal traceability and restart diagnostics.
+
+Minimal fix:
+
+- In `appendGoalHistoryForSteer`, continue treating missing `goal.json` as "no current Goal".
+- Return `load goal.json` for any other Goal load failure.
+- Keep existing Goal-history append error propagation unchanged.
+- Add focused runtime coverage for corrupt `goal.json` during steer acceptance.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `goal.json` during steer returned a raw JSON parser error without the filename.
+- Focused post-fix runtime regression proving corrupt `goal.json` during steer returns an actionable `goal.json` error before provider execution.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4769,6 +4797,12 @@ Evidence gates:
 - Confirmed FCA-20260526-140 against the active Goal completion audit requirement in `spec/18-durable-contract-and-completion.md`, the current Goal fact-source boundary in `spec/01-runtime-architecture.md`, and the snapshot evidence requirement in `spec/11-spec-audit-and-traceability.md`.
 - Confirmed this is not a no-goal session issue: absent `goal.json` remains optional, but an existing malformed Goal snapshot must fail closed because it can represent an active, paused, budget-limited, or completed objective.
 - Confirmed the minimal fix belongs in `CompletionController.goalCompletionGate` because that is the unified finish gate responsible for blocking completion until Goal state is readable and valid.
+
+### Review 134
+
+- Confirmed FCA-20260526-141 against steer Goal-update requirements in `spec/13-live-input-and-steering.md` and current Goal fact-source requirements in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not provider execution bypass: the pre-fix regression already stopped before provider execution, but it skipped the Goal-history decision point and reported only a raw JSON parse error.
+- Confirmed the minimal fix belongs in `appendGoalHistoryForSteer` because that helper is where accepted steer decides whether a current Goal requires `goal.updated` history.
 
 ## Update Log
 
@@ -6320,6 +6354,41 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-141
+
+Slice: `fix(runtime): report corrupt steer goal state`
+
+Finding:
+
+- `appendGoalHistoryForSteer` treated every `LoadGoal` error as no current Goal.
+- Before the fix, corrupt `goal.json` during steer acceptance skipped the Goal-history decision point and later failed with a raw JSON parser error that did not identify the snapshot file.
+
+Changes:
+
+- Changed `appendGoalHistoryForSteer` to ignore only missing `goal.json`.
+- Returned `load goal.json` for corrupt/unreadable Goal snapshots.
+- Added focused runtime coverage for corrupt Goal state during steer acceptance.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineSteerAcceptanceReportsCorruptGoalSnapshot -count=1`: failed before the fix because corrupt `goal.json` returned a raw JSON parser error without `goal.json`.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptanceReports(CorruptGoalSnapshot|GoalHistoryError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/goal.go internal/runtime/engine_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

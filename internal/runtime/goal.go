@@ -161,7 +161,13 @@ func loadGoalOptional(store *session.Store, sessionID string) (*session.SessionG
 
 func appendGoalHistoryForSteer(store *session.Store, sessionID string, text string, interrupt bool) error {
 	goal, err := store.LoadGoal(sessionID)
-	if err != nil || goal.GoalID == "" {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("load goal.json: %w", err)
+	}
+	if goal.GoalID == "" {
 		return nil
 	}
 	return store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{

@@ -1901,6 +1901,24 @@ func TestEngineSteerAcceptanceReportsGoalHistoryError(t *testing.T) {
 	}
 }
 
+func TestEngineSteerAcceptanceReportsCorruptGoalSnapshot(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	goalPath := filepath.Join(engine.store.SessionDir(meta.ID), "goal.json")
+	if err := os.WriteFile(goalPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt goal: %v", err)
+	}
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatalf("provider should not be called after corrupt goal snapshot")
+		return provider.TurnResult{}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err == nil || !strings.Contains(err.Error(), "goal.json") {
+		t.Fatalf("expected corrupt goal snapshot error, got %v", err)
+	}
+}
+
 func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
 	engine, meta, state, registry, _, catalog := newTestEngine(t, session.ModeRun)
 	_ = state
