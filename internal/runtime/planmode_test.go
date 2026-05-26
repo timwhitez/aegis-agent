@@ -1659,6 +1659,86 @@ func TestApproveLinkedMissionPlanRetryAfterEventFailureDoesNotDuplicateHistory(t
 	}
 }
 
+func TestApproveLinkedMissionPlanRetryReportsCorruptGoalHistory(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := runner.store.CreateGoal(sessionID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Retry linked mission approval corrupt history",
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	planMode, _, err := runner.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("ensure plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := runner.store.ApprovePlanMode(sessionID, session.PlanModeSourceCLI); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	executing, err := runner.store.MarkPlanModeExecuting(sessionID, session.PlanModeSourceCLI)
+	if err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	if executing.PlanModeID != planMode.PlanModeID {
+		t.Fatalf("unexpected executing plan mode: %#v", executing)
+	}
+	blockRuntimeEventsPath(t, runner.store, sessionID)
+
+	err = runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI, false)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected mission approval event append error, got %v", err)
+	}
+
+	eventsPath := filepath.Join(runner.store.SessionDir(sessionID), "events.jsonl")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatalf("remove blocked events path: %v", err)
+	}
+	historyPath := filepath.Join(runner.store.SessionDir(sessionID), "artifacts", "goal-history.jsonl")
+	if err := os.WriteFile(historyPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt goal history: %v", err)
+	}
+
+	err = runner.approveLinkedMissionPlan(sessionID, executing, session.PlanModeSourceCLI, false)
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected corrupt goal history error, got %v", err)
+	}
+	events, loadErr := runner.store.LoadEvents(sessionID)
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("load events after corrupt history retry: %v", loadErr)
+	}
+	if count := countRuntimeEventType(events, "mission.plan.approved"); count != 0 {
+		t.Fatalf("corrupt goal history should fail before appending mission approval event, got %d events=%#v", count, events)
+	}
+}
+
 func TestApproveLinkedPlanModeBlocksUncoveredMissionValidation(t *testing.T) {
 	cfg := config.Default()
 	runner := NewRunner(cfg)

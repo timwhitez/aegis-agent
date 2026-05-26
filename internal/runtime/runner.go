@@ -1017,8 +1017,14 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 		return err
 	}
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if missionPlanApprovalMatches(goal, planMode) && r.hasMissionPlanApprovedHistory(sessionID, goal.GoalID, planMode) {
-		return r.appendMissionPlanApprovedEventOnce(sessionID, goal.GoalID, planMode, goal.Mission.ApprovedAt, overrideCoverage)
+	if missionPlanApprovalMatches(goal, planMode) {
+		hasApprovalHistory, err := r.hasMissionPlanApprovedHistory(sessionID, goal.GoalID, planMode)
+		if err != nil {
+			return err
+		}
+		if hasApprovalHistory {
+			return r.appendMissionPlanApprovedEventOnce(sessionID, goal.GoalID, planMode, goal.Mission.ApprovedAt, overrideCoverage)
+		}
 	}
 	goal, err = r.store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
 		Source:           session.GoalSourceSystem,
@@ -1044,10 +1050,10 @@ func missionPlanApprovalMatches(goal session.SessionGoal, planMode session.PlanM
 	return strings.TrimSpace(planMode.PlanModeID) != "" && planMode.ApprovedVersion > 0
 }
 
-func (r *Runner) hasMissionPlanApprovedHistory(sessionID, goalID string, planMode session.PlanModeState) bool {
+func (r *Runner) hasMissionPlanApprovedHistory(sessionID, goalID string, planMode session.PlanModeState) (bool, error) {
 	history, err := r.store.LoadGoalHistory(sessionID)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("load goal-history.jsonl: %w", err)
 	}
 	goalID = strings.TrimSpace(goalID)
 	planModeID := strings.TrimSpace(planMode.PlanModeID)
@@ -1065,9 +1071,9 @@ func (r *Runner) hasMissionPlanApprovedHistory(sessionID, goalID string, planMod
 		if intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
 			continue
 		}
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 func (r *Runner) appendMissionPlanApprovedEventOnce(sessionID, goalID string, planMode session.PlanModeState, approvedAt string, overrideCoverage bool) error {
