@@ -4215,6 +4215,34 @@ Validation:
 - Existing direct-delegate visible-output sync, parent-coordination error, and queue corrupt-handoff regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-169: Budget wrap-up awaiting input hides corrupt goal snapshot
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `goal.json` as the current goal fact source, and requires `update_goal(status=complete)` / goal audit state to live in the current snapshot rather than only history.
+- `spec/11-spec-audit-and-traceability.md` says `goal.json` and `artifacts/goal-history.jsonl` are target facts, while derived views such as session summaries cannot replace them.
+- `internal/runtime/engine.go` `awaitingBudgetWrapUp` reloaded `goal.json` only to choose between two user-facing budget messages, and ignored non-missing load errors.
+- A focused pre-fix regression created a stop-on-budget goal, recorded a valid budget wrap-up, then used a real `tool.after` hook to corrupt `goal.json` before `awaitingBudgetWrapUp` reloaded it. Before the fix, the engine moved to `awaiting_input` with a generic budget message and no error.
+
+Impact:
+
+A session could enter `goal_budget_limited` awaiting-input state immediately after `goal.json` became corrupt, hiding the fact that the authoritative goal snapshot was unreadable. That weakens recovery and can make operators trust a budget wrap-up state that is no longer backed by the current goal fact.
+
+Minimal fix:
+
+- Treat non-missing `goal.json` reload failures in `awaitingBudgetWrapUp` as runtime errors with `load goal.json for budget wrap-up` context.
+- Preserve the existing successful message when `goal.json` loads and contains a budget-wrap-up record.
+- Keep the existing budget turn-start history rollback behavior unchanged.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `goal.json` after budget-wrap-up progress was hidden and the engine transitioned to `awaiting_input`.
+- Focused post-fix runtime regression proving the same corruption returns a `goal.json` error and does not transition to budget awaiting input.
+- Existing budget wrap-up success and goal-history rollback regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -5779,7 +5807,47 @@ Evidence gates:
 - Confirmed this is not a child execution failure: the child completed and then a completion hook corrupted the durable `messages.jsonl` fact, so the parent-side handoff materialization is the failing boundary.
 - Confirmed the minimal fix belongs in `SpawnAgent`, because synchronous `agent_spawn` / `Delegate` results are materialized there before parent coordination records the child as completed or failed.
 
+### Review 162
+
+- Confirmed FCA-20260526-169 against the goal snapshot fact-source requirements in `spec/01-runtime-architecture.md` and `spec/11-spec-audit-and-traceability.md`.
+- Confirmed this is not only cosmetic text selection: `awaitingBudgetWrapUp` mutates `state.json` to `awaiting_input` / `goal_budget_limited`, so hiding a corrupt current goal snapshot can leave durable state inconsistent with unreadable goal facts.
+- Confirmed the minimal fix belongs in `awaitingBudgetWrapUp`, because that is the state-transition boundary after budget wrap-up execution and before the session returns to the operator.
+
 ## Update Log
+
+### FCA-20260526-169
+
+Slice: `fix(runtime): report corrupt budget goal snapshot`
+
+Finding:
+
+- `awaitingBudgetWrapUp` ignored `LoadGoal` errors while deciding whether the budget wrap-up had been recorded.
+- Before the fix, if `goal.json` became corrupt after `record_goal_progress(kind="budget_wrapup")`, the engine still transitioned to `awaiting_input` / `goal_budget_limited` with a generic message and no error.
+
+Changes:
+
+- `awaitingBudgetWrapUp` now returns `load goal.json for budget wrap-up: ...` on non-missing goal snapshot load failure.
+- The existing successful recorded-wrap-up message is preserved when the current goal snapshot loads and contains a budget-wrap-up record.
+- Added focused runtime coverage that corrupts `goal.json` through a real `tool.after` hook after budget wrap-up progress is recorded.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineBudgetWrapUpAwaitsReportsCorruptGoalSnapshot -count=1`: failed before the fix because the engine transitioned to `awaiting_input` with no error.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUp(AwaitsReportsCorruptGoalSnapshot|ThenFinishAwaitsInput|TurnStartReportsGoalHistoryError)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-168
 

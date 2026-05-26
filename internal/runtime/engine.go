@@ -767,6 +767,8 @@ func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionM
 	text := "Goal budget limit reached. stop_on_budget is true, so execution is awaiting input after the budget wrap-up boundary."
 	if goal, err := e.store.LoadGoal(meta.ID); err == nil && session.HasBudgetWrapUpRecord(goal) {
 		text = "Goal budget limit reached and budget wrap-up was recorded. Execution is awaiting input because stop_on_budget is true."
+	} else if err != nil {
+		return RunResult{}, fmt.Errorf("load goal.json for budget wrap-up: %w", err)
 	}
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
