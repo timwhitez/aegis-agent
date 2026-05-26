@@ -2259,6 +2259,66 @@ func TestReconcileFailedJobUpdatesLinkedRunningSession(t *testing.T) {
 	}
 }
 
+func TestLoadJobReportsLinkedSessionStateSaveError(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_state_save_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_state_save_error",
+		RootSessionID:    "parent_state_save_error",
+		AgentName:        "state-save-child",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_state_save_error",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	steerPath := filepath.Join(store.SessionDir(childMeta.ID), "control", "steer.jsonl")
+	if err := os.Remove(steerPath); err != nil {
+		t.Fatalf("remove steer jsonl: %v", err)
+	}
+	if err := os.Mkdir(steerPath, 0o700); err != nil {
+		t.Fatalf("replace steer jsonl with directory: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          QueueStatusFailed,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		AgentName:       childMeta.AgentName,
+		AgentRole:       childMeta.AgentRole,
+		Prompt:          "fail",
+		Mode:            ModeExec,
+		Background:      true,
+		LastError:       "worker failed before state save",
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save failed job: %v", err)
+	}
+
+	repaired, err := store.LoadJob(job.ID)
+	if err == nil {
+		t.Fatalf("expected linked session state save error, got repaired job %#v", repaired)
+	}
+	loadedState, loadErr := store.LoadState(childMeta.ID)
+	if loadErr != nil {
+		t.Fatalf("load child state: %v", loadErr)
+	}
+	if loadedState.Status != StatusRunning {
+		t.Fatalf("expected child state to remain running after failed repair, got %#v", loadedState)
+	}
+}
+
 func TestDeleteSessionTreeDoesNotDeadlockWithReconcilableJob(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

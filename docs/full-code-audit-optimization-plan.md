@@ -2092,6 +2092,38 @@ Validation:
 - Adjacent `load_skill` repeat / force-reload regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-076: queue reconciliation hides linked-session state write failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` require queue jobs and linked child session state to be durable file facts, with reconciliation repairing stale or terminal queue/session facts only when file facts can prove the transition.
+- Before this slice, `reconcileQueueJobSession` called `SaveState` when a failed/completed queue job had to update its linked child `state.json`, but ignored the returned error.
+- The same helper ignored `SaveJob` errors while repairing stale/no-session jobs or syncing repaired queue job metadata.
+- A focused store regression replaced the linked child `control/steer.jsonl` with a directory so `SaveState` failed through the pending-steer refresh path. `LoadJob` still returned a repaired failed job with `SessionStatus=failed` while the linked child `state.json` remained durably `running`.
+- A focused runtime regression blocked the completed queue-job file path during a queued child `finish`; before the fix, `Engine.Run` still returned `completed` even though parent queue facts could not be reconciled.
+
+Impact:
+
+Web, CLI, or runtime queue views could report a repaired terminal queue job even though the linked child session source state was not updated. That leaves parent/background operators with contradictory facts: the queue job appears failed or completed, while session lists and recovery still see the child as running.
+
+Minimal fix:
+
+- Make queue reconciliation return write errors for linked child `SaveState` failures.
+- Make queue reconciliation return write errors for repaired queue job `SaveJob` failures.
+- Propagate reconciliation errors through `LoadJob`, queue listing, `ListPage`, and `ListChildren` instead of returning repaired in-memory facts.
+- Propagate linked queue reconciliation errors from engine terminal transitions after the child session's own state/event facts are durable.
+- Keep parent lifecycle event repair best-effort, because those events are diagnostic/reconstruction aids while job/state files remain the source facts.
+- Add focused regressions for linked session state save failure and runtime child queue-job reconciliation failure.
+
+Validation:
+
+- Focused linked-session state save failure regression.
+- Focused runtime linked queue-job reconciliation failure regression.
+- Full `internal/session` regression suite.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2553,6 +2585,12 @@ Evidence gates:
 - Confirmed FCA-20260526-075 against `spec/01-runtime-architecture.md`, prior FCA-20260525-032 loaded-skill durability evidence, `defLoadSkill`, `skillLoaded`, `markSkillLoaded`, and a focused blocked-state regression.
 - Confirmed this is not just a cache optimization: `loaded_skills` feeds idempotent tool behavior, compaction/session summary context, and recovery-visible operator facts.
 - Confirmed the fix should fail the `load_skill` tool before returning the full skill body when the loaded-skill state fact cannot be persisted.
+
+### Review 69
+
+- Confirmed FCA-20260526-076 against `spec/01-runtime-architecture.md`, `spec/18-durable-contract-and-completion.md`, `LoadJob`, `ListJobs`, `ListPage`, `ListChildren`, `Engine.reconcileLinkedQueueJob`, `reconcileQueueJobSession`, and focused blocked-state regression evidence.
+- Confirmed this is a source-fact issue because queue/job reconciliation changes both queue job status facts and linked child `state.json`; returning repaired job data without the matching state write creates contradictory durable recovery state.
+- Confirmed parent queue lifecycle event repair remains best-effort in this slice; the promoted failure is the ignored write to `state.json` / queue job files, not missing diagnostic events.
 
 ## Update Log
 
@@ -4360,6 +4398,40 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-076
+
+Slice: `fix(runtime): report queue reconcile write failures`
+
+Finding:
+
+- Queue/job reconciliation returned repaired in-memory facts even when linked durable facts could not be written.
+- A focused store regression blocked the linked child `SaveState` path; before the fix, `LoadJob` returned a failed repaired job while the child `state.json` remained running.
+- A focused runtime regression blocked the completed queue-job file path during queued child completion; before the fix, `Engine.Run` still returned `completed` even though the parent queue facts could not be reconciled.
+
+Changes:
+
+- Changed queue reconciliation to return linked child `SaveState` failures and repaired queue `SaveJob` failures.
+- Propagated reconciliation errors through `LoadJob`, queue listing, session list page, and child listing.
+- Propagated linked queue reconciliation errors from engine terminal transitions after the child session state/event facts are written.
+- Kept missing queue job files as a no-op for metadata-only queue IDs, while still returning malformed/unwritable queue fact errors.
+- Added focused store and runtime regressions.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadJobReportsLinkedSessionStateSaveError -count=1`: failed before the fix with a successful repaired job while child state remained running.
+- `go test -timeout 120s ./internal/runtime -run TestEngineReportsLinkedQueueJobReconcileSaveError -count=1`: failed before the fix with `Status:"completed"`.
+- `go test -timeout 120s ./internal/session ./internal/runtime -run 'TestLoadJobReportsLinkedSessionStateSaveError|TestEngineReportsLinkedQueueJobReconcileSaveError|TestEngineCompletingQueuedChildReconcilesParentQueueFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.

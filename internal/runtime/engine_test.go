@@ -2118,6 +2118,68 @@ func TestEngineCompletingQueuedChildReconcilesParentQueueFacts(t *testing.T) {
 	}
 }
 
+func TestEngineReportsLinkedQueueJobReconcileSaveError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	parentMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_queue_save_error",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "parent_queue_save_error",
+	}
+	if err := engine.store.Create(parentMeta, session.State{Status: session.StatusRunning, Phase: "turn_decide", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	meta.ParentSessionID = parentMeta.ID
+	meta.RootSessionID = parentMeta.ID
+	meta.QueueJobID = "job_queue_save_error"
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save child metadata: %v", err)
+	}
+	if err := engine.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              meta.QueueJobID,
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       meta.ID,
+		SessionStatus:   session.StatusAwaitingInput,
+		Prompt:          "continue child",
+		Mode:            session.ModeExec,
+		Background:      true,
+		LastError:       "child session is resumable: awaiting_input",
+	}); err != nil {
+		t.Fatalf("save blocked job: %v", err)
+	}
+	queuePath := filepath.Join(engine.store.Root(), "_queue", session.QueueStatusCompleted, meta.QueueJobID+".json")
+	if err := os.MkdirAll(queuePath, 0o700); err != nil {
+		t.Fatalf("block completed queue job path: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish child")); err != nil {
+		t.Fatalf("append child prompt: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"child done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected queue job reconcile save error, got result %#v", result)
+	}
+	if !strings.Contains(err.Error(), meta.QueueJobID) && !strings.Contains(err.Error(), "_queue") {
+		t.Fatalf("expected queue job reconciliation path error, got %v", err)
+	}
+}
+
 func TestEngineAcceptsSteerAfterProviderDoneCandidateBoundary(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "initial")); err != nil {

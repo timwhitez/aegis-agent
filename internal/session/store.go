@@ -809,7 +809,9 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 		if err != nil {
 			continue
 		}
-		s.reconcileSessionQueueJob(meta)
+		if err := s.reconcileSessionQueueJob(meta); err != nil {
+			return nil, err
+		}
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
 			continue
@@ -861,7 +863,9 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		if err != nil || meta.ParentSessionID != parentSessionID {
 			continue
 		}
-		s.reconcileSessionQueueJob(meta)
+		if err := s.reconcileSessionQueueJob(meta); err != nil {
+			return nil, err
+		}
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
 			continue
@@ -1134,7 +1138,9 @@ func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 	canonical := canonicalQueueJobCopy(copies)
 	_ = s.removeDuplicateQueueJobCopies(copies, canonical.path)
 	job = canonical.job
-	if repaired, changed := s.reconcileQueueJobSession(job); changed {
+	if repaired, changed, err := s.reconcileQueueJobSession(job); err != nil {
+		return QueueJob{}, err
+	} else if changed {
 		job = repaired
 	}
 	return job, nil
@@ -1190,7 +1196,9 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 		if parentSessionID != "" && job.ParentSessionID != parentSessionID {
 			continue
 		}
-		if repaired, changed := s.reconcileQueueJobSession(job); changed {
+		if repaired, changed, err := s.reconcileQueueJobSession(job); err != nil {
+			return nil, err
+		} else if changed {
 			job = repaired
 		}
 		out = append(out, job)
@@ -1780,7 +1788,7 @@ func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
 	return file, nil
 }
 
-func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
+func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	originalStatus := job.Status
 	meta, state, messages, ok := s.findSessionForQueueJob(job.ID)
 	if !ok {
@@ -1788,21 +1796,23 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 			if isTerminalQueueStatus(job.Status) {
 				s.ensureTerminalQueueJobParentState(job)
 			}
-			return job, false
+			return job, false, nil
 		}
 		if !queueJobIsStale(job, time.Now().UTC()) {
-			return job, false
+			return job, false, nil
 		}
 		job.Status = QueueStatusFailed
 		job.SessionStatus = StatusFailed
 		job.LastError = "queue job stale: running job has no linked session and heartbeat is stale"
-		_ = s.SaveJob(job)
+		if err := s.SaveJob(job); err != nil {
+			return job, false, fmt.Errorf("persist stale queue job repair %s: %w", job.ID, err)
+		}
 		if isTerminalQueueStatus(job.Status) {
 			s.ensureTerminalQueueJobParentState(job)
 		} else if job.Status != originalStatus {
 			s.reconcileParentQueueJobStatus(job)
 		}
-		return job, true
+		return job, true, nil
 	}
 	if job.Status == QueueStatusRunning && state.Status == StatusRunning && queueJobIsStale(job, time.Now().UTC()) {
 		job.Status = QueueStatusFailed
@@ -1812,12 +1822,16 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 		var stateChanged bool
 		state, stateChanged = reconcileStateFromTerminalQueueJob(state, job)
 		if stateChanged {
-			_ = s.SaveState(meta.ID, state)
+			if err := s.SaveState(meta.ID, state); err != nil {
+				return job, false, fmt.Errorf("persist linked session state for queue job %s: %w", job.ID, err)
+			}
 		}
 	}
 	state, stateChanged := reconcileStateFromTerminalQueueJob(state, job)
 	if stateChanged {
-		_ = s.SaveState(meta.ID, state)
+		if err := s.SaveState(meta.ID, state); err != nil {
+			return job, false, fmt.Errorf("persist linked session state for queue job %s: %w", job.ID, err)
+		}
 	}
 	changed := syncRunningQueueJobSession(&job, meta, state, messages)
 	switch state.Status {
@@ -1857,22 +1871,25 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool) {
 		if isTerminalQueueStatus(job.Status) {
 			s.ensureTerminalQueueJobParentState(job)
 		}
-		return job, false
+		return job, false, nil
 	}
-	_ = s.SaveJob(job)
+	if err := s.SaveJob(job); err != nil {
+		return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
+	}
 	if isTerminalQueueStatus(job.Status) {
 		s.ensureTerminalQueueJobParentState(job)
 	} else if job.Status != originalStatus {
 		s.reconcileParentQueueJobStatus(job)
 	}
-	return job, true
+	return job, true, nil
 }
 
-func (s *Store) reconcileSessionQueueJob(meta SessionMetadata) {
+func (s *Store) reconcileSessionQueueJob(meta SessionMetadata) error {
 	if strings.TrimSpace(meta.QueueJobID) == "" {
-		return
+		return nil
 	}
-	_, _ = s.LoadJob(meta.QueueJobID)
+	_, err := s.LoadJob(meta.QueueJobID)
+	return err
 }
 
 func (s *Store) ReconcileSessionQueueJob(sessionID string) (QueueJob, bool, error) {
