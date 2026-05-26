@@ -616,6 +616,13 @@ func TestUpdateGoalAccountingReturnsHistoryAppendError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
 		t.Fatalf("expected goal history append error, got %v", err)
 	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.TokensUsed != 0 {
+		t.Fatalf("failed accounting should not advance goal snapshot, got %#v", loaded)
+	}
 }
 
 func TestStoreGoalConcurrentAccountingAndProgressMutationsBothPersist(t *testing.T) {
@@ -831,6 +838,44 @@ func TestApproveMissionPlanRejectsGoalWithoutMissionPlan(t *testing.T) {
 	}
 }
 
+func TestApproveMissionPlanReturnsHistoryAppendError(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:             true,
+		Mode:                GoalModeMission,
+		Objective:           "Approve mission with history",
+		RequirePlanApproval: true,
+		Source:              GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockGoalHistoryPath(t, store, meta.ID)
+	_, err := store.ApproveMissionPlan(meta.ID, MissionPlanApprovalInput{Source: GoalSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
+		t.Fatalf("expected goal history append error, got %v", err)
+	}
+	loaded, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.Mission == nil || loaded.Mission.PlanStatus != MissionPlanStatusNeedsApproval || loaded.Mission.ApprovedAt != "" {
+		t.Fatalf("failed mission approval should not advance goal snapshot, got %#v", loaded)
+	}
+}
+
 func TestStoreGoalApprovalRelinksExistingPendingPlanMode(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -1038,6 +1083,13 @@ func TestCompleteGoalReturnsHistoryAppendError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
 		t.Fatalf("expected goal history append error, got %v", err)
 	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Status != GoalStatusActive || loaded.CompletedAt != "" || loaded.CompletionAudit != nil {
+		t.Fatalf("failed completion should not advance goal snapshot, got %#v", loaded)
+	}
 }
 
 func TestMissionPlanCoverageReportsUncoveredAndInvalidAssignments(t *testing.T) {
@@ -1193,6 +1245,13 @@ func TestRecordGoalProgressReturnsHistoryAppendError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
 		t.Fatalf("expected goal history append error, got %v", err)
+	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if len(loaded.Progress) != 0 {
+		t.Fatalf("failed progress record should not advance goal snapshot, got %#v", loaded)
 	}
 }
 

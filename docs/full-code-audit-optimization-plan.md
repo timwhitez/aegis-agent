@@ -2317,6 +2317,33 @@ Validation:
 - Adjacent linked-goal Plan Mode relink regression.
 - Standard grouped validation before commit.
 
+### FCA-20260526-084: Goal history failures can leave advanced snapshots
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` define `goal.json` plus `artifacts/goal-history.jsonl` as durable Goal facts.
+- FCA-20260526-061 already made Goal transition helpers return `AppendGoalHistory` errors, but helpers still mutated `goal.json` before appending the required history fact.
+- Focused regressions blocked `artifacts/goal-history.jsonl`. Before this fix, `UpdateGoalAccounting` returned an error while leaving `tokens_used` advanced, and `CompleteGoal` returned an error while leaving `status=complete` plus completion audit in `goal.json`.
+- The same mutation-before-history shape existed for mission plan approval and structured progress recording.
+
+Impact:
+
+Recovery, Web Mission Control, completion gates, and provider prompt construction could observe an advanced current Goal snapshot even though the append-only transition history was missing the matching fact. Operators would see an error, but later reads could still treat the failed transition as current state.
+
+Minimal fix:
+
+- Snapshot the previous Goal current facts before history-backed store transitions.
+- If any required Goal history append fails after a current snapshot mutation, restore the previous `goal.json` before returning the append error.
+- Apply rollback to completion, mission plan approval, accounting / budget-limited / budget-wrap-up history, and structured progress / mission plan / mission validation updates.
+- Extend focused blocked-history regressions to assert failed transitions do not advance current snapshots.
+
+Validation:
+
+- Focused Goal accounting, completion, mission approval, and progress history-failure regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2826,6 +2853,12 @@ Evidence gates:
 - Confirmed FCA-20260526-083 against Plan Mode durable fact requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`, current `planmode.json` mutation ordering, and focused blocked-history evidence.
 - Confirmed this is not a duplicate of FCA-20260526-060: that slice made history append failures visible, while this slice prevents the current Plan Mode snapshot and derived plan Markdown from remaining advanced after the visible failure.
 - Confirmed rollback belongs in the session store helpers so CLI, Web, runtime, SDK, and future callers read consistent Plan Mode facts after a failed transition.
+
+### Review 77
+
+- Confirmed FCA-20260526-084 against Goal durable fact requirements in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`, current `goal.json` mutation ordering, and focused blocked-history evidence.
+- Confirmed this is not a duplicate of FCA-20260526-061: that slice made history append failures visible, while this slice prevents current Goal snapshots from remaining advanced after the visible failure.
+- Confirmed the fix belongs in Goal store helpers so CLI, Web, runtime, SDK, and future callers read consistent Goal facts after failed completion, accounting, mission approval, or progress transitions.
 
 ## Update Log
 
@@ -4872,6 +4905,37 @@ Validation:
 - `go test -timeout 120s ./internal/session -run 'TestSubmitPlanModeReturnsHistoryAppendError|TestApprovePlanModeReturnsHistoryAppendError|TestStoreGoalApprovalRelinksExistingPendingPlanMode' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/session/planmode.go internal/session/goal.go internal/session/planmode_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-084
+
+Slice: `fix(session): roll back failed goal history transitions`
+
+Finding:
+
+- Goal store helpers returned required `goal-history.jsonl` append errors, but they mutated `goal.json` before the failed history append.
+- Focused regressions blocked `goal-history.jsonl`; before the fix, failed accounting left `tokens_used` advanced and failed completion left the current snapshot completed.
+
+Changes:
+
+- Added rollback snapshots for Goal current facts before history-backed transitions.
+- Restored the previous `goal.json` when a required history append fails after mutation.
+- Applied rollback to completion, mission plan approval, accounting / budget history, and structured progress / mission update paths.
+- Extended focused accounting, completion, mission approval, and progress history-failure regressions to assert current snapshot rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestUpdateGoalAccountingReturnsHistoryAppendError|TestCompleteGoalReturnsHistoryAppendError' -count=1`: failed before the fix because failed accounting/completion left `goal.json` advanced.
+- `go test -timeout 120s ./internal/session -run 'TestUpdateGoalAccountingReturnsHistoryAppendError|TestCompleteGoalReturnsHistoryAppendError|TestRecordGoalProgressReturnsHistoryAppendError|TestApproveMissionPlanReturnsHistoryAppendError|TestApproveMissionPlanRejectsGoalWithoutMissionPlan' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/goal.go internal/session/goal_progress.go internal/session/store_test.go`: passed with no output.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"go-cli-agent/internal/fileutil"
 )
 
 const (
@@ -600,6 +602,10 @@ func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source
 
 func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (SessionGoal, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rollback, err := s.goalRollbackSnapshot(sessionID)
+	if err != nil {
+		return SessionGoal{}, err
+	}
 	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
 		if goal.GoalID == "" {
 			return errors.New("session has no current goal")
@@ -642,6 +648,9 @@ func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (Sessi
 			"validation_statuses": append([]GoalItemStatusUpdate(nil), input.ValidationStatuses...),
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return SessionGoal{}, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+		}
 		return SessionGoal{}, err
 	}
 	return goal, nil
@@ -681,6 +690,10 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 	if approvedAt == "" {
 		approvedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	rollback, err := s.goalRollbackSnapshot(sessionID)
+	if err != nil {
+		return SessionGoal{}, err
+	}
 	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
 		if goal.GoalID == "" {
 			return errors.New("session has no current goal")
@@ -715,6 +728,9 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 			"coverage_override": input.CoverageOverride,
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return SessionGoal{}, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+		}
 		return SessionGoal{}, err
 	}
 	return goal, nil
@@ -899,6 +915,57 @@ func (s *Store) AppendGoalHistory(sessionID string, entry GoalHistoryEntry) erro
 	return nil
 }
 
+type goalRollback struct {
+	Snapshot    SessionGoal
+	HasSnapshot bool
+}
+
+func (s *Store) goalRollbackSnapshot(sessionID string) (goalRollback, error) {
+	rollback := goalRollback{}
+	previous, err := s.LoadGoal(sessionID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return rollback, nil
+	}
+	if err != nil {
+		return rollback, err
+	}
+	rollback.Snapshot = previous
+	rollback.HasSnapshot = strings.TrimSpace(previous.GoalID) != ""
+	return rollback, nil
+}
+
+func (s *Store) rollbackGoalAfterHistoryError(sessionID string, rollback goalRollback) error {
+	if !rollback.HasSnapshot {
+		return s.removeGoalSnapshot(sessionID)
+	}
+	return s.writeGoalSnapshot(sessionID, rollback.Snapshot)
+}
+
+func (s *Store) writeGoalSnapshot(sessionID string, goal SessionGoal) error {
+	path, err := s.sessionPath(sessionID, "goal.json")
+	if err != nil {
+		return err
+	}
+	prepareGoalForSave(sessionID, &goal)
+	if err := ValidateGoal(goal); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeJSONFile(path, goal)
+}
+
+func (s *Store) removeGoalSnapshot(sessionID string) error {
+	path, err := s.sessionPath(sessionID, "goal.json")
+	if err != nil {
+		return err
+	}
+	if err := fileutil.RemoveFileNoSymlink(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) LoadGoalHistory(sessionID string) ([]GoalHistoryEntry, error) {
 	path, err := s.sessionPath(sessionID, "artifacts", "goal-history.jsonl")
 	if err != nil {
@@ -914,6 +981,10 @@ func (s *Store) LoadGoalHistory(sessionID string) ([]GoalHistoryEntry, error) {
 
 func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (SessionGoal, bool, error) {
 	budgetLimited := false
+	rollback, err := s.goalRollbackSnapshot(sessionID)
+	if err != nil {
+		return SessionGoal{}, false, err
+	}
 	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
 		if goal.GoalID == "" {
 			return nil
@@ -949,6 +1020,9 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 			"time_used_seconds":       goal.TimeUsedSeconds,
 		},
 	}); err != nil {
+		if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return SessionGoal{}, false, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+		}
 		return SessionGoal{}, false, err
 	}
 	if budgetLimited {
@@ -964,6 +1038,9 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 				"stop_on_budget":    goal.Control.StopOnBudget,
 			},
 		}); err != nil {
+			if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+				return SessionGoal{}, false, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+			}
 			return SessionGoal{}, false, err
 		}
 		if goal.Control.StopOnBudget {
@@ -975,6 +1052,9 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 					"budget_wrapup_requested_at": goal.BudgetWrapUpRequestedAt,
 				},
 			}); err != nil {
+				if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+					return SessionGoal{}, false, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+				}
 				return SessionGoal{}, false, err
 			}
 		}

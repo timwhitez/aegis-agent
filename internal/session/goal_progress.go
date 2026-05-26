@@ -134,6 +134,10 @@ func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (S
 	planChanged := false
 	validationChanged := false
 	record := GoalProgressRecord{}
+	rollback, err := s.goalRollbackSnapshot(sessionID)
+	if err != nil {
+		return SessionGoal{}, GoalProgressRecord{}, err
+	}
 	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
 		if goal.GoalID == "" {
 			return errors.New("session has no current goal")
@@ -189,6 +193,9 @@ func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (S
 				"progress": record,
 			},
 		}); err != nil {
+			if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+				return SessionGoal{}, GoalProgressRecord{}, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+			}
 			return SessionGoal{}, GoalProgressRecord{}, err
 		}
 	}
@@ -202,6 +209,9 @@ func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (S
 				"milestone_updates": input.MilestoneUpdates,
 			},
 		}); err != nil {
+			if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+				return SessionGoal{}, GoalProgressRecord{}, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+			}
 			return SessionGoal{}, GoalProgressRecord{}, err
 		}
 	}
@@ -214,6 +224,9 @@ func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (S
 				"validation_updates": input.ValidationUpdates,
 			},
 		}); err != nil {
+			if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+				return SessionGoal{}, GoalProgressRecord{}, fmt.Errorf("restore goal snapshot after %v: %w", err, rollbackErr)
+			}
 			return SessionGoal{}, GoalProgressRecord{}, err
 		}
 	}
