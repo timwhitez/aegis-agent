@@ -2916,6 +2916,36 @@ Validation:
 - Adjacent Plan Mode approval/revision runtime tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-106: Plan Mode cancellation retry duplicates durable history
+
+Severity: Medium
+
+Evidence:
+
+- `spec/18-durable-contract-and-completion.md` defines `planmode.json` and `artifacts/planmode-history.jsonl` as Plan Mode facts, while `events.jsonl` is the replay/observability event stream consumed by runtime/Web surfaces.
+- `internal/runtime/runner.go` cancelled Plan Mode by appending any pending `request_user_input` cancellation result, calling `CancelPlanMode`, then appending the required `planmode.cancelled` runtime event.
+- If `events.jsonl` append failed after `CancelPlanMode`, durable Plan Mode state and history already recorded cancellation.
+- Retrying the same cancellation called `CancelPlanMode` again even when `planmode.json` was already `cancelled`, adding a second `planmode.cancelled` history row before restoring the missing runtime event.
+- A focused regression blocked `events.jsonl` during cancellation, restored the path, retried cancellation, and observed duplicate `planmode.cancelled` history before the fix.
+
+Impact:
+
+An operator retry after a transient event append failure could make Plan Mode history show multiple user cancellations for one cancellation action. This did not resume provider execution, but it polluted the durable audit trail and could mislead Web/session summary recovery views.
+
+Minimal fix:
+
+- Make runtime cancellation recovery idempotent when Plan Mode is already `cancelled`.
+- Re-append the missing `planmode.cancelled` runtime event once without re-running the store cancellation transition.
+- Keep pending `request_user_input` cancellation tool-result de-duplication unchanged.
+- Add focused runtime coverage for blocked `events.jsonl`, retry after restoring the path, one durable cancellation history row, and one restored runtime event.
+
+Validation:
+
+- Focused pre-fix runtime regression proving retry duplicated `planmode.cancelled` history.
+- Focused post-fix runtime regression for the same path.
+- Adjacent Plan Mode cancellation/input runtime tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3557,6 +3587,12 @@ Evidence gates:
 - Confirmed FCA-20260526-105 against Web Ask-for-Changes semantics in `spec/17-web-console.md`, Plan Mode durable recovery requirements in `spec/18-durable-contract-and-completion.md`, and runtime `Continue` revision handling.
 - Confirmed this is distinct from approval retry: the failed durable fact is the revision user-message metadata, and the partially advanced Plan Mode state is `planning`, not `executing`.
 - Confirmed the minimal fix should require matching `planmode.plan_revised` history and an absent replay message before treating a planning-state retry as a recovered revision, so normal planning continuations remain ordinary user messages.
+
+### Review 99
+
+- Confirmed FCA-20260526-106 against Plan Mode durable fact requirements in `spec/18-durable-contract-and-completion.md` and runtime cancellation ordering in `internal/runtime/runner.go`.
+- Confirmed this is separate from pending input cancellation replay: `appendPlanInputCancelToolResult` already de-duplicates the `request_user_input` tool result, while the duplicated fact is the later `planmode.cancelled` history row.
+- Confirmed the minimal fix should be runtime-level idempotent cancellation recovery for already-cancelled Plan Mode state, not store-level weakening of `CancelPlanMode` history semantics.
 
 ## Update Log
 
@@ -5706,6 +5742,43 @@ Validation:
 - `go test -timeout 120s ./internal/runtime -run TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage -count=1`: failed before the fix because retry wrote no `planmode_revision` user message.
 - `go test -timeout 120s ./internal/runtime -run 'Test(RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApprovePlanModeReportsPlanApprovedEventAppendError|CancelPlanModeReportsCancelledEventAppendError)' -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'Test(RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApprovePlanModeReportsPlanApprovedEventAppendError|ApproveLinkedMissionPlanReportsEventAppendError|ApproveLinkedPlanModeMarksMissionPlanApproved|ApproveLinkedPlanModeBlocksUncoveredMissionValidation|CancelPlanModeReportsCancelledEventAppendError|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelReturnsHistoryAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-106
+
+Slice: `fix(runtime): retry failed plan cancellation event replay`
+
+Finding:
+
+- Runtime Plan Mode cancellation could persist `planmode.cancelled` history and move `planmode.json` to `cancelled` before appending the required `planmode.cancelled` runtime event.
+- With `events.jsonl` blocked, retrying the same cancellation called `CancelPlanMode` again and duplicated the durable cancellation history row.
+
+Changes:
+
+- Added an idempotent runtime cancellation helper that recognizes already-cancelled Plan Mode state.
+- Re-appends the missing `planmode.cancelled` event once without re-running the store cancellation transition.
+- Preserves existing pending `request_user_input` cancellation tool-result de-duplication.
+- Added focused runtime coverage for blocked `events.jsonl` during cancellation, retry after restoring the path, one durable cancellation history row, and one restored cancellation event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory -count=1`: failed before the fix because retry duplicated `planmode.cancelled` history.
+- `go test -timeout 120s ./internal/runtime -run TestCancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|CancelPlanModeReportsCancelledEventAppendError|PlanInputCancelReturnsHistoryAppendError|PlanInputAnswerRollsBackWhenToolResultAppendFails)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|CancelPlanModeReportsCancelledEventAppendError|PlanInputCancelReturnsHistoryAppendError|PlanInputAnswerRollsBackWhenToolResultAppendFails|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage)' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.

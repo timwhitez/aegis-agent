@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/provider"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/tools"
@@ -399,6 +400,76 @@ func TestCancelPlanModeReportsCancelledEventAppendError(t *testing.T) {
 	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, CancelPlan: true, Source: session.PlanModeSourceCLI})
 	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected plan mode cancellation event append error, got result=%#v err=%v", result, err)
+	}
+}
+
+func TestCancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planMode, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Cancel plan mode", Source: session.PlanModeSourceCLI})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	blockRuntimeEventsPath(t, runner.store, sessionID)
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, CancelPlan: true, Source: session.PlanModeSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected cancellation event append error, got result=%#v err=%v", result, err)
+	}
+	cancelled, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode after failed event append: %v", err)
+	}
+	if cancelled.PlanModeID != planMode.PlanModeID || cancelled.Status != session.PlanModeStatusCancelled {
+		t.Fatalf("expected cancellation state to be durable, got %#v", cancelled)
+	}
+	history, err := runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode history after failed event append: %v", err)
+	}
+	if count := countRuntimePlanModeHistoryType(history, "planmode.cancelled"); count != 1 {
+		t.Fatalf("expected one durable cancellation history row after failed event append, got %d history=%#v", count, history)
+	}
+
+	eventsPath := filepath.Join(runner.store.SessionDir(sessionID), "events.jsonl")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatalf("remove blocked events path: %v", err)
+	}
+	retried, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, CancelPlan: true, Source: session.PlanModeSourceCLI})
+	if err != nil {
+		t.Fatalf("retry cancel plan mode: result=%#v err=%v", retried, err)
+	}
+	if retried.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting input after retry, got %#v", retried)
+	}
+	history, err = runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode history after retry: %v", err)
+	}
+	if count := countRuntimePlanModeHistoryType(history, "planmode.cancelled"); count != 1 {
+		t.Fatalf("retry should not duplicate cancellation history, got %d history=%#v", count, history)
+	}
+	events, err := runner.store.LoadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("load events after retry: %v", err)
+	}
+	if count := countRuntimeEventType(events, "planmode.cancelled"); count != 1 {
+		t.Fatalf("retry should append one cancellation event, got %d events=%#v", count, events)
 	}
 }
 
@@ -828,6 +899,26 @@ func hasRuntimePlanModeHistoryType(items []session.PlanModeHistoryEntry, target 
 		}
 	}
 	return false
+}
+
+func countRuntimePlanModeHistoryType(items []session.PlanModeHistoryEntry, target string) int {
+	var count int
+	for _, item := range items {
+		if item.Type == target {
+			count++
+		}
+	}
+	return count
+}
+
+func countRuntimeEventType(items []events.Event, target string) int {
+	var count int
+	for _, item := range items {
+		if item.Type == target {
+			count++
+		}
+	}
+	return count
 }
 
 func countPlanModeApprovalMessages(messages []session.Message) int {

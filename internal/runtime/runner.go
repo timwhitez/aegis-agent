@@ -645,12 +645,8 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err := r.appendPlanInputCancelToolResult(meta.ID, source); err != nil {
 			return r.failBeforeRun(meta.ID, state, "plan_input", err)
 		}
-		planMode, err := r.store.CancelPlanMode(meta.ID, source)
-		if err != nil {
+		if _, err := r.ensurePlanModeCancelled(meta.ID, source); err != nil {
 			return r.failBeforeRun(meta.ID, state, "plan_input", err)
-		}
-		if err := r.appendEvent(meta.ID, "planmode.cancelled", "planmode", planModeEventData(planMode)); err != nil {
-			return r.failBeforeRun(meta.ID, state, "planmode", err)
 		}
 		state.Status = session.StatusAwaitingInput
 		state.Phase = "plan_cancelled"
@@ -733,6 +729,23 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func (r *Runner) ensurePlanModeCancelled(sessionID, source string) (session.PlanModeState, error) {
+	planMode, err := r.store.LoadPlanMode(sessionID)
+	if err != nil {
+		return session.PlanModeState{}, err
+	}
+	if planMode.Status != session.PlanModeStatusCancelled {
+		planMode, err = r.store.CancelPlanMode(sessionID, source)
+		if err != nil {
+			return session.PlanModeState{}, err
+		}
+	}
+	if err := r.appendPlanModeEventOnce(sessionID, "planmode.cancelled", planMode); err != nil {
+		return session.PlanModeState{}, err
+	}
+	return planMode, nil
 }
 
 func (r *Runner) ensurePlanModeRevisedForMessage(sessionID string, planMode session.PlanModeState, source, message string) (session.PlanModeState, bool, error) {
