@@ -521,6 +521,58 @@ func TestGoalPlanApproveRejectsGoalWithoutMissionPlan(t *testing.T) {
 	}
 }
 
+func TestGoalPlanApproveCommandReportsEventAppendError(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_plan_approve_event_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_plan_approve_event_error",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:        true,
+		Mode:           session.GoalModeMission,
+		Objective:      "Plan through CLI with event failure",
+		ValidationPlan: []string{"go test ./internal/app"},
+		Features:       []string{"CLI plan"},
+		Milestones:     []string{"CLI validation"},
+		Source:         session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.Features[0].ClaimedAssertions = []string{"validation_0001"}
+	goal.Mission.Milestones[0].ValidationIDs = []string{"validation_0001"}
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+	blockAppEventsPath(t, store, meta.ID)
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run(context.Background(), []string{"goal", "plan", "approve", meta.ID, "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected event append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
 func TestGoalStatusCommandPreservesAccountingAndProgressFacts(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -1969,5 +2021,16 @@ func blockAppGoalHistoryPath(t *testing.T, store *session.Store, sessionID strin
 	}
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block goal history path: %v", err)
+	}
+}
+
+func blockAppEventsPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	eventsPath := filepath.Join(store.SessionDir(sessionID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
 	}
 }

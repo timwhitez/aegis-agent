@@ -525,7 +525,10 @@ func (s *Store) AppendEvent(sessionID string, event events.Event) error {
 	if err != nil {
 		return err
 	}
-	return s.appendJSONL(path, event)
+	if err := s.appendJSONL(path, event); err != nil {
+		return fmt.Errorf("append event %s: %w", path, err)
+	}
+	return nil
 }
 
 func (s *Store) LoadTodo(sessionID string) ([]TodoItem, error) {

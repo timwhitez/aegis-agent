@@ -1946,6 +1946,33 @@ Validation:
 - Existing required-artifact tracking and contract freshness regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-071: CLI mission approval hides event append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` keeps `events.jsonl` as a session fact source, and the CLI fallback is part of the Web-first recovery/control surface.
+- Before this slice, `goal plan approve` updated `goal.json` and appended `mission.plan.approved` goal history through `ApproveMissionPlan`, then ignored the matching `events.jsonl` append failure.
+- A focused regression replaced `events.jsonl` with a directory: `go-cli-agent goal plan approve <session> --json` returned success JSON while the durable event fact was missing.
+- `AppendEvent` returned raw filesystem errors without the failed `events.jsonl` path, unlike the recently hardened goal/history/contract/provider append diagnostics.
+
+Impact:
+
+CLI users and recovery tooling could observe an approved mission plan without the corresponding event fact in the session timeline. That weakens Web/CLI traceability for a user control action and makes failures hard to diagnose because the original error did not identify `events.jsonl`.
+
+Minimal fix:
+
+- Propagate the `AppendEvent` error from CLI mission plan approval.
+- Add path context to `AppendEvent` failures.
+- Add a focused CLI regression for blocked `events.jsonl` during mission plan approval.
+
+Validation:
+
+- Focused CLI mission-plan approval event failure regression.
+- Adjacent CLI goal plan/status/clear regressions.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2383,6 +2410,12 @@ Evidence gates:
 - Confirmed FCA-20260526-070 against `spec/18-durable-contract-and-completion.md`, `requiredArtifactGate`, `EvaluateToolCall`, and focused blocked-tracker finish-gate regression.
 - Confirmed this is a finish-gate state-source issue rather than a display summary issue: the gate could allow `finish` when `artifact-tracker.json` was unreadable or could not be refreshed.
 - Confirmed the fix should block as `required_artifact_state`, preserving normal missing/stale artifact messages for valid tracker reads.
+
+### Review 65
+
+- Confirmed FCA-20260526-071 against `spec/01-runtime-architecture.md`, CLI `goalPlanApproveCommand`, `ApproveMissionPlan`, `AppendEvent`, and focused blocked-event regression.
+- Confirmed this is not a duplicate of the goal-history fixes: `ApproveMissionPlan` already reports history failures, while the CLI adapter separately ignored the session event append failure.
+- Confirmed the fix belongs in the CLI adapter for propagation plus the session store for event path context.
 
 ## Update Log
 
@@ -4019,6 +4052,36 @@ Validation:
 
 - `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerRequiredArtifactGateReportsTrackerRefreshError' -count=1`: failed before the fix by allowing `finish`.
 - `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerRequiredArtifactGateReportsTrackerRefreshError|TestCompletionControllerTrackToolResultReportsArtifactTrackerError|TestCompletionControllerRequiresSessionTouchedArtifact|TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction|TestRequiredArtifactGateRejectsSymlinkedArtifactAfterContractCreation|TestSessionContractTracksRequiredArtifactAndCompletionGate' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-071
+
+Slice: `fix(cli): report mission approval event failures`
+
+Finding:
+
+- CLI `goal plan approve` ignored the `mission.plan.approved` event append error after `ApproveMissionPlan` had already updated `goal.json` and goal history.
+- A blocked `events.jsonl` path reproduced false success: the command returned approved-goal JSON with no durable event fact.
+
+Changes:
+
+- Changed CLI mission plan approval to return `AppendEvent` failures.
+- Added path context to `AppendEvent` errors.
+- Added a focused CLI regression for blocked `events.jsonl` during mission plan approval.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run 'TestGoalPlanApproveCommandReportsEventAppendError' -count=1`: failed before the fix with success JSON.
+- `go test -timeout 120s ./internal/app -run 'TestGoalPlanApproveCommandReportsEventAppendError|TestGoalMissionPlanAndValidationCommands|TestGoalPlanApproveRejectsGoalWithoutMissionPlan|TestGoalStatusCommandReportsHistoryAppendError|TestGoalClearCommandReportsHistoryAppendError' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.

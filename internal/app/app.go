@@ -796,12 +796,14 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, j
 	if err != nil {
 		return err
 	}
-	_ = store.AppendEvent(sessionID, events.New(sessionID, "mission.plan.approved", "goal", map[string]any{
+	if err := store.AppendEvent(sessionID, events.New(sessionID, "mission.plan.approved", "goal", map[string]any{
 		"goal_id":           goal.GoalID,
 		"plan_status":       goal.Mission.PlanStatus,
 		"approved_at":       approvedAt,
 		"coverage_override": overrideCoverage,
-	}))
+	})); err != nil {
+		return err
+	}
 	if jsonMode {
 		return json.NewEncoder(stdout).Encode(goal)
 	}
