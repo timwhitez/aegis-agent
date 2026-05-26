@@ -4124,6 +4124,36 @@ Validation:
 - Existing stale-linked and completed-session reconciliation regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-148: Queue lists and claims hide corrupt queue job files
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `QueueStore And Worker` as durable queue job storage with claim leases, heartbeat, and file-fact-based liveness.
+- `spec/17-web-console.md` requires queue job statuses and failures to remain visible in the Background inspector / API rather than disappearing from operator views.
+- `internal/session/store.go` `listQueueJobCopies` silently skipped every `readJSONFile` error for `*.json` files under queue status directories.
+- `internal/session/store.go` `ClaimNextQueuedJob` used the same silent skip for queued job JSON read errors before building the claim candidate list.
+- Focused pre-fix store regressions corrupted valid queue job files named `<job_id>.json`; before the fix, `ListJobs` returned nil error with no item and `ClaimNextQueuedJob` returned `(zero, false, nil)`.
+
+Impact:
+
+A corrupt durable queue job file could disappear from Web/CLI queue views and from worker claim attempts. Operators would see no queued work or no matching parent job even though a real queue fact file existed, weakening recovery and making queue liveness depend on silent omission rather than durable error reporting.
+
+Minimal fix:
+
+- Treat valid queue job filenames (`<valid-id>.json`) as durable queue facts whose unreadable JSON must be reported.
+- Keep existing skip behavior for directories, non-JSON files, invalid filenames, mismatched valid JSON, invalid job IDs, and invalid job statuses.
+- Add focused store coverage for corrupt queue job files in `ListJobs`, `ListJobsPage`, `ListJobsByParent`, and `ClaimNextQueuedJob`.
+- Keep the existing mismatched-filename claim regression green.
+
+Validation:
+
+- Focused pre-fix store regressions proving corrupt queue job files were hidden by list and claim paths.
+- Focused post-fix store regressions proving corrupt queue job files are reported by list and claim paths.
+- Existing mismatched valid JSON regression remains green.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -5018,7 +5048,48 @@ Evidence gates:
 - Confirmed this is not a legitimate orphan repair case: `session.json` had already identified a linked session for the queue job, so unreadable `state.json` or `messages.jsonl` must stop reconciliation instead of being treated as no linked session.
 - Confirmed the minimal fix belongs in `findSessionForQueueJob` / `reconcileQueueJobSession` because that helper is the single point deciding whether a queue job has a linked session fact set available for reconciliation.
 
+### Review 141
+
+- Confirmed FCA-20260526-148 against queue job durability and lease/claim requirements in `spec/01-runtime-architecture.md`, plus Web queue visibility requirements in `spec/17-web-console.md`.
+- Confirmed this is not the same as invalid scratch files in queue directories: invalid filenames and mismatched valid JSON are still skipped for diagnostics, but a valid `<job_id>.json` queue fact that cannot be read must be reported.
+- Confirmed the minimal fix belongs in `listQueueJobCopies` and `ClaimNextQueuedJob` because those are the shared Web/CLI list path and worker claim path that were turning unreadable queue facts into no visible work.
+
 ## Update Log
+
+### FCA-20260526-148
+
+Slice: `fix(session): report corrupt queue job files`
+
+Finding:
+
+- `listQueueJobCopies` and `ClaimNextQueuedJob` skipped unreadable queue job JSON files.
+- Before the fix, corrupt valid queue job files disappeared from `ListJobs` / `ListJobsPage` / `ListJobsByParent`, and `ClaimNextQueuedJob` returned no work instead of reporting the corrupt queued job.
+
+Changes:
+
+- Added valid queue-job filename recognition before reading queue status directory entries.
+- Changed list and claim paths to report read errors for valid `<job_id>.json` files.
+- Preserved skips for invalid filenames, mismatched valid JSON, invalid job IDs, and invalid statuses.
+- Added focused store coverage for corrupt queue job list and claim paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'Test(ClaimNextQueuedJobReportsCorruptQueuedJob|ListJobsReportsCorruptQueueJob)' -count=1`: failed before the fix because corrupt queue job files were skipped.
+- `go test -timeout 120s ./internal/session -run 'Test(ClaimNextQueuedJobReportsCorruptQueuedJob|ListJobsReportsCorruptQueueJob|ClaimNextQueuedJobSkipsMismatchedQueueFilename|ListChildrenAndParentJobsUseCreationOrder)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-147
 

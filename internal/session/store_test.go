@@ -2245,6 +2245,32 @@ func TestClaimNextQueuedJobSkipsMismatchedQueueFilename(t *testing.T) {
 	}
 }
 
+func TestClaimNextQueuedJobReportsCorruptQueuedJob(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_corrupt_claim",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	if err := os.WriteFile(store.queueJobPath(QueueStatusQueued, job.ID), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt queued job: %v", err)
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err == nil || !strings.Contains(err.Error(), "job_corrupt_claim.json") {
+		t.Fatalf("expected corrupt queued job error, got job=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, statErr := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); statErr != nil {
+		t.Fatalf("expected corrupt job to remain queued, got %v", statErr)
+	}
+}
+
 func TestReconcileStaleRunningJobWithoutSessionFailsJob(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
@@ -2389,6 +2415,36 @@ func TestListChildrenAndParentJobsUseCreationOrder(t *testing.T) {
 	}
 	if len(listedJobs) != 2 || listedJobs[0].ID != "job_first" || listedJobs[1].ID != "job_second" {
 		t.Fatalf("expected job creation order, got %#v", listedJobs)
+	}
+}
+
+func TestListJobsReportsCorruptQueueJob(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_corrupt_list",
+		Status:          QueueStatusQueued,
+		ParentSessionID: "parent_corrupt_list",
+		RootSessionID:   "parent_corrupt_list",
+		Prompt:          "do work",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	if err := os.WriteFile(store.queueJobPath(QueueStatusQueued, job.ID), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt queued job: %v", err)
+	}
+
+	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "job_corrupt_list.json") {
+		t.Fatalf("expected ListJobs to report corrupt job, got %v", err)
+	}
+	if _, _, err := store.ListJobsPage(10, 0); err == nil || !strings.Contains(err.Error(), "job_corrupt_list.json") {
+		t.Fatalf("expected ListJobsPage to report corrupt job, got %v", err)
+	}
+	if _, err := store.ListJobsByParent(job.ParentSessionID, 10); err == nil || !strings.Contains(err.Error(), "job_corrupt_list.json") {
+		t.Fatalf("expected ListJobsByParent to report corrupt job, got %v", err)
 	}
 }
 

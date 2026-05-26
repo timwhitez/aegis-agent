@@ -1294,10 +1294,13 @@ func (s *Store) listQueueJobCopies() ([]queueJobCopy, error) {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 				continue
 			}
+			if _, ok := queueJobIDFromFilename(entry.Name()); !ok {
+				continue
+			}
 			var job QueueJob
 			path := filepath.Join(dir, entry.Name())
 			if err := readJSONFile(path, &job); err != nil {
-				continue
+				return nil, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 			}
 			if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" || !isQueueStatus(job.Status) {
 				continue
@@ -1380,6 +1383,17 @@ func queueJobFactTime(job QueueJob) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+func queueJobIDFromFilename(name string) (string, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return "", false
+	}
+	jobID := strings.TrimSuffix(name, ".json")
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return "", false
+	}
+	return jobID, true
 }
 
 func (s *Store) removeDuplicateQueueJobCopies(copies []queueJobCopy, keepPath string) error {
@@ -1526,9 +1540,12 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+		if _, ok := queueJobIDFromFilename(entry.Name()); !ok {
+			continue
+		}
 		var job QueueJob
 		if err := readJSONFile(filepath.Join(dir, entry.Name()), &job); err != nil {
-			continue
+			return QueueJob{}, false, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 		}
 		if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" {
 			continue
