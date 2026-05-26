@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -1163,6 +1164,9 @@ func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, 
 	}
 	planMode, request, err := r.store.AnswerPlanModeInput(sessionID, requestID, source, answers)
 	if err != nil {
+		if recovered, recoverErr := r.recoverPlanInputAnswerEvent(sessionID, requestID, answers); recoverErr != nil || recovered {
+			return recoverErr
+		}
 		return err
 	}
 	result := session.ToolResult{
@@ -1183,15 +1187,130 @@ func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, 
 		}
 		return err
 	}
-	if err := r.appendEvent(sessionID, "planmode.input_answered", "plan_input", map[string]any{
-		"plan_mode_id": planMode.PlanModeID,
-		"request_id":   request.RequestID,
-		"answers":      answers,
-		"recovered":    true,
-	}); err != nil {
+	return r.appendPlanInputAnsweredEventOnce(sessionID, planMode.PlanModeID, request.RequestID, answers)
+}
+
+func (r *Runner) recoverPlanInputAnswerEvent(sessionID, requestID string, answers []session.PlanModeInputAnswer) (bool, error) {
+	answer, ok, err := r.matchingPlanInputAnswerHistory(sessionID, requestID, answers)
+	if err != nil || !ok {
+		return false, err
+	}
+	exists, err := r.hasToolResult(sessionID, answer.ToolCallID, "request_user_input")
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if err := r.appendPlanInputAnsweredEventOnce(sessionID, answer.PlanModeID, answer.RequestID, answers); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+type planInputAnswerRecord struct {
+	PlanModeID string
+	RequestID  string
+	ToolCallID string
+}
+
+func (r *Runner) matchingPlanInputAnswerHistory(sessionID, requestID string, answers []session.PlanModeInputAnswer) (planInputAnswerRecord, bool, error) {
+	history, err := r.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		return planInputAnswerRecord{}, false, err
+	}
+	requestID = strings.TrimSpace(requestID)
+	for i := len(history) - 1; i >= 0; i-- {
+		item := history[i]
+		if item.Type != "planmode.input_answered" {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["request_id"])) != requestID {
+			continue
+		}
+		if !planInputAnswersEqual(item.Data["answers"], answers) {
+			return planInputAnswerRecord{}, false, nil
+		}
+		toolCallID := matchingPlanInputToolCallID(history, item.PlanModeID, requestID)
+		if strings.TrimSpace(toolCallID) == "" {
+			return planInputAnswerRecord{}, false, nil
+		}
+		return planInputAnswerRecord{
+			PlanModeID: strings.TrimSpace(item.PlanModeID),
+			RequestID:  requestID,
+			ToolCallID: toolCallID,
+		}, true, nil
+	}
+	return planInputAnswerRecord{}, false, nil
+}
+
+func matchingPlanInputToolCallID(history []session.PlanModeHistoryEntry, planModeID, requestID string) string {
+	planModeID = strings.TrimSpace(planModeID)
+	requestID = strings.TrimSpace(requestID)
+	for i := len(history) - 1; i >= 0; i-- {
+		item := history[i]
+		if item.Type != "planmode.input_requested" {
+			continue
+		}
+		if strings.TrimSpace(item.PlanModeID) != planModeID {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["request_id"])) != requestID {
+			continue
+		}
+		return strings.TrimSpace(fmt.Sprint(item.Data["tool_call_id"]))
+	}
+	return ""
+}
+
+func planInputAnswersEqual(raw any, answers []session.PlanModeInputAnswer) bool {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	var recorded []session.PlanModeInputAnswer
+	if err := json.Unmarshal(data, &recorded); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(recorded, answers)
+}
+
+func (r *Runner) appendPlanInputAnsweredEventOnce(sessionID, planModeID, requestID string, answers []session.PlanModeInputAnswer) error {
+	recorded, err := r.hasPlanModeInputAnsweredEvent(sessionID, planModeID, requestID)
+	if err != nil {
 		return err
 	}
-	return nil
+	if recorded {
+		return nil
+	}
+	return r.appendEvent(sessionID, "planmode.input_answered", "plan_input", map[string]any{
+		"plan_mode_id": planModeID,
+		"request_id":   requestID,
+		"answers":      answers,
+		"recovered":    true,
+	})
+}
+
+func (r *Runner) hasPlanModeInputAnsweredEvent(sessionID, planModeID, requestID string) (bool, error) {
+	events, err := r.store.LoadEvents(sessionID)
+	if err != nil {
+		return false, err
+	}
+	planModeID = strings.TrimSpace(planModeID)
+	requestID = strings.TrimSpace(requestID)
+	for _, item := range events {
+		if item.Type != "planmode.input_answered" {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["plan_mode_id"])) != planModeID {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["request_id"])) != requestID {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *Runner) restorePlanInputAnswerAfterMessageError(sessionID string, snapshot session.PlanModeSnapshot, history []session.PlanModeHistoryEntry, cause error) error {

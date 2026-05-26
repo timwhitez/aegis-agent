@@ -457,6 +457,108 @@ func TestPlanInputAnswerRollsBackWhenToolResultAppendFails(t *testing.T) {
 	}
 }
 
+func TestPlanInputAnswerRetryAfterEventFailureRestoresEvent(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Answer plan input"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	request := session.PlanModeInputRequest{
+		RequestID:  "pmq_answer_event",
+		ToolCallID: "call_answer_event",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := runner.store.SetPlanModePendingRequest(sessionID, request, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+	answers := []session.PlanModeInputAnswer{{
+		QuestionID: "scope_choice",
+		Label:      "Narrow (Recommended)",
+		Value:      "Narrow (Recommended)",
+	}}
+	blockRuntimeEventsPath(t, runner.store, sessionID)
+
+	err := runner.appendPlanInputToolResult(sessionID, request.RequestID, session.PlanModeSourceWeb, answers)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected event append error, got %v", err)
+	}
+	planMode, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode after failed event append: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusPlanning || planMode.PendingRequest != nil {
+		t.Fatalf("failed event append should keep answered plan mode facts, got %#v", planMode)
+	}
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages after failed event append: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, request.ToolCallID, "request_user_input"); count != 1 {
+		t.Fatalf("expected one replay tool result after failed event append, got %d messages=%#v", count, messages)
+	}
+	history, err := runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load history after failed event append: %v", err)
+	}
+	if count := countRuntimePlanModeHistoryType(history, "planmode.input_answered"); count != 1 {
+		t.Fatalf("expected one answered history row after failed event append, got %d history=%#v", count, history)
+	}
+
+	eventsPath := filepath.Join(runner.store.SessionDir(sessionID), "events.jsonl")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatalf("remove blocked events path: %v", err)
+	}
+	if err := runner.appendPlanInputToolResult(sessionID, request.RequestID, session.PlanModeSourceWeb, answers); err != nil {
+		t.Fatalf("retry plan input answer event: %v", err)
+	}
+	messages, err = runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages after retry: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, request.ToolCallID, "request_user_input"); count != 1 {
+		t.Fatalf("retry should not duplicate replay tool result, got %d messages=%#v", count, messages)
+	}
+	history, err = runner.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load history after retry: %v", err)
+	}
+	if count := countRuntimePlanModeHistoryType(history, "planmode.input_answered"); count != 1 {
+		t.Fatalf("retry should not duplicate answered history, got %d history=%#v", count, history)
+	}
+	events, err := runner.store.LoadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("load events after retry: %v", err)
+	}
+	if count := countRuntimeEventType(events, "planmode.input_answered"); count != 1 {
+		t.Fatalf("retry should append one answered event, got %d events=%#v", count, events)
+	}
+}
+
 func TestCancelPlanModeReportsCancelledEventAppendError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
