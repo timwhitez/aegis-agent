@@ -136,8 +136,13 @@ func (s *Store) LoadMetadata(sessionID string) (SessionMetadata, error) {
 	if err != nil {
 		return meta, err
 	}
-	err = readJSONFile(path, &meta)
-	return meta, err
+	if err := readJSONFile(path, &meta); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return meta, err
+		}
+		return meta, fmt.Errorf("load session.json: %w", err)
+	}
+	return meta, nil
 }
 
 func (s *Store) SaveMetadata(sessionID string, meta SessionMetadata) error {

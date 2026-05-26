@@ -4154,6 +4154,34 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
+
+Severity: Low
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `session.json` as a core `SessionStore` fact and requires WebConsole to reuse local file facts rather than maintaining a second authority.
+- `spec/00-product.md` requires session, state, messages, and events to be file facts, with WebConsole serving as the default local operator surface.
+- `internal/webconsole/service.go` `requireSession` blocks session mutation routes by calling `Store.LoadMetadata`, but corrupt metadata errors came back as raw JSON parse text such as `unexpected end of JSON input`.
+- `internal/session/store.go` `LoadMetadata` returned `readJSONFile` errors directly, unlike nearby recovery hardening that names corrupt durable facts.
+- A focused pre-fix WebConsole regression corrupted `session.json`, then patched `/api/sessions/<id>/mission/plan`. Before the fix, the request failed before mutation, but the error body did not mention `session.json`.
+
+Impact:
+
+Operators diagnosing a corrupt session from Web routes could see only a generic JSON parse error without the file fact that needs repair or inspection. The route was already safely blocked, but the recovery signal was weaker than other corrupt durable-fact diagnostics in the repo.
+
+Minimal fix:
+
+- Wrap `LoadMetadata` read failures as `load session.json: ...`.
+- Preserve invalid session-id and missing-file classification by wrapping only the `readJSONFile` error, so `errors.Is(err, fs.ErrNotExist)` still works for Web 404 mapping.
+- Add focused WebConsole coverage proving a corrupt `session.json` route failure names the source file and does not mutate the Goal mission role plan.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving corrupt session metadata returned only a raw JSON parse error.
+- Focused post-fix WebConsole regression proving the same route now reports `session.json` and leaves the Goal mission role plan unchanged.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-165: Goal and Plan Mode history appends hide corrupt current snapshots
 
 Severity: Medium
@@ -5672,7 +5700,49 @@ Evidence gates:
 - Confirmed this is not a valid missing-snapshot compatibility issue: absent `goal.json` / `planmode.json` remains allowed for explicit history entries without an inferred ID, while malformed present snapshots must not be collapsed into no current ID.
 - Confirmed the minimal fix belongs in the store append helpers because they are the shared linkage point for callers that omit `GoalID` or `PlanModeID`, and strengthening only that point avoids adding workflow-specific guards.
 
+### Review 159
+
+- Confirmed FCA-20260526-166 against the session metadata fact-source requirements in `spec/00-product.md` and `spec/01-runtime-architecture.md`.
+- Confirmed this is a diagnostics hardening issue rather than an unsafe mutation: `requireSession` already blocks the Web route before the mission plan patch executes, but the returned error lacked the corrupt fact filename.
+- Confirmed the minimal fix belongs in `Store.LoadMetadata`, because it is the shared loader for `session.json` and wrapping only read errors preserves existing missing-session and invalid-ID classification.
+
 ## Update Log
+
+### FCA-20260526-166
+
+Slice: `fix(session): name corrupt metadata facts`
+
+Finding:
+
+- `Store.LoadMetadata` returned raw JSON/file read errors for malformed present `session.json`.
+- Before the fix, Web session routes such as mission plan patch failed safely, but the API error body only said `unexpected end of JSON input` and did not identify `session.json`.
+
+Changes:
+
+- Wrapped metadata read failures as `load session.json: ...`.
+- Kept session-id validation errors and missing session files compatible by wrapping only the `readJSONFile` result.
+- Added focused WebConsole coverage proving corrupt metadata route failures name `session.json` and do not mutate the Goal mission role plan.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionRolePlanReportsCorruptSessionMetadata -count=1`: failed before the fix because the error omitted `session.json`.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionRolePlanReportsCorruptSessionMetadata -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestStoreRejectsInvalidIDs|TestDeleteSessionTreeRemovesRootAndChildren|TestStoreLoadMetadata' -count=1`: passed, no matching tests were selected in this package.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceMissionRolePlanReportsCorruptSessionMetadata|TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs' -count=1`: passed after preserving missing `session.json` compatibility for legacy `os.IsNotExist` callers.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-165
 

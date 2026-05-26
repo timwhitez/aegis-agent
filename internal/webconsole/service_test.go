@@ -3204,6 +3204,58 @@ func TestServiceMissionRolePlanAppliesExactRoleProviderOverrides(t *testing.T) {
 	}
 }
 
+func TestServiceMissionRolePlanReportsCorruptSessionMetadata(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Providers["fallback"] = cfg.Providers["openai"]
+	fallback := cfg.Providers["fallback"]
+	fallback.Model = "fallback-model"
+	cfg.Providers["fallback"] = fallback
+	cfg.DefaultProvider = "fallback"
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_role_plan_corrupt_meta")
+	meta.Provider = "openai"
+	meta.Model = "gpt-5.4"
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Reject role defaults without session metadata",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	sessionPath := filepath.Join(svc.store.SessionDir(meta.ID), "session.json")
+	if err := os.WriteFile(sessionPath, []byte(`{"id":`), 0o600); err != nil {
+		t.Fatalf("write corrupt session metadata: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"role_plan": []map[string]any{
+			{"name": "Plan", "role": "planner", "scope": "split milestones"},
+		},
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "session.json") {
+		t.Fatalf("expected session.json error, got %#v", errResp)
+	}
+	goal, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if goal.Mission != nil && len(goal.Mission.RolePlan) != 0 {
+		t.Fatalf("failed role plan patch should not mutate goal, got %#v", goal.Mission.RolePlan)
+	}
+}
+
 func TestServiceStartSessionWithGoalPersistsGoal(t *testing.T) {
 	server := newGoalCompleteServer()
 	defer server.Close()
