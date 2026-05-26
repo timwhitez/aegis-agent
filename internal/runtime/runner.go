@@ -700,6 +700,8 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 					"plan_version": revised.PlanVersion,
 				}
 			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("load planmode.json: %w", err))
 		}
 	}
 	checkpointHint, checkpointWarnings, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)

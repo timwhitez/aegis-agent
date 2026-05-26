@@ -1060,6 +1060,73 @@ func TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage(t 
 	}
 }
 
+func TestContinueMessageReportsCorruptPlanModeSnapshot(t *testing.T) {
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_corrupt_planmode",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"should not run"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        3,
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		Retry:             config.Retry{MaxAttempts: 1},
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planModePath := filepath.Join(runner.store.SessionDir(sessionID), "planmode.json")
+	if err := os.WriteFile(planModePath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt planmode: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, Message: "revise the plan", Source: session.PlanModeSourceCLI})
+	if err == nil || !strings.Contains(err.Error(), "planmode.json") {
+		t.Fatalf("expected corrupt planmode error, got result=%#v err=%v", result, err)
+	}
+	if calls := providerCalls.Load(); calls != 0 {
+		t.Fatalf("provider must not run while planmode.json is corrupt, got %d calls", calls)
+	}
+	messages, loadErr := runner.store.LoadMessages(sessionID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Text == "revise the plan" {
+			t.Fatalf("corrupt planmode should fail before appending continuation message, got %#v", messages)
+		}
+	}
+}
+
 func TestActivePlanInputDeliveryClaimsWaiterBeforeSend(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

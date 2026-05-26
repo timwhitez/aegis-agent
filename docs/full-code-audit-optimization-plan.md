@@ -3775,6 +3775,34 @@ Validation:
 - Focused post-fix WebConsole regression proving session detail and task-board endpoints return HTTP 500 with `tasks/task_0002.json`.
 - Standard grouped validation before commit.
 
+### FCA-20260526-136: Plan Mode continue hides corrupt snapshot filename
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` define `planmode.json` as the durable Plan Mode execution-gate fact source.
+- `spec/00-product.md` documents that a normal `continue` message under `awaiting_approval` is treated as a Plan Mode revision, so `Runner.Continue` must load the current Plan Mode snapshot before accepting that message.
+- `internal/runtime/runner.go` loaded `planmode.json` in the normal-message `Continue` path but only handled the success case; every load error, including corrupt JSON in an existing `planmode.json`, was ignored.
+- The engine later reloaded Plan Mode during preparation and failed with a raw JSON parser error. A focused pre-fix runtime regression wrote invalid JSON to `planmode.json`; `Continue` failed before provider execution, but the returned error was `invalid character 'n' looking for beginning of object key string` and did not identify `planmode.json`.
+
+Impact:
+
+CLI and Web fallback `continue` recovery could surface a non-actionable raw JSON error for a corrupt Plan Mode gate instead of naming the unreadable durable fact file. Because the corrupt gate was not rejected at the revision-message branch, continuation preparation could advance past the point where it should have failed, weakening Plan Mode recovery diagnostics and making it harder to distinguish "no Plan Mode" from "Plan Mode snapshot is corrupt."
+
+Minimal fix:
+
+- In the normal-message `Continue` path, continue treating `fs.ErrNotExist` as "no Plan Mode".
+- For any other `LoadPlanMode` error, fail before checkpoint injection, continuation message append, or provider execution.
+- Wrap the error with `load planmode.json` so the failure names the corrupt durable snapshot.
+- Add a focused runtime regression proving the corrupt snapshot returns an error containing `planmode.json`, does not call the provider, and does not append the continuation user message.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `planmode.json` returned a raw JSON parser error without the snapshot filename.
+- Focused post-fix runtime regression proving corrupt `planmode.json` is reported before provider execution or continuation message append.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4596,6 +4624,12 @@ Evidence gates:
 - Confirmed FCA-20260526-135 against the persistent task graph requirements in `spec/12-task-system.md`, runtime context-loading requirements in `spec/01-runtime-architecture.md`, and Web task-board requirements in `spec/17-web-console.md`.
 - Confirmed this is not an optional missing-directory issue: sessions without `tasks/` may still have an empty durable task graph, but a present malformed `tasks/task_*.json` file is a corrupt fact that must be surfaced.
 - Confirmed the minimal fix belongs in the shared store task reader because the same hidden-error pattern affects Web detail, CLI/SDK `tasks`, runtime prompt context, compaction/checkpoint inputs, and mutating task operations.
+
+### Review 129
+
+- Confirmed FCA-20260526-136 against the Plan Mode fact-source and approval/revision semantics in `spec/00-product.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a provider-execution bypass: the focused pre-fix regression showed the provider was not reached, while the bug is the late, filename-less corrupt snapshot failure in the `continue` recovery path.
+- Confirmed the minimal fix belongs in `Runner.Continue` because that is where a normal continuation message is classified as a Plan Mode revision; the engine should not be the first code path to discover an unreadable pending gate after continuation preparation has already advanced.
 
 ## Update Log
 
@@ -7765,6 +7799,43 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestServiceTaskBoardReportsCorruptTaskFile -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/session/store.go internal/session/taskboard_test.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-136
+
+Slice: `fix(runtime): report corrupt plan mode continuation state`
+
+Finding:
+
+- Normal-message `Continue` ignored non-missing `planmode.json` load errors while checking whether the message should revise a pending Plan Mode.
+- Before the fix, corrupt `planmode.json` failed later with a raw JSON parser error that did not name the durable snapshot file.
+
+Changes:
+
+- Changed `Runner.Continue` to distinguish absent Plan Mode snapshots from corrupt/unreadable snapshots.
+- Preserved `fs.ErrNotExist` as "no Plan Mode" for ordinary non-Plan continuations.
+- Returned a pre-run failure wrapping non-missing Plan Mode load errors with `load planmode.json`.
+- Added a focused runtime regression proving corrupt Plan Mode continuation state does not call the provider or append the continuation message.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestContinueMessageReportsCorruptPlanModeSnapshot -count=1`: failed before the fix because corrupt `planmode.json` returned a raw JSON parser error without `planmode.json`.
+- `go test -timeout 120s ./internal/runtime -run TestContinueMessageReportsCorruptPlanModeSnapshot -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ContinueMessageReportsCorruptPlanModeSnapshot|RevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage|ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApproveLinkedPlanModeMarksMissionPlanApproved|ApproveLinkedPlanModeBlocksUncoveredMissionValidation)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
