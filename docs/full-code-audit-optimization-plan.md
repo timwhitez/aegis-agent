@@ -2855,6 +2855,36 @@ Validation:
 - Adjacent Plan Mode runtime/session tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-104: Plan Mode approval retry can strand missing replay message
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md` require Plan Mode approval to leave a replayable `meta.source=planmode_approval` user message before execution resumes.
+- `internal/runtime/runner.go` `Continue` advanced Plan Mode through `ApprovePlanMode`, required approval/execution events, and linked mission approval before appending the approval user message through `appendUserMessage`.
+- If `messages.jsonl` append failed at that point, `Continue` returned an error while `planmode.json` was already `executing`, the linked mission plan could already be approved, and no replayable approval user message existed.
+- A retry with `ApprovePlan=true` then failed pre-provider because `ApprovePlanMode` rejected the already-`executing` Plan Mode, so the operator could not use the same approval action to write the missing replay fact and continue.
+- A focused regression replaced `messages.jsonl` with a directory during approval, restored the path, and retried approval. Before the fix, the retry stopped with `plan mode is not awaiting approval: executing`.
+
+Impact:
+
+An approval crash or filesystem failure at the replay-message boundary could leave durable Plan Mode/mission control facts saying approval/execution started while provider replay lacked the required user approval message. The normal retry path then refused to proceed, forcing manual repair of session files.
+
+Minimal fix:
+
+- Make runtime Plan Mode approval recovery idempotent across `awaiting_approval`, `approved`, and `executing` states.
+- Re-emit missing required Plan Mode approval/execution events only when the same Plan Mode id and approved version are absent from `events.jsonl`.
+- Allow an already-`executing` approved Plan Mode to proceed to linked mission approval and approval-message append without re-mutating Plan Mode history.
+- Add focused runtime coverage that blocks `messages.jsonl`, verifies the provider does not run without the replay message, restores the path, retries approval, and verifies exactly one `planmode_approval` user message is written.
+
+Validation:
+
+- Focused pre-fix runtime regression proving retry failed from the partially advanced approval state.
+- Focused post-fix runtime regression for the same path.
+- Adjacent Plan Mode approval/input runtime tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3484,6 +3514,12 @@ Evidence gates:
 - Confirmed FCA-20260526-103 against recovered Plan Mode input replay requirements in `spec/01-runtime-architecture.md`, provider tool-result replay rules in `spec/03-provider-contracts.md`, and Plan Mode recovery requirements in `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is a replay-safety issue rather than a display-only history gap: the failure path clears the stored pending request before writing the `request_user_input` tool result required for provider replay.
 - Confirmed the minimal fix belongs around the runtime recovered input composition; the store-level `AnswerPlanModeInput` transition is valid by itself, but runtime composes it with a required message append and must roll both durable Plan Mode facts back when the replay message write fails.
+
+### Review 97
+
+- Confirmed FCA-20260526-104 against Plan Mode approval replay requirements in `spec/01-runtime-architecture.md`, provider replay rules in `spec/03-provider-contracts.md`, Web approval behavior in `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is distinct from missing Plan Mode control events: the required events and history can be present, while the replayable `planmode_approval` user message is still missing after `messages.jsonl` append failure.
+- Confirmed the minimal fix should make approval retry idempotent for already-approved/executing Plan Mode states instead of rolling back established history-backed approval facts or treating all runtime events as transactional.
 
 ## Update Log
 
@@ -5563,6 +5599,42 @@ Validation:
 - `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/session/planmode.go internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-104
+
+Slice: `fix(runtime): retry failed plan approval replay`
+
+Finding:
+
+- Runtime Plan Mode approval could persist approval/execution and linked mission facts before appending the required `meta.source=planmode_approval` user message to `messages.jsonl`.
+- With `messages.jsonl` blocked, the first approval failed before provider execution and left no replayable approval message. A later approval retry then failed because the Plan Mode snapshot was already `executing`.
+
+Changes:
+
+- Added an idempotent runtime approval helper that accepts `awaiting_approval`, `approved`, and `executing` Plan Mode states.
+- Re-appends missing required Plan Mode approval/execution events only when the same Plan Mode id and approved version are absent.
+- Allows approval retry to append the missing replayable approval user message and continue without re-mutating Plan Mode history.
+- Added focused runtime coverage for blocked `messages.jsonl` during approval and retry after restoring the path.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage -count=1`: failed before the fix with `plan mode is not awaiting approval: executing`.
+- `go test -timeout 120s ./internal/runtime -run TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|ApprovePlanModeReportsPlanApprovedEventAppendError|ApproveLinkedMissionPlanReportsEventAppendError|ApproveLinkedPlanModeMarksMissionPlanApproved|ApproveLinkedPlanModeBlocksUncoveredMissionValidation|CancelPlanModeReportsCancelledEventAppendError|PlanInputAnswerRollsBackWhenToolResultAppendFails|PlanInputCancelReturnsHistoryAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(PlanModeInputValidationAndAnswer|SubmitPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError|PlanModeSubmitApproveAndHistory|RestorePlanModeSnapshotRemovesCreatedPlanMode)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.

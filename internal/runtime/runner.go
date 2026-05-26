@@ -665,19 +665,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err := r.checkPlanModeGoalCoverage(meta.ID, req.OverrideGoalCoverage); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
-		approved, err := r.store.ApprovePlanMode(meta.ID, source)
+		executing, err := r.ensurePlanModeExecutingForApproval(meta.ID, source)
 		if err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
-		}
-		if err := r.appendEvent(meta.ID, "planmode.plan_approved", "planmode", planModeEventData(approved)); err != nil {
-			return r.failBeforeRun(meta.ID, state, "planmode", err)
-		}
-		executing, err := r.store.MarkPlanModeExecuting(meta.ID, source)
-		if err != nil {
-			return r.failBeforeRun(meta.ID, state, "prepare", err)
-		}
-		if err := r.appendEvent(meta.ID, "planmode.execution_started", "planmode", planModeEventData(executing)); err != nil {
-			return r.failBeforeRun(meta.ID, state, "planmode", err)
 		}
 		if err := r.approveLinkedMissionPlan(meta.ID, executing, source, req.OverrideGoalCoverage); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
@@ -744,6 +734,113 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func (r *Runner) ensurePlanModeExecutingForApproval(sessionID, source string) (session.PlanModeState, error) {
+	planMode, err := r.store.LoadPlanMode(sessionID)
+	if err != nil {
+		return session.PlanModeState{}, err
+	}
+	switch planMode.Status {
+	case session.PlanModeStatusAwaitingApproval:
+		approved, err := r.store.ApprovePlanMode(sessionID, source)
+		if err != nil {
+			return session.PlanModeState{}, err
+		}
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_approved", approved); err != nil {
+			return session.PlanModeState{}, err
+		}
+		executing, err := r.store.MarkPlanModeExecuting(sessionID, source)
+		if err != nil {
+			return session.PlanModeState{}, err
+		}
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.execution_started", executing); err != nil {
+			return session.PlanModeState{}, err
+		}
+		return executing, nil
+	case session.PlanModeStatusApproved:
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_approved", planMode); err != nil {
+			return session.PlanModeState{}, err
+		}
+		executing, err := r.store.MarkPlanModeExecuting(sessionID, source)
+		if err != nil {
+			return session.PlanModeState{}, err
+		}
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.execution_started", executing); err != nil {
+			return session.PlanModeState{}, err
+		}
+		return executing, nil
+	case session.PlanModeStatusExecuting:
+		if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
+			return session.PlanModeState{}, errors.New("plan mode has no approved plan")
+		}
+		approvalEvent := planMode
+		approvalEvent.Status = session.PlanModeStatusApproved
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_approved", approvalEvent); err != nil {
+			return session.PlanModeState{}, err
+		}
+		if err := r.appendPlanModeEventOnce(sessionID, "planmode.execution_started", planMode); err != nil {
+			return session.PlanModeState{}, err
+		}
+		return planMode, nil
+	default:
+		return session.PlanModeState{}, fmt.Errorf("plan mode is not awaiting approval: %s", planMode.Status)
+	}
+}
+
+func (r *Runner) appendPlanModeEventOnce(sessionID, eventType string, planMode session.PlanModeState) error {
+	recorded, err := r.hasPlanModeEvent(sessionID, eventType, planMode)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return nil
+	}
+	return r.appendEvent(sessionID, eventType, "planmode", planModeEventData(planMode))
+}
+
+func (r *Runner) hasPlanModeEvent(sessionID, eventType string, planMode session.PlanModeState) (bool, error) {
+	eventType = strings.TrimSpace(eventType)
+	planModeID := strings.TrimSpace(planMode.PlanModeID)
+	if eventType == "" || planModeID == "" {
+		return false, nil
+	}
+	items, err := r.store.LoadEvents(sessionID)
+	if err != nil {
+		return false, err
+	}
+	for _, item := range items {
+		if item.Type != eventType {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(item.Data["plan_mode_id"])) != planModeID {
+			continue
+		}
+		if eventType == "planmode.plan_approved" && intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
+			continue
+		}
+		if eventType == "planmode.execution_started" && intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func intFromEventData(data map[string]any, key string) int {
+	switch value := data[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		out, _ := value.Int64()
+		return int(out)
+	default:
+		return 0
+	}
 }
 
 func (r *Runner) checkPlanModeGoalCoverage(sessionID string, override bool) error {
