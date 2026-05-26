@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -491,6 +492,28 @@ func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
 	}
 	if checkpoint.TaskSummary["completed"] != 1 || checkpoint.TaskSummary["cancelled"] != 1 || checkpoint.TaskSummary["done"] != 2 || checkpoint.TaskSummary["total"] != 2 {
 		t.Fatalf("expected checkpoint to separate cancelled tasks, got %#v", checkpoint.TaskSummary)
+	}
+}
+
+func TestLongRunCheckpointReportsCorruptTaskGraph(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	meta.ParentSessionID = "parent-session"
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if _, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "preserve corrupt task evidence"}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "tasks", "task_0001.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt task: %v", err)
+	}
+
+	err := writeLongRunCheckpoint(store, meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "tasks/task_0001.json") {
+		t.Fatalf("expected corrupt task graph error, got %v", err)
+	}
+	if _, loadErr := store.LoadLongRunCheckpoint(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("expected no misleading checkpoint after corrupt task graph, got %v", loadErr)
 	}
 }
 

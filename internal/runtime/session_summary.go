@@ -326,7 +326,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	goal, goalErr := store.LoadGoal(sessionID)
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
 	todo, _ := store.LoadTodo(sessionID)
-	tasks, _ := store.ListTasks(sessionID)
+	tasks, err := store.ListTasks(sessionID)
+	if err != nil {
+		return fmt.Errorf("load tasks for long-run checkpoint: %w", err)
+	}
 	children, _ := store.ListChildren(sessionID, 100)
 	jobs, _ := store.ListJobsByParent(sessionID, 100)
 	notifications, _ := store.LoadBackgroundNotifications(sessionID)

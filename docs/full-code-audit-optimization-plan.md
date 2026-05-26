@@ -4154,6 +4154,36 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-154: Long-run checkpoint hides corrupt task graph facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines `tasks/task_*.json` as the durable persistent task graph for long-running work, recovery, and ready/blocked/done calculation.
+- `spec/18-durable-contract-and-completion.md` says long-run checkpoints record todo/task summary as a resume index, not a replacement for the source task files.
+- `FCA-20260526-135` fixed `ListTasks` so corrupt `tasks/task_*.json` files are reported rather than silently dropped.
+- `internal/runtime/session_summary.go` `writeLongRunCheckpoint` still called `tasks, _ := store.ListTasks(sessionID)`, discarding the now-meaningful corrupt-task error before writing `checkpoints/longrun-latest.json`.
+- A focused pre-fix regression corrupted `tasks/task_0001.json` in a parent-linked session. Before the fix, `writeLongRunCheckpoint` returned nil and wrote a checkpoint with an empty task summary.
+
+Impact:
+
+Long-running recovery could overwrite or create a checkpoint that says the durable task graph is empty while a present task file is corrupt. That misleads resume/handoff context and weakens the task graph recovery guarantees established by the store-level corrupt-task fix.
+
+Minimal fix:
+
+- Propagate `ListTasks` errors from `writeLongRunCheckpoint` with `load tasks for long-run checkpoint` context.
+- Preserve missing `tasks/` directory / no-task behavior because `ListTasks` already returns an empty task graph for that optional case.
+- Do not write a misleading long-run checkpoint when the task graph is corrupt.
+- Add focused runtime coverage proving corrupt task files stop checkpoint writing and no checkpoint artifact is left behind.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `tasks/task_0001.json` was hidden and a misleading checkpoint was written.
+- Focused post-fix runtime regression proving corrupt task graph state is reported with the task filename and no checkpoint is written.
+- Existing checkpoint task-summary and provider-attempt checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-153: Checkpoint resume hints hide corrupt contract drift state
 
 Severity: Medium
@@ -5233,7 +5263,47 @@ Evidence gates:
 - Confirmed this is not a no-contract compatibility issue: a genuinely missing current `contract.json` can still be summarized as checkpoint drift, but a malformed existing contract file must be surfaced as corrupt state.
 - Confirmed the minimal fix belongs in `checkpointDriftWarnings`, because that helper is the point where the current contract fact is compared to the checkpoint snapshot before `appendCheckpointResumeHint` writes a new harness reminder.
 
+### Review 147
+
+- Confirmed FCA-20260526-154 against the persistent task graph requirements in `spec/12-task-system.md` and the checkpoint resume-index boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a missing optional taskboard issue: `ListTasks` still returns an empty graph when no durable task files exist, while a present malformed `tasks/task_*.json` is corrupt recovery state.
+- Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because the shared store already reports corrupt task files and only the checkpoint writer was still discarding that error.
+
 ## Update Log
+
+### FCA-20260526-154
+
+Slice: `fix(runtime): report corrupt checkpoint task graph`
+
+Finding:
+
+- `writeLongRunCheckpoint` discarded `ListTasks` errors while building `checkpoints/longrun-latest.json`.
+- Before the fix, corrupt `tasks/task_0001.json` in a parent-linked session produced a successful checkpoint with an empty task summary.
+
+Changes:
+
+- Propagated `ListTasks` errors from `writeLongRunCheckpoint` as `load tasks for long-run checkpoint`.
+- Preserved no-task compatibility through the store's existing missing-directory empty-list behavior.
+- Added focused runtime coverage proving corrupt task graph state prevents a misleading checkpoint artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptTaskGraph -count=1`: failed before the fix because corrupt task graph state returned nil from checkpoint writing.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsCorruptTaskGraph|TestSessionSummaryAndCheckpointSeparateCancelledTasks|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-153
 
