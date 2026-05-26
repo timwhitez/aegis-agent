@@ -3378,6 +3378,33 @@ Validation:
 - Focused post-fix WebConsole regression proving the alias is rejected before persistence.
 - Standard grouped validation before commit.
 
+### FCA-20260526-122: Web API-key invalid env values fail after writing secrets
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats Settings API-key writes as sensitive local mutations requiring clear failure behavior.
+- `internal/webconsole/service.go` `handleUpdateConfig` wrote `config.yaml`, then wrote the submitted API key into `.env`, and only afterwards called `os.Setenv`.
+- Go rejects NUL-containing environment values, but `preflightWebAPIKeyUpdate` did not validate the API-key value before persistence.
+- A focused WebConsole regression submitted `api_key: "sk-invalid\x00value"`. Before the fix, `/api/config` returned HTTP 500 from late `setenv: invalid argument` after the config and `.env` write paths had already run.
+
+Impact:
+
+A malformed secret value could make Settings report failure while still persisting a submitted secret into `.env` and persisting provider/model config changes. The process environment would not match durable files, and retry/recovery would be ambiguous.
+
+Minimal fix:
+
+- Reject NUL-containing API-key values in the existing Web API-key preflight.
+- Run that check before config, env-file, process environment, or audit mutation.
+- Add focused WebConsole coverage asserting invalid values leave no config file, env file secret, or process env mutation.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving invalid env values failed at late `os.Setenv`.
+- Focused post-fix WebConsole regression proving invalid env values are rejected before persistence.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4115,6 +4142,12 @@ Evidence gates:
 - Confirmed FCA-20260526-121 against Settings auditability requirements in `spec/17-web-console.md` and file-fact consistency requirements in `spec/01-runtime-architecture.md`.
 - Confirmed this is distinct from FCA-20260526-120: that path aliases config and API-key env file, while this one aliases config and the Web audit JSONL file and can occur even without an API-key update.
 - Confirmed the minimal fix should stay in Web Settings preflight. The audit log writer, config writer, Settings frontend, and audit event schema do not need to change for this slice.
+
+### Review 115
+
+- Confirmed FCA-20260526-122 against Settings API-key sensitivity requirements in `spec/17-web-console.md` and provider API-key configuration behavior in `spec/03-provider-contracts.md`.
+- Confirmed this is distinct from FCA-20260526-119: that issue validates the env key name, while this issue validates the env value before the same late `os.Setenv` failure point.
+- Confirmed the minimal fix should stay in Web Settings API-key preflight; config/env-file formatting, Settings UI behavior, and provider adapters do not need to change for this slice.
 
 ## Update Log
 
@@ -6795,6 +6828,40 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigRejectsConfigPathAsAuditLog -count=1`: failed before the fix with HTTP 200.
 - `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigRejectsConfigPathAsAuditLog -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'Test(UpdateConfigRejectsConfigPathAsAuditLog|APIKeyWriteRejectsConfigPathAsEnvFile)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-122
+
+Slice: `fix(webconsole): preflight API key env values`
+
+Finding:
+
+- Web Settings accepted NUL-containing API-key values and only failed when `os.Setenv` ran after config and `.env` persistence.
+- Before the fix, `/api/config` returned HTTP 500 from late `setenv: invalid argument` while the API key write path had already run.
+
+Changes:
+
+- Added NUL-value validation to the existing Web API-key preflight.
+- Kept the check before config, env-file, process environment, or audit mutation.
+- Added focused WebConsole coverage proving invalid values leave no config file, env file secret, or process env mutation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence -count=1`: failed before the fix with late `setenv: invalid argument`.
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|RejectsInvalidEnvKeyBeforePersistence|RejectsInvalidEnvValueBeforePersistence|RejectsConfigPathAsEnvFile|DoesNotLogSecretValue)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.
