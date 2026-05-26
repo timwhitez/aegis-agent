@@ -4154,6 +4154,36 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-159: Long-run checkpoint hides corrupt todo state
+
+Severity: Medium
+
+Evidence:
+
+- `spec/12-task-system.md` defines `todo.json` as the session todo snapshot and says long-task checkpoints read todo/task derived state while remaining resume indexes, not source facts.
+- `spec/18-durable-contract-and-completion.md` says long-run checkpoints record todo/task summary and resume hints, but the checkpoint is not a replacement for messages/events/state or source task files.
+- `FCA-20260526-099` hardened `todo_write` to report unreadable `todo.json`, and `FCA-20260526-155` hardened `session.md` to display corrupt todo state.
+- `internal/runtime/session_summary.go` `writeLongRunCheckpoint` still called `todo, _ := store.LoadTodo(sessionID)`, discarding corrupt todo load errors before writing `checkpoints/longrun-latest.json`.
+- A focused pre-fix regression corrupted `todo.json` in a parent-linked session. Before the fix, `writeLongRunCheckpoint` returned nil and could write a checkpoint with an empty todo summary.
+
+Impact:
+
+Long-running recovery could create or overwrite a checkpoint that omits todo state while the real `todo.json` snapshot is corrupt. That misleads resume/handoff context and weakens the same durable task-state recovery guarantees already applied to task graph files and `session.md`.
+
+Minimal fix:
+
+- Propagate `LoadTodo` errors from `writeLongRunCheckpoint` with `load todo.json for long-run checkpoint` context.
+- Preserve missing or empty todo compatibility because `LoadTodo` already returns an empty list for the optional missing-file case.
+- Do not write a misleading long-run checkpoint when the todo snapshot is corrupt.
+- Add focused runtime coverage proving corrupt `todo.json` stops checkpoint writing and no checkpoint artifact is left behind.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `todo.json` was hidden by checkpoint writing.
+- Focused post-fix runtime regression proving corrupt todo state is reported with `todo.json` and no checkpoint is written.
+- Existing corrupt task graph, cancelled-task checkpoint, and provider-attempt checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-158: Session summary hides corrupt message and event logs
 
 Severity: Medium
@@ -5416,7 +5446,48 @@ Evidence gates:
 - Confirmed this is not an authority/gate change: valid empty message/event logs still render with no observed tool repetition or owner clue, while malformed present logs should be visible in `session.md` as diagnostics.
 - Confirmed the minimal fix belongs in `writeSessionSummary`; store loaders already report corrupt logs, and only the Markdown summary was still collapsing those errors into ordinary absence.
 
+### Review 152
+
+- Confirmed FCA-20260526-159 against the persistent todo requirements in `spec/12-task-system.md` and the checkpoint resume-index boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a missing optional todo compatibility issue: `LoadTodo` still returns an empty list for absent or empty todo state, while malformed present `todo.json` is corrupt recovery state.
+- Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because store and summary paths already report corrupt todo state and only the checkpoint writer was still discarding that error.
+
 ## Update Log
+
+### FCA-20260526-159
+
+Slice: `fix(runtime): report corrupt checkpoint todo state`
+
+Finding:
+
+- `writeLongRunCheckpoint` discarded `LoadTodo` errors while building `checkpoints/longrun-latest.json`.
+- Before the fix, corrupt `todo.json` in a parent-linked session returned nil from checkpoint writing and could produce a checkpoint with an empty todo summary.
+
+Changes:
+
+- Propagated `LoadTodo` errors from `writeLongRunCheckpoint` as `load todo.json for long-run checkpoint`.
+- Preserved empty/missing todo compatibility through the store's existing missing-file empty-list behavior.
+- Added focused runtime coverage proving corrupt todo state prevents a misleading checkpoint artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptTodoState -count=1`: failed before the fix because corrupt todo state returned nil from checkpoint writing.
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointReportsCorruptTodoState -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsCorrupt(TodoState|TaskGraph)|TestSessionSummaryAndCheckpointSeparateCancelledTasks|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-158
 

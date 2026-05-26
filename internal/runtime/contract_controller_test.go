@@ -709,6 +709,25 @@ func TestLongRunCheckpointReportsCorruptTaskGraph(t *testing.T) {
 	}
 }
 
+func TestLongRunCheckpointReportsCorruptTodoState(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	meta.ParentSessionID = "parent-session"
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "todo.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt todo: %v", err)
+	}
+
+	err := writeLongRunCheckpoint(store, meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "todo.json") {
+		t.Fatalf("expected corrupt todo error, got %v", err)
+	}
+	if _, loadErr := store.LoadLongRunCheckpoint(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("expected no misleading checkpoint after corrupt todo state, got %v", loadErr)
+	}
+}
+
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

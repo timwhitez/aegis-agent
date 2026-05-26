@@ -348,7 +348,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	artifacts, _ := store.LoadArtifactTracker(sessionID)
 	goal, goalErr := store.LoadGoal(sessionID)
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
-	todo, _ := store.LoadTodo(sessionID)
+	todo, err := store.LoadTodo(sessionID)
+	if err != nil {
+		return fmt.Errorf("load todo.json for long-run checkpoint: %w", err)
+	}
 	tasks, err := store.ListTasks(sessionID)
 	if err != nil {
 		return fmt.Errorf("load tasks for long-run checkpoint: %w", err)
