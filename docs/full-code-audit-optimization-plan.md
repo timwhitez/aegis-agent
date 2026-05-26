@@ -3183,6 +3183,35 @@ Validation:
 - Focused post-fix WebConsole regression for the same path and adjacent pending Plan Mode queue gate.
 - Standard grouped validation before commit.
 
+### FCA-20260526-115: Queue submit leaves queued job after parent coordination failure
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires parent / queue coordination facts to make child and queue work visible through durable local state.
+- `spec/18-durable-contract-and-completion.md` requires parent coordination to block parent completion while unresolved explicit queue work remains.
+- `internal/runtime/delegation.go` `QueueSubmit` wrote the queue job with `store.EnqueueJob(job)` before adding the job to `parent-coordination.json`.
+- If `addParentQueueJob` failed, `QueueSubmit` returned an error but did not remove the already-queued job.
+- The existing parent-coordination error regression only asserted that an error was returned. Extending it to list queue jobs after the failed submit showed the failed request left a queued job available for worker pickup before the fix.
+
+Impact:
+
+The Web/API/CLI caller could see queue submission fail while a background worker still consumes the child job. The parent session would not have the matching unresolved queue coordination fact, so parent completion gates, recovery views, and background observability could miss work that is actually running.
+
+Minimal fix:
+
+- Add a narrow `Store.DeleteJob` wrapper around the existing locked queue job deletion helper.
+- When parent coordination fails after `EnqueueJob`, delete the just-created queue job before returning the coordination error.
+- If rollback deletion also fails, return an error that includes both the original coordination failure and the rollback failure.
+- Extend the parent-coordination error regression to assert no queued job remains after the failed submit.
+
+Validation:
+
+- Focused pre-fix runtime regression proving failed parent coordination left a queued job behind.
+- Focused post-fix runtime regression for rollback on parent coordination failure.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3878,6 +3907,12 @@ Evidence gates:
 - Confirmed FCA-20260526-114 against Web error-class requirements in `spec/17-web-console.md`, queue durability requirements in `spec/01-runtime-architecture.md`, and runtime `QueueSubmit` write ordering in `internal/runtime/delegation.go`.
 - Confirmed this is distinct from FCA-20260526-113: steer writes `control/steer.jsonl`, while queue submit writes global `_queue` job facts and optional parent coordination facts.
 - Confirmed the minimal fix should stay in the Web service HTTP adapter. Runtime queue behavior, queue store layout, provider selection, and frontend queue UI do not need to change for this slice.
+
+### Review 108
+
+- Confirmed FCA-20260526-115 against parent coordination requirements in `spec/18-durable-contract-and-completion.md`, queue durability requirements in `spec/01-runtime-architecture.md`, and `QueueSubmit` ordering in `internal/runtime/delegation.go`.
+- Confirmed this is not a Web status classification issue: even direct runtime queue submit could return an error after leaving a durable queued job available for workers.
+- Confirmed the minimal fix should roll back only the just-created queue job on the parent-link failure path, without changing worker processing, queue status precedence, or parent coordination semantics.
 
 ## Update Log
 
@@ -6326,6 +6361,40 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-115
+
+Slice: `fix(runtime): roll back failed parent queue link`
+
+Finding:
+
+- `Runner.QueueSubmit` persisted a queued job before adding the job to parent coordination.
+- If `parent-coordination.json` could not be written, `QueueSubmit` returned an error while leaving the queued job available for worker pickup with no matching parent unresolved-work fact.
+
+Changes:
+
+- Added public `Store.DeleteJob` backed by the existing locked queue job deletion helper.
+- Rolled back the just-created queue job when parent coordination persistence fails after `EnqueueJob`.
+- Preserved rollback failure visibility by returning an error that includes the original parent coordination failure and the delete failure.
+- Extended the parent coordination error regression to assert no queued job remains after failed submit.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerQueueSubmitReportsParentCoordinationError -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerQueueSubmitReportsParentCoordinationError|TestRunnerQueueSubmitAndWorkerCompletesJob|TestRunnerProcessNextJobReportsParentCoordinationError' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/runtime/delegation.go internal/runtime/delegation_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.

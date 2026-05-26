@@ -494,6 +494,13 @@ func TestRunnerQueueSubmitReportsParentCoordinationError(t *testing.T) {
 	if !strings.Contains(err.Error(), "parent-coordination.json") {
 		t.Fatalf("expected parent coordination path error, got %v", err)
 	}
+	jobs, listErr := runner.store.ListJobs(10)
+	if listErr != nil {
+		t.Fatalf("list jobs after failed queue submit: %v", listErr)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("expected failed parent-linked queue submit to roll back queued job, got %#v", jobs)
+	}
 }
 
 func TestRunnerProcessNextJobReportsParentCoordinationError(t *testing.T) {

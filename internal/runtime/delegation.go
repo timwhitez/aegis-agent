@@ -336,6 +336,9 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	}
 	if job.ParentSessionID != "" {
 		if err := addParentQueueJob(r.store, job.ParentSessionID, job.ID, job.WaitMode); err != nil {
+			if deleteErr := r.store.DeleteJob(job.ID); deleteErr != nil {
+				return session.QueueJob{}, fmt.Errorf("persist parent coordination for queue job %s failed with %v; delete queued job after failed parent coordination: %w", job.ID, err, deleteErr)
+			}
 			return session.QueueJob{}, err
 		}
 		_ = writeSessionSummary(r.store, job.ParentSessionID)

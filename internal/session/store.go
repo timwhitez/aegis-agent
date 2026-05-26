@@ -1111,6 +1111,12 @@ func (s *Store) SaveJob(job QueueJob) error {
 	return s.saveJobLocked(job)
 }
 
+func (s *Store) DeleteJob(jobID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deleteJobLocked(jobID)
+}
+
 func (s *Store) saveJobLocked(job QueueJob) error {
 	if err := validateStoreID("queue job", job.ID); err != nil {
 		return err
