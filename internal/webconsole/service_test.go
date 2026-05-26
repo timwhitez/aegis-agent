@@ -1913,6 +1913,67 @@ func TestServiceMissionPlanApproveReportsHistoryLoadErrorAsServerError(t *testin
 	}
 }
 
+func TestServiceMissionPlanApproveReportsLinkedPlanModeEventAppendError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_approve_planmode_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Require linked plan mode event",
+		ValidationPlan:      []string{"manual: validate approval"},
+		Features:            []string{"approval gate"},
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, _, err := svc.store.RecordGoalProgress(meta.ID, session.GoalProgressInput{
+		Source: session.GoalSourceTool,
+		Kind:   "validation",
+		FeatureUpdates: []session.MissionFeatureProgressUpdate{{
+			ID:                "feature_0001",
+			ClaimedAssertions: []string{"validation_0001"},
+		}},
+		ValidationUpdates: []session.GoalValidationProgressUpdate{{
+			ID:     "validation_0001",
+			Status: "verified",
+		}},
+	}); err != nil {
+		t.Fatalf("record coverage progress: %v", err)
+	}
+	beforeGoal, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal before failed approval: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "events.jsonl") {
+		t.Fatalf("expected events path in error, got %#v", errResp)
+	}
+	loaded, loadErr := svc.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal after failed approval: %v", loadErr)
+	}
+	if loaded.GoalID != beforeGoal.GoalID || loaded.Mission == nil || loaded.Mission.PlanStatus != beforeGoal.Mission.PlanStatus {
+		t.Fatalf("failed linked plan mode event should restore pre-request goal, before=%#v after=%#v", beforeGoal, loaded)
+	}
+	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
+		t.Fatalf("failed linked plan mode event should restore absent plan mode, got plan=%#v err=%v", planMode, planErr)
+	}
+}
+
 func TestServiceMissionPlanApproveRejectsGoalWithoutMissionPlan(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

@@ -1068,11 +1068,14 @@ func (s *Service) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessi
 		return
 	} else if created {
 		planModeChanged = true
-		_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
-			"plan_mode_id":   planMode.PlanModeID,
-			"status":         planMode.Status,
-			"linked_goal_id": planMode.LinkedGoalID,
-		}))
+		if err := s.appendLinkedPlanModeCreatedEvent(sessionID, planMode); err != nil {
+			if restoreErr := s.restoreGoalCreateAfterPlanModeError(sessionID, previousPlanMode, previousTasks, previousHistory, err); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, restoreErr)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	} else if planMode.PlanModeID != "" && planMode.LinkedGoalID == goal.GoalID && previousPlanMode.State.LinkedGoalID != goal.GoalID {
 		planModeChanged = true
 	}
@@ -1198,11 +1201,18 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		}
 		planModeChanged = webPlanModeChanged(previousPlanMode, planMode, created)
 		if created {
-			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
-				"plan_mode_id":   planMode.PlanModeID,
-				"status":         planMode.Status,
-				"linked_goal_id": planMode.LinkedGoalID,
-			}))
+			if err := s.appendLinkedPlanModeCreatedEvent(sessionID, planMode); err != nil {
+				if restoreErr := s.restoreGoalPatchAfterPlanModeError(sessionID, current, previousPlanMode, previousTasks, tasksSnapshotLoaded, err); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, restoreErr)
+					return
+				}
+				if restoreErr := s.restoreGoalHistoryAfterMutationError(sessionID, previousHistory, err, "linked plan mode event"); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, restoreErr)
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 	}
 	if err := s.appendGoalMutation(sessionID, goal, "goal.updated", map[string]any{
@@ -1424,11 +1434,18 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		planModeCreated = created
 		planModeChanged = webPlanModeChanged(previousPlanMode, planMode, created)
 		if created {
-			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
-				"plan_mode_id":   planMode.PlanModeID,
-				"status":         planMode.Status,
-				"linked_goal_id": planMode.LinkedGoalID,
-			}))
+			if err := s.appendLinkedPlanModeCreatedEvent(sessionID, planMode); err != nil {
+				if restoreErr := s.restoreGoalPatchAfterPlanModeError(sessionID, current, previousPlanMode, previousTasks, tasksSnapshotLoaded, err); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, restoreErr)
+					return
+				}
+				if restoreErr := s.restoreGoalHistoryAfterMutationError(sessionID, previousHistory, err, "linked plan mode event"); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, restoreErr)
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 	}
 	if err := s.appendGoalMutation(sessionID, goal, "mission.plan.updated", map[string]any{
@@ -1472,6 +1489,7 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 		writeError(w, goalStoreStatus(err), err)
 		return
 	}
+	previousGoal := goal
 	goal.Mode = session.GoalModeMission
 	mission := ensureMissionPlan(goal.Mission)
 	if err := ensureWebMissionCoverage(goal, req.OverrideCoverage); err != nil {
@@ -1528,17 +1546,38 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if session.GoalRequiresPlanApproval(goal) {
+		previousHistory, err := s.store.LoadGoalHistory(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		previousPlanMode, err := s.store.SnapshotPlanMode(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		planMode, created, err := s.store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceWeb)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 		if created {
-			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
-				"plan_mode_id":   planMode.PlanModeID,
-				"status":         planMode.Status,
-				"linked_goal_id": planMode.LinkedGoalID,
-			}))
+			if err := s.appendLinkedPlanModeCreatedEvent(sessionID, planMode); err != nil {
+				if restoreErr := s.store.RestorePlanModeSnapshot(sessionID, previousPlanMode); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("restore plan mode after linked plan mode event error %v: %w", err, restoreErr))
+					return
+				}
+				if restoreErr := s.store.SaveGoal(sessionID, previousGoal); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after linked plan mode event error %v: %w", err, restoreErr))
+					return
+				}
+				if restoreErr := s.store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal history after linked plan mode event error %v: %w", err, restoreErr))
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 		writeError(w, http.StatusConflict, errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan"))
 		return
@@ -1620,11 +1659,14 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 		planModeCreated = created
 		planModeChanged = webPlanModeChanged(previousPlanMode, planMode, created)
 		if created {
-			_ = s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
-				"plan_mode_id":   planMode.PlanModeID,
-				"status":         planMode.Status,
-				"linked_goal_id": planMode.LinkedGoalID,
-			}))
+			if err := s.appendLinkedPlanModeCreatedEvent(sessionID, planMode); err != nil {
+				if restoreErr := s.restoreGoalPatchAfterPlanModeError(sessionID, previous, previousPlanMode, nil, false, err); restoreErr != nil {
+					writeError(w, http.StatusInternalServerError, restoreErr)
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 	}
 	if err := s.appendGoalMutation(sessionID, goal, "mission.validation.updated", map[string]any{
@@ -4455,6 +4497,14 @@ func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal,
 		return goalMutationAppendError{err: err, historyAppended: true}
 	}
 	return nil
+}
+
+func (s *Service) appendLinkedPlanModeCreatedEvent(sessionID string, planMode session.PlanModeState) error {
+	return s.store.AppendEvent(sessionID, events.New(sessionID, "planmode.created", "goal", map[string]any{
+		"plan_mode_id":   planMode.PlanModeID,
+		"status":         planMode.Status,
+		"linked_goal_id": planMode.LinkedGoalID,
+	}))
 }
 
 type goalMutationAppendError struct {

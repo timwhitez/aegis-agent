@@ -3688,6 +3688,35 @@ Validation:
 - Focused post-fix WebConsole table regression proving corrupt snapshot files return HTTP 500 with the relevant fact filename.
 - Standard grouped validation before commit.
 
+### FCA-20260526-133: Web linked Plan Mode creation hides event append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `planmode.created` as a structured session event, and `spec/17-web-console.md` requires Web Plan Mode controls to reuse `planmode.json`, `artifacts/planmode-history.jsonl`, and session events rather than a second Web state source.
+- Web Goal create, generic Goal patch, mission-plan patch, mission validation patch, and mission plan approve can call `EnsurePlanModeForGoal`, which creates `planmode.json` and appends Plan Mode history.
+- `internal/webconsole/service.go` then attempted to append a `planmode.created` event, but discarded the append error with `_ = s.store.AppendEvent(...)`.
+- A focused pre-fix WebConsole regression blocked `events.jsonl` during mission plan approval that creates a linked Plan Mode; the API returned the normal HTTP 409 conflict and left the missing event hidden instead of reporting the failed durable event write.
+
+Impact:
+
+The Web API could report a normal user-action conflict or success after creating a linked Plan Mode gate while losing the required `planmode.created` session event. That weakens timeline/recovery traceability for approval gates and can make operators believe a failed local event write was just ordinary Plan Mode status conflict.
+
+Minimal fix:
+
+- Add a shared Web helper for appending linked `planmode.created` events.
+- Treat append failures as HTTP 500.
+- Reuse existing rollback paths to restore Goal/task/Plan Mode facts when the event write fails after linked Plan Mode creation.
+- Add focused WebConsole coverage for mission plan approval hiding a linked Plan Mode event append failure.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving blocked `events.jsonl` returned HTTP 409 and hid the missing `planmode.created` event.
+- Focused post-fix WebConsole regression proving the same path returns HTTP 500 and restores the pre-request Goal/Plan Mode facts.
+- Adjacent Web rollback regressions for Goal create, generic Goal patch, mission-plan patch, and mission validation patch.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4491,6 +4520,12 @@ Evidence gates:
 - Confirmed FCA-20260526-132 against the session detail response contract in `spec/17-web-console.md` and the durable fact boundaries in `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is a snapshot-load issue, not an optional-file absence issue: the store returns `fs.ErrNotExist` for absent snapshots, and the Web adapter should ignore only that case.
 - Confirmed the minimal fix belongs in `sessionDetail`; it preserves Web's read-only adapter role and does not add a second authority for contract, checkpoint, parent coordination, Goal, or Plan Mode state.
+
+### Review 126
+
+- Confirmed FCA-20260526-133 against the Plan Mode event list in `spec/01-runtime-architecture.md` and the Web Plan Mode fact-source boundary in `spec/17-web-console.md`.
+- Confirmed this is distinct from earlier linked Plan Mode creation rollback fixes: `EnsurePlanModeForGoal` can succeed and append Plan Mode history, while the Web-only `planmode.created` event append fails afterward.
+- Confirmed the minimal fix should stay in Web handlers because the store owns Plan Mode snapshot/history writes, while the Web service owns session events for Web control actions and already has rollback paths around later event failures.
 
 ## Update Log
 
@@ -7548,6 +7583,43 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsSnapshotLoadErrors -count=1`: failed before the fix because corrupt snapshot files returned HTTP 200 with omitted facts.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailReportsSnapshotLoadErrors -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestService(SessionDetailReportsSnapshotLoadErrors|SessionDetailReportsGoalHistoryLoadError|GoalFactsAndMissionCoverageApproval)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-133
+
+Slice: `fix(webconsole): report linked plan mode event errors`
+
+Finding:
+
+- Web linked Plan Mode creation discarded `planmode.created` session event append errors after `EnsurePlanModeForGoal` succeeded.
+- Before the fix, blocked `events.jsonl` during mission plan approval returned the normal HTTP 409 Plan Mode conflict and hid the missing durable event fact.
+
+Changes:
+
+- Added `appendLinkedPlanModeCreatedEvent` for Web linked Plan Mode creation events.
+- Propagated event append failures from Goal create, Goal patch, mission-plan patch, mission validation patch, and mission plan approval linked-gate paths.
+- Reused existing rollback helpers so event append failure restores affected Goal/task/Plan Mode facts.
+- Added focused WebConsole coverage for mission plan approval blocked on `events.jsonl`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanApproveReportsLinkedPlanModeEventAppendError -count=1`: failed before the fix because blocked `events.jsonl` returned HTTP 409 and hid the missing event.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanApproveReportsLinkedPlanModeEventAppendError -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreateReportsEventAppendErrorAndRollsBack|GoalPatchRollsBackLinkedPlanModeWhenEventAppendFails|MissionPlanPatchPlanModeReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|MissionValidationContractPatchReportsHistoryAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(MissionPlanApproveReportsLinkedPlanModeEventAppendError|GoalCreateReportsEventAppendErrorAndRollsBack|GoalPatchRollsBackLinkedPlanModeWhenEventAppendFails|MissionPlanPatchPlanModeReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|MissionValidationContractPatchReportsHistoryAppendError)' -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
