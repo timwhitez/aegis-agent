@@ -221,6 +221,49 @@ func TestEngineProviderRetryReportsProviderAttemptAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineProviderRetryReportsEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	adapter := emittingAdapter{
+		run: func(_ context.Context, _ provider.TurnRequest, emit provider.EmitFunc) (provider.TurnResult, error) {
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
+			emit("provider.retry", map[string]any{
+				"attempt":      1,
+				"delay_ms":     1,
+				"error":        "temporary timeout",
+				"class":        "upstream_timeout",
+				"timeout_kind": "request_timeout",
+			})
+			return provider.TurnResult{Text: "should not persist", StopReason: "done_candidate"}, nil
+		},
+	}
+
+	result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected provider.retry event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			t.Fatalf("provider retry event failure should stop before assistant persistence: %#v", messages)
+		}
+	}
+}
+
 func TestEngineProviderFailureReportsProviderAttemptAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {

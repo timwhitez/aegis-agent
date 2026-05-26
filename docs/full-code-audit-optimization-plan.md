@@ -2235,6 +2235,33 @@ Validation:
 - Adjacent provider auto-resume ledger and happy-path regression group.
 - Standard grouped validation before commit.
 
+### FCA-20260526-081: provider retry can lose required durable event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` requires provider transport retry after `429` / `5xx` / transport timeout to leave `provider.retry` evidence.
+- The provider-attempt retry ledger path was already hardened, but the adapter event callback still emitted `provider.retry` through the best-effort `emit` helper before writing the ledger.
+- A focused regression blocked `events.jsonl` with a directory before the adapter emitted `provider.retry`. Before the fix, `Engine.Run` returned `awaiting_input` with assistant text even though the required retry event was not persisted.
+
+Impact:
+
+Provider retries could occur without the required durable timeline event. Web-first retry proof and recovery diagnostics could show later progress while missing the searchable event evidence that the upstream call had been retried.
+
+Minimal fix:
+
+- Use the error-returning event append path for `provider.retry` in the provider callback.
+- Stop the provider turn before assistant persistence if the required retry event cannot be written.
+- Keep non-retry provider callback events best-effort in this slice.
+- Add a focused provider retry event append regression.
+
+Validation:
+
+- Focused provider retry event append failure regression.
+- Adjacent provider retry ledger, parse-failure, and auto-resume regression group.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2726,6 +2753,12 @@ Evidence gates:
 - Confirmed FCA-20260526-080 against `spec/03-provider-contracts.md`, `Engine.Run`, the auto-resume timeout branch, and focused blocked-`events.jsonl` evidence.
 - Confirmed this is distinct from the earlier provider-attempt ledger fix: `provider-attempts.jsonl` records the durable diagnostic ledger, while the spec also requires a searchable `provider.auto_resume` event.
 - Confirmed the fix stops before the auto-resume reminder and next provider call if the required event cannot be written.
+
+### Review 74
+
+- Confirmed FCA-20260526-081 against `spec/03-provider-contracts.md`, the provider adapter callback in `Engine.Run`, and focused blocked-`events.jsonl` retry evidence.
+- Confirmed this is distinct from the provider-attempt retry ledger fix: the ledger records durable retry diagnostics, while the spec also requires a searchable `provider.retry` event.
+- Confirmed the fix keeps non-retry provider callback events on the existing best-effort timeline path.
 
 ## Update Log
 
@@ -4694,4 +4727,26 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-081
+
+Slice: `fix(runtime): require provider retry event persistence`
+
+Finding:
+
+- Provider retry callbacks wrote required `provider.retry` evidence through the best-effort event helper before recording the hardened provider-attempt ledger.
+- A focused regression blocked `events.jsonl`; before the fix, the retry path returned `awaiting_input` with assistant text without persisting the required retry event.
+
+Changes:
+
+- Added an error-returning `appendProviderRetry` helper.
+- Propagated `provider.retry` append failures from the provider callback before provider-attempt ledger writes and assistant persistence.
+- Kept non-retry provider callback events on the best-effort timeline path.
+- Added a focused provider retry event append regression.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderRetryReportsEventAppendError -count=1`: failed before the fix with `awaiting_input` and no append error.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderRetryReportsEventAppendError|TestEngineProviderRetryReportsProviderAttemptAppendError|TestEngineRecordsProviderParseFailureAttempt|TestEngineAutoResumesProviderTimeoutBeforeFailing' -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

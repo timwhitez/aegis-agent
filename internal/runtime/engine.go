@@ -259,8 +259,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			PromptCache:      meta.ProviderOptions.PromptCache,
 			Store:            meta.ProviderOptions.Store,
 		}, func(eventType string, data map[string]any) {
-			e.emit(meta.ID, eventType, "provider_call", data)
 			if eventType == "provider.retry" {
+				if appendErr := e.appendProviderRetry(meta.ID, data); appendErr != nil && providerAttemptErr == nil {
+					providerAttemptErr = appendErr
+					if cancel != nil {
+						cancel()
+					}
+					return
+				}
 				if appendErr := recordProviderRetry(e.store, meta, state.Turn, data); appendErr != nil && providerAttemptErr == nil {
 					providerAttemptErr = appendErr
 					if cancel != nil {
@@ -271,7 +277,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if providerAttemptErr == nil {
 					_ = writeSessionSummary(e.store, meta.ID)
 				}
+				return
 			}
+			e.emit(meta.ID, eventType, "provider_call", data)
 		})
 		e.control.clearCancel(cancel)
 		if providerAttemptErr != nil {
@@ -947,6 +955,10 @@ func (e *Engine) providerAutoResumeEventData(err error, attempt int) map[string]
 		}
 	}
 	return data
+}
+
+func (e *Engine) appendProviderRetry(sessionID string, data map[string]any) error {
+	return e.appendEvent(sessionID, "provider.retry", "provider_call", data)
 }
 
 func (e *Engine) appendProviderCancelled(sessionID, reason string) error {
