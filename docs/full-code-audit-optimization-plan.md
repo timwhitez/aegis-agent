@@ -3803,6 +3803,34 @@ Validation:
 - Focused post-fix runtime regression proving corrupt `planmode.json` is reported before provider execution or continuation message append.
 - Standard grouped validation before commit.
 
+### FCA-20260526-137: Plan Mode tool gate fails open on corrupt snapshot
+
+Severity: High
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` require pending Plan Mode to be enforced by the centralized completion/tool gate, using `planmode.json` as the durable execution-gate fact source.
+- `spec/11-spec-audit-and-traceability.md` states that pending Plan Mode must have provider schema filtering and `CompletionController` gate enforcement aligned, with mutating tools blocked before approval.
+- `internal/runtime/completion_controller.go` `planModeGate` called `LoadPlanMode` and returned no gate whenever `err != nil`, collapsing an absent optional Plan Mode snapshot and a corrupt existing `planmode.json` into the same allow path.
+- A focused pre-fix runtime regression wrote invalid JSON to `planmode.json` and called `EvaluateToolCall` for `write_file`; the decision was `GateAllow` instead of a Plan Mode state block.
+
+Impact:
+
+If `planmode.json` became corrupt between provider request preparation and tool execution, the controller could allow a mutating tool instead of failing closed on the unreadable execution-gate fact. That weakens the Plan Mode hard-guard boundary and creates a mismatch between the store's absent-versus-corrupt distinction and the runtime gate that is supposed to enforce approval.
+
+Minimal fix:
+
+- Change `planModeGate` to treat only `fs.ErrNotExist` as "no Plan Mode".
+- Return a blocking `plan_mode_state` decision for every other Plan Mode load error.
+- Include `planmode.json` in the model/operator message so the corrupt durable snapshot is actionable.
+- Add a focused runtime regression proving corrupt Plan Mode gate state blocks `write_file` with the snapshot filename.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt `planmode.json` allowed `write_file`.
+- Focused post-fix runtime regression proving corrupt `planmode.json` blocks `write_file` with `plan_mode_state`.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4630,6 +4658,12 @@ Evidence gates:
 - Confirmed FCA-20260526-136 against the Plan Mode fact-source and approval/revision semantics in `spec/00-product.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md`.
 - Confirmed this is not a provider-execution bypass: the focused pre-fix regression showed the provider was not reached, while the bug is the late, filename-less corrupt snapshot failure in the `continue` recovery path.
 - Confirmed the minimal fix belongs in `Runner.Continue` because that is where a normal continuation message is classified as a Plan Mode revision; the engine should not be the first code path to discover an unreadable pending gate after continuation preparation has already advanced.
+
+### Review 130
+
+- Confirmed FCA-20260526-137 against the centralized Plan Mode gate requirements in `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is a distinct gate fail-open issue from FCA-20260526-136: the prior fix covers `continue` revision preparation, while this fix covers `CompletionController` tool-call decisions after provider output.
+- Confirmed the minimal fix should stay in `CompletionController.planModeGate`; provider schema filtering still fails earlier when the engine can read Plan Mode state, but the controller must independently fail closed when its own durable gate read fails.
 
 ## Update Log
 
@@ -6181,6 +6215,43 @@ Validation:
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-137
+
+Slice: `fix(runtime): fail closed on corrupt plan mode gate state`
+
+Finding:
+
+- `CompletionController.planModeGate` treated every `LoadPlanMode` error as no active Plan Mode gate.
+- Before the fix, corrupt `planmode.json` made `EvaluateToolCall` allow `write_file` instead of blocking on the unreadable Plan Mode execution-gate fact.
+
+Changes:
+
+- Changed `planModeGate` to ignore only missing `planmode.json`.
+- Added a `plan_mode_state` block for corrupt/unreadable Plan Mode snapshots.
+- Included `planmode.json` in the gate message.
+- Added focused runtime coverage for corrupt Plan Mode gate state.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCompletionControllerBlocksWhenPlanModeSnapshotCorrupt -count=1`: failed before the fix because corrupt `planmode.json` allowed `write_file`.
+- `go test -timeout 120s ./internal/runtime -run TestCompletionControllerBlocksWhenPlanModeSnapshotCorrupt -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CompletionControllerBlocksWhenPlanModeSnapshotCorrupt|PlanModeGateBlocksToolsAfterCreateGoalRequiresApproval|EngineSubmitPlanStopsTurnAndCompletesLaterToolResults)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/completion_controller.go internal/runtime/planmode_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.

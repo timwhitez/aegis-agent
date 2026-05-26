@@ -193,6 +193,35 @@ func TestPlanModeGateBlocksToolsAfterCreateGoalRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestCompletionControllerBlocksWhenPlanModeSnapshotCorrupt(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	store := session.NewStore(cfg.Session.Dir)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "tool_execute", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planModePath := filepath.Join(store.SessionDir(meta.ID), "planmode.json")
+	if err := os.WriteFile(planModePath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt plan mode: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluateToolCall(nil, "write_file", json.RawMessage(`{"path":"x.txt","content":"blocked"}`))
+	if decision.Status != GateBlock || decision.GateID != "plan_mode_state" || !strings.Contains(decision.ModelMessage, "planmode.json") {
+		t.Fatalf("expected corrupt planmode gate block with filename, got %#v", decision)
+	}
+}
+
 func TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Plan this change before editing.")); err != nil {

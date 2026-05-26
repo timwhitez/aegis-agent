@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"time"
@@ -71,7 +73,13 @@ func (c *CompletionController) EvaluateToolCall(messages []session.Message, tool
 
 func (c *CompletionController) planModeGate(toolName string) (string, string) {
 	planMode, err := c.store.LoadPlanMode(c.sessionID)
-	if err != nil || planMode.PlanModeID == "" {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", ""
+		}
+		return "plan_mode_state", "Plan Mode gate could not load planmode.json: " + err.Error()
+	}
+	if planMode.PlanModeID == "" {
 		return "", ""
 	}
 	return planModeToolGate(planMode, toolName)
