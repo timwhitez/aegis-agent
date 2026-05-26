@@ -1256,6 +1256,12 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 		"created_task_ids":  webTaskIDs(createdTasks),
 		"plan_mode_created": planModeCreated,
 	}); err != nil {
+		if len(createdTasks) == 0 && !planModeCreated {
+			if restoreErr := s.store.SaveGoal(sessionID, current); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore goal after mission plan mutation error %v: %w", err, restoreErr))
+				return
+			}
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
