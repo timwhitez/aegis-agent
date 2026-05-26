@@ -110,6 +110,46 @@ func TestServiceSteerReportsStoreAppendFailureAsServerError(t *testing.T) {
 	}
 }
 
+func TestServiceSessionSubresourcesRejectUnknownSession(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	sessionID := "missing_session_subresource"
+	for _, path := range []string{
+		"/api/sessions/" + sessionID + "/children",
+		"/api/sessions/" + sessionID + "/tasks",
+		"/api/sessions/" + sessionID + "/messages",
+		"/api/sessions/" + sessionID + "/goal",
+	} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected %s to reject unknown session with 404, got %d body=%s", path, resp.StatusCode, string(body))
+		}
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+sessionID+"/goal", map[string]any{
+		"objective": "should not create a partial session tree",
+	}, http.StatusNotFound)
+	if errResp.Error == "" {
+		t.Fatalf("expected missing-session goal create error response")
+	}
+	if _, err := os.Stat(svc.store.SessionDir(sessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing-session goal create to leave no session directory, got err=%v", err)
+	}
+}
+
 func TestServiceGoalEndpointsMutateDurableGoal(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

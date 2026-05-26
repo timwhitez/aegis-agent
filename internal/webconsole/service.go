@@ -578,11 +578,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			resp, err := s.sessionDetail(sessionID, queryBoundedInt(r, "limit", 40, 1, 200))
 			if err != nil {
-				status := http.StatusInternalServerError
-				if errors.Is(err, fs.ErrNotExist) {
-					status = http.StatusNotFound
-				}
-				writeError(w, status, err)
+				writeError(w, sessionStoreStatus(err), err)
 				return
 			}
 			writeJSON(w, http.StatusOK, resp)
@@ -591,6 +587,9 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		}
+		return
+	}
+	if !s.requireSession(w, sessionID) {
 		return
 	}
 	if len(parts) != 2 {
@@ -750,7 +749,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 	hasActiveHandle, err := s.hasActiveDescendantHandle(sessionID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, sessionStoreStatus(err), err)
 		return
 	}
 	if hasActiveHandle {
@@ -766,11 +765,7 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		return
 	}
 	if err := s.store.DeleteSessionTree(sessionID); err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, fs.ErrNotExist) {
-			status = http.StatusNotFound
-		}
-		writeError(w, status, err)
+		writeError(w, sessionStoreStatus(err), err)
 		return
 	}
 	if err := s.appendAuditEvent("web.session.delete", map[string]any{
@@ -780,6 +775,24 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "deleted": true})
+}
+
+func (s *Service) requireSession(w http.ResponseWriter, sessionID string) bool {
+	if _, err := s.store.LoadMetadata(sessionID); err != nil {
+		writeError(w, sessionStoreStatus(err), err)
+		return false
+	}
+	return true
+}
+
+func sessionStoreStatus(err error) int {
+	if errors.Is(err, fs.ErrNotExist) {
+		return http.StatusNotFound
+	}
+	if isStoreIDClientError(err) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 func (s *Service) handleClearSessions(w http.ResponseWriter) {
@@ -4273,6 +4286,16 @@ func isGoalClientError(err error) bool {
 		strings.Contains(text, "goal time budget") ||
 		strings.Contains(text, "invalid goal mode") ||
 		strings.Contains(text, "invalid goal status")
+}
+
+func isStoreIDClientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "id is required") ||
+		strings.Contains(text, "leading or trailing whitespace is not allowed") ||
+		strings.Contains(text, "path separators and traversal are not allowed")
 }
 
 func goalDraftFromWebStartRequest(req *GoalDraftRequest, prompt string) (*session.GoalDraft, error) {

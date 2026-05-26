@@ -3515,6 +3515,37 @@ Validation:
 - Focused post-fix Node renderer regression proving the existing-key mask is restored after unchanged-key saves.
 - Standard grouped validation before commit.
 
+### FCA-20260526-127: Session subresource routes accept unknown session IDs
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` defines session control/detail APIs as scoped to local session file facts, and `spec/01-runtime-architecture.md` keeps session state/messages/events as the fact source.
+- `internal/webconsole/service.go` correctly mapped `GET /api/sessions/{id}` missing `session.json` errors to HTTP 404, but subresource routes were dispatched without first proving the session metadata existed.
+- `GET /api/sessions/{id}/children` called `ListChildren` / `ListJobsByParent`, both of which can naturally return empty lists for an unknown parent ID, so an unknown session looked like a valid session with no background work.
+- `GET /api/sessions/{id}/tasks` called `LoadTodo` / `ListTasks`, both of which treat missing files/directories as empty state, so an unknown session could look like a valid empty task board.
+- `GET /api/sessions/{id}/goal` treated missing `goal.json` as "no goal" and returned HTTP 200 `null`, even if the enclosing session itself did not exist.
+- `POST /api/sessions/{id}/goal` could call `CreateGoal` without an existing `session.json`; the store write helpers create parent directories, so this could create orphaned `goal.json`, `goal-history.jsonl`, and event facts under a directory that was not a valid session.
+- A focused pre-fix WebConsole regression showed `GET /api/sessions/missing_session_subresource/children` returned HTTP 200 with empty arrays instead of rejecting the unknown session.
+
+Impact:
+
+The Web API could hide stale links, mistyped session IDs, or deleted sessions behind valid-looking empty subresource responses. Worse, goal creation could materialize orphaned session directories without `session.json`, splitting durable goal/event artifacts away from a valid session metadata fact and confusing recovery, history cleanup, and operator diagnosis.
+
+Minimal fix:
+
+- Add a route-level `requireSession` check for all `/api/sessions/{id}/...` subresource routes before dispatching to goal, Plan Mode, mission, continue, steer, stop/interrupt, children, messages, or task handlers.
+- Keep top-level `GET /api/sessions/{id}` behavior unchanged except for sharing the same missing-session / malformed-ID status mapper.
+- Map missing session metadata to HTTP 404 and malformed store IDs to HTTP 400.
+- Add focused WebConsole coverage for unknown `children`, `tasks`, `messages`, `goal` reads and unknown-session goal creation; assert goal creation leaves no partial session directory.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving `GET /children` for an unknown session returned HTTP 200.
+- Focused post-fix WebConsole regression proving unknown session subresources return HTTP 404 and no orphan session directory is created by goal creation.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4282,6 +4313,12 @@ Evidence gates:
 - Confirmed FCA-20260526-126 against the Settings backend API-key unchanged semantics in `internal/webconsole/service.go` and operator-state requirements in `spec/17-web-console.md`.
 - Confirmed this is distinct from FCA-20260526-125: that path had no existing key and should stay blank, while this path starts with an existing key and an empty payload means unchanged.
 - Confirmed the minimal fix should stay in the Settings renderer post-save state update. Backend clear-key semantics are not currently exposed, so the backend should not reinterpret empty `api_key` as deletion in this slice.
+
+### Review 120
+
+- Confirmed FCA-20260526-127 against the WebConsole session-file authority requirements in `spec/01-runtime-architecture.md` and the session-scoped API contract in `spec/17-web-console.md`.
+- Confirmed this is not a general queue/children empty-state issue: existing sessions with no children, tasks, messages, or goal may still return empty data, but unknown session IDs must fail before subresource dispatch.
+- Confirmed the minimal fix should stay at the Web session route boundary. Store helpers should continue to treat optional per-session files like `goal.json`, `todo.json`, `tasks/`, and message/event logs as optional once the enclosing session metadata fact exists.
 
 ## Update Log
 
@@ -7137,6 +7174,41 @@ Validation:
 - `node --check internal/webconsole/assets/settings-view.js`: passed.
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-127
+
+Slice: `fix(webconsole): reject unknown session subresources`
+
+Finding:
+
+- Web session subresource routes did not first prove that `session.json` existed for the requested session ID.
+- Before the fix, `GET /api/sessions/missing_session_subresource/children` returned HTTP 200 with empty arrays, and unknown-session goal creation could create orphaned goal/session artifacts without a valid session metadata fact.
+
+Changes:
+
+- Added a Web session route boundary check that loads session metadata before dispatching `/api/sessions/{id}/...` subresources.
+- Reused a shared session store status mapper so missing session metadata returns HTTP 404 and malformed store IDs return HTTP 400.
+- Kept existing valid-session empty-state semantics for no goal, no tasks, no children, and no messages.
+- Added focused WebConsole regression coverage for unknown `children`, `tasks`, `messages`, and `goal` reads plus unknown-session goal creation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionSubresourcesRejectUnknownSession -count=1`: failed before the fix because unknown-session children returned HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionSubresourcesRejectUnknownSession -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
