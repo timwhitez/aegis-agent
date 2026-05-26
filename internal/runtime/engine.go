@@ -300,12 +300,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if err := e.store.SaveState(meta.ID, state); err != nil {
 					return RunResult{}, err
 				}
-				e.emitProviderAutoResume(meta.ID, err, state.ProviderAutoResumeCount)
 				if appendErr := recordProviderAutoResumeAttempt(e.store, meta, state.Turn, err, state.ProviderAutoResumeCount); appendErr != nil {
 					return e.fail(ctx, meta, state, appendErr, hookManager)
 				}
 				_ = writeSessionSummary(e.store, meta.ID)
 				_ = writeLongRunCheckpoint(e.store, meta.ID)
+				if appendErr := e.appendProviderAutoResume(meta.ID, err, state.ProviderAutoResumeCount); appendErr != nil {
+					return RunResult{}, appendErr
+				}
 				if _, appendErr := e.appendHarnessReminder(meta, "provider_call", providerAutoResumePrompt(err, state.ProviderAutoResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts), "provider_auto_resume"); appendErr != nil {
 					return RunResult{}, appendErr
 				}
@@ -923,7 +925,12 @@ func (e *Engine) shouldAutoResumeProviderError(err error, state session.State) b
 	return httpErr.Class == "upstream_timeout"
 }
 
-func (e *Engine) emitProviderAutoResume(sessionID string, err error, attempt int) {
+func (e *Engine) appendProviderAutoResume(sessionID string, err error, attempt int) error {
+	data := e.providerAutoResumeEventData(err, attempt)
+	return e.appendEvent(sessionID, "provider.auto_resume", "provider_call", data)
+}
+
+func (e *Engine) providerAutoResumeEventData(err error, attempt int) map[string]any {
 	data := map[string]any{
 		"attempt":      attempt,
 		"max_attempts": e.cfg.Runtime.ProviderAutoResume.MaxAttempts,
@@ -939,7 +946,7 @@ func (e *Engine) emitProviderAutoResume(sessionID string, err error, attempt int
 			data["status_code"] = httpErr.StatusCode
 		}
 	}
-	e.emit(sessionID, "provider.auto_resume", "provider_call", data)
+	return data
 }
 
 func (e *Engine) appendProviderCancelled(sessionID, reason string) error {

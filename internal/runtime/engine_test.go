@@ -409,6 +409,52 @@ func TestEngineProviderAutoResumeReportsProviderAttemptAppendError(t *testing.T)
 	}
 }
 
+func TestEngineProviderAutoResumeReportsEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
+	engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 2
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Return a finish tool call.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
+			return provider.TurnResult{}, &provider.HTTPError{
+				Provider:    "fake",
+				Class:       "upstream_timeout",
+				Message:     "context deadline exceeded",
+				TimeoutKind: "request_timeout",
+			}
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected provider.auto_resume event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("provider should not be recalled after provider.auto_resume append failure, got %d calls", callCount)
+	}
+}
+
 func TestEngineProviderSuccessReportsProviderAttemptAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {

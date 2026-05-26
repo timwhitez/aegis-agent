@@ -2208,6 +2208,33 @@ Validation:
 - Adjacent interrupt-steer cancellation and defer regression group.
 - Standard grouped validation before commit.
 
+### FCA-20260526-080: provider auto-resume can lose required durable event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/03-provider-contracts.md` requires provider auto-resume after `upstream_timeout` to leave `provider.auto_resume` evidence.
+- The provider-attempt ledger path was already hardened, but `Engine.Run` still emitted `provider.auto_resume` through the best-effort `emit` helper.
+- A focused regression blocked `events.jsonl` with a directory after the first timeout. Before the fix, `Engine.Run` recalled the provider and completed the session even though the required `provider.auto_resume` event was not persisted.
+
+Impact:
+
+Sessions could auto-resume after provider timeout without the required durable timeline event. Recovery and Web-first operator views would show later progress without searchable evidence explaining why the provider was retried by runtime auto-resume.
+
+Minimal fix:
+
+- Use the error-returning event append path for `provider.auto_resume`.
+- Stop before appending the auto-resume harness reminder or recalling the provider if the event cannot be persisted.
+- Keep the already-hardened `provider-attempts.jsonl` ledger behavior unchanged.
+- Add a focused auto-resume event append regression.
+
+Validation:
+
+- Focused provider auto-resume event append failure regression.
+- Adjacent provider auto-resume ledger and happy-path regression group.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2693,6 +2720,12 @@ Evidence gates:
 - Confirmed FCA-20260526-079 against `spec/13-live-input-and-steering.md`, `Engine.Run`, provider cancellation branches, and focused blocked-`events.jsonl` interrupt-steer evidence.
 - Confirmed this event is not merely diagnostic in this path: the live-steer spec explicitly requires durable `provider.cancelled` evidence when provider preemption succeeds.
 - Confirmed the fix stays scoped to provider cancellation and does not change generic best-effort timeline event behavior.
+
+### Review 73
+
+- Confirmed FCA-20260526-080 against `spec/03-provider-contracts.md`, `Engine.Run`, the auto-resume timeout branch, and focused blocked-`events.jsonl` evidence.
+- Confirmed this is distinct from the earlier provider-attempt ledger fix: `provider-attempts.jsonl` records the durable diagnostic ledger, while the spec also requires a searchable `provider.auto_resume` event.
+- Confirmed the fix stops before the auto-resume reminder and next provider call if the required event cannot be written.
 
 ## Update Log
 
@@ -4621,6 +4654,37 @@ Validation:
 
 - `go test -timeout 120s ./internal/runtime -run TestEngineProviderCancellationReportsCancelledEventAppendError -count=1`: failed before the fix with `awaiting_input` and no append error.
 - `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderCancellationReportsCancelledEventAppendError|TestEngineInterruptSteerCancelsProviderAndContinuesWithAcceptedMessage|TestEngineInterruptSteerDeferredFinishLeavesSessionAwaitingInput|TestEngineInterruptSteerDuringToolDefersUntilNextTurn' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-080
+
+Slice: `fix(runtime): require provider auto-resume event persistence`
+
+Finding:
+
+- Runtime auto-resume after `upstream_timeout` wrote required `provider.auto_resume` evidence through the best-effort event helper.
+- A focused regression blocked `events.jsonl`; before the fix, auto-resume recalled the provider and completed the session without the required durable event.
+
+Changes:
+
+- Added an error-returning `appendProviderAutoResume` helper.
+- Propagated `provider.auto_resume` append failures before the auto-resume harness reminder and next provider call.
+- Reused one shared provider auto-resume event-data builder.
+- Added a focused provider auto-resume event append regression.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderAutoResumeReportsEventAppendError -count=1`: failed before the fix with a completed session and no append error.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderAutoResumeReportsEventAppendError|TestEngineProviderAutoResumeReportsProviderAttemptAppendError|TestEngineAutoResumesProviderTimeoutBeforeFailing' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
