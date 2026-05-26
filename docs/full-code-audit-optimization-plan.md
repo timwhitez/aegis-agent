@@ -4703,6 +4703,35 @@ Validation:
 - Existing provider failure / provider stop / incomplete-no-finish failed-event regressions remain targeted at their original `session.failed` append paths after `session.context.loaded` now fails earlier when blocked.
 - Standard grouped validation completed in the update log.
 
+### FCA-20260527-186: Failed live-input acceptance leaves duplicate replay messages
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` requires accepted steer input to become a real user message, but only when the acceptance facts are durably recorded; the same local-file-fact boundary applies to background results consumed by a parent session.
+- `internal/runtime/engine.go` `drainSteer` appended the steer user message before writing the checked `user.message` and `session.steer.accepted` events.
+- `internal/runtime/engine.go` `drainBackground` appended the background-results user message and marked notifications accepted before writing the checked `user.message` and `session.background.accepted` events.
+- Focused regressions blocked `events.jsonl` before acceptance. The provider was correctly stopped, but the provider-visible steer/background user message remained in `messages.jsonl`; background notifications were also already accepted.
+
+Impact:
+
+A retry after the local event write was repaired could inject the same steer or background result again, or in the background case could lose the retry opportunity because the notification was already marked accepted. That makes `messages.jsonl`, control queues, and event facts disagree about whether live input actually became part of a successful provider turn.
+
+Minimal fix:
+
+- Roll back the just-appended steer user message if the matching `user.message` event cannot be persisted.
+- For background results, persist the `user.message` event before marking notifications accepted.
+- Roll back the just-appended background-results user message if that event cannot be persisted, leaving the notification pending for retry.
+- Preserve the existing checked accepted-event behavior and successful steer/background injection paths.
+
+Validation:
+
+- Focused pre-fix regressions proving blocked `events.jsonl` left provider-visible steer/background messages after acceptance failed.
+- Focused post-fix regressions proving those messages are rolled back and the durable steer/background control items remain retryable.
+- Existing successful steer/background injection regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6369,7 +6398,48 @@ Evidence gates:
 - Confirmed this is not generic telemetry: the event records todo/task counts, project-memory present/missing paths, role hints, Goal, and Plan Mode context immediately before provider prompt construction.
 - Confirmed the minimal fix should fail before provider execution when that event cannot be written, preserving the fact-source boundary without changing context construction or prompt content.
 
+### Review 179
+
+- Confirmed FCA-20260527-186 against `spec/13-live-input-and-steering.md` and the Web-first file-fact model in `spec/01-runtime-architecture.md`: provider-visible live input must not survive as accepted context when the matching event evidence cannot be written.
+- Confirmed this is not a generic retry nicety. Without rollback, a failed local event write leaves `messages.jsonl` ahead of steer/background control facts and can duplicate the same input after recovery.
+- Confirmed the minimal fix should be local to `drainSteer` and `drainBackground`, using existing `RemoveLastMessageIfID` rollback and preserving the model-led runtime loop.
+
 ## Update Log
+
+### FCA-20260527-186
+
+Slice: `fix(runtime): roll back failed live input messages`
+
+Finding:
+
+- Checked live-input event appends stopped provider execution when `events.jsonl` was unavailable.
+- The failed acceptance paths still left the just-appended steer or background-results user message in `messages.jsonl`.
+- Background results could also be marked accepted before the matching `user.message` event persisted.
+
+Changes:
+
+- `drainSteer` now removes the just-appended steer message if the checked steer `user.message` event cannot be written.
+- `drainBackground` now writes the background-results `user.message` event before marking notifications accepted.
+- `drainBackground` now removes the just-appended background-results message if that event cannot be written, leaving the notification pending for retry.
+- Extended focused regressions to assert failed event persistence does not leave provider-visible live-input messages behind and keeps the control item retryable.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(SteerAcceptanceReportsAcceptedEventAppendError|BackgroundAcceptanceReportsAcceptedEventAppendError|AcceptsPendingSteerBeforeProviderCall|AcceptsBackgroundResultsBeforeProviderCall)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-185
 

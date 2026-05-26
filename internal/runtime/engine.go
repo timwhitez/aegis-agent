@@ -1137,7 +1137,10 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 			"source":    "steer",
 			"interrupt": requests[i].Interrupt,
 		}); err != nil {
-			return accepted, err
+			if rollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); rollbackErr != nil {
+				return accepted, fmt.Errorf("record steer user.message event after rolling back accepted steer message failed with %v: %w", rollbackErr, err)
+			}
+			return accepted, fmt.Errorf("record steer user.message event: %w", err)
 		}
 		if err := e.appendEvent(sessionID, "session.steer.accepted", "control_drain", map[string]any{
 			"id":        requests[i].ID,
@@ -1211,20 +1214,23 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 	if err := e.store.AppendMessage(sessionID, msg); err != nil {
 		return 0, err
 	}
-	for i := range notifications {
-		if notifications[i].DeliveryStatus == session.BackgroundNotificationPending {
-			notifications[i].DeliveryStatus = session.BackgroundNotificationAccepted
-		}
-	}
-	if err := e.store.UpdateBackgroundNotifications(sessionID, notifications); err != nil {
-		return 0, err
-	}
 	if err := e.appendEvent(sessionID, "user.message", "control_drain", map[string]any{
 		"text":   text,
 		"mode":   meta.Mode,
 		"source": "background_results",
 		"count":  len(pending),
 	}); err != nil {
+		if rollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); rollbackErr != nil {
+			return 0, fmt.Errorf("record background-results user.message event after rolling back background message failed with %v: %w", rollbackErr, err)
+		}
+		return 0, fmt.Errorf("record background-results user.message event: %w", err)
+	}
+	for i := range notifications {
+		if notifications[i].DeliveryStatus == session.BackgroundNotificationPending {
+			notifications[i].DeliveryStatus = session.BackgroundNotificationAccepted
+		}
+	}
+	if err := e.store.UpdateBackgroundNotifications(sessionID, notifications); err != nil {
 		return 0, err
 	}
 	if err := e.appendEvent(sessionID, "session.background.accepted", "control_drain", map[string]any{

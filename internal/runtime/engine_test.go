@@ -2236,6 +2236,22 @@ func TestEngineSteerAcceptanceReportsAcceptedEventAppendError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected steer accepted event append error, result=%#v err=%v", result, err)
 	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "steer" {
+			t.Fatalf("steer event failure should roll back provider-visible steer message, got %#v", messages)
+		}
+	}
+	requests, loadErr := engine.store.LoadSteerRequests(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load steer requests: %v", loadErr)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusPending {
+		t.Fatalf("steer event failure should keep steer pending for retry, got %#v", requests)
+	}
 }
 
 func TestEngineDeferPendingInterruptReportsEventAppendError(t *testing.T) {
@@ -2559,6 +2575,22 @@ func TestEngineBackgroundAcceptanceReportsAcceptedEventAppendError(t *testing.T)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected background accepted event append error, result=%#v err=%v", result, err)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "background_results" {
+			t.Fatalf("background event failure should roll back provider-visible background message, got %#v", messages)
+		}
+	}
+	notifications, loadErr := engine.store.LoadBackgroundNotifications(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load background notifications: %v", loadErr)
+	}
+	if len(notifications) != 1 || notifications[0].DeliveryStatus != session.BackgroundNotificationPending {
+		t.Fatalf("background event failure should keep notification pending for retry, got %#v", notifications)
 	}
 }
 
