@@ -2744,6 +2744,10 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(configPath) == "" {
 		configPath = config.PersistPath("", cwd)
 	}
+	if err := preflightWebConfigAuditTarget(configPath, webAuditLogPath(s.store.Root())); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := s.ensureAuditLogWritable(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2858,6 +2862,17 @@ func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
 	}
 	if _, _, err := fileutil.ReadRegularFileNoSymlink(update.envFile); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	return nil
+}
+
+func preflightWebConfigAuditTarget(configPath, auditPath string) error {
+	same, err := sameWebPath(configPath, auditPath)
+	if err != nil {
+		return err
+	}
+	if same {
+		return fmt.Errorf("config file and audit log must be separate: %s", configPath)
 	}
 	return nil
 }

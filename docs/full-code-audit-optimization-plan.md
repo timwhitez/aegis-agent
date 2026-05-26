@@ -3351,6 +3351,33 @@ Validation:
 - Focused post-fix WebConsole regression proving the alias is rejected before persistence.
 - Standard grouped validation before commit.
 
+### FCA-20260526-121: Web config file can alias the audit log
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires Settings writes and API-key writes to be auditable, and `spec/01-runtime-architecture.md` keeps local files as durable fact sources.
+- `internal/webconsole/service.go` `handleUpdateConfig` preflighted that the audit log was writable, then wrote `config.yaml`, and then appended `web.config.write` to the audit log.
+- The route did not reject `Options.ConfigPath` matching `webAuditLogPath(s.store.Root())`.
+- A focused WebConsole regression set the config path to the Web audit log path. Before the fix, `/api/config` returned HTTP 200 and left one file containing YAML config followed by JSONL audit events.
+
+Impact:
+
+A misconfigured Web service could treat one path as both durable config and audit log. The successful response would leave a corrupted config file and a non-independent audit trail, undermining later recovery and Settings inspection.
+
+Minimal fix:
+
+- Add a Web Settings preflight that rejects config paths whose cleaned absolute path matches the Web audit log path.
+- Run this preflight before audit-log writability probing, config persistence, env-file persistence, process env mutation, or audit append.
+- Add focused WebConsole coverage asserting no file is created when the config path aliases the audit log.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving the aliased config/audit target returned HTTP 200.
+- Focused post-fix WebConsole regression proving the alias is rejected before persistence.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -4082,6 +4109,12 @@ Evidence gates:
 - Confirmed FCA-20260526-120 against Settings sensitivity requirements in `spec/17-web-console.md` and durable local file consistency requirements in `spec/01-runtime-architecture.md`.
 - Confirmed this is distinct from FCA-20260526-118 and FCA-20260526-119: those cover env write failure and malformed env names, while this path is reported as a successful save but corrupts the target layout by using one file for both config and API-key env data.
 - Confirmed the minimal fix should remain a Web Settings target preflight; config persistence, env-file formatting, Settings frontend payloads, and audit event shape do not need to change for this slice.
+
+### Review 114
+
+- Confirmed FCA-20260526-121 against Settings auditability requirements in `spec/17-web-console.md` and file-fact consistency requirements in `spec/01-runtime-architecture.md`.
+- Confirmed this is distinct from FCA-20260526-120: that path aliases config and API-key env file, while this one aliases config and the Web audit JSONL file and can occur even without an API-key update.
+- Confirmed the minimal fix should stay in Web Settings preflight. The audit log writer, config writer, Settings frontend, and audit event schema do not need to change for this slice.
 
 ## Update Log
 
@@ -6728,6 +6761,40 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsConfigPathAsEnvFile -count=1`: failed before the fix with HTTP 200.
 - `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRejectsConfigPathAsEnvFile -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite|RejectsInvalidEnvKeyBeforePersistence|RejectsConfigPathAsEnvFile|DoesNotLogSecretValue)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 14/14 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-121
+
+Slice: `fix(webconsole): reject config audit target alias`
+
+Finding:
+
+- Web Settings allowed `Options.ConfigPath` to point at the same file as `webconsole-audit.jsonl`.
+- Before the fix, `/api/config` returned HTTP 200, wrote YAML config, then appended JSONL audit records into the same file.
+
+Changes:
+
+- Added a Web Settings preflight that rejects config paths matching the cleaned absolute Web audit log path.
+- Ran the alias preflight before audit-log writability probing, config persistence, API-key env-file persistence, process env mutation, or audit append.
+- Added focused WebConsole coverage proving no file is created for the config/audit alias case.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigRejectsConfigPathAsAuditLog -count=1`: failed before the fix with HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigRejectsConfigPathAsAuditLog -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(UpdateConfigRejectsConfigPathAsAuditLog|APIKeyWriteRejectsConfigPathAsEnvFile)' -count=1`: passed.
 - `git diff --check`: passed.
 - `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.

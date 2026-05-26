@@ -3745,6 +3745,30 @@ func TestAPIKeyWriteRejectsConfigPathAsEnvFile(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRejectsConfigPathAsAuditLog(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := webAuditLogPath(cfg.Session.Dir)
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"model":    "should-not-persist",
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "audit log must be separate") {
+		t.Fatalf("expected audit alias preflight error, got %#v", errResp)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed config preflight should not persist config/audit log; stat err=%v", err)
+	}
+}
+
 func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
