@@ -1805,6 +1805,70 @@ func TestRunnerWatchSteerHandlesMultipleInterruptRequests(t *testing.T) {
 	}
 }
 
+func TestRunnerWatchSteerRequiresInterruptRequestedEventBeforeSignal(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.Runtime.Steer.PollIntervalMS = 10
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	request := session.NewSteerRequest("interrupt", true)
+	if err := runner.store.AppendSteerRequest(meta.ID, request); err != nil {
+		t.Fatalf("append steer: %v", err)
+	}
+	eventsPath := filepath.Join(runner.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go runner.watchSteer(ctx, meta.ID)
+	time.Sleep(50 * time.Millisecond)
+	if runner.control.consumeSteerInterrupt() {
+		t.Fatal("watcher should not signal interrupt when interrupt_requested event cannot be persisted")
+	}
+	cancel()
+
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatalf("remove blocked events path: %v", err)
+	}
+	if err := os.WriteFile(eventsPath, nil, 0o600); err != nil {
+		t.Fatalf("restore events path: %v", err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	go runner.watchSteer(ctx, meta.ID)
+	if !waitForSteerInterrupt(t, runner.control) {
+		t.Fatal("expected interrupt after interrupt_requested event can be persisted")
+	}
+	eventsData, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if !strings.Contains(string(eventsData), `"type":"session.steer.interrupt_requested"`) {
+		t.Fatalf("expected interrupt_requested event after restore, got:\n%s", string(eventsData))
+	}
+}
+
 func waitForSteerInterrupt(t *testing.T, control *runControl) bool {
 	t.Helper()
 	deadline := time.Now().Add(500 * time.Millisecond)

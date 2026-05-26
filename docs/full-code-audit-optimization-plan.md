@@ -4647,6 +4647,33 @@ Validation:
 - Adjacent interrupt-defer and accepted-steer regressions remain green.
 - Standard grouped validation before commit.
 
+### FCA-20260527-184: Interrupt steer watcher can signal cancellation without durable request event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` lists `session.steer.interrupt_requested` as a live-input event and treats interrupt steer as best-effort preemption with durable event evidence.
+- `internal/runtime/runner.go` `watchSteer` observed pending interrupt steer requests, marked their IDs as seen, signaled the in-memory interrupt cancel path, and emitted `session.steer.interrupt_requested` through unchecked `r.emit`.
+- If `events.jsonl` was unavailable at that point, the runner could still cancel a provider/tool path while the required interrupt-request event was missing. The watcher also marked the request as seen, so the event would not be retried by that watcher instance.
+- A focused pre-fix runner regression blocked `events.jsonl` before the watcher saw a pending interrupt request. Before the fix, the watcher still signaled the in-memory interrupt despite being unable to persist `session.steer.interrupt_requested`.
+
+Impact:
+
+An interrupt steer could affect live execution without the durable event that explains why a provider/tool turn was cancelled or deferred. That weakens recovery and Web timeline diagnosis for the exact moment an operator requested best-effort preemption.
+
+Minimal fix:
+
+- Use checked `appendEvent` for `session.steer.interrupt_requested` in the steer watcher.
+- Persist the event before marking the request as seen or signaling the in-memory interrupt.
+- If event persistence fails, leave the request un-seen in the watcher so a later poll can retry once `events.jsonl` is writable; the queued steer request itself remains durable for normal safe-boundary acceptance.
+
+Validation:
+
+- Focused runner regression proving blocked `events.jsonl` prevents the in-memory interrupt signal and retries after the event path is restored.
+- Existing multiple-interrupt watcher regression remains green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6301,7 +6328,48 @@ Evidence gates:
 - Confirmed this is distinct from the accepted-steer fix: accepted steer already uses checked `user.message` and `session.steer.accepted` appends, while `deferPendingInterrupts` still used unchecked `e.emit`.
 - Confirmed the minimal ordering is event-first, status-second. If `events.jsonl` is unavailable, leaving the steer pending is safer than silently committing a deferred control state without the required event.
 
+### Review 177
+
+- Confirmed FCA-20260527-184 against the `session.steer.interrupt_requested` event requirement in `spec/13-live-input-and-steering.md`; this is the durable evidence for best-effort interrupt preemption.
+- Confirmed the existing `Runner.Steer` requested/queued event rollback does not cover the watcher-side in-memory interrupt signal because the watcher can observe an already queued request later.
+- Confirmed event-first ordering is appropriate here: if the event cannot be persisted, the queued steer remains durable and can still be accepted at a safe boundary, but the runtime should not trigger an unrecorded interrupt cancellation.
+
 ## Update Log
+
+### FCA-20260527-184
+
+Slice: `fix(runtime): persist interrupt steer requests`
+
+Finding:
+
+- `watchSteer` marked interrupt steer requests as seen and signaled the in-memory interrupt path before emitting `session.steer.interrupt_requested`.
+- The event append used unchecked `r.emit`.
+- Before the fix, blocked `events.jsonl` still triggered in-memory cancellation without the durable interrupt-request event.
+
+Changes:
+
+- `watchSteer` now appends `session.steer.interrupt_requested` through checked `appendEvent`.
+- The watcher records the event before marking the request seen or signaling `requestSteerInterrupt`.
+- If event persistence fails, the watcher skips the in-memory interrupt signal and leaves the request eligible for a later watcher poll.
+- Added focused runner coverage for blocked event persistence and retry after the event path is restored.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerWatchSteer(RequiresInterruptRequestedEventBeforeSignal|HandlesMultipleInterruptRequests)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/runner_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-183
 

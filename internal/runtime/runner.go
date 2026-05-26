@@ -1816,13 +1816,13 @@ func (r *Runner) watchSteer(ctx context.Context, sessionID string) {
 				if _, ok := seenInterrupts[req.ID]; ok {
 					continue
 				}
-				seenInterrupts[req.ID] = struct{}{}
-				if req.Interrupt {
-					r.control.requestSteerInterrupt()
-					r.emit(sessionID, "session.steer.interrupt_requested", "control", map[string]any{
-						"id": req.ID,
-					})
+				if err := r.appendEvent(sessionID, "session.steer.interrupt_requested", "control", map[string]any{
+					"id": req.ID,
+				}); err != nil {
+					continue
 				}
+				seenInterrupts[req.ID] = struct{}{}
+				r.control.requestSteerInterrupt()
 			}
 		}
 	}
