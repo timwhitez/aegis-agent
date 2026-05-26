@@ -256,6 +256,122 @@ func TestServiceGoalCreateReportsEventAppendErrorAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestServiceGoalCreateRollsBackWhenLinkedPlanModeCreationFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_create_planmode_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	blockWebPlanModeHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"objective":              "Create goal with linked plan mode",
+		"mode":                   "mission",
+		"require_plan_approval":  true,
+		"create_tasks_from_plan": true,
+		"features":               []string{"created task should roll back"},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "planmode-history.jsonl") {
+		t.Fatalf("expected plan mode history error, got %#v", apiErr)
+	}
+	if _, loadErr := svc.store.LoadGoal(meta.ID); !errors.Is(loadErr, fs.ErrNotExist) {
+		t.Fatalf("failed linked plan mode creation should roll back goal snapshot, got %v", loadErr)
+	}
+	history, historyErr := svc.store.LoadGoalHistory(meta.ID)
+	if historyErr != nil {
+		t.Fatalf("load goal history: %v", historyErr)
+	}
+	if len(history) != 0 {
+		t.Fatalf("failed linked plan mode creation should roll back goal history, got %#v", history)
+	}
+	tasks, taskErr := svc.store.ListTasks(meta.ID)
+	if taskErr != nil {
+		t.Fatalf("list tasks: %v", taskErr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed linked plan mode creation should roll back generated tasks, got %#v", tasks)
+	}
+	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
+		t.Fatalf("failed linked plan mode creation should not leave plan mode, got plan=%#v err=%v", planMode, planErr)
+	}
+}
+
+func TestServiceMissionPlanPatchRollsBackWhenLinkedPlanModeCreationFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_patch_planmode_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	original, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Plain goal before mission patch",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	blockWebPlanModeHistoryPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	patchReq, err := http.NewRequest(http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", bytes.NewBufferString(`{
+		"plan_status":"needs_approval",
+		"features":[{"id":"feature_plan","title":"Feature","status":"pending"}],
+		"create_tasks_from_plan":true
+	}`))
+	if err != nil {
+		t.Fatalf("new patch request: %v", err)
+	}
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set(webMutationHeader, "1")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("patch mission plan: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusInternalServerError {
+		body, _ := io.ReadAll(patchResp.Body)
+		t.Fatalf("expected plan mode creation failure, got %d body=%s", patchResp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(patchResp.Body)
+	if !strings.Contains(string(body), "planmode-history.jsonl") {
+		t.Fatalf("expected plan mode history error, got body=%s", string(body))
+	}
+	loaded, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal after failed patch: %v", err)
+	}
+	if loaded.Mode != original.Mode || loaded.Mission != nil || loaded.GoalID != original.GoalID {
+		t.Fatalf("failed linked plan mode creation should restore original goal, got %#v original=%#v", loaded, original)
+	}
+	tasks, taskErr := svc.store.ListTasks(meta.ID)
+	if taskErr != nil {
+		t.Fatalf("list tasks: %v", taskErr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed linked plan mode creation should roll back generated tasks, got %#v", tasks)
+	}
+	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
+		t.Fatalf("failed linked plan mode creation should not leave plan mode, got plan=%#v err=%v", planMode, planErr)
+	}
+}
+
 func TestServiceGoalStatusPreservesAccountingAndProgressFacts(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -5922,6 +6038,17 @@ func blockWebGoalHistoryPath(t *testing.T, store *session.Store, sessionID strin
 	}
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block goal history path: %v", err)
+	}
+}
+
+func blockWebPlanModeHistoryPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "planmode-history.jsonl")
+	if err := os.Remove(historyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove plan mode history: %v", err)
+	}
+	if err := os.Mkdir(historyPath, 0o700); err != nil {
+		t.Fatalf("block plan mode history path: %v", err)
 	}
 }
 

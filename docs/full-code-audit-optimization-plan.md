@@ -2736,6 +2736,36 @@ Validation:
 - Focused post-fix todo/tool tests.
 - Standard grouped validation before commit.
 
+### FCA-20260526-100: Web goal mutations can leave missing linked Plan Mode gates
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md` require goals or missions that need plan approval to have a real linked Plan Mode gate, with `planmode.json` / `artifacts/planmode-history.jsonl` as durable facts.
+- `internal/webconsole/service.go` `handleGoalCreate` created `goal.json`, `artifacts/goal-history.jsonl`, and optional mission-synced tasks before calling `EnsurePlanModeForGoal`.
+- `handleGoalPatch`, `handleMissionPlanPatch`, and `handleMissionValidationPatch` similarly mutated `goal.json` and sometimes `tasks/` before ensuring the linked Plan Mode gate.
+- When `EnsurePlanModeForGoal` failed, these handlers returned an HTTP 500 without restoring the already-mutated goal/task facts.
+- Focused regressions blocked `artifacts/planmode-history.jsonl`. Before this fix, Web goal create returned an error but left the new goal/history/tasks behind, and mission plan patch returned an error while leaving the mission in `needs_approval` with generated task facts and no durable linked Plan Mode gate.
+
+Impact:
+
+Web operators could receive a failed mutation response while the session facts had still advanced into an approval-required state without the required Plan Mode gate. That weakens the Plan Mode execution boundary, Web Goal inspector consistency, task/mission recovery, and later completion decisions that assume approval-required goals have a durable pending gate.
+
+Minimal fix:
+
+- Roll back `goal.json`, goal history, task snapshots, and Plan Mode snapshots when Web goal creation cannot create the required linked Plan Mode.
+- Roll back generic goal patch, mission plan patch, and mission validation patch goal/task mutations when linked Plan Mode creation fails.
+- Restore the previous goal/task facts if a Plan Mode snapshot cannot be captured after a Web patch has already mutated goal facts.
+- Add focused WebConsole regressions for create and mission-plan patch failures caused by blocked `planmode-history.jsonl`.
+
+Validation:
+
+- Focused pre-fix WebConsole regressions proving create and mission plan patch partial writes.
+- Focused post-fix WebConsole regressions for the same paths.
+- Adjacent Web goal / mission / Plan Mode rollback tests.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -3341,6 +3371,12 @@ Evidence gates:
 - Confirmed FCA-20260526-099 against `spec/12-task-system.md`, store `LoadTodo`, and tool `todo_write`.
 - Confirmed the finding is behavior-backed rather than schema-only: replacing `todo.json` with a directory made `todo_write` return a successful no-op with `null` output before the fix.
 - Confirmed the minimal fix belongs in the tool's existing snapshot load path; the store already treats a missing `todo.json` as an empty snapshot, so the fix only surfaces real load failures.
+
+### Review 93
+
+- Confirmed FCA-20260526-100 against the linked Plan Mode gate requirements in `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`, plus Web goal create / patch handlers.
+- Confirmed this is a source-fact consistency issue, not just a missing event: blocked `planmode-history.jsonl` made the API return failure while `goal.json`, goal history, and task facts still advanced without the required linked Plan Mode gate.
+- Confirmed the minimal fix should restore the previous durable goal/task/Plan Mode snapshots on gate-creation failure instead of weakening `EnsurePlanModeForGoal` or bypassing Plan Mode approval.
 
 ## Update Log
 
@@ -5928,4 +5964,39 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-100
+
+Slice: `fix(webconsole): roll back failed linked plan gates`
+
+Finding:
+
+- Web goal and mission mutations wrote goal/task facts before creating the linked Plan Mode gate required for approval-gated goals.
+- Focused regressions blocked `artifacts/planmode-history.jsonl`; before the fix, goal create and mission plan patch returned HTTP 500 while leaving the mutated goal/task facts behind with no durable linked Plan Mode gate.
+
+Changes:
+
+- Added restore helpers for Web goal create and Web goal/mission patch paths when linked Plan Mode creation fails.
+- Restored previous `goal.json`, goal history, task snapshots, and Plan Mode snapshots for failed goal creation.
+- Restored previous `goal.json`, task snapshots, and Plan Mode snapshots for failed goal / mission / validation patches.
+- Added focused WebConsole regressions for failed linked Plan Mode creation during goal create and mission plan patch.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreate|MissionPlanPatch)RollsBackWhenLinkedPlanModeCreationFails' -count=1`: failed before the fix because the failed responses left mutated goal/task facts.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreate|MissionPlanPatch)RollsBackWhenLinkedPlanModeCreationFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreateReportsEventAppendErrorAndRollsBack|GoalCreateRollsBackWhenLinkedPlanModeCreationFails|GoalPatchReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|MissionPlanPatchReportsHistoryAppendError|MissionPlanPatchTaskSyncReportsHistoryAppendError|MissionPlanPatchPlanModeReportsHistoryAppendError|MissionPlanPatchRollsBackWhenLinkedPlanModeCreationFails|MissionValidationContractPatchReportsHistoryAppendError|MissionValidationPatchResetsApprovedPlanToPendingGate|GoalEndpointsMutateDurableGoal)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
