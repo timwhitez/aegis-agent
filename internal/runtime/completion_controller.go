@@ -269,7 +269,13 @@ func (c *CompletionController) goalCompletionGate(toolName string) (string, stri
 		return "", ""
 	}
 	goal, err := c.store.LoadGoal(c.sessionID)
-	if err != nil || goal.GoalID == "" {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", ""
+		}
+		return "goal_state", "Goal completion gate could not load goal.json: " + err.Error()
+	}
+	if goal.GoalID == "" {
 		return "", ""
 	}
 	switch goal.Status {

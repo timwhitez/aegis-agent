@@ -610,6 +610,20 @@ func TestGoalCompletionGateBlocksActiveGoalAndAllowsCompletedGoal(t *testing.T) 
 	}
 }
 
+func TestGoalCompletionGateReportsCorruptGoalSnapshot(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	goalPath := filepath.Join(store.SessionDir(meta.ID), "goal.json")
+	if err := os.WriteFile(goalPath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt goal: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"done"}`))
+	if decision.Status != GateBlock || decision.GateID != "goal_state" || !strings.Contains(decision.ModelMessage, "goal.json") {
+		t.Fatalf("expected corrupt goal snapshot block, got %#v", decision)
+	}
+}
+
 func TestGoalCompletionGateRequiresBudgetWrapUpWhenStopOnBudget(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	tokenBudget := int64(1)
