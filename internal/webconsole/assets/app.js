@@ -38,6 +38,7 @@ const state = {
   refreshingHistory: false,
   toastCounter: 0,
   skills: [],
+  skillUploadInFlight: false,
   fileTree: [],
   workspacePath: '',
   selectedTreePath: '',
@@ -482,7 +483,7 @@ function setupEventListeners() {
   nodes.interruptToggleBtn?.addEventListener('click', toggleInterruptArm);
   nodes.goalToggleBtn?.addEventListener('click', toggleGoalMode);
   nodes.planToggleBtn?.addEventListener('click', togglePlanMode);
-  nodes.skillUploadBtn?.addEventListener('click', () => nodes.skillUpload?.click());
+  nodes.skillUploadBtn?.addEventListener('click', () => openSkillUploadPicker());
   nodes.newSessionBtn?.addEventListener('click', () => {
     const wasGenerating = state.isGenerating;
     resetChatSession();
@@ -737,8 +738,15 @@ function setupEventListeners() {
     if (!file) {
       return;
     }
+    if (state.skillUploadInFlight) {
+      showToast('Skill upload is already in progress.', 'info');
+      event.target.value = '';
+      return;
+    }
     const formData = new FormData();
     formData.append('file', file);
+    state.skillUploadInFlight = true;
+    setSkillUploadPending(document, true);
     try {
       await requestFormJSON('/api/skills/upload', formData, {
         method: 'POST',
@@ -749,8 +757,11 @@ function setupEventListeners() {
       }
     } catch (err) {
       showToast(err.message || 'Failed to upload skill zip.', 'error');
+    } finally {
+      state.skillUploadInFlight = false;
+      setSkillUploadPending(document, false);
+      event.target.value = '';
     }
-    event.target.value = '';
   });
 
   document.addEventListener('keydown', (event) => {
@@ -2586,9 +2597,8 @@ function renderSkills(skills) {
     }
     const emptyBtn = document.getElementById('empty-upload-btn');
     if (emptyBtn) {
-      emptyBtn.addEventListener('click', () => {
-        document.getElementById('skill-upload')?.click();
-      });
+      emptyBtn.addEventListener('click', () => openSkillUploadPicker());
+      setSkillUploadPending(document, state.skillUploadInFlight);
     }
     return;
   }
@@ -2624,16 +2634,25 @@ function renderSkills(skills) {
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: nodes.skillsGrid });
   }
+  setSkillUploadPending(document, state.skillUploadInFlight);
+}
+
+function openSkillUploadPicker() {
+  if (state.skillUploadInFlight) {
+    showToast('Skill upload is already in progress.', 'info');
+    return;
+  }
+  const uploadInput = document.getElementById('skill-upload');
+  if (uploadInput) {
+    uploadInput.click();
+  } else {
+    showToast('Upload input not available.', 'error');
+  }
 }
 
 async function handleSkillAction(id, isInstalled, button) {
   if (!isInstalled) {
-    const uploadInput = document.getElementById('skill-upload');
-    if (uploadInput) {
-      uploadInput.click();
-    } else {
-      showToast('Upload input not available.', 'error');
-    }
+    openSkillUploadPicker();
     return;
   }
   if (!await confirmSkillUninstall(id)) {

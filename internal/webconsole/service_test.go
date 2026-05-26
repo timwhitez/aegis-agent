@@ -2866,6 +2866,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "confirmGoalClear") || !strings.Contains(jsBody, "confirmSkillUninstall") || !strings.Contains(jsBody, "Skill uninstall cancelled") {
 		t.Fatalf("expected risky goal clear and skill uninstall actions to require confirmation, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "state.skillUploadInFlight") || !strings.Contains(jsBody, "setSkillUploadPending") {
+		t.Fatalf("expected skill upload to track and restore pending controls, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "setComposerMode") || !strings.Contains(jsBody, "normalizeComposerMode") || !strings.Contains(jsBody, "mode === 'goal'") || !strings.Contains(jsBody, "mode === 'plan'") {
 		t.Fatalf("expected Goal and Plan composer controls to be mutually exclusive, got app.js body: %s", jsBody)
 	}

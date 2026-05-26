@@ -33,6 +33,37 @@ function isAcceptedLaunchResponse(value) {
   return String(value?.status || '').toLowerCase() === 'accepted' && Boolean(value?.session_id);
 }
 
+function setSkillUploadPending(root, pending) {
+  const doc = root || document;
+  const uploadInput = doc.getElementById?.('skill-upload');
+  const controls = [
+    doc.getElementById?.('skill-upload-btn'),
+    doc.getElementById?.('empty-upload-btn'),
+    ...Array.from(doc.querySelectorAll?.('[data-skill-action][data-skill-installed="0"]') || [])
+  ].filter(Boolean);
+  const label = pending ? 'Uploading...' : '';
+  for (const control of controls) {
+    if (pending) {
+      if (!control.dataset.uploadIdleLabel) {
+        control.dataset.uploadIdleLabel = control.textContent || 'Upload .zip Skill';
+      }
+      control.disabled = true;
+      control.textContent = label;
+      control.setAttribute('aria-busy', 'true');
+      continue;
+    }
+    control.disabled = false;
+    if (control.dataset.uploadIdleLabel) {
+      control.textContent = control.dataset.uploadIdleLabel;
+    }
+    delete control.dataset.uploadIdleLabel;
+    control.removeAttribute('aria-busy');
+  }
+  if (uploadInput) {
+    uploadInput.disabled = Boolean(pending);
+  }
+}
+
 function mergeMessageWindows(currentMessages, nextMessages) {
   const current = maybeArray(currentMessages);
   const next = maybeArray(nextMessages);

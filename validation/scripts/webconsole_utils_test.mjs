@@ -171,6 +171,69 @@ test('isAcceptedLaunchResponse recognizes async launch responses only', () => {
   assert.equal(context.isAcceptedLaunchResponse(null), false);
 });
 
+test('setSkillUploadPending disables and restores upload controls', () => {
+  function fakeControl(text = '') {
+    return {
+      textContent: text,
+      disabled: false,
+      dataset: {},
+      attrs: {},
+      setAttribute(name, value) {
+        this.attrs[name] = value;
+      },
+      removeAttribute(name) {
+        delete this.attrs[name];
+      },
+      getAttribute(name) {
+        return this.attrs[name] || null;
+      }
+    };
+  }
+  const mainButton = fakeControl('Upload .zip Skill');
+  const emptyButton = fakeControl('Upload .zip Skill');
+  const cardButton = fakeControl('Upload to Install');
+  const freshCardButton = fakeControl('Upload to Install');
+  const uploadInput = fakeControl('');
+  const root = {
+    getElementById(id) {
+      return {
+        'skill-upload-btn': mainButton,
+        'empty-upload-btn': emptyButton,
+        'skill-upload': uploadInput
+      }[id] || null;
+    },
+    querySelectorAll(selector) {
+      assert.equal(selector, '[data-skill-action][data-skill-installed="0"]');
+      return [cardButton, freshCardButton];
+    }
+  };
+
+  context.setSkillUploadPending(root, true);
+
+  for (const control of [mainButton, emptyButton, cardButton]) {
+    assert.equal(control.disabled, true);
+    assert.equal(control.textContent, 'Uploading...');
+    assert.equal(control.getAttribute('aria-busy'), 'true');
+  }
+  assert.equal(uploadInput.disabled, true);
+
+  context.setSkillUploadPending(root, false);
+
+  assert.equal(mainButton.disabled, false);
+  assert.equal(mainButton.textContent, 'Upload .zip Skill');
+  assert.equal(emptyButton.disabled, false);
+  assert.equal(emptyButton.textContent, 'Upload .zip Skill');
+  assert.equal(cardButton.disabled, false);
+  assert.equal(cardButton.textContent, 'Upload to Install');
+  assert.equal(mainButton.getAttribute('aria-busy'), null);
+  assert.equal(uploadInput.disabled, false);
+
+  freshCardButton.textContent = 'Upload to Install';
+  delete freshCardButton.dataset.uploadIdleLabel;
+  context.setSkillUploadPending(root, false);
+  assert.equal(freshCardButton.textContent, 'Upload to Install');
+});
+
 test('mergeMessageWindows preserves older loaded messages when server tail overlaps', () => {
   const current = ['m1', 'm2', 'm3', 'm4'].map((id) => ({ id }));
   const next = ['m3', 'm4', 'm5'].map((id) => ({ id }));

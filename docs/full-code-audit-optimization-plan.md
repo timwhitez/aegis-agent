@@ -2035,6 +2035,35 @@ Validation:
 - Adjacent Plan Mode input responder and no-responder regressions.
 - Standard grouped validation before commit.
 
+### FCA-20260526-074: Skill upload lacks pending-submit state
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires form submit controls to enter a clear pending / disabled state, and specifically requires skills upload / uninstall and settings save failures to use backend errors and restore pending button state.
+- Skill uninstall and settings save already disable their action buttons and restore them on failure.
+- Before this slice, the `skill-upload` change handler immediately sent the multipart request and only cleared the file input after completion. It did not set an in-flight flag, disable the header upload button, disable empty-state / card upload entry points, or disable the hidden file input while the request was pending.
+- Focused frontend regressions failed before the fix: the renderer test had no `setSkillUploadPending` helper, and the embedded asset contract found no `state.skillUploadInFlight` or `setSkillUploadPending` usage in `app.js`.
+
+Impact:
+
+Operators could trigger repeated skill upload requests while the first multipart upload was still in flight. Slow uploads or backend errors could leave the UI looking idle even though a local skill install mutation was pending, violating the Web-first form-state contract and increasing the chance of duplicate local mutations.
+
+Minimal fix:
+
+- Add a reusable frontend helper that disables and labels all skill upload entry points plus the hidden file input while upload is pending, then restores their labels and enabled state.
+- Track `state.skillUploadInFlight` in `app.js`.
+- Guard repeated header/card/empty-state upload clicks and duplicate file-input changes while a request is pending.
+- Restore pending controls in `finally` after success or failure, preserving real backend error toasts.
+- Add focused Node and embedded asset regressions.
+
+Validation:
+
+- Focused frontend helper regression.
+- Focused embedded asset contract regression.
+- Standard grouped validation before commit.
+
 ## Reviewed Areas With No Confirmed New Issue Yet
 
 These areas have been inspected enough to avoid duplicating already-fixed items, but the broad audit is still ongoing:
@@ -2484,6 +2513,12 @@ Evidence gates:
 - Confirmed FCA-20260526-073 against `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, `defRequestUserInput`, `Store.LoadState`, `Store.SaveState`, and focused blocked-state regressions.
 - Confirmed this is a source-fact issue, not a derived summary issue: Plan Mode pending input needs both `planmode.json` and `state.json` to agree before Web/CLI recovery can treat the session as waiting for operator input.
 - Confirmed the fix should stop before emitting `planmode.input_requested` or calling the interactive responder when the awaiting-input state transition cannot be durably written, while preserving the already-written pending request as a recovery fact.
+
+### Review 67
+
+- Confirmed FCA-20260526-074 against `spec/17-web-console.md`, the `skill-upload` file input change handler, `handleSkillAction`, and focused frontend pending-state regressions.
+- Confirmed this is not a backend upload validation issue: upload size, zip entry, path safety, duplicate target, audit preflight, and uninstall mutation safety are already covered, while the missing behavior is the browser-side pending/disabled state during a real multipart mutation.
+- Confirmed the fix should preserve existing backend error toast behavior while making all upload entry points visibly pending and non-repeatable until the request settles.
 
 ## Update Log
 
@@ -4218,6 +4253,40 @@ Validation:
 - `go test -timeout 120s ./internal/tools -run 'TestRequestUserInputReportsState(Load|Save)ErrorBeforeResponder|TestRequestUserInputResponderErrorKeepsRecoverablePendingRequest|TestRequestUserInputWithoutResponderFailsBeforePendingRequest' -count=1`: passed.
 - `go test -timeout 120s ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools -run 'TestRequestUserInput|TestRunnerFailBeforeRunReports|TestEngineProviderFailureReports|TestEngineFailReportsFailedEventAppendError|TestPlanMode' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260526-074
+
+Slice: `fix(webconsole): disable skill upload while pending`
+
+Finding:
+
+- The skill upload file-input handler sent the multipart upload request without disabling the header upload button, empty-state upload button, card upload entry points, or hidden file input.
+- Focused frontend evidence failed before the fix: the Node renderer test had no `setSkillUploadPending` helper, and the embedded asset contract found no `state.skillUploadInFlight` / `setSkillUploadPending` usage in `app.js`.
+
+Changes:
+
+- Added `setSkillUploadPending` to disable, mark `aria-busy`, relabel, and restore all skill upload entry points.
+- Added `state.skillUploadInFlight` and `openSkillUploadPicker` to guard repeated upload clicks and duplicate file-input changes.
+- Wrapped the multipart upload request in pending state and restored controls in `finally`, keeping existing backend error toast behavior.
+- Added focused Node helper and embedded asset contract regressions.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `setSkillUploadPending` was missing.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because `app.js` lacked `state.skillUploadInFlight` and `setSkillUploadPending`.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/utils.js`: passed.
 - `git diff --check`: passed.
 - `gofmt -l cmd internal pkg validation/cmd`: no output.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/events.js internal/webconsole/assets/session-view.js internal/webconsole/assets/utils.js`: passed.
