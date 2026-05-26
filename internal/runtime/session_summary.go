@@ -24,8 +24,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	todo, todoErr := store.LoadTodo(sessionID)
 	tasks, tasksErr := store.ListTasks(sessionID)
 	contract, contractErr := store.LoadContract(sessionID)
-	artifacts, _ := store.LoadArtifactTracker(sessionID)
-	attempts, _ := store.LoadProviderAttempts(sessionID)
+	artifacts, artifactsErr := store.LoadArtifactTracker(sessionID)
+	attempts, attemptsErr := store.LoadProviderAttempts(sessionID)
 	goal, goalErr := store.LoadGoal(sessionID)
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
 	children, _ := store.ListChildren(sessionID, 100)
@@ -177,7 +177,9 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	}
 
 	b.WriteString("\n## Required Artifacts\n\n")
-	if len(artifacts) == 0 {
+	if artifactsErr != nil {
+		b.WriteString(fmt.Sprintf("artifact-tracker.json load error: `%s`\n", artifactsErr.Error()))
+	} else if len(artifacts) == 0 {
 		b.WriteString("not recorded\n")
 	} else {
 		for _, artifact := range artifacts {
@@ -230,7 +232,9 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	}
 
 	b.WriteString("\n## Provider Attempts\n\n")
-	if len(attempts) == 0 {
+	if attemptsErr != nil {
+		b.WriteString(fmt.Sprintf("provider-attempts.jsonl load error: `%s`\n", attemptsErr.Error()))
+	} else if len(attempts) == 0 {
 		b.WriteString("not recorded\n")
 	} else {
 		cache := summarizeProviderAttemptCache(attempts)

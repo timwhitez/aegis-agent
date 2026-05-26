@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-156: Session summary hides corrupt artifact and provider-attempt facts
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` says `SessionSummaryWriter` aggregates artifact tracker and provider attempt facts into `session.md`.
+- `spec/18-durable-contract-and-completion.md` says `session.md` summarizes required artifacts and recent provider attempts as an operator-readable derived view, while it is never a fact source.
+- `spec/03-provider-contracts.md` defines `provider-attempts.jsonl` as the durable retry / auto-resume / failure / success ledger for diagnostics and recovery.
+- `internal/session/store.go` already distinguishes missing optional `artifact-tracker.json` / `provider-attempts.jsonl` from corrupt or unreadable present files.
+- `internal/runtime/session_summary.go` still loaded those facts with `artifacts, _ := store.LoadArtifactTracker(sessionID)` and `attempts, _ := store.LoadProviderAttempts(sessionID)`, discarding meaningful load errors before rendering the Required Artifacts and Provider Attempts sections.
+- A focused pre-fix regression corrupted `artifact-tracker.json` and `provider-attempts.jsonl`. Before the fix, `session.md` rendered both sections as `not recorded`.
+
+Impact:
+
+Operators and recovery prompts could read `session.md` and conclude there were no required-artifact facts or provider-attempt facts while the real issue was unreadable durable state. That weakens recovery diagnostics for required-artifact completion, provider retry/timeout analysis, cache telemetry, and broad audit evidence, especially after Web detail and completion gates already surface these corrupt files.
+
+Minimal fix:
+
+- Preserve `not recorded` for genuinely missing or empty artifact tracker and provider-attempt facts.
+- Render non-missing `artifact-tracker.json` and `provider-attempts.jsonl` load failures in their existing `session.md` sections.
+- Keep `session.md` derived-only: summary write failures still do not become runtime authority.
+- Add focused runtime coverage for corrupt artifact tracker and provider-attempt ledger summary rendering.
+
+Validation:
+
+- Focused pre-fix runtime regression proving corrupt artifact/provider-attempt facts were rendered as `not recorded`.
+- Focused post-fix runtime regression proving `session.md` names `artifact-tracker.json` and `provider-attempts.jsonl` load errors.
+- Existing optional-fact, task-state, and provider-attempt summary/checkpoint regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-155: Session summary hides corrupt task-state facts
 
 Severity: Medium
@@ -5305,7 +5336,48 @@ Evidence gates:
 - Confirmed this is not an authority/gate change: missing or empty todo/task state still renders as `not recorded`, while malformed present task-state facts should be visible in `session.md` as diagnostics.
 - Confirmed the minimal fix belongs in `writeSessionSummary`; the store and model tool paths already report corrupt todo/task files, and only the Markdown summary was still collapsing those errors into absence.
 
+### Review 149
+
+- Confirmed FCA-20260526-156 against `SessionSummaryWriter` requirements in `spec/01-runtime-architecture.md`, provider-attempt ledger requirements in `spec/03-provider-contracts.md`, and the derived-view boundary in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not an authority/gate change: missing or empty artifact/provider-attempt facts still render as `not recorded`, while malformed present fact files should be visible in `session.md` as diagnostics.
+- Confirmed the minimal fix belongs in `writeSessionSummary`; store loaders, Web detail, and completion/provider paths already distinguish absent versus corrupt fact files, and only the Markdown summary was still collapsing those errors into absence.
+
 ## Update Log
+
+### FCA-20260526-156
+
+Slice: `fix(runtime): surface corrupt artifact facts in session summary`
+
+Finding:
+
+- `writeSessionSummary` discarded `LoadArtifactTracker` and `LoadProviderAttempts` errors while rendering the Required Artifacts and Provider Attempts sections.
+- Before the fix, corrupt `artifact-tracker.json` and corrupt `provider-attempts.jsonl` were both displayed as `not recorded`.
+
+Changes:
+
+- Rendered non-missing artifact tracker and provider-attempt ledger load failures in their existing `session.md` sections.
+- Preserved `not recorded` for genuinely missing or empty artifact/provider-attempt facts.
+- Added focused runtime coverage for corrupt `artifact-tracker.json` and `provider-attempts.jsonl`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptArtifactAndProviderAttemptFacts -count=1`: failed before the fix because corrupt artifact/provider-attempt facts rendered as `not recorded`.
+- `go test -timeout 120s ./internal/runtime -run TestSessionSummaryReportsCorruptArtifactAndProviderAttemptFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionSummaryReportsCorrupt(ArtifactAndProviderAttemptFacts|OptionalFacts|TaskStateFacts)|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-155
 
