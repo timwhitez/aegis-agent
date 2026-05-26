@@ -1980,6 +1980,29 @@ func TestEngineSteerAcceptanceReportsCorruptGoalSnapshot(t *testing.T) {
 	}
 }
 
+func TestEngineSteerAcceptanceReportsAcceptedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatalf("provider should not be called after steer accepted event append failure")
+		return provider.TurnResult{}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected steer accepted event append error, result=%#v err=%v", result, err)
+	}
+}
+
 func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
 	engine, meta, state, registry, _, catalog := newTestEngine(t, session.ModeRun)
 	_ = state

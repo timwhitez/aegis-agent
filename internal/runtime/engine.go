@@ -1106,16 +1106,20 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 		requests[i].Status = session.SteerStatusAccepted
 		changed = true
 		accepted++
-		e.emit(sessionID, "user.message", "control_drain", map[string]any{
+		if err := e.appendEvent(sessionID, "user.message", "control_drain", map[string]any{
 			"text":      text,
 			"mode":      meta.Mode,
 			"source":    "steer",
 			"interrupt": requests[i].Interrupt,
-		})
-		e.emit(sessionID, "session.steer.accepted", "control_drain", map[string]any{
+		}); err != nil {
+			return accepted, err
+		}
+		if err := e.appendEvent(sessionID, "session.steer.accepted", "control_drain", map[string]any{
 			"id":        requests[i].ID,
 			"interrupt": requests[i].Interrupt,
-		})
+		}); err != nil {
+			return accepted, err
+		}
 		if err := appendGoalHistoryForSteer(e.store, sessionID, text, requests[i].Interrupt); err != nil {
 			return accepted, err
 		}
