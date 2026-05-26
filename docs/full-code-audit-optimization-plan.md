@@ -4154,6 +4154,37 @@ Validation:
 - Existing mismatched valid JSON regression remains green.
 - Standard grouped validation before commit.
 
+### FCA-20260526-164: Compaction hides corrupt Goal snapshot state
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines compaction as a context-view mechanism that must not replace or corrupt original session logs, and `SessionGoalManager` says Goal snapshots are injected into compaction summaries and long-run recovery facts.
+- `spec/18-durable-contract-and-completion.md` defines `goal.json` as the current Goal snapshot used by `session.md`, checkpoints, Mission Control, and recovery prompts.
+- `internal/runtime/compaction.go` called `loadGoalOptional` while building fresh compaction summaries, fallback reuse summaries, and reuse event metadata, but discarded its error.
+- A focused pre-fix regression corrupted `goal.json` before compaction. Before the fix, compaction succeeded, wrote a summary with no `goal_snapshot`, and emitted `goal_present=false`.
+- A second focused pre-fix regression used the hysteresis reuse path with corrupt `goal.json`. Before the fix, reuse also succeeded and reported no Goal.
+
+Impact:
+
+Compaction could turn a corrupt Goal snapshot into a provider-visible context summary that says no Goal exists. That weakens recovery and long-running goal traceability because future turns may rely on the compacted view and miss the fact that the durable Goal source is unreadable.
+
+Minimal fix:
+
+- Propagate `loadGoalOptional` errors from fresh compaction as `load goal.json for compaction`.
+- Propagate corrupt Goal errors from fallback reuse summary construction as `load goal.json for compaction reuse`.
+- Propagate corrupt Goal errors from reuse event metadata as `load goal.json for compaction reuse event`.
+- Preserve no-Goal compatibility by continuing to treat `fs.ErrNotExist` as nil through `loadGoalOptional`.
+- Add focused runtime coverage for fresh compaction and hysteresis reuse with corrupt `goal.json`.
+
+Validation:
+
+- Focused pre-fix runtime regressions proving corrupt `goal.json` was hidden by fresh compaction and reuse.
+- Focused post-fix runtime regressions proving corrupt Goal state stops compaction/reuse with an actionable `goal.json` error.
+- Existing corrupt feature-list, durable summary, hysteresis reuse, and reference-prefix compaction regressions remain green.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-163: Long-run checkpoint hides corrupt optional recovery snapshots
 
 Severity: Medium
@@ -5599,7 +5630,49 @@ Evidence gates:
 - Confirmed this is not a missing optional-file compatibility issue: absent contract, Goal, Plan Mode, or parent coordination snapshots remain valid no-state cases, while malformed present snapshots are corrupt recovery facts.
 - Confirmed the minimal fix belongs in `writeLongRunCheckpoint`, because Web detail, completion/Plan/parent gates, checkpoint drift handling, and `session.md` already report these corrupt snapshots and only checkpoint writing still collapsed them into absence.
 
+### Review 157
+
+- Confirmed FCA-20260526-164 against the compaction/source-log boundary in `spec/01-runtime-architecture.md` and the Goal snapshot recovery requirements in `spec/18-durable-contract-and-completion.md`.
+- Confirmed this is not a no-Goal compatibility issue: absent `goal.json` still means no current Goal, while malformed present `goal.json` is corrupt recovery state.
+- Confirmed the minimal fix belongs in the compactor because `loadGoalOptional` already exposes the absent-versus-corrupt distinction, and only the compaction summary/reuse paths were discarding it.
+
 ## Update Log
+
+### FCA-20260526-164
+
+Slice: `fix(runtime): report corrupt compaction goal state`
+
+Finding:
+
+- Compaction and hysteresis reuse discarded `loadGoalOptional` errors while deriving `goal_snapshot` and `goal_present` facts.
+- Before the fix, corrupt `goal.json` returned nil from compaction/reuse, wrote or reused a summary with no Goal snapshot, and marked `goal_present=false`.
+
+Changes:
+
+- Propagated corrupt Goal errors from fresh compaction as `load goal.json for compaction`.
+- Propagated corrupt Goal errors from fallback reuse as `load goal.json for compaction reuse`.
+- Propagated corrupt Goal errors from reuse event metadata as `load goal.json for compaction reuse event`.
+- Added focused runtime coverage for fresh compaction and hysteresis reuse with corrupt `goal.json`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactor(ReportsCorruptGoalSnapshot|ReuseReportsCorruptGoalSnapshot)' -count=1`: failed before the fix because corrupt Goal state was hidden as no Goal.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactor(ReportsCorruptGoalSnapshot|ReuseReportsCorruptGoalSnapshot)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactor(ReportsCorrupt(GoalSnapshot|FeatureList)|WritesDurableSummaryArtifact|ReusesSummaryWithinHysteresisWindow)|TestCompactionAddsReferencePrefix' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260526-163
 

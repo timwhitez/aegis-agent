@@ -46,11 +46,18 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		return cloned, size, false, nil
 	}
 	if lastCompactionInputChars > 0 && profile.HysteresisDeltaChars > 0 && size < lastCompactionInputChars+profile.HysteresisDeltaChars {
-		summary, summarySource := c.reusableCompactionSummary(sessionID, workdir, state, sourceMessages, todo, tasks, profile)
+		summary, summarySource, err := c.reusableCompactionSummary(sessionID, workdir, state, sourceMessages, todo, tasks, profile)
+		if err != nil {
+			return nil, size, false, err
+		}
 		compactText, _ := json.MarshalIndent(summary, "", "  ")
 		recent := recentMessagesForCompaction(cloned, 6)
 		if emit != nil {
-			emit(events.New(sessionID, "compact.reused", "compact", c.compactReusedEventData(sessionID, workdir, size, lastCompactionInputChars, profile, todo, tasks, summarySource)))
+			data, err := c.compactReusedEventData(sessionID, workdir, size, lastCompactionInputChars, profile, todo, tasks, summarySource)
+			if err != nil {
+				return nil, size, false, err
+			}
+			emit(events.New(sessionID, "compact.reused", "compact", data))
 		}
 		compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
 		compacted.Meta = map[string]any{
@@ -66,7 +73,10 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
 	taskSummary := taskCounts(tasks)
 	proofBudget := proofReadBudget()
-	goal, _ := loadGoalOptional(c.store, sessionID)
+	goal, err := loadGoalOptional(c.store, sessionID)
+	if err != nil {
+		return nil, size, false, fmt.Errorf("load goal.json for compaction: %w", err)
+	}
 
 	emit(events.New(sessionID, "compact.started", "compact", map[string]any{
 		"input_chars":            size,
@@ -161,23 +171,30 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	return out, size, true, nil
 }
 
-func (c *compactor) reusableCompactionSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, string) {
+func (c *compactor) reusableCompactionSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, string, error) {
 	if relativePath := latestCompactionArtifactRelativePath(c.store, sessionID); relativePath != "" {
 		var summary map[string]any
 		if err := c.store.ReadArtifact(sessionID, relativePath, &summary); err == nil && len(summary) > 0 {
-			return summary, relativePath
+			return summary, relativePath, nil
 		}
 	}
-	return c.fallbackCompactionReuseSummary(sessionID, workdir, state, messages, todo, tasks, profile), "derived"
+	summary, err := c.fallbackCompactionReuseSummary(sessionID, workdir, state, messages, todo, tasks, profile)
+	if err != nil {
+		return nil, "", err
+	}
+	return summary, "derived", nil
 }
 
-func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) map[string]any {
+func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, error) {
 	projectMemory := loadProjectMemoryStack(workdir)
 	readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
 	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
 	taskSummary := taskCounts(tasks)
 	proofBudget := proofReadBudget()
-	goal, _ := loadGoalOptional(c.store, sessionID)
+	goal, err := loadGoalOptional(c.store, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("load goal.json for compaction reuse: %w", err)
+	}
 	summary := map[string]any{
 		"completed_items":          collectCompletedItems(todo, tasks),
 		"artifact_memory":          collectArtifactMemory(messages, workdir, 12),
@@ -207,16 +224,19 @@ func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, st
 	if goal != nil {
 		summary["goal_snapshot"] = compactGoalSnapshot(*goal)
 	}
-	return summary
+	return summary, nil
 }
 
-func (c *compactor) compactReusedEventData(sessionID, workdir string, size, lastCompactionInputChars int, profile compactionContextProfile, todo []session.TodoItem, tasks []session.Task, summarySource string) map[string]any {
+func (c *compactor) compactReusedEventData(sessionID, workdir string, size, lastCompactionInputChars int, profile compactionContextProfile, todo []session.TodoItem, tasks []session.Task, summarySource string) (map[string]any, error) {
 	projectMemory := loadProjectMemoryStack(workdir)
 	readyTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) == 0 })
 	blockedTasks := filterTasks(tasks, func(task session.Task) bool { return task.Status == "pending" && len(task.BlockedBy) > 0 })
 	taskSummary := taskCounts(tasks)
 	proofBudget := proofReadBudget()
-	goal, _ := loadGoalOptional(c.store, sessionID)
+	goal, err := loadGoalOptional(c.store, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("load goal.json for compaction reuse event: %w", err)
+	}
 	return map[string]any{
 		"input_chars":                 size,
 		"last_compaction_input_chars": lastCompactionInputChars,
@@ -234,7 +254,7 @@ func (c *compactor) compactReusedEventData(sessionID, workdir string, size, last
 		"done_task_count":             taskSummary.Done,
 		"proof_read_budget":           proofBudget,
 		"goal_present":                goal != nil,
-	}
+	}, nil
 }
 
 func latestCompactionArtifactRelativePath(store *session.Store, sessionID string) string {
