@@ -6653,6 +6653,75 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 }
 
+func TestServiceConfigDefaultsProviderScopedFieldsToCurrentDefault(t *testing.T) {
+	cfg := testConfig(t, "")
+	provider := cfg.Providers["openai"]
+	provider.APIKeyEnv = "OPENAI_API_KEY"
+	provider.BaseURL = "http://old.example.invalid/v1"
+	provider.Model = "gpt-old"
+	cfg.Providers["openai"] = provider
+	envPath := filepath.Join(t.TempDir(), ".env")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"base_url":       "http://default.example.invalid/v1",
+		"model":          "gpt-default-updated",
+		"reasoning_mode": "high",
+		"api_key":        "default-secret",
+	}, http.StatusOK, nil)
+
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.DefaultProvider != "openai" {
+		t.Fatalf("expected default provider to remain openai, got %q", updated.DefaultProvider)
+	}
+	updatedProvider := updated.Providers["openai"]
+	if updatedProvider.BaseURL != "http://default.example.invalid/v1" {
+		t.Fatalf("expected default provider base_url to update, got %#v", updatedProvider)
+	}
+	if updatedProvider.Model != "gpt-default-updated" {
+		t.Fatalf("expected default provider model to update, got %#v", updatedProvider)
+	}
+	if updatedProvider.ReasoningEffort != "high" {
+		t.Fatalf("expected default provider reasoning effort to update, got %#v", updatedProvider)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "default-secret" {
+		t.Fatalf("expected OPENAI_API_KEY to update, got %q", got)
+	}
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read persisted env file: %v", err)
+	}
+	if !strings.Contains(string(envBytes), "OPENAI_API_KEY=default-secret") {
+		t.Fatalf("expected default provider API key to persist to env file, got %q", string(envBytes))
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config file: %v", err)
+	}
+	configText := string(configBytes)
+	for _, want := range []string{
+		"base_url: http://default.example.invalid/v1",
+		"model: gpt-default-updated",
+		"reasoning_effort: high",
+	} {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("expected %q to persist to config, got %q", want, configText)
+		}
+	}
+}
+
 func TestServiceConfigSaveClearsExplicitProviderFields(t *testing.T) {
 	cfg := testConfig(t, "")
 	provider := cfg.Providers["openai"]

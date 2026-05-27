@@ -4900,6 +4900,35 @@ Validation:
 - Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
 - Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
 
+### FCA-20260527-228: Settings provider-scoped fields can be silently ignored without provider
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` defines `POST /api/config` as saving provider defaults, API Provider, base URL, model, API key, reasoning / thinking mode, and reasoning summary, and defines `POST /api/config/test` as accepting the same provider form subset without persistence.
+- `internal/webconsole/service.go` `handleTestConfig` normalizes an empty `provider` to the current `DefaultProvider` before applying provider-scoped form fields.
+- `internal/webconsole/service.go` `handleUpdateConfig` only applied provider-scoped fields inside `if p, ok := updatedCfg.Providers[req.Provider]; ok`, so an empty or omitted `provider` caused `base_url`, `model`, `api_provider`, `api_key`, `reasoning_mode`, and `reasoning_summary` to be skipped while the route still wrote config/audit state and returned HTTP 200.
+- The current frontend sends `provider: providerSelect.value`, so this is a direct Settings API contract gap rather than a browser form serialization bug.
+- A focused regression posted `/api/config` without `provider` but with `base_url`, `model`, `reasoning_mode`, and `api_key`. Before the fix, the request returned HTTP 200 while the default provider retained the old base URL/model/reasoning settings and the API key was not written.
+
+Impact:
+
+Direct API clients and recovery scripts can receive a successful Settings save response even though provider-scoped changes were ignored. This makes the Web-first Settings control surface misleading, especially for API-key repair or fallback automation where a user expects the current default provider to be updated consistently with the test/probe endpoint.
+
+Minimal fix:
+
+- Resolve the provider target for Settings save by trimming `req.Provider`.
+- When provider-scoped fields are present and `req.Provider` is blank, target `updatedCfg.DefaultProvider`, matching `/api/config/test` semantics.
+- Validate that the resolved provider exists before applying provider-scoped fields or API-key writes.
+- Use the resolved provider for reasoning-mode validation, API-provider validation, config mutation, and API-key audit metadata, without changing pure guardrails / hard-turn-limit / role-provider saves.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving a no-provider provider-scoped save returned HTTP 200 while leaving the default provider unchanged.
+- Focused post-fix regression proving the same payload updates active config, persisted config, process env, and `.env` for the current default provider.
+- Adjacent Settings, full WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-226: Workspace browser sensitive symlink aliases can bypass name filtering
 
 Severity: Medium
@@ -7208,6 +7237,12 @@ Evidence gates:
 - Confirmed the bug is not in frontend payload mapping. `settings-view.js` renders the supported dropdown values and `api.js` serializes them correctly; the bypass is direct API submission to `handleUpdateConfig`, `handleTestConfig`, or nested role provider overrides.
 - Confirmed the minimal fix belongs in the WebConsole Settings validation path: reuse config default/alias resolution, then reject adapter families outside the runtime-supported set before persistence or probe, without changing provider adapters or introducing a broader config validation framework.
 
+### Review 221
+
+- Confirmed FCA-20260527-228 against the Settings API contract in `spec/17-web-console.md`: `POST /api/config` saves provider-scoped Settings values, and `POST /api/config/test` already treats a blank provider as the current default provider.
+- Confirmed the browser path is not the source: `settings-view.js` always includes the selected provider in the save payload. The bug is the direct API route silently skipping provider-scoped fields when `req.Provider` is blank.
+- Confirmed the minimal fix belongs in `handleUpdateConfig`: normalize a provider target for provider-scoped fields and API-key writes, defaulting only those fields to `DefaultProvider` when the request omits `provider`, without changing guardrails-only or role-provider-only saves.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7269,6 +7304,43 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-228
+
+Slice: `fix(webconsole): apply default provider settings updates`
+
+Finding:
+
+- `handleUpdateConfig` used `req.Provider` directly when applying provider-scoped Settings fields, so requests that omitted `provider` skipped base URL, model, API Provider, reasoning mode, reasoning summary, and API key updates.
+- `handleTestConfig` already defaulted an omitted provider to the current default provider, making save/test semantics inconsistent for direct API clients.
+- Before the fix, a focused regression showed `/api/config` without `provider` returning HTTP 200 while leaving the default provider's base URL/model/reasoning settings unchanged and not writing the API key.
+
+Changes:
+
+- Added provider-scoped field detection for Settings save requests.
+- Normalized a Settings save provider target: explicit `provider` still changes the default provider; omitted `provider` with provider-scoped fields now targets `DefaultProvider`.
+- Used the normalized provider target for provider mutation, reasoning validation, API-provider validation, and API-key audit metadata.
+- Added a focused regression covering active config, persisted config, process env, and `.env` writes for a no-provider default-provider update.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceConfigDefaultsProviderScopedFieldsToCurrentDefault -count=1`: failed before the fix because the default provider kept the old base URL/model/reasoning settings.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceConfigDefaultsProviderScopedFieldsToCurrentDefault -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfig(RoutesUpdateActiveConfig|DefaultsProviderScopedFieldsToCurrentDefault|SaveClearsExplicitProviderFields|RejectsUnsupportedAPIProvider|TestRejectsUnsupportedAPIProvider|RoutesPersistRoleProviderOverrides|RejectsUnknownRoleProviderOverride|RejectsUnsupportedRoleAPIProviderOverride|RoutesPersistThinkingMaxMode|CustomAnthropicProviderGetsThinkingModes|RejectsCustomProviderWithoutAPIProvider|TestAppliesReasoningModeWithoutPersisting|TestUsesAnthropicPromptCacheDefault)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-227
 

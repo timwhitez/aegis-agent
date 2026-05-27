@@ -3049,17 +3049,30 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if req.Provider != "" {
-		if _, ok := updatedCfg.Providers[req.Provider]; !ok {
+	providerName := strings.TrimSpace(req.Provider)
+	providerScopedUpdate := configRequestHasProviderScopedFields(req)
+	if providerName != "" {
+		if _, ok := updatedCfg.Providers[providerName]; !ok {
 			writeError(w, http.StatusBadRequest, newWebError(
 				errorCodeUnknownProvider,
 				"unknown provider",
-				"provider "+req.Provider+" is not configured",
+				"provider "+providerName+" is not configured",
 				"choose one of the configured providers before saving settings",
 			))
 			return
 		}
-		updatedCfg.DefaultProvider = req.Provider
+		updatedCfg.DefaultProvider = providerName
+	} else if providerScopedUpdate {
+		providerName = strings.TrimSpace(updatedCfg.DefaultProvider)
+		if _, ok := updatedCfg.Providers[providerName]; !ok {
+			writeError(w, http.StatusBadRequest, newWebError(
+				errorCodeUnknownProvider,
+				"unknown provider",
+				"provider "+providerName+" is not configured",
+				"choose one of the configured providers before saving settings",
+			))
+			return
+		}
 	}
 	if strings.TrimSpace(req.GuardrailsMode) != "" {
 		updatedCfg.Runtime.GuardrailsMode = configMode(req.GuardrailsMode)
@@ -3084,7 +3097,8 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	var apiKeyAudit map[string]any
 	var apiKeyUpdate *webAPIKeyUpdate
-	if p, ok := updatedCfg.Providers[req.Provider]; ok {
+	if providerName != "" {
+		p := updatedCfg.Providers[providerName]
 		if req.BaseURL != nil {
 			p.BaseURL = strings.TrimSpace(*req.BaseURL)
 		}
@@ -3095,18 +3109,18 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			p.APIProvider = strings.TrimSpace(*req.APIProvider)
 		}
 		if req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "" {
-			if err := applyProviderReasoningMode(req.Provider, &p, *req.ReasoningMode); err != nil {
+			if err := applyProviderReasoningMode(providerName, &p, *req.ReasoningMode); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 		}
 		if req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "" {
-			if err := applyProviderReasoningSummary(req.Provider, &p, *req.ReasoningSummary); err != nil {
+			if err := applyProviderReasoningSummary(providerName, &p, *req.ReasoningSummary); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 		}
-		if _, err := effectiveWebSettingsAPIProvider(req.Provider, p); err != nil {
+		if _, err := effectiveWebSettingsAPIProvider(providerName, p); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -3119,12 +3133,12 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				value:   *req.APIKey,
 			}
 			apiKeyAudit = map[string]any{
-				"provider": req.Provider,
+				"provider": providerName,
 				"env_key":  p.APIKeyEnv,
 				"env_file": envPath,
 			}
 		}
-		updatedCfg.Providers[req.Provider] = p
+		updatedCfg.Providers[providerName] = p
 	}
 
 	cwd, _ := os.Getwd()
@@ -3220,6 +3234,15 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	s.workers.UpdateConfig(updatedCfg)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func configRequestHasProviderScopedFields(req UpdateConfigRequest) bool {
+	return req.APIProvider != nil ||
+		req.BaseURL != nil ||
+		req.Model != nil ||
+		(req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey) ||
+		(req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "") ||
+		(req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "")
 }
 
 type webAPIKeyUpdate struct {
