@@ -1737,14 +1737,39 @@ func defCreateGoal() Definition {
 				}
 				return errorResult("create_goal", fmt.Errorf("record goal.created event: %w", err)), nil
 			}
+			previousPlanMode, err := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
+			if err != nil {
+				return errorResult("create_goal", err), nil
+			}
+			previousPlanModeHistory, err := execCtx.Store.LoadPlanModeHistory(execCtx.SessionID)
+			if err != nil {
+				return errorResult("create_goal", err), nil
+			}
 			if planMode, created, err := execCtx.Store.EnsurePlanModeForGoal(execCtx.SessionID, goal, session.PlanModeSourceTool); err != nil {
 				return errorResult("create_goal", err), nil
-			} else if created && execCtx.Emit != nil {
-				execCtx.Emit("planmode.created", map[string]any{
+			} else if created {
+				if err := emitToolEvent(execCtx, "planmode.created", map[string]any{
 					"plan_mode_id":   planMode.PlanModeID,
 					"status":         planMode.Status,
 					"linked_goal_id": planMode.LinkedGoalID,
-				})
+				}); err != nil {
+					if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPlanMode); rollbackErr != nil {
+						return errorResult("create_goal", fmt.Errorf("restore plan mode after planmode.created event failure %v: %w", err, rollbackErr)), nil
+					}
+					if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousPlanModeHistory); rollbackErr != nil {
+						return errorResult("create_goal", fmt.Errorf("restore plan mode history after planmode.created event failure %v: %w", err, rollbackErr)), nil
+					}
+					if _, rollbackErr := execCtx.Store.ClearGoal(execCtx.SessionID); rollbackErr != nil {
+						return errorResult("create_goal", fmt.Errorf("restore goal after planmode.created event failure %v: %w", err, rollbackErr)), nil
+					}
+					if rollbackErr := execCtx.Store.RestoreGoalHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
+						return errorResult("create_goal", fmt.Errorf("restore goal history after planmode.created event failure %v: %w", err, rollbackErr)), nil
+					}
+					if rollbackErr := execCtx.Store.SaveTasks(execCtx.SessionID, previousTasks); rollbackErr != nil {
+						return errorResult("create_goal", fmt.Errorf("restore tasks after planmode.created event failure %v: %w", err, rollbackErr)), nil
+					}
+					return errorResult("create_goal", fmt.Errorf("record planmode.created event: %w", err)), nil
+				}
 			}
 			data, _ := json.MarshalIndent(goal, "", "  ")
 			return session.ToolResult{
