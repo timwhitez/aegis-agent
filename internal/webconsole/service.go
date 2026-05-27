@@ -4879,7 +4879,10 @@ func (s *Service) pruneInactiveHandles() {
 	stale := make([]string, 0, len(ids))
 	for _, id := range ids {
 		state, err := s.store.LoadState(id)
-		if err != nil || currentProcessHandleCanBePruned(state.Status) {
+		if err != nil {
+			continue
+		}
+		if currentProcessHandleCanBePruned(state.Status) {
 			stale = append(stale, id)
 		}
 	}

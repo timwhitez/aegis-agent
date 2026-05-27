@@ -7626,6 +7626,12 @@ Evidence gates:
 - Confirmed this is distinct from existing Plan Mode answer-count, duplicate, unknown-question, rollback, active-handle, and plan-approval coverage. Those slices proved answer delivery and recovery facts are durable; this slice covers forged or stale answer payloads that name a valid question but select text the model never offered.
 - Confirmed the minimal fix belongs in the shared session answer validator with a mirrored Web helper check: reject non-Other answers that do not map to an offered option label or description, while preserving explicit Other answers, CLI interactive option selection, Web active-handle delivery, runtime recovery, provider adapters, and Plan Mode gate autonomy.
 
+### Review 257
+
+- Confirmed FCA-20260528-264 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`'s WebConsole active-handle contract: in-memory handles are not durable authority, but the current Web process must retain them while a run may still be active so stop/interrupt and `Service.Close` can target the correct runner.
+- Confirmed this is distinct from FCA-20260525-027 and FCA-20260527-203. Those slices covered duplicate stale handle releases and released owner clues in session detail; this slice covers `pruneInactiveHandles` treating an unreadable `state.json` as proof that a current-process handle is stale.
+- Confirmed the minimal fix belongs in WebConsole handle pruning: only prune handles after reading a terminal durable state, and keep the handle on state-load errors so local cancellation remains possible while the operator repairs or inspects the broken session fact.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7687,6 +7693,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-264
+
+Slice: `fix(webconsole): retain handles on state load errors`
+
+Finding:
+
+- `Service.pruneInactiveHandles` deleted the current-process launch handle whenever `LoadState` returned any error.
+- A focused regression corrupted `state.json` for a Web-owned running session, then called `hasAnyActiveHandle`; before the fix, that read path pruned the only in-memory handle even though no durable terminal state proved the run was settled.
+
+Impact:
+
+- A transient or corrupt `state.json` read could strand an active Web-runner outside `s.handles`. The Web stop/interrupt endpoints would then report `ACTIVE_HANDLE_NOT_OWNED`, and `Service.Close` would no longer cancel that runner through the handle map.
+- This weakens the Web-first recovery boundary: the broken durable state still needs repair, but losing the local cancel handle removes the operator's safest same-process control while the run may still be executing.
+
+Changes:
+
+- Updated `pruneInactiveHandles` to keep current-process handles when `LoadState` fails.
+- Kept pruning for readable terminal states (`completed` / `failed`), preserving stale completed-handle cleanup used by session clear/delete flows.
+- Added a focused WebConsole lifecycle regression proving unreadable state does not prune the handle and `Service.Close` still calls its cancel function.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServicePruneInactiveHandlesKeepsUnreadableStateHandle -count=1`: failed before the fix because `hasAnyActiveHandle` pruned the handle after corrupting `state.json`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(PruneInactiveHandlesKeepsUnreadableStateHandle|ClearSessionsIgnoresStaleHandles|ClearSessionsRejectsRunningSessionsWithoutLiveOwners|DeleteSessionRejectsActiveDeepDescendantHandle|RejectsDuplicateHandleAndPreservesOwner)' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-263
 

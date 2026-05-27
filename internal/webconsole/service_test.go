@@ -6770,6 +6770,59 @@ func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
 	}
 }
 
+func TestServicePruneInactiveHandlesKeepsUnreadableStateHandle(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "unreadable_state_active_handle",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "unreadable_state_active_handle",
+	}
+	if err := svc.store.Create(meta, session.State{Status: session.StatusRunning, Phase: "provider_call", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	var cancelled bool
+	handle := &launchHandle{
+		sessionID:      meta.ID,
+		cancel:         func() { cancelled = true },
+		startedAt:      time.Now().UTC().Format(time.RFC3339Nano),
+		processStartID: "test-process",
+		pid:            os.Getpid(),
+	}
+	if err := svc.addHandle(handle); err != nil {
+		t.Fatalf("add handle: %v", err)
+	}
+	statePath := filepath.Join(svc.store.SessionDir(meta.ID), "state.json")
+	if err := os.WriteFile(statePath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt state: %v", err)
+	}
+
+	if !svc.hasAnyActiveHandle() {
+		t.Fatal("unreadable state must not prune the current-process active handle")
+	}
+	current, ok := svc.handleForSession(meta.ID)
+	if !ok || current != handle {
+		t.Fatalf("expected original handle to remain, got handle=%#v ok=%v", current, ok)
+	}
+
+	svc.Close()
+	if !cancelled {
+		t.Fatal("expected Close to cancel handle retained across unreadable state")
+	}
+}
+
 func TestServiceClearSessionsRejectsRunningSessionsWithoutLiveOwners(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
