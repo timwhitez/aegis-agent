@@ -7674,6 +7674,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-270 and FCA-20260528-269. Those slices guarded the full session-detail response and selected queue-job detail response; this slice covers the older-message page request issued from an already loaded session detail.
 - Confirmed the minimal fix belongs in `loadEarlierMessages`: capture the requested session id and message anchor, ignore success/error UI updates when either the selected session or the current page-request sequence has changed, and avoid letting an older request clear a newer pagination request's loading/scroll state.
 
+### Review 265
+
+- Confirmed FCA-20260528-272 against `spec/17-web-console.md`'s Workspace browser contract: the Workspace panel is a local read-only browser over current file facts, so a slow previous directory or file response must not overwrite the path/content the operator selected later.
+- Confirmed this is distinct from FCA-20260527-226, FCA-20260527-232, and FCA-20260527-238. Those slices covered sensitive path filtering, backend path-error classification, and surfacing backend Workspace errors; this slice covers the client-side async race after valid Workspace browser requests are already in flight.
+- Confirmed the minimal fix belongs in `workspace-view.js`: track one Workspace selection request sequence across directory and file selections, apply success/error UI mutations only for the newest matching request, and preserve backend Workspace policy, runtime file tools, and server-side file fact authority unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7735,6 +7741,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-272
+
+Slice: `fix(webconsole): ignore stale workspace responses`
+
+Finding:
+
+- `loadWorkspaceDirectory()` issued `/api/files?path=...` and then unconditionally wrote `state.workspacePath`, `state.fileTree`, `selectedTreePath`, and editor header/copy when the response settled.
+- `loadFile()` similarly wrote the editor content from `/api/file/read?path=...` without checking whether the operator had already selected another file.
+- A slow previous Workspace request could therefore overwrite the currently selected directory tree or file content after a newer, valid selection had already rendered.
+
+Impact:
+
+- The Workspace panel could display a directory listing or file body for a path different from the operator's current selection.
+- This did not mutate workspace files, session facts, or backend browse policy, but it weakened the local Web view by allowing stale browser requests to disagree with the latest Workspace object the user selected.
+
+Changes:
+
+- Added a Workspace selection request sequence guard in `workspace-view.js`.
+- Directory success/error handling now applies only if its request sequence still matches the latest Workspace selection request.
+- File read success/error handling now applies only if its request sequence still matches the latest Workspace selection request.
+- Added VM-level WebConsole JS regressions for stale Workspace directory responses, stale Workspace file responses, and cross-type file-to-directory / directory-to-file races.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the stale `slow` directory response replaced the selected `fast` directory and the stale `slow.txt` file response replaced the selected `fast.txt` content.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after the Workspace request sequence guards.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-271
 

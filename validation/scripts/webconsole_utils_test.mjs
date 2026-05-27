@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const utilsSource = readFileSync(new URL('../../internal/webconsole/assets/utils.js', import.meta.url), 'utf8');
 const sessionViewSource = readFileSync(new URL('../../internal/webconsole/assets/session-view.js', import.meta.url), 'utf8');
 const settingsViewSource = readFileSync(new URL('../../internal/webconsole/assets/settings-view.js', import.meta.url), 'utf8');
+const workspaceViewSource = readFileSync(new URL('../../internal/webconsole/assets/workspace-view.js', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../../internal/webconsole/assets/app.js', import.meta.url), 'utf8');
 const context = {
   console: {
@@ -220,6 +221,53 @@ function createAppHarnessContext() {
   vm.runInContext(appSource, appContext, { filename: 'app.js' });
   appContext.pendingRequests = pendingRequests;
   return appContext;
+}
+
+function createWorkspaceHarnessContext() {
+  const pendingRequests = [];
+  const workspaceContext = {
+    console: {
+      error() {}
+    },
+    window: {},
+    document: {
+      createElement() {
+        return fakeAppElement();
+      }
+    },
+    state: {
+      meta: {
+        workspace_root: '/tmp/workspace',
+        workspace_switch_supported: false
+      },
+      workspacePath: '',
+      selectedTreePath: '',
+      fileTree: []
+    },
+    nodes: {
+      fileTree: fakeAppElement(),
+      editorFilename: fakeAppElement(),
+      editorContent: fakeAppElement(),
+      workspaceSubtitle: fakeAppElement(),
+      workspaceRootChip: fakeAppElement()
+    },
+    requestJSON(url) {
+      return new Promise((resolve, reject) => {
+        pendingRequests.push({ url, resolve, reject });
+      });
+    },
+    showToast() {}
+  };
+  vm.createContext(workspaceContext);
+  vm.runInContext(utilsSource, workspaceContext, { filename: 'utils.js' });
+  vm.runInContext(workspaceViewSource, workspaceContext, { filename: 'workspace-view.js' });
+  vm.runInContext(`
+    renderFileTree = function(tree) {
+      state.renderedTree = tree;
+    };
+  `, workspaceContext);
+  workspaceContext.pendingRequests = pendingRequests;
+  return workspaceContext;
 }
 
 test('safeMarkdown keeps language-tagged fences inside an open code block', () => {
@@ -585,6 +633,144 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
     hasMore: false,
     oldest: 'b1',
     loadingEarlier: false
+  });
+});
+
+test('loadWorkspaceDirectory ignores stale directory responses after navigation changes', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  const slowLoad = vm.runInContext(`loadWorkspaceDirectory('slow')`, workspaceContext);
+
+  assert.equal(workspaceContext.pendingRequests.length, 1);
+  assert.match(workspaceContext.pendingRequests[0].url, /slow/);
+
+  const fastLoad = vm.runInContext(`loadWorkspaceDirectory('fast')`, workspaceContext);
+  assert.equal(workspaceContext.pendingRequests.length, 2);
+  assert.match(workspaceContext.pendingRequests[1].url, /fast/);
+
+  workspaceContext.pendingRequests[1].resolve([
+    { name: 'current.txt', path: 'fast/current.txt', type: 'file' }
+  ]);
+  await fastLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    path: state.workspacePath,
+    renderedNames: state.renderedTree.map((node) => node.name),
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText
+  })`, workspaceContext)), {
+    path: 'fast',
+    renderedNames: ['current.txt'],
+    filename: 'Workspace / fast',
+    content: 'Choose a file or directory to inspect inside the current server workspace.'
+  });
+
+  workspaceContext.pendingRequests[0].resolve([
+    { name: 'stale.txt', path: 'slow/stale.txt', type: 'file' }
+  ]);
+  await slowLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    path: state.workspacePath,
+    renderedNames: state.renderedTree.map((node) => node.name),
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText
+  })`, workspaceContext)), {
+    path: 'fast',
+    renderedNames: ['current.txt'],
+    filename: 'Workspace / fast',
+    content: 'Choose a file or directory to inspect inside the current server workspace.'
+  });
+});
+
+test('loadFile ignores stale file responses after another file is selected', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  const slowLoad = vm.runInContext(`loadFile('slow.txt')`, workspaceContext);
+
+  assert.equal(workspaceContext.pendingRequests.length, 1);
+  assert.match(workspaceContext.pendingRequests[0].url, /slow\.txt/);
+
+  const fastLoad = vm.runInContext(`loadFile('fast.txt')`, workspaceContext);
+  assert.equal(workspaceContext.pendingRequests.length, 2);
+  assert.match(workspaceContext.pendingRequests[1].url, /fast\.txt/);
+
+  workspaceContext.pendingRequests[1].resolve({ content: 'current file' });
+  await fastLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText
+  })`, workspaceContext)), {
+    filename: 'fast.txt',
+    content: 'current file'
+  });
+
+  workspaceContext.pendingRequests[0].resolve({ content: 'stale file' });
+  await slowLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText
+  })`, workspaceContext)), {
+    filename: 'fast.txt',
+    content: 'current file'
+  });
+});
+
+test('workspace file responses do not overwrite later directory navigation', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  const fileLoad = vm.runInContext(`loadFile('old.txt')`, workspaceContext);
+  const directoryLoad = vm.runInContext(`loadWorkspaceDirectory('next')`, workspaceContext);
+
+  assert.equal(workspaceContext.pendingRequests.length, 2);
+  assert.match(workspaceContext.pendingRequests[0].url, /old\.txt/);
+  assert.match(workspaceContext.pendingRequests[1].url, /next/);
+
+  workspaceContext.pendingRequests[1].resolve([
+    { name: 'next.txt', path: 'next/next.txt', type: 'file' }
+  ]);
+  await directoryLoad;
+
+  workspaceContext.pendingRequests[0].resolve({ content: 'old file body' });
+  await fileLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    path: state.workspacePath,
+    renderedNames: state.renderedTree.map((node) => node.name),
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText
+  })`, workspaceContext)), {
+    path: 'next',
+    renderedNames: ['next.txt'],
+    filename: 'Workspace / next',
+    content: 'Choose a file or directory to inspect inside the current server workspace.'
+  });
+});
+
+test('workspace directory responses do not overwrite later file selection', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  const directoryLoad = vm.runInContext(`loadWorkspaceDirectory('old')`, workspaceContext);
+  const fileLoad = vm.runInContext(`loadFile('new.txt')`, workspaceContext);
+
+  assert.equal(workspaceContext.pendingRequests.length, 2);
+  assert.match(workspaceContext.pendingRequests[0].url, /old/);
+  assert.match(workspaceContext.pendingRequests[1].url, /new\.txt/);
+
+  workspaceContext.pendingRequests[1].resolve({ content: 'new file body' });
+  await fileLoad;
+
+  workspaceContext.pendingRequests[0].resolve([
+    { name: 'old.txt', path: 'old/old.txt', type: 'file' }
+  ]);
+  await directoryLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    path: state.workspacePath,
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText
+  })`, workspaceContext)), {
+    path: '',
+    filename: 'new.txt',
+    content: 'new file body'
   });
 });
 

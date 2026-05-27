@@ -41,8 +41,20 @@ function updateWorkspaceMeta() {
 async function loadWorkspaceDirectory(path = '') {
   const normalized = normalizeWorkspacePath(path);
   const queryPath = normalized || '.';
+  const requestSeq = nextWorkspaceRequestSeq();
   nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
-  const tree = await requestJSON(`/api/files?path=${encodeURIComponent(queryPath)}`);
+  let tree;
+  try {
+    tree = await requestJSON(`/api/files?path=${encodeURIComponent(queryPath)}`);
+  } catch (err) {
+    if (state.workspaceRequestSeq !== requestSeq) {
+      return;
+    }
+    throw err;
+  }
+  if (state.workspaceRequestSeq !== requestSeq) {
+    return;
+  }
   state.workspacePath = normalized;
   state.fileTree = tree;
   state.selectedTreePath = '';
@@ -50,6 +62,12 @@ async function loadWorkspaceDirectory(path = '') {
   updateWorkspaceMeta();
   nodes.editorFilename.innerText = workspaceDisplayName();
   nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
+}
+
+function nextWorkspaceRequestSeq() {
+  const requestSeq = (state.workspaceRequestSeq || 0) + 1;
+  state.workspaceRequestSeq = requestSeq;
+  return requestSeq;
 }
 
 function normalizeWorkspacePath(path = '') {
@@ -194,12 +212,19 @@ function cssEscape(value) {
 }
 
 async function loadFile(path) {
+  const requestSeq = nextWorkspaceRequestSeq();
   nodes.editorFilename.innerText = path;
   nodes.editorContent.innerText = 'Loading...';
   try {
     const data = await requestJSON(`/api/file/read?path=${encodeURIComponent(path)}`);
+    if (state.workspaceRequestSeq !== requestSeq) {
+      return;
+    }
     nodes.editorContent.innerText = data.content;
   } catch (err) {
+    if (state.workspaceRequestSeq !== requestSeq) {
+      return;
+    }
     const message = workspaceErrorMessage(err, `Failed to load file: ${path}`);
     nodes.editorContent.innerText = message;
     showToast(message, 'error');
