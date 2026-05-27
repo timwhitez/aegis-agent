@@ -4872,6 +4872,33 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-215: Batched steer acceptance can leave earlier accepted input pending after later failure
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` requires accepted steer input to become real `user` messages, update `control/steer.jsonl`, refresh the session contract/artifact tracker, and preserve a traceable event sequence.
+- `internal/runtime/engine.go` `drainSteer` appended each accepted steer message and events inside the loop, but delayed `UpdateSteerRequests`, pending-count refresh, and contract refresh until after the whole initial queue snapshot finished.
+- A focused regression queued two pending steer requests and blocked only the second request's `session.steer.accepted` event. Before the fix, the first request's message and accepted events were already persisted, but both queue rows still read `pending`; the function also counted the failing second request as accepted.
+
+Impact:
+
+If a later steer in the same safe-boundary batch failed during required event persistence, an earlier successfully accepted steer could remain pending in `control/steer.jsonl`. Retrying after storage repair could inject that earlier user instruction a second time, creating duplicate user messages and conflicting event/queue facts. The same delayed update also postponed contract refresh until the end of the batch, so a partial batch failure could leave already visible steer instructions without their required contract snapshot.
+
+Minimal fix:
+
+- Treat each steer request as durably accepted only after its message, `user.message`, `session.steer.accepted`, optional Goal history/event facts, queue status, pending-count refresh, and contract refresh all succeed.
+- Persist the accepted status and refresh pending count immediately after each successful steer, preserving the existing rollback behavior for the currently failing steer message/history.
+- Keep ordering and concurrent-append behavior unchanged: the loop still processes the initially loaded queue snapshot, while `UpdateSteerRequests` merges concurrent appends.
+- Add focused runtime coverage proving an earlier accepted steer stays accepted, the later failed steer remains pending, the pending count is correct, and the contract tracks the accepted steer message.
+
+Validation:
+
+- Focused pre-fix runtime regression proving the first accepted steer remained pending and the failing second steer was counted as accepted.
+- Focused post-fix runtime regression proving per-steer durable status, pending count, and contract refresh survive a later acceptance failure.
+- Runtime, WebConsole, JS syntax, repo test, and vet gates before commit.
+
 ### FCA-20260527-214: Markdown sanitizer allows protocol-relative external URLs
 
 Severity: Low
@@ -6826,7 +6853,49 @@ Evidence gates:
 - Confirmed `sanitizeHref` rejected unsupported schemes but accepted protocol-relative `//host/path` through the relative-path branch; a focused Node regression showed the input rendered as external link and image HTML.
 - Confirmed the minimal fix belongs in the browser sanitizer allowlist, not backend service routes, because the unsafe transformation happens when the WebConsole renders session/plan Markdown.
 
+### Review 208
+
+- Confirmed FCA-20260527-215 against `spec/13-live-input-and-steering.md`: accepted steer input must become a real user message, update durable queue state, refresh the session contract/artifact tracker, and leave traceable events.
+- Confirmed `Engine.drainSteer` persisted message/event facts per steer but updated `control/steer.jsonl`, pending steer count, and contract only after finishing the entire loaded queue snapshot. A focused regression with two queued steers and a blocked second `session.steer.accepted` event showed the first accepted steer could remain pending and be replayed on retry.
+- Confirmed the minimal fix belongs in runtime steer acceptance: after each successful steer, immediately persist that request's accepted status, refresh pending count, and refresh contract before moving to the next request; preserve rollback and pending retry semantics for the currently failing steer.
+
 ## Update Log
+
+### FCA-20260527-215
+
+Slice: `fix(runtime): persist accepted steer status per request`
+
+Finding:
+
+- `drainSteer` delayed `UpdateSteerRequests`, pending-count refresh, and contract refresh until after all pending/deferred steer requests in the loaded snapshot were processed.
+- A focused regression queued `first` and `second`, then blocked the second request's `session.steer.accepted` event. Before the fix, the first steer message and accepted events were durable, but the first queue row still read `pending`, the second failed steer was included in the accepted count, and retry could duplicate the first instruction.
+
+Changes:
+
+- Moved accepted queue status persistence, pending-count refresh, and contract refresh into the per-request success path after required message/event/Goal facts succeed.
+- Count a steer as accepted only after those durable facts and refreshes complete.
+- Added `TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails`, covering the partial-batch failure window, queue statuses, pending count, retained message, and contract source message.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails -count=1`: failed before the fix because the first accepted steer stayed pending and the failing second steer was counted as accepted.
+- `go test -timeout 120s ./internal/runtime -run TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptance(PersistsEarlierAcceptedStatusWhenLaterAcceptFails|ReportsAcceptedEventAppendError|ReportsGoalUpdatedEventAppendError)|TestEngineRefreshesPendingSteerCountAfterConcurrentAppend|TestEngineAcceptsPendingSteerBeforeProviderCall' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-214
 

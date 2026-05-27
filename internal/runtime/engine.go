@@ -1185,7 +1185,6 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 	if err != nil {
 		return 0, err
 	}
-	var changed bool
 	accepted := 0
 	for i := range requests {
 		if requests[i].Status != session.SteerStatusPending && requests[i].Status != session.SteerStatusDeferred {
@@ -1211,9 +1210,6 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 		if err := e.store.AppendMessage(sessionID, msg); err != nil {
 			return accepted, err
 		}
-		requests[i].Status = session.SteerStatusAccepted
-		changed = true
-		accepted++
 		if err := e.appendEvent(sessionID, "user.message", "control_drain", map[string]any{
 			"text":      text,
 			"mode":      meta.Mode,
@@ -1273,8 +1269,7 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 				return accepted, fmt.Errorf("record goal.updated event for accepted steer: %w", err)
 			}
 		}
-	}
-	if changed {
+		requests[i].Status = session.SteerStatusAccepted
 		if err := e.store.UpdateSteerRequests(sessionID, requests); err != nil {
 			return accepted, err
 		}
@@ -1284,7 +1279,7 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 		}, meta); err != nil {
 			return accepted, err
 		}
-		return accepted, nil
+		accepted++
 	}
 	return accepted, nil
 }

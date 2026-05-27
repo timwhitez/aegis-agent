@@ -2648,6 +2648,74 @@ func TestEngineSteerAcceptanceReportsAcceptedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails(t *testing.T) {
+	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	first := session.NewSteerRequest("first", false)
+	second := session.NewSteerRequest("second", false)
+	if err := engine.store.AppendSteerRequest(meta.ID, first); err != nil {
+		t.Fatalf("append first steer: %v", err)
+	}
+	if err := engine.store.AppendSteerRequest(meta.ID, second); err != nil {
+		t.Fatalf("append second steer: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "session.steer.accepted" && evt.Data["id"] == second.ID {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+
+	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "session.steer.accepted") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected second steer accepted event append error, accepted=%d err=%v", accepted, err)
+	}
+	if accepted != 1 {
+		t.Fatalf("expected only first steer to be durably accepted, got accepted=%d", accepted)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	var steerTexts []string
+	firstSteerMessageID := ""
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "steer" {
+			steerTexts = append(steerTexts, msg.Text)
+			if msg.Text == "first" {
+				firstSteerMessageID = msg.ID
+			}
+		}
+	}
+	if len(steerTexts) != 1 || steerTexts[0] != "first" {
+		t.Fatalf("expected only first steer message to remain, got %#v in messages %#v", steerTexts, messages)
+	}
+	contract, loadErr := engine.store.LoadContract(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load contract: %v", loadErr)
+	}
+	if contract.SourceMessageID != firstSteerMessageID {
+		t.Fatalf("expected contract to refresh for first accepted steer %q, got %#v", firstSteerMessageID, contract)
+	}
+	requests, loadErr := engine.store.LoadSteerRequests(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load steer requests: %v", loadErr)
+	}
+	statusByID := map[string]string{}
+	for _, request := range requests {
+		statusByID[request.ID] = request.Status
+	}
+	if statusByID[first.ID] != session.SteerStatusAccepted || statusByID[second.ID] != session.SteerStatusPending {
+		t.Fatalf("expected first accepted and second pending after partial drain failure, got %#v", requests)
+	}
+	loadedState, loadErr := engine.store.LoadState(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if loadedState.PendingSteerCount != 1 {
+		t.Fatalf("expected pending steer count to reflect failed second steer, got %#v", loadedState)
+	}
+}
+
 func TestEngineDeferPendingInterruptReportsEventAppendError(t *testing.T) {
 	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	request := session.NewSteerRequest("switch later", true)
