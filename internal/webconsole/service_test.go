@@ -3877,6 +3877,100 @@ func TestContinueRESTModelDefaultUsesProviderDefault(t *testing.T) {
 	}
 }
 
+func TestContinueRESTBackfillsMissingProviderOptions(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		select {
+		case captured <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_legacy_continue",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"continued\"}"}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	providerCfg := cfg.Providers["openai"]
+	providerCfg.APIProvider = "openai-compatible"
+	providerCfg.WireAPI = "responses"
+	cfg.Providers["openai"] = providerCfg
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_continue_legacy_options",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		RequestedWorkdir: workdir,
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	state := session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "awaiting_input",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/continue", map[string]any{
+		"message": "continue legacy session",
+	}, http.StatusAccepted, nil)
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(meta.ID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string {
+		state, err := svc.store.LoadState(meta.ID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+
+	updatedMeta, err := svc.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if updatedMeta.ProviderOptions.Store == nil || *updatedMeta.ProviderOptions.Store {
+		t.Fatalf("expected REST continue to persist backfilled store=false, got %#v", updatedMeta.ProviderOptions)
+	}
+
+	var body map[string]any
+	select {
+	case body = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for provider request")
+	}
+	if got := body["store"]; got != false {
+		t.Fatalf("expected provider request to include backfilled store=false, got %#v", body)
+	}
+}
+
 func TestStartSessionRejectsUnknownField(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

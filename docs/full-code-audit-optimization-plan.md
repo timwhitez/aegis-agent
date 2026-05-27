@@ -7614,6 +7614,12 @@ Evidence gates:
 - Confirmed this is distinct from existing Plan Mode history rollback coverage. Prior tests covered `planmode-history.jsonl` append failures after submit/approve; this slice covers the earlier derived Markdown artifact write failure after `planmode.json` has already advanced to `awaiting_approval`.
 - Confirmed the minimal fix belongs in `SessionStore.SubmitPlanMode`: restore the captured Plan Mode snapshot if `planmode-plan.md` cannot be written, preserving valid submit, approval, execution, Web Plan Mode controls, provider adapters, and runtime gate semantics.
 
+### Review 255
+
+- Confirmed FCA-20260528-262 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/17-web-console.md`'s provider option persistence requirements: generation / reasoning / store / retry / timeout options must be available from durable session metadata during `continue`, and Web continue must rely on the same runtime fact source.
+- Confirmed this is distinct from FCA-20260528-258. That slice normalized explicit `model:"default"` on continue; this slice covers legacy or manually-created sessions whose `session.json` lacks `provider_options`, causing a resume with no explicit provider override to omit provider defaults such as OpenAI-compatible `store=false`.
+- Confirmed the minimal fix belongs in `Runner.Continue`: when a loaded session has an empty provider-options snapshot on a path that will resume execution, reconstruct the effective provider options from the resolved provider config before invoking the provider, preserving existing non-empty durable options, explicit provider/model overrides, provider-independent Plan Mode cancellation, Web adapter thinness, provider adapter replay boundaries, and current configuration validation behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7675,6 +7681,32 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-262
+
+Slice: `fix(runtime): backfill provider options on continue`
+
+Finding:
+
+- Legacy or manually-created sessions could have `session.json` metadata with a provider/model but an empty `provider_options` snapshot.
+- `Runner.Continue` only rebuilt provider options when an explicit provider override was supplied. A normal continue of such a session saved the empty snapshot again and passed it to the provider request path.
+
+Impact:
+
+- OpenAI-compatible resumed turns could omit the runtime default `store=false`, even though current start/probe paths persist that default to keep the local session store as the fact source.
+- Web continue inherited the same runtime gap: the Web service correctly used the runtime facade, but a legacy session resumed from the default Web surface could still show completed execution without backfilled provider options in session metadata.
+
+Changes:
+
+- Updated `Runner.Continue` to detect an empty loaded `ProviderOptions` snapshot and rebuild it from the configured provider before appending the resumed user turn and invoking the provider.
+- Added a focused runtime regression proving a legacy session now persists backfilled `store=false` and sends it in the OpenAI-compatible Responses request.
+- Added a focused WebConsole REST regression proving the default Web continue path receives the same backfilled provider options through the runtime layer.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerContinueBackfillsMissingProviderOptions -count=1`: failed before the fix because `ProviderOptions` remained empty after continue and the provider request lacked `store=false`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinue(BackfillsMissingProviderOptions|UsesDurableRetryPolicyFromSessionMetadata|ProviderDefaultKeepsExistingModel|ModelDefaultUsesProviderDefaultModel)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestContinueREST(BackfillsMissingProviderOptions|CarriesRuntimeFields|ModelDefaultUsesProviderDefault)' -count=1`: passed.
 
 ### FCA-20260528-261
 

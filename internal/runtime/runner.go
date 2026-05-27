@@ -821,6 +821,16 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event: %w", err))
 		}
 	}
+	if meta.ProviderOptions == (session.ProviderOptions{}) {
+		providerCfg, err := r.cfg.ProviderConfig(meta.Provider)
+		if err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", WrapConfigError(err))
+		}
+		meta.ProviderOptions = providerOptionsFromConfig(meta.Provider, providerCfg)
+		if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+	}
 	if stringsTrim(req.Message) != "" {
 		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, extraUserMeta); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
