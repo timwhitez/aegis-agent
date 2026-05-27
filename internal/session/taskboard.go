@@ -31,7 +31,7 @@ type TaskUpdateInput struct {
 }
 
 func CreateTask(store *Store, sessionID string, input TaskCreateInput) (Task, error) {
-	if input.Subject == "" {
+	if strings.TrimSpace(input.Subject) == "" {
 		return Task{}, errors.New("subject is required")
 	}
 	var created Task

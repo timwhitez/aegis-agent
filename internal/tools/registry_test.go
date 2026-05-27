@@ -1605,6 +1605,43 @@ func TestFileToolsRejectBlankPath(t *testing.T) {
 	}
 }
 
+func TestTaskCreateRejectsBlankSubject(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "task_create", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{"subject":" \n\t ","priority":"high"}`))
+	if err != nil {
+		t.Fatalf("task_create: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "subject is required") {
+		t.Fatalf("expected task_create to reject blank subject, got %#v", result)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("blank subject created durable task: %#v", tasks)
+	}
+}
+
 func TestWriteFileRejectsSymlinkedTempAlias(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

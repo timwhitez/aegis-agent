@@ -92,6 +92,34 @@ func TestTaskCycleRejected(t *testing.T) {
 	}
 }
 
+func TestTaskCreateRejectsBlankSubject(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: " \n\t "}); err == nil || !strings.Contains(err.Error(), "subject is required") {
+		t.Fatalf("expected blank subject error, got %v", err)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("blank subject created task: %#v", tasks)
+	}
+}
+
 func TestTaskUpdateRemovesReverseEdges(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

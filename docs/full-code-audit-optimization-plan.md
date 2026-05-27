@@ -7542,6 +7542,12 @@ Evidence gates:
 - Confirmed this is distinct from path escape, symlink escape, generated-artifact filtering, write denylist, and empty `old_text` handling. This slice covers schema-valid but blank path strings before any workspace resolution.
 - Confirmed the minimal fix belongs in the built-in file-tool handlers: reject blank paths before read/write resolution and write-policy checks, without changing valid relative paths, skill-reference reads, atomic writes, or edit replacement semantics.
 
+### Review 243
+
+- Confirmed FCA-20260527-250 against `spec/12-task-system.md`'s durable task graph contract: `task_create.subject` is the human-readable durable task title, so whitespace-only subjects are invalid task records rather than useful resumable state.
+- Confirmed this is distinct from task dependency cycle checks, reverse-edge maintenance, event rollback, and todo no-op handling. This slice covers a schema-valid but blank subject entering the task graph.
+- Confirmed the minimal fix belongs in the session task layer, not only the model tool wrapper: reject `strings.TrimSpace(subject) == ""` in `CreateTask`, preserving valid subjects, priority normalization, dependency sync, and tool event behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7603,6 +7609,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-250
+
+Slice: `fix(tasks): reject blank task subjects`
+
+Finding:
+
+- `task_create` requires a `subject` string, and the session task graph stores that string as the durable task title.
+- `CreateTask` only rejected `subject == ""`, so whitespace-only subjects were accepted and persisted as `task_0001.json`.
+- Before the fix, the focused regression failed because `task_create` with `"subject":" \n\t "` returned a successful task with a blank-looking subject.
+
+Impact:
+
+- Long-running task state could contain unreadable durable nodes that do not describe any actual work.
+- This weakens resume/handoff quality and makes the task graph look populated while providing no useful task title.
+
+Changes:
+
+- Added focused tool-level and session-layer regressions proving blank task subjects are rejected and do not create task files.
+- Changed `session.CreateTask` to reject `strings.TrimSpace(input.Subject) == ""`, so all callers share the same invariant.
+- Left valid task subjects, priority defaults, dependency edges, task IDs, cycle checks, and tool event rollback behavior unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestTaskCreateRejectsBlankSubject -count=1`: failed before the fix because a whitespace-only subject created `task_0001`.
+- `go test -timeout 120s ./internal/tools -run 'TestTaskCreateRejectsBlankSubject|TestShellAndTodoToolsEmitCompactionMetadata|TestTaskEventFailuresRestoreGraph' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools -run 'TestTaskCreateRejectsBlankSubject|TestTaskLifecycleAutoUnlocksDependents|TestTaskCycleRejected|TestTaskUpdateRemovesReverseEdges|TestTaskEventFailuresRestoreGraph' -count=1`: passed.
+- `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-249
 
