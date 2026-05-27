@@ -3778,6 +3778,69 @@ func TestTodoWriteNoopDoesNotLookLikeProgress(t *testing.T) {
 	}
 }
 
+func TestTodoWriteRejectsInvalidItems(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "blank content",
+			payload: `{"todos":[{"content":" \n\t ","status":"pending","priority":"high"}]}`,
+			want:    "content is required",
+		},
+		{
+			name:    "missing status",
+			payload: `{"todos":[{"content":"Do work","priority":"high"}]}`,
+			want:    "status is required",
+		},
+		{
+			name:    "invalid priority",
+			payload: `{"todos":[{"content":"Do work","status":"pending","priority":"urgent"}]}`,
+			want:    `invalid todo priority: urgent`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(tc.payload))
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tc.want) {
+				t.Fatalf("expected %q error, got %#v", tc.want, result)
+			}
+			todo, err := store.LoadTodo(meta.ID)
+			if err != nil {
+				t.Fatalf("load todo: %v", err)
+			}
+			if len(todo) != 0 {
+				t.Fatalf("invalid todo item was persisted: %#v", todo)
+			}
+		})
+	}
+}
+
 func TestTodoWriteReportsLoadErrorBeforeNoop(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()

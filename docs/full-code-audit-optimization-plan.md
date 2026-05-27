@@ -7548,6 +7548,12 @@ Evidence gates:
 - Confirmed this is distinct from task dependency cycle checks, reverse-edge maintenance, event rollback, and todo no-op handling. This slice covers a schema-valid but blank subject entering the task graph.
 - Confirmed the minimal fix belongs in the session task layer, not only the model tool wrapper: reject `strings.TrimSpace(subject) == ""` in `CreateTask`, preserving valid subjects, priority normalization, dependency sync, and tool event behavior.
 
+### Review 244
+
+- Confirmed FCA-20260527-251 against `spec/12-task-system.md`'s session todo contract: `todo_write` stores the current execution plan as durable `todo.json`, and each non-empty item needs meaningful `content`, a valid `status`, and a valid optional `priority`.
+- Confirmed this is distinct from FCA-20260527-099 and FCA-20260527-250. Those slices covered unreadable todo snapshot no-op behavior and blank durable task subjects; this slice covers malformed but schema-valid todo items that could enter the session todo snapshot.
+- Confirmed the minimal fix belongs in both the tool validator and session store validator: reject blank content, missing status, and non-empty priority values outside `high|medium|low`, preserving empty todo lists, optional empty priority, timestamps, no-op detection, and required `todo.updated` event rollback behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7609,6 +7615,54 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-251
+
+Slice: `fix(tools): validate todo items`
+
+Finding:
+
+- `todo_write` requires a full `todos` snapshot, and `spec/12-task-system.md` defines each todo item with `content`, `status`, and optional `priority`.
+- `validateTodoSnapshot` accepted blank `content`, accepted missing `status` as a tool-layer value before the store returned a generic invalid status error, and never validated `priority`.
+- The session store validator had the same durable-state gap for direct `SaveTodo` callers.
+- Before the fix, focused regressions showed blank todo content and invalid priorities persisted to `todo.json`; missing status failed only with `invalid todo status ""` instead of a required-field error.
+
+Impact:
+
+- Session todo state could look populated while containing items with no actionable content, or could carry priority values outside the documented `high|medium|low` contract.
+- That weakens resume, compaction, Web task display, and long-run handoff quality because the durable execution-plan snapshot no longer has predictable item semantics.
+
+Changes:
+
+- Added focused tool-level coverage proving `todo_write` rejects blank content, missing status, and invalid priority without persisting those items.
+- Added focused session-store coverage proving direct `SaveTodo` callers cannot bypass the same durable todo item invariants.
+- Updated `validateTodoSnapshot` and `validateTodo` to require trimmed non-empty content, require a valid status, and reject non-empty priority values outside `high|medium|low`.
+- Preserved empty todo lists, optional empty priority, automatic `updated_at` fill, no-op timestamp preservation, and existing required `todo.updated` event rollback behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestTodoWriteRejectsInvalidItems -count=1`: failed before the fix because blank content and invalid priority were persisted, while missing status returned only a generic invalid-status error.
+- `go test -timeout 120s ./internal/session -run TestSaveTodoRejectsInvalidItems -count=1`: failed before the fix because blank content and invalid priority were accepted by `SaveTodo`, while missing status returned only a generic invalid-status error.
+- `go test -timeout 120s ./internal/tools -run TestTodoWriteRejectsInvalidItems -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run TestSaveTodoRejectsInvalidItems -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestTodoWriteRejectsInvalidItems|TestTodoWriteNoopDoesNotLookLikeProgress|TestTodoWriteReportsLoadErrorBeforeNoop|TestTodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot|TestTodoWriteNoopReportsRequiredEventError' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestSaveTodoRejectsInvalidItems|TestTaskCreateRejectsBlankSubject|TestTaskLifecycleAutoUnlocksDependents|TestTaskCycleRejected|TestTaskUpdateRemovesReverseEdges' -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/taskboard_test.go internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-250
 

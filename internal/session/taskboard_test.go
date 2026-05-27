@@ -120,6 +120,59 @@ func TestTaskCreateRejectsBlankSubject(t *testing.T) {
 	}
 }
 
+func TestSaveTodoRejectsInvalidItems(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	cases := []struct {
+		name string
+		todo []TodoItem
+		want string
+	}{
+		{
+			name: "blank content",
+			todo: []TodoItem{{Content: " \n\t ", Status: "pending", Priority: "high"}},
+			want: "content is required",
+		},
+		{
+			name: "missing status",
+			todo: []TodoItem{{Content: "Do work", Priority: "high"}},
+			want: "status is required",
+		},
+		{
+			name: "invalid priority",
+			todo: []TodoItem{{Content: "Do work", Status: "pending", Priority: "urgent"}},
+			want: `invalid todo priority "urgent"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.SaveTodo(meta.ID, tc.todo); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+			todo, err := store.LoadTodo(meta.ID)
+			if err != nil {
+				t.Fatalf("load todo: %v", err)
+			}
+			if len(todo) != 0 {
+				t.Fatalf("invalid todo item was persisted: %#v", todo)
+			}
+		})
+	}
+}
+
 func TestTaskUpdateRemovesReverseEdges(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

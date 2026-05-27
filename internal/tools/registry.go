@@ -2502,11 +2502,22 @@ func markSkillLoaded(execCtx ExecContext, name string) error {
 
 func validateTodoSnapshot(todos []session.TodoItem) error {
 	inProgress := 0
-	for _, item := range todos {
+	for i, item := range todos {
+		if strings.TrimSpace(item.Content) == "" {
+			return fmt.Errorf("todo item %d content is required", i+1)
+		}
 		switch item.Status {
-		case "", "pending", "in_progress", "completed", "cancelled":
+		case "pending", "in_progress", "completed", "cancelled":
 		default:
+			if strings.TrimSpace(item.Status) == "" {
+				return fmt.Errorf("todo item %d status is required", i+1)
+			}
 			return fmt.Errorf("invalid todo status: %s", item.Status)
+		}
+		switch item.Priority {
+		case "", "high", "medium", "low":
+		default:
+			return fmt.Errorf("invalid todo priority: %s", item.Priority)
 		}
 		if item.Status == "in_progress" {
 			inProgress++

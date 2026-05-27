@@ -2656,11 +2656,22 @@ func readJSONL[T any](path string, out *[]T) error {
 
 func validateTodo(todo []TodoItem) error {
 	inProgress := 0
-	for _, item := range todo {
+	for i, item := range todo {
+		if strings.TrimSpace(item.Content) == "" {
+			return fmt.Errorf("todo item %d content is required", i+1)
+		}
 		switch item.Status {
 		case "pending", "in_progress", "completed", "cancelled":
 		default:
+			if strings.TrimSpace(item.Status) == "" {
+				return fmt.Errorf("todo item %d status is required", i+1)
+			}
 			return fmt.Errorf("invalid todo status %q", item.Status)
+		}
+		switch item.Priority {
+		case "", "high", "medium", "low":
+		default:
+			return fmt.Errorf("invalid todo priority %q", item.Priority)
 		}
 		if item.Status == "in_progress" {
 			inProgress++
