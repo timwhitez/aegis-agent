@@ -852,6 +852,104 @@ test('running-session steer completion does not mark a newly selected session as
   });
 });
 
+test('continue completion does not mark a newly selected session as generating', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    state.sessionId = 'session_continue_slow_a';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded A', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_continue_slow_a' },
+      state: { status: 'paused' },
+      plan_mode: null,
+      messages: []
+    };
+    nodes.chatInput.value = 'continue this session';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_continue_slow_a\/continue/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      plan_mode: null,
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_continue_slow_a', status: 'accepted' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: state.isGenerating,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    generating: false,
+    activityTitle: 'Loaded session B'
+  });
+});
+
+test('plan revision completion does not mark a newly selected session as generating', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    state.sessionId = 'session_revision_slow_a';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded plan A', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_revision_slow_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: { status: 'awaiting_approval' },
+      messages: []
+    };
+    nodes.chatInput.value = 'revise the plan';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_revision_slow_a\/planmode\/revise/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      plan_mode: null,
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_revision_slow_a', status: 'accepted' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: state.isGenerating,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    generating: false,
+    activityTitle: 'Loaded session B'
+  });
+});
+
 test('loadWorkspaceDirectory ignores stale directory responses after navigation changes', async () => {
   const workspaceContext = createWorkspaceHarnessContext();
   const slowLoad = vm.runInContext(`loadWorkspaceDirectory('slow')`, workspaceContext);

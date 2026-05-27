@@ -970,10 +970,14 @@ async function sendMessage() {
 
   const currentStatus = state.sessionDetail?.state?.status || '';
   if (hasDurableSession() && ['awaiting_input', 'paused', 'failed'].includes(currentStatus)) {
+    const sessionID = state.sessionId;
     try {
       const planMode = currentPlanMode();
       if (planMode?.status === 'awaiting_approval') {
-        await revisePlanMode(state.sessionId, text);
+        await revisePlanMode(sessionID, text);
+        if (state.sessionId !== sessionID) {
+          return;
+        }
         showToast('Plan revision sent.', 'success');
       } else {
         const planDraft = collectPlanModeDraft(text);
@@ -989,10 +993,13 @@ async function sendMessage() {
           copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
           tone: 'live'
         });
-        await requestContinueSession(state.sessionId, text, {
-          silentToast: true,
+        await continueSession(sessionID, {
+          message: text,
           planMode: planDraft || undefined
         });
+        if (state.sessionId !== sessionID) {
+          return;
+        }
         if (planDraft) {
           state.planModeEnabled = false;
         }
@@ -1006,11 +1013,13 @@ async function sendMessage() {
       queueSessionRefresh(60);
       queueOverviewRefresh(220);
     } catch (err) {
-      removeOptimisticMessage(optimisticID);
-      state.isGenerating = false;
-      showToast(err.message || 'Failed to continue session.', 'error');
-      updateUI();
-      renderCurrentSession();
+      if (state.sessionId === sessionID) {
+        removeOptimisticMessage(optimisticID);
+        state.isGenerating = false;
+        showToast(err.message || 'Failed to continue session.', 'error');
+        updateUI();
+        renderCurrentSession();
+      }
     }
     return;
   }
