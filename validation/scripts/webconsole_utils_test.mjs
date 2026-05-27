@@ -1040,6 +1040,55 @@ test('inline continue action does not refresh a newly selected session after sta
   ]);
 });
 
+test('fetchHistory queues the latest requested page and ignores stale in-flight history', async () => {
+  const appContext = createAppHarnessContext();
+
+  const firstLoad = vm.runInContext(`fetchHistory(1)`, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /\/api\/history\?page=1&page_size=8/);
+
+  await vm.runInContext(`fetchHistory(3)`, appContext);
+
+  appContext.pendingRequests[0].resolve({
+    items: [{ id: 'session_page_1_stale', status: 'completed' }],
+    page: 1,
+    page_size: 8,
+    total: 1,
+    total_pages: 3
+  });
+  await firstLoad;
+
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.match(appContext.pendingRequests[1].url, /\/api\/history\?page=3&page_size=8/);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    page: state.historyPage,
+    historyIDs: maybeArray(state.historyData?.items).map((item) => item.id)
+  })`, appContext)), {
+    page: 3,
+    historyIDs: []
+  });
+
+  appContext.pendingRequests[1].resolve({
+    items: [{ id: 'session_page_3_current', status: 'completed' }],
+    page: 3,
+    page_size: 8,
+    total: 17,
+    total_pages: 3
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    page: state.historyPage,
+    dataPage: state.historyData?.page,
+    historyIDs: maybeArray(state.historyData?.items).map((item) => item.id)
+  })`, appContext)), {
+    page: 3,
+    dataPage: 3,
+    historyIDs: ['session_page_3_current']
+  });
+});
+
 test('plan revision completion does not mark a newly selected session as generating', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);

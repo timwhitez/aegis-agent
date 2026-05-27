@@ -37,6 +37,9 @@ const state = {
   selectedQueueJobDetail: null,
   inspectorTab: 'tasks',
   refreshingHistory: false,
+  needsHistoryRefresh: false,
+  pendingHistoryRefreshOptions: null,
+  historyRequestSeq: 0,
   toastCounter: 0,
   skills: [],
   skillUploadInFlight: false,
@@ -2449,26 +2452,42 @@ function historyErrorMessage(err, fallback = 'Failed to load recent activity.') 
 }
 
 async function fetchHistory(page = state.historyPage, options = {}) {
+  const requestedPage = Math.max(1, Number(page) || 1);
   if (state.refreshingHistory) {
+    state.historyPage = requestedPage;
+    state.needsHistoryRefresh = true;
+    state.pendingHistoryRefreshOptions = options;
+    persistUIState();
     return;
   }
   const container = nodes.views.history;
   const showLoading = options.showLoading ?? !state.historyData;
   const silentError = options.silentError ?? false;
+  const pageSize = state.historyPageSize;
+  const requestSeq = state.historyRequestSeq + 1;
+  state.historyRequestSeq = requestSeq;
   state.refreshingHistory = true;
-  state.historyPage = Math.max(1, Number(page) || 1);
+  state.needsHistoryRefresh = false;
+  state.pendingHistoryRefreshOptions = null;
+  state.historyPage = requestedPage;
   persistUIState();
   if (showLoading) {
     container.innerHTML = '<div class="view-loading">Loading sessions...</div>';
   }
   try {
-    const data = await requestJSON(`/api/history?page=${encodeURIComponent(state.historyPage)}&page_size=${encodeURIComponent(state.historyPageSize)}`);
+    const data = await requestJSON(`/api/history?page=${encodeURIComponent(requestedPage)}&page_size=${encodeURIComponent(pageSize)}`);
+    if (state.historyRequestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
+      return;
+    }
     state.historyData = data;
     renderHistory(data);
     refreshOverview().catch((err) => {
       console.error('overview refresh error', err);
     });
   } catch (err) {
+    if (state.historyRequestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
+      return;
+    }
     console.error('history error', err);
     const message = historyErrorMessage(err);
     if (!state.historyData) {
@@ -2482,6 +2501,15 @@ async function fetchHistory(page = state.historyPage, options = {}) {
     }
   } finally {
     state.refreshingHistory = false;
+    if (state.needsHistoryRefresh) {
+      const nextPage = state.historyPage;
+      const nextOptions = state.pendingHistoryRefreshOptions || {};
+      state.needsHistoryRefresh = false;
+      state.pendingHistoryRefreshOptions = null;
+      fetchHistory(nextPage, nextOptions).catch((err) => {
+        console.error('queued history refresh error', err);
+      });
+    }
   }
 }
 
