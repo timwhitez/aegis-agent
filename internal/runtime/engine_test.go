@@ -2902,6 +2902,38 @@ func TestEngineDeferPendingInterruptReportsEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineDeferPendingInterruptDoesNotEmitWhenStatusUpdateFails(t *testing.T) {
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
+	request := session.NewSteerRequest("switch later", true)
+	if err := engine.store.AppendSteerRequest(meta.ID, request); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	engine.control.requestSteerInterrupt()
+	steerLockPath := filepath.Join(engine.store.SessionDir(meta.ID), "control", "steer.lock")
+	blockPathAsDir(t, steerLockPath, "steer lock")
+
+	err := engine.deferPendingInterrupts(meta.ID)
+	if err == nil {
+		t.Fatalf("expected deferred steer status update error")
+	}
+	requests, loadErr := engine.store.LoadSteerRequests(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load steer requests: %v", loadErr)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusPending {
+		t.Fatalf("status update failure should keep steer pending, got %#v", requests)
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	for _, event := range eventsList {
+		if event.Type == "session.steer.deferred" {
+			t.Fatalf("status update failure should not emit deferred event, got %#v", eventsList)
+		}
+	}
+}
+
 func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
 	engine, meta, state, registry, _, catalog := newTestEngine(t, session.ModeRun)
 	_ = state

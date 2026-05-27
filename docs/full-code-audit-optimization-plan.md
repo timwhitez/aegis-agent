@@ -4872,6 +4872,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-221: Deferred interrupt steer events can precede durable status
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines session `events.jsonl` and `control/steer.jsonl` as durable facts.
+- `spec/13-live-input-and-steering.md` says interrupt steer that cannot be safely preempted should become `deferred` rather than being silently dropped.
+- `internal/runtime/engine.go` `deferPendingInterrupts` appended `session.steer.deferred` before updating the request status in `control/steer.jsonl`.
+- A focused regression blocked `control/steer.lock`; before the fix, `deferPendingInterrupts` returned an update error but left a durable `session.steer.deferred` event while the request stayed `pending`.
+
+Impact:
+
+Recovery and Web timelines could show an interrupt steer as deferred even though the control queue still made it pending and retryable. On retry, the same request could produce a second deferred event or be accepted through a different path, making event and control facts disagree about the same external interrupt.
+
+Minimal fix:
+
+- Update `control/steer.jsonl` and refresh `state.json` pending count before writing deferred events.
+- Batch all deferred events for the current drain after the queue/status facts succeed.
+- If event persistence fails, restore only the requests deferred by the current drain back to `pending` and refresh the pending count.
+- Preserve the existing event-failure behavior that leaves failed deferred requests retryable.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `control/steer.lock` left a deferred event while status stayed pending.
+- Focused post-fix runtime regression proving status update failure emits no deferred event and leaves the request pending.
+- Adjacent event failure, real tool-cancel fallback, runtime/session, WebConsole, JS, repo test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-220: Steer pending-count refresh failures can be silently ignored
 
 Severity: Medium
@@ -7008,6 +7036,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 214
+
+- Confirmed FCA-20260527-221 against `spec/13-live-input-and-steering.md`: a non-preemptable interrupt steer must be deferred as a control-queue fact and represented by matching durable event facts.
+- Confirmed this is distinct from accepted-steer slices FCA-20260527-215 through FCA-20260527-220. This slice covers the interrupt-deferral path before the steer is accepted into the provider transcript.
+- Confirmed the minimal fix belongs in `Engine.deferPendingInterrupts`: mark deferred and refresh pending count first, then batch event emission, with rollback to pending if event emission fails.
+
 ### Review 213
 
 - Confirmed FCA-20260527-220 against the session fact-source requirements in `spec/01-runtime-architecture.md` and the live steer acceptance requirements in `spec/13-live-input-and-steering.md`: `state.json` pending count and `control/steer.jsonl` queue status must be refreshed as part of the accepted steer boundary.
@@ -7033,6 +7067,40 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-221
+
+Slice: `fix(runtime): defer interrupt steer atomically`
+
+Finding:
+
+- `deferPendingInterrupts` wrote `session.steer.deferred` before changing the matching request in `control/steer.jsonl` from `pending` to `deferred`.
+- If `UpdateSteerRequests` failed, the event timeline claimed the interrupt was deferred while the request remained pending and retryable.
+
+Changes:
+
+- Changed `deferPendingInterrupts` to update matching pending interrupt steer requests to `deferred` before emitting deferred events.
+- Refreshes pending steer count after the queue update.
+- Emits deferred events as one batch after queue/status facts are durable.
+- On deferred-event failure, restores only the requests deferred by the current drain to `pending` and refreshes pending count.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineDeferPendingInterruptDoesNotEmitWhenStatusUpdateFails -count=1`: failed before the fix because blocked `control/steer.lock` still left a `session.steer.deferred` event.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineDeferPendingInterrupt(DoesNotEmitWhenStatusUpdateFails|ReportsEventAppendError)|TestEngineMarksInterruptSteerDeferredWhenToolIgnoresCancel' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
 
 ### FCA-20260527-220
 

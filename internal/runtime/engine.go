@@ -1168,26 +1168,54 @@ func (e *Engine) deferPendingInterrupts(sessionID string) error {
 		return err
 	}
 	changed := false
+	deferredRequests := make([]session.SteerRequest, 0)
 	for i := range requests {
 		if requests[i].Status != session.SteerStatusPending || !requests[i].Interrupt {
 			continue
 		}
-		if err := e.appendEvent(sessionID, "session.steer.deferred", "control_drain", map[string]any{
-			"id":        requests[i].ID,
-			"interrupt": true,
-		}); err != nil {
-			return err
-		}
 		requests[i].Status = session.SteerStatusDeferred
+		deferredRequests = append(deferredRequests, requests[i])
 		changed = true
 	}
 	if !changed {
 		return nil
 	}
+	rollbackRequests := make([]session.SteerRequest, len(requests))
+	copy(rollbackRequests, requests)
+	for i := range rollbackRequests {
+		for _, deferred := range deferredRequests {
+			if rollbackRequests[i].ID != deferred.ID {
+				continue
+			}
+			rollbackRequests[i].Status = session.SteerStatusPending
+			break
+		}
+	}
 	if err := e.store.UpdateSteerRequests(sessionID, requests); err != nil {
 		return err
 	}
-	_, _ = e.store.RefreshPendingSteerCount(sessionID)
+	if _, err := e.store.RefreshPendingSteerCount(sessionID); err != nil {
+		if rollbackErr := e.store.UpdateSteerRequests(sessionID, rollbackRequests); rollbackErr != nil {
+			return fmt.Errorf("refresh pending steer count after rolling back deferred steer requests failed with %v: %w", rollbackErr, err)
+		}
+		return fmt.Errorf("refresh pending steer count: %w", err)
+	}
+	deferredEvents := make([]events.Event, 0, len(deferredRequests))
+	for _, request := range deferredRequests {
+		deferredEvents = append(deferredEvents, events.New(sessionID, "session.steer.deferred", "control_drain", map[string]any{
+			"id":        request.ID,
+			"interrupt": true,
+		}))
+	}
+	if err := e.appendEvents(sessionID, deferredEvents); err != nil {
+		if rollbackErr := e.store.UpdateSteerRequests(sessionID, rollbackRequests); rollbackErr != nil {
+			return fmt.Errorf("record deferred steer events after rolling back deferred steer requests failed with %v: %w", rollbackErr, err)
+		}
+		if _, refreshErr := e.store.RefreshPendingSteerCount(sessionID); refreshErr != nil {
+			return fmt.Errorf("record deferred steer events after refreshing rolled back pending steer count failed with %v: %w", refreshErr, err)
+		}
+		return err
+	}
 	return nil
 }
 
