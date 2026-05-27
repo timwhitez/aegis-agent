@@ -3832,38 +3832,52 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, rawDir := range cfg.Skills.Dirs {
+		if strings.TrimSpace(rawDir) == "" {
+			continue
+		}
 		dir, err := resolveSkillDir(rawDir)
 		if err != nil {
-			continue
+			writeError(w, http.StatusInternalServerError, err)
+			return
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("read skills dir %s: %w", dir, err))
+			return
 		}
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
 			}
 			skillDir := filepath.Join(dir, entry.Name())
-			mdData, _, err := fileutil.ReadRegularFileNoSymlink(filepath.Join(skillDir, "SKILL.md"))
+			manifestPath := filepath.Join(skillDir, "SKILL.md")
+			mdData, _, err := fileutil.ReadRegularFileNoSymlink(manifestPath)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("read skill manifest %s: %w", manifestPath, err))
+				return
+			}
 			desc := "Local skill"
 			name := entry.Name()
-			if err == nil {
-				// Simple frontmatter extraction
-				lines := strings.Split(string(mdData), "\n")
-				inFront := false
-				for _, l := range lines {
-					l = strings.TrimSpace(l)
-					if l == "---" {
-						inFront = !inFront
-						continue
-					}
-					if inFront && strings.HasPrefix(l, "description:") {
-						desc = strings.TrimSpace(strings.TrimPrefix(l, "description:"))
-					}
-					if inFront && strings.HasPrefix(l, "name:") {
-						name = strings.TrimSpace(strings.TrimPrefix(l, "name:"))
-					}
+			// Simple frontmatter extraction
+			lines := strings.Split(string(mdData), "\n")
+			inFront := false
+			for _, l := range lines {
+				l = strings.TrimSpace(l)
+				if l == "---" {
+					inFront = !inFront
+					continue
+				}
+				if inFront && strings.HasPrefix(l, "description:") {
+					desc = strings.TrimSpace(strings.TrimPrefix(l, "description:"))
+				}
+				if inFront && strings.HasPrefix(l, "name:") {
+					name = strings.TrimSpace(strings.TrimPrefix(l, "name:"))
 				}
 			}
 			skills = append(skills, skillMeta{

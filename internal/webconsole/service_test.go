@@ -7870,6 +7870,63 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	}
 }
 
+func TestServiceSkillListRequiresReadableSkillManifest(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	good := filepath.Join(skillsDir, "good-skill")
+	notSkill := filepath.Join(skillsDir, "notes")
+	if err := os.MkdirAll(good, 0o755); err != nil {
+		t.Fatalf("mkdir good skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "SKILL.md"), []byte("---\nname: good-skill\ndescription: good skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write good skill: %v", err)
+	}
+	if err := os.MkdirAll(notSkill, 0o755); err != nil {
+		t.Fatalf("mkdir non-skill dir: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 1 || listed[0]["id"] != "good-skill" {
+		t.Fatalf("skill list should only include directories with readable SKILL.md, got %#v", listed)
+	}
+
+	symlinked := filepath.Join(skillsDir, "symlinked-skill")
+	if err := os.MkdirAll(symlinked, 0o755); err != nil {
+		t.Fatalf("mkdir symlinked skill: %v", err)
+	}
+	outsideManifest := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.WriteFile(outsideManifest, []byte("---\nname: symlinked-skill\n---\n"), 0o600); err != nil {
+		t.Fatalf("write outside manifest: %v", err)
+	}
+	if err := os.Symlink(outsideManifest, filepath.Join(symlinked, "SKILL.md")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/skills")
+	if err != nil {
+		t.Fatalf("get skills with symlinked manifest: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected unreadable skill manifest to return 500, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), "SKILL.md") {
+		t.Fatalf("expected skill manifest error to name SKILL.md, got %s", string(body))
+	}
+}
+
 func TestSkillUploadRejectsMalformedPackageAsBadRequest(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")

@@ -7452,6 +7452,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-233. That slice fixed `/api/history` `page_size` / `page` overflow and pagination metadata; this slice covers the remaining raw `limit` parsing paths for session, child, and queue list endpoints.
 - Confirmed the minimal fix belongs in the Web service adapter: bound the query value before calling the session store, without changing durable store list ordering, queue reconciliation, frontend state, or runtime/session authority.
 
+### Review 228
+
+- Confirmed FCA-20260527-235 against `spec/04-tools-and-skills.md` and `spec/17-web-console.md`: local skills are directories with a readable `SKILL.md`, and the Web Skills view should reflect the same local skill boundary as the runtime catalog instead of inventing installed skills from arbitrary folders.
+- Confirmed this is distinct from FCA-20260527-229 and the upload rollback slices. Those hardened malformed upload packages and install/uninstall side effects; this slice covers the residual read/list path after files already exist under a configured skill directory.
+- Confirmed the minimal fix belongs in the Web service Skills adapter: skip directories without `SKILL.md`, propagate non-missing manifest/root read errors with actionable paths, and leave runtime SkillCatalog loading, upload transactions, audit events, and frontend state unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7513,6 +7519,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-235
+
+Slice: `fix(webconsole): require skill manifests in list`
+
+Finding:
+
+- `handleListSkills` iterated every direct child directory under each configured skills root and returned an installed skill card even when the directory had no `SKILL.md`.
+- The same handler swallowed `SKILL.md` read failures and fell back to `description:"Local skill"`, so a manifest rejected by the no-symlink regular-file reader could still appear installed in the Web Skills view.
+- Before the fix, `TestServiceSkillListRequiresReadableSkillManifest` failed because a plain `notes/` directory was returned as an installed skill alongside the valid `good-skill`.
+
+Impact:
+
+- The default Web console could display local "installed" skills that the runtime skill catalog would not load through `load_skill`.
+- Operators could try to manage or reason about a fake local skill, while genuine local manifest corruption or symlink rejection was hidden instead of surfaced as a backend error.
+
+Changes:
+
+- Changed `/api/skills` to ignore blank configured skill roots and missing skill roots, matching optional local skill-directory behavior.
+- Changed the local skill listing loop to skip child directories that do not contain `SKILL.md`.
+- Changed non-missing skill-root and `SKILL.md` read errors to return HTTP 500 with the relevant path, rather than manufacturing a fallback installed skill card.
+- Added `TestServiceSkillListRequiresReadableSkillManifest` covering valid skills, non-skill directories, and a symlinked manifest rejected by `ReadRegularFileNoSymlink`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillListRequiresReadableSkillManifest -count=1`: failed before the fix because `/api/skills` listed a plain `notes/` directory as installed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillListRequiresReadableSkillManifest -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkill(ListRequiresReadableSkillManifest|RoutesUploadListUninstallAndInstallUnsupported|UploadRejectsMalformedPackageAsBadRequest)' -count=1`: passed.
 
 ### FCA-20260527-234
 
