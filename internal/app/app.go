@@ -649,6 +649,10 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		if err != nil {
 			return err
 		}
+		previousHistory, err := store.LoadGoalHistory(sessionID)
+		if err != nil {
+			return err
+		}
 		cleared, err := store.ClearGoal(sessionID)
 		if err != nil {
 			return err
@@ -674,6 +678,9 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 			})); err != nil {
 				if restoreErr := store.SaveGoal(sessionID, goal); restoreErr != nil {
 					return fmt.Errorf("restore goal after clear event error %v: %w", err, restoreErr)
+				}
+				if restoreErr := store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+					return fmt.Errorf("restore goal history after clear event error %v: %w", err, restoreErr)
 				}
 				return err
 			}
@@ -811,6 +818,11 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, j
 		}
 		return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
 	}
+	previousHistory, err := store.LoadGoalHistory(sessionID)
+	if err != nil {
+		return err
+	}
+	previousGoal := goal
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	goal, err = store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
 		Source:           session.GoalSourceCLI,
@@ -826,6 +838,12 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, j
 		"approved_at":       approvedAt,
 		"coverage_override": overrideCoverage,
 	})); err != nil {
+		if restoreErr := store.SaveGoal(sessionID, previousGoal); restoreErr != nil {
+			return fmt.Errorf("restore goal after mission approval event error %v: %w", err, restoreErr)
+		}
+		if restoreErr := store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+			return fmt.Errorf("restore goal history after mission approval event error %v: %w", err, restoreErr)
+		}
 		return err
 	}
 	if jsonMode {
@@ -908,6 +926,10 @@ func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status,
 	if err != nil {
 		return err
 	}
+	previousHistory, err := store.LoadGoalHistory(sessionID)
+	if err != nil {
+		return err
+	}
 	goal, err := store.SetGoalStatus(sessionID, status, session.GoalSourceCLI)
 	if err != nil {
 		return err
@@ -931,6 +953,9 @@ func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status,
 	})); err != nil {
 		if restoreErr := store.SaveGoal(sessionID, previous); restoreErr != nil {
 			return fmt.Errorf("restore goal after status event error %v: %w", err, restoreErr)
+		}
+		if restoreErr := store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+			return fmt.Errorf("restore goal history after status event error %v: %w", err, restoreErr)
 		}
 		return err
 	}

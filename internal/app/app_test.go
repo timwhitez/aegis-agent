@@ -571,6 +571,20 @@ func TestGoalPlanApproveCommandReportsEventAppendError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected event append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load restored goal: %v", loadErr)
+	}
+	if loaded.Mission == nil || loaded.Mission.PlanStatus == session.MissionPlanStatusApproved || loaded.Mission.ApprovedAt != "" {
+		t.Fatalf("failed mission approval event should restore unapproved goal, got %#v", loaded.Mission)
+	}
+	history, historyErr := store.LoadGoalHistory(meta.ID)
+	if historyErr != nil {
+		t.Fatalf("load restored goal history: %v", historyErr)
+	}
+	if appGoalHistoryContainsType(history, "mission.plan.approved") {
+		t.Fatalf("failed mission approval event should restore goal history, got %#v", history)
+	}
 }
 
 func TestGoalPlanApproveCommandReportsLinkedPlanModeCreatedEventAppendError(t *testing.T) {
@@ -810,6 +824,54 @@ func TestGoalStatusCommandReportsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestGoalStatusCommandRollsBackHistoryWhenEventAppendFails(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := testAppSessionMetadata(t, "session_goal_status_event_error")
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Pause through CLI with blocked events",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	beforeHistory, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	blockAppEventsPath(t, store, meta.ID)
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run(context.Background(), []string{"goal", "pause", meta.ID, "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected event append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal pause should restore active goal snapshot, got %#v", loaded)
+	}
+	afterHistory, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored goal history: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || appGoalHistoryContainsType(afterHistory, "goal.paused") {
+		t.Fatalf("failed goal pause event should restore goal history, before=%#v after=%#v", beforeHistory, afterHistory)
+	}
+}
+
 func TestGoalClearCommandReportsHistoryAppendError(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	meta := testAppSessionMetadata(t, "session_goal_clear_history_error")
@@ -844,6 +906,54 @@ func TestGoalClearCommandReportsHistoryAppendError(t *testing.T) {
 	}
 	if loaded.GoalID == "" || loaded.Status != session.GoalStatusActive {
 		t.Fatalf("failed goal clear should restore active goal snapshot, got %#v", loaded)
+	}
+}
+
+func TestGoalClearCommandRollsBackHistoryWhenEventAppendFails(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := testAppSessionMetadata(t, "session_goal_clear_event_error")
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Clear through CLI with blocked events",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	beforeHistory, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	blockAppEventsPath(t, store, meta.ID)
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run(context.Background(), []string{"goal", "clear", meta.ID, "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected event append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	loaded, loadErr := store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("failed goal clear should restore goal snapshot, got load error: %v", loadErr)
+	}
+	if loaded.GoalID == "" || loaded.Status != session.GoalStatusActive {
+		t.Fatalf("failed goal clear should restore active goal snapshot, got %#v", loaded)
+	}
+	afterHistory, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored goal history: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || appGoalHistoryContainsType(afterHistory, "goal.cleared") {
+		t.Fatalf("failed goal clear event should restore goal history, before=%#v after=%#v", beforeHistory, afterHistory)
 	}
 }
 
@@ -2171,6 +2281,15 @@ func blockAppGoalHistoryPath(t *testing.T, store *session.Store, sessionID strin
 	if err := os.Mkdir(historyPath, 0o700); err != nil {
 		t.Fatalf("block goal history path: %v", err)
 	}
+}
+
+func appGoalHistoryContainsType(history []session.GoalHistoryEntry, target string) bool {
+	for _, entry := range history {
+		if entry.Type == target {
+			return true
+		}
+	}
+	return false
 }
 
 func blockAppEventsPath(t *testing.T, store *session.Store, sessionID string) {

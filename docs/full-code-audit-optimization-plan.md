@@ -6604,7 +6604,37 @@ Evidence gates:
 - Confirmed the issue is distinct from FCA-20260527-193 and FCA-20260527-195. Those slices covered newly created linked Plan Mode gates; this slice covers `EnsurePlanModeForGoal` reusing an already pending but unlinked Plan Mode and appending Plan Mode history without matching event evidence.
 - Confirmed the minimal fix must cover each adapter that can perform the relink outside the store: model tool `create_goal`, Web goal/mission/validation controls, and the CLI `goal plan approve` fallback. On event failure, restore Plan Mode snapshot/history and any surrounding Goal/task facts owned by the route.
 
+### Review 190
+
+- Confirmed FCA-20260527-197 against the Goal and mission event catalog in `spec/01-runtime-architecture.md`: `goal.paused`, `goal.cleared`, and `mission.plan.approved` are durable session events paired with Goal history facts.
+- Confirmed the issue is distinct from FCA-20260526-086 and FCA-20260526-071. Those slices made CLI history/event failures visible and restored `goal.json`; this slice covers the remaining event-stage mismatch where the CLI restored the current Goal snapshot but left the just-appended Goal history fact behind.
+- Confirmed the minimal fix belongs in the CLI adapter: snapshot Goal history before CLI-owned status, clear, and direct mission approval mutations, then restore it together with `goal.json` if the paired event append fails.
+
 ## Update Log
+
+### FCA-20260527-197
+
+Slice: `fix(app): restore goal history on event failures`
+
+Finding:
+
+- CLI `goal pause/resume/complete`, `goal clear`, and direct `goal plan approve` appended Goal history facts before appending the paired session event.
+- On blocked `events.jsonl`, these commands returned an error and restored `goal.json`, but left the just-appended `goal.paused`, `goal.cleared`, or `mission.plan.approved` history entry in `artifacts/goal-history.jsonl`.
+- Recovery views and later audits could therefore see a historical transition that the CLI reported as failed and that had no matching durable event timeline fact.
+
+Changes:
+
+- Snapshotted Goal history before CLI status transitions, clear, and direct mission approval.
+- Restored Goal history alongside `goal.json` when the paired `goal.*` or `mission.plan.approved` event append fails.
+- Extended CLI regressions to assert blocked event writes restore both the current Goal snapshot and Goal history for status, clear, and direct mission approval.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run 'TestGoal(Status|Clear)CommandRollsBackHistoryWhenEventAppendFails' -count=1`: failed before the fix because `goal.paused` and `goal.cleared` history entries remained after event failure.
+- `go test -timeout 120s ./internal/app -run 'TestGoalPlanApproveCommandReportsEventAppendError' -count=1`: failed before the fix because `mission.plan.approved` remained in `goal.json` / Goal history after event failure.
+- `go test -timeout 120s ./internal/app -run 'TestGoal(Status|Clear)Command(RollsBackHistoryWhenEventAppendFails|ReportsHistoryAppendError)|TestGoalPlanApproveCommandReportsEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 
 ### FCA-20260527-196
 
