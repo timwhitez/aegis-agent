@@ -7233,6 +7233,48 @@ func TestProcessSkillZipRejectsFileDirectoryConflictBeforeMutation(t *testing.T)
 	}
 }
 
+func TestProcessSkillZipPreservesExistingSkillOnLateExtractionError(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	existing := filepath.Join(dest, "demo-skill")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "SKILL.md"), []byte("---\nname: existing-demo\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "keep.txt"), []byte("keep me\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill payload: %v", err)
+	}
+	zipPath := filepath.Join(base, "corrupt-late.zip")
+	createCorruptStoredZip(t, zipPath, []zipTestEntry{
+		{name: "demo-skill/SKILL.md", content: "---\nname: demo-skill\n---\nbody\n"},
+		{name: "demo-skill/good.txt", content: "new content\n"},
+		{name: "demo-skill/bad.txt", content: "late payload"},
+	}, "late payload", "late payloae")
+
+	if _, err := processSkillZip(zipPath, dest); err == nil {
+		t.Fatal("expected corrupt zip payload to fail during extraction")
+	}
+	data, err := os.ReadFile(filepath.Join(existing, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("existing skill should remain after failed extraction: %v", err)
+	}
+	if !strings.Contains(string(data), "existing-demo") {
+		t.Fatalf("existing skill was unexpectedly replaced: %q", string(data))
+	}
+	keepData, err := os.ReadFile(filepath.Join(existing, "keep.txt"))
+	if err != nil {
+		t.Fatalf("existing payload should remain after failed extraction: %v", err)
+	}
+	if string(keepData) != "keep me\n" {
+		t.Fatalf("existing payload was unexpectedly modified: %q", keepData)
+	}
+	if _, err := os.Stat(filepath.Join(existing, "good.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed upload should not leave partial extracted file, got %v", err)
+	}
+}
+
 func TestProcessSkillZipAllowsNestedSkillFiles(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")
@@ -7593,6 +7635,48 @@ func createZipEntriesInOrder(t *testing.T, zipPath string, entries []zipTestEntr
 	}
 	if err := zipWriter.Close(); err != nil {
 		t.Fatalf("close zip writer: %v", err)
+	}
+}
+
+func createCorruptStoredZip(t *testing.T, zipPath string, entries []zipTestEntry, oldPayload, newPayload string) {
+	t.Helper()
+	if len(oldPayload) == 0 || len(oldPayload) != len(newPayload) {
+		t.Fatalf("corrupt payload replacement must be non-empty and length-preserving")
+	}
+	file, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip: %v", err)
+	}
+	zipWriter := zip.NewWriter(file)
+	for _, item := range entries {
+		header := &zip.FileHeader{Name: item.name, Method: zip.Store}
+		header.SetMode(0o644)
+		entry, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", item.name, err)
+		}
+		if _, err := entry.Write([]byte(item.content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", item.name, err)
+		}
+	}
+	if err := zipWriter.Close(); err != nil {
+		_ = file.Close()
+		t.Fatalf("close zip writer: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close zip file: %v", err)
+	}
+	data, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	idx := bytes.Index(data, []byte(oldPayload))
+	if idx < 0 {
+		t.Fatalf("payload %q not found in stored zip", oldPayload)
+	}
+	copy(data[idx:idx+len(oldPayload)], []byte(newPayload))
+	if err := os.WriteFile(zipPath, data, 0o600); err != nil {
+		t.Fatalf("write corrupt zip: %v", err)
 	}
 }
 

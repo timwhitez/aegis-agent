@@ -3541,6 +3541,11 @@ func (s *Service) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotImplemented, errors.New("installing marketplace skills is not supported; upload a .zip skill instead"))
 }
 
+type skillZipPlan struct {
+	Root       string
+	TargetPath string
+}
+
 func processSkillZip(src string, globalDest string) (int, error) {
 	r, err := zip.OpenReader(src)
 	if err != nil {
@@ -3586,10 +3591,6 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		return 0, errors.New("no SKILL.md found in zip, not a valid skill package")
 	}
 
-	type skillZipPlan struct {
-		Root       string
-		TargetPath string
-	}
 	plans := make([]skillZipPlan, 0, len(skillRoots))
 	seenTargets := make(map[string]string, len(skillRoots))
 	for _, root := range skillRoots {
@@ -3637,22 +3638,29 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		}
 		if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 			return 0, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
+		} else if err == nil && !info.IsDir() {
+			return 0, fmt.Errorf("refusing to replace non-directory skill path: %s", targetPath)
 		} else if err != nil && !os.IsNotExist(err) {
 			return 0, err
 		}
 		plans = append(plans, skillZipPlan{Root: root, TargetPath: targetPath})
 	}
 
+	stagingRoot, err := os.MkdirTemp(globalDest, ".skill-upload-*")
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = fileutil.RemoveDirAllNoSymlink(stagingRoot)
+	}()
+
 	extractedCount := 0
 	extractedBytes := int64(0)
 
 	for _, plan := range plans {
 		root := plan.Root
-		targetPath := plan.TargetPath
+		targetPath := stagedSkillTargetPath(stagingRoot, plan.TargetPath)
 
-		if err := fileutil.RemoveDirAllNoSymlink(targetPath); err != nil {
-			return extractedCount, err
-		}
 		if err := fileutil.MkdirAllNoSymlink(targetPath, 0o755); err != nil {
 			return extractedCount, err
 		}
@@ -3716,7 +3724,107 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		}
 		extractedCount++
 	}
+	if err := commitStagedSkillZipPlans(plans, stagingRoot); err != nil {
+		return 0, err
+	}
 	return extractedCount, nil
+}
+
+func stagedSkillTargetPath(stagingRoot, targetPath string) string {
+	return filepath.Join(stagingRoot, filepath.Base(targetPath))
+}
+
+type committedSkillZipPlan struct {
+	targetPath string
+	backupPath string
+	installed  bool
+}
+
+func commitStagedSkillZipPlans(plans []skillZipPlan, stagingRoot string) error {
+	committed := make([]committedSkillZipPlan, 0, len(plans))
+	for _, plan := range plans {
+		stagePath := stagedSkillTargetPath(stagingRoot, plan.TargetPath)
+		if !pathWithinRoot(stagingRoot, stagePath) || filepath.Dir(stagePath) != stagingRoot {
+			return rollbackCommittedSkillZipPlans(committed, fmt.Errorf("invalid staged skill path: %s", stagePath))
+		}
+		if _, err := os.Lstat(stagePath); err != nil {
+			return rollbackCommittedSkillZipPlans(committed, err)
+		}
+
+		entry := committedSkillZipPlan{targetPath: plan.TargetPath}
+		if info, err := os.Lstat(plan.TargetPath); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return rollbackCommittedSkillZipPlans(committed, fmt.Errorf("refusing to replace symlinked skill directory: %s", plan.TargetPath))
+			}
+			if !info.IsDir() {
+				return rollbackCommittedSkillZipPlans(committed, fmt.Errorf("refusing to replace non-directory skill path: %s", plan.TargetPath))
+			}
+			backupPath, err := reserveSkillBackupPath(filepath.Dir(plan.TargetPath), filepath.Base(plan.TargetPath))
+			if err != nil {
+				return rollbackCommittedSkillZipPlans(committed, err)
+			}
+			if err := os.Rename(plan.TargetPath, backupPath); err != nil {
+				return rollbackCommittedSkillZipPlans(committed, err)
+			}
+			entry.backupPath = backupPath
+			committed = append(committed, entry)
+		} else if !os.IsNotExist(err) {
+			return rollbackCommittedSkillZipPlans(committed, err)
+		} else {
+			committed = append(committed, entry)
+		}
+
+		if err := os.Rename(stagePath, plan.TargetPath); err != nil {
+			return rollbackCommittedSkillZipPlans(committed, err)
+		}
+		committed[len(committed)-1].installed = true
+	}
+
+	for _, entry := range committed {
+		if entry.backupPath == "" {
+			continue
+		}
+		if err := fileutil.RemoveDirAllNoSymlink(entry.backupPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reserveSkillBackupPath(parent, name string) (string, error) {
+	backupPath, err := os.MkdirTemp(parent, "."+name+".backup-*")
+	if err != nil {
+		return "", err
+	}
+	if !pathWithinRoot(parent, backupPath) || filepath.Dir(backupPath) != parent {
+		_ = fileutil.RemoveDirAllNoSymlink(backupPath)
+		return "", fmt.Errorf("invalid skill backup path: %s", backupPath)
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return "", err
+	}
+	return backupPath, nil
+}
+
+func rollbackCommittedSkillZipPlans(committed []committedSkillZipPlan, cause error) error {
+	var rollbackErrs []string
+	for i := len(committed) - 1; i >= 0; i-- {
+		entry := committed[i]
+		if entry.installed {
+			if err := fileutil.RemoveDirAllNoSymlink(entry.targetPath); err != nil {
+				rollbackErrs = append(rollbackErrs, err.Error())
+			}
+		}
+		if entry.backupPath != "" {
+			if err := os.Rename(entry.backupPath, entry.targetPath); err != nil {
+				rollbackErrs = append(rollbackErrs, err.Error())
+			}
+		}
+	}
+	if len(rollbackErrs) > 0 {
+		return fmt.Errorf("%w (rollback failed: %s)", cause, strings.Join(rollbackErrs, "; "))
+	}
+	return cause
 }
 
 func validateSkillZipRootEntries(cleanNames map[*zip.File]string, files []*zip.File, root string) error {

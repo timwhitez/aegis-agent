@@ -4872,6 +4872,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-222: Skill upload extraction failures can replace installed skills
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats skill install/upload as a risky local WebConsole mutation that must be bounded, auditable, and free of malformed-package side effects.
+- `internal/webconsole/service.go` `processSkillZip` now pre-validates traversal, size, duplicate target names, symlinked targets, and file/directory conflicts, but still removed the existing target skill directory before reading and writing every zip entry.
+- A zip can pass structural prevalidation and then fail during a later entry read, for example when a stored entry's payload is corrupted and `archive/zip` reports a checksum error while `readZipFileLimited` reads it.
+- A focused regression created an existing `demo-skill`, uploaded a zip with a valid `SKILL.md` and a later corrupt file entry, and proved that before the fix the failed upload replaced `demo-skill/SKILL.md` with the new package content.
+
+Impact:
+
+A malformed skill upload could return failure and emit no `web.skill.install` audit event, while still replacing or partially rewriting an installed local skill. This violates the local-console safety boundary for risky skill mutations and makes operator recovery harder because the previously installed skill contents can be gone even though the upload failed.
+
+Minimal fix:
+
+- Extract every planned skill root into a temporary staging directory under the managed skill root.
+- Commit staged skills only after all zip entries for all planned roots are read and written successfully.
+- During commit, move any existing target skill aside into a backup path, rename the staged skill into place, and roll back prior staged installs/backups if a later commit step fails.
+- Reject existing non-directory target paths before mutation, preserving the existing symlink and direct-child target checks.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving a late zip read/checksum error replaced an existing installed skill.
+- Focused post-fix regression proving the same failed upload leaves existing `SKILL.md`, existing payload files, and target contents unchanged.
+- Adjacent skill upload/uninstall, audit preflight, full WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-221: Deferred interrupt steer events can precede durable status
 
 Severity: Medium
@@ -7036,6 +7064,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 215
+
+- Confirmed FCA-20260527-222 against the WebConsole skill-upload safety and auditability requirements in `spec/17-web-console.md`: skill install/upload is a risky local mutation, and malformed packages must not replace installed local skills on failed responses.
+- Confirmed this is distinct from FCA-20260527-211. That slice covered structural file/directory path conflicts before extraction; this slice covers late zip read/checksum failures after structural prevalidation succeeds.
+- Confirmed the minimal fix belongs in `processSkillZip`: stage all extraction first, then commit with backup/rollback semantics, rather than introducing a broad WebConsole transaction layer or changing the SkillCatalog runtime behavior.
+
 ### Review 214
 
 - Confirmed FCA-20260527-221 against `spec/13-live-input-and-steering.md`: a non-preemptable interrupt steer must be deferred as a control-queue fact and represented by matching durable event facts.
@@ -7067,6 +7101,40 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-222
+
+Slice: `fix(webconsole): stage skill uploads before replace`
+
+Finding:
+
+- `processSkillZip` removed the target skill directory before reading every entry in the incoming zip.
+- A package with a valid `SKILL.md` and a later corrupt stored entry could pass prevalidation, fail during extraction, and still replace the installed skill before returning an error.
+
+Changes:
+
+- Added staging extraction under the managed skill root so all planned skill roots are fully read and written before any installed target is touched.
+- Added commit helpers that move existing skill targets to backup paths, rename staged skills into place, and roll back installed/backup paths if a later commit step fails.
+- Added non-directory target rejection alongside the existing symlink/direct-child target checks.
+- Added a corrupt stored-zip regression proving late extraction errors preserve the installed skill and leave no partial new files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipPreservesExistingSkillOnLateExtractionError -count=1`: failed before the fix because corrupt late extraction still replaced `SKILL.md`.
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipPreservesExistingSkillOnLateExtractionError -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZip|TestServiceSkill|TestSensitiveWebActionsEmitAuditEvents|TestSensitiveActionsPreflightAuditBeforeMutating' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-221
 
