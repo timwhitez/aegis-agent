@@ -4872,6 +4872,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-225: Session delete/clear audit append failures can erase history
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires session delete and session history clear to write searchable audit events because they are risky local WebConsole mutations.
+- `internal/webconsole/service.go` `handleDeleteSession` preflighted audit-log writability, then deleted the target session tree and linked queue jobs before appending `web.session.delete`.
+- `internal/webconsole/service.go` `handleClearSessions` preflighted audit-log writability, then cleared the local session history root before appending `web.sessions.clear`.
+- Focused regressions forced failures at `web.session.delete` and `web.sessions.clear`. Before the fix, failed audit appends returned HTTP 500 while the parent/child sessions or cleared session history had already been removed.
+
+Impact:
+
+The browser could report a failed delete/clear operation while local session history and linked queue jobs were already erased without the required audit record. That makes recovery ambiguous and violates the Web-first file-fact boundary because the operator-visible failure no longer matches durable history state.
+
+Minimal fix:
+
+- Add a WebConsole-local history mutation transaction for delete/clear operations.
+- Move affected session directories, linked queue job files, or full history-root entries into an owner-only sibling backup before appending the required audit event.
+- Roll back moved history paths when `web.session.delete` or `web.sessions.clear` cannot be appended, and only remove the backup after the audit event succeeds.
+- Keep existing active-handle, running-session, running-queue, ID, symlink, and path-containment checks in place.
+
+Validation:
+
+- Focused pre-fix WebConsole regressions proving failed delete/clear audit appends removed local history despite HTTP 500.
+- Focused post-fix regressions proving failed audit append restores session directories and queue job files and emits no failed audit event.
+- Adjacent session delete/clear/audit, full WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-224: Skill mutation audit append failures can leave install/uninstall side effects
 
 Severity: Medium
@@ -7119,6 +7147,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 218
+
+- Confirmed FCA-20260527-225 against the WebConsole session history safety and auditability requirements in `spec/17-web-console.md`: session delete and session history clear are risky local mutations and must not erase local session/queue facts when the required audit event cannot be persisted.
+- Confirmed this is distinct from FCA-20260526-044. That slice covered audit-log writability preflight before mutation; this slice covers the later window where preflight succeeds but the actual required audit append fails after history has already been moved/deleted.
+- Confirmed the minimal fix belongs in the WebConsole session delete/clear handlers and a narrow history-mutation transaction helper: keep backups until audit success, then finalize, without changing provider adapters, frontend state authority, or adding runtime-driven orchestration.
+
 ### Review 217
 
 - Confirmed FCA-20260527-224 against the WebConsole skill safety and auditability requirements in `spec/17-web-console.md`: skill install/uninstall are risky local mutations and must not leave local skill root changes when the required audit event cannot be persisted.
@@ -7168,6 +7202,42 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-225
+
+Slice: `fix(webconsole): roll back history audit failures`
+
+Finding:
+
+- `handleDeleteSession` deleted the session tree and linked queue jobs before appending `web.session.delete`.
+- `handleClearSessions` cleared the local history root before appending `web.sessions.clear`.
+- If the actual audit append failed after audit preflight, the HTTP request returned 500 while session history or queue job facts were already erased without the required audit event.
+
+Changes:
+
+- Added a WebConsole-local history mutation transaction that moves affected files/directories into an owner-only sibling backup before audit append.
+- Changed session delete to move the target session tree and linked queue job JSON files first, append `web.session.delete`, and finalize only after audit success.
+- Changed session history clear to move current history-root entries first, append `web.sessions.clear`, and finalize only after audit success.
+- Rolled back moved history paths when delete/clear audit append fails.
+- Added focused regressions for session delete and session history clear audit append failures.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'Test(DeleteSession|ClearSessions)RollsBackWhenAuditAppendFails' -count=1`: failed before the fix because deleted/cleared sessions were not restored after audit append failure.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(DeleteSession|ClearSessions)RollsBackWhenAuditAppendFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(DeleteSessionRouteRemovesSessionTreeAndJobs|ClearSessionsRouteRemovesHistory|ClearSessionsIgnoresStaleHandles|ClearSessionsRejectsRunningSessionsWithoutLiveOwners|DeleteSessionRejectsRunningSessionWithoutLiveOwner|DeleteSessionRejectsActiveDeepDescendantHandle)|TestSensitiveWebActionsEmitAuditEvents|TestSensitiveActionsPreflightAuditBeforeMutating' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-224
 

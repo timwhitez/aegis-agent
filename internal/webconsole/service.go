@@ -768,13 +768,22 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := s.store.DeleteSessionTree(sessionID); err != nil {
+	deleteTx, err := s.prepareDeleteSessionTreeTransaction(sessionID)
+	if err != nil {
 		writeError(w, sessionStoreStatus(err), err)
 		return
 	}
 	if err := s.appendAuditEvent("web.session.delete", map[string]any{
 		"session_id": sessionID,
 	}); err != nil {
+		if rollbackErr := deleteTx.Rollback(); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore session delete after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := deleteTx.Finalize(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -826,15 +835,253 @@ func (s *Service) handleClearSessions(w http.ResponseWriter) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := s.store.ClearHistory(); err != nil {
+	clearTx, err := s.prepareClearHistoryTransaction()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if err := s.appendAuditEvent("web.sessions.clear", nil); err != nil {
+		if rollbackErr := clearTx.Rollback(); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore session history after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := clearTx.Finalize(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
+}
+
+type webHistoryMove struct {
+	originalPath string
+	backupPath   string
+}
+
+type webHistoryMutationTransaction struct {
+	root       string
+	backupRoot string
+	moves      []webHistoryMove
+}
+
+func newWebHistoryMutationTransaction(root, prefix string) (*webHistoryMutationTransaction, error) {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" || root == "." || filepath.Dir(root) == root {
+		return nil, fmt.Errorf("invalid session root: %s", root)
+	}
+	parent := filepath.Dir(root)
+	if err := rejectAuditSymlinkAncestors(parent); err != nil {
+		return nil, err
+	}
+	backupRoot, err := os.MkdirTemp(parent, "."+filepath.Base(root)+"."+prefix+"-*")
+	if err != nil {
+		return nil, err
+	}
+	if !pathWithinRoot(parent, backupRoot) || filepath.Dir(backupRoot) != parent {
+		_ = fileutil.RemoveDirAllNoSymlink(backupRoot)
+		return nil, fmt.Errorf("invalid history backup path: %s", backupRoot)
+	}
+	return &webHistoryMutationTransaction{root: root, backupRoot: backupRoot}, nil
+}
+
+func (tx *webHistoryMutationTransaction) MovePathIfExists(path string) error {
+	path = filepath.Clean(path)
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return tx.MovePath(path)
+}
+
+func (tx *webHistoryMutationTransaction) MovePath(path string) error {
+	if tx == nil {
+		return errors.New("history mutation transaction is nil")
+	}
+	path = filepath.Clean(path)
+	if !pathWithinRoot(tx.root, path) || filepath.Clean(path) == tx.root {
+		return fmt.Errorf("history path escapes session root: %s", path)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to move symlinked history path: %s", path)
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to move unsupported history path: %s", path)
+	}
+	rel, err := filepath.Rel(tx.root, path)
+	if err != nil {
+		return err
+	}
+	if rel == "." || rel == "" || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("invalid history relative path: %s", rel)
+	}
+	backupPath := filepath.Join(tx.backupRoot, rel)
+	if !pathWithinRoot(tx.backupRoot, backupPath) {
+		return fmt.Errorf("history backup path escapes backup root: %s", backupPath)
+	}
+	if err := fileutil.MkdirAllNoSymlink(filepath.Dir(backupPath), 0o700); err != nil {
+		return err
+	}
+	if err := os.Rename(path, backupPath); err != nil {
+		return err
+	}
+	tx.moves = append(tx.moves, webHistoryMove{originalPath: path, backupPath: backupPath})
+	return nil
+}
+
+func (tx *webHistoryMutationTransaction) Finalize() error {
+	if tx == nil || tx.backupRoot == "" {
+		return nil
+	}
+	if err := fileutil.RemoveDirAllNoSymlink(tx.backupRoot); err != nil {
+		return err
+	}
+	tx.moves = nil
+	tx.backupRoot = ""
+	return nil
+}
+
+func (tx *webHistoryMutationTransaction) Rollback() error {
+	if tx == nil {
+		return nil
+	}
+	var errs []error
+	for i := len(tx.moves) - 1; i >= 0; i-- {
+		move := tx.moves[i]
+		if err := fileutil.MkdirAllNoSymlink(filepath.Dir(move.originalPath), 0o700); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := os.Rename(move.backupPath, move.originalPath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if tx.backupRoot != "" {
+		if err := fileutil.RemoveDirAllNoSymlink(tx.backupRoot); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	tx.moves = nil
+	tx.backupRoot = ""
+	return nil
+}
+
+func (s *Service) prepareDeleteSessionTreeTransaction(sessionID string) (*webHistoryMutationTransaction, error) {
+	if _, err := s.store.LoadMetadata(sessionID); err != nil {
+		return nil, err
+	}
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return nil, err
+	}
+	targets := sessionTreeTargetIDs(sessionID, items)
+	jobs, _, err := s.store.ListJobsPage(1000000, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := newWebHistoryMutationTransaction(s.store.Root(), "delete")
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	targetIDs := make([]string, 0, len(targets))
+	for id := range targets {
+		targetIDs = append(targetIDs, id)
+	}
+	sort.Strings(targetIDs)
+	for _, id := range targetIDs {
+		if err := tx.MovePathIfExists(s.store.SessionDir(id)); err != nil {
+			return nil, err
+		}
+	}
+
+	jobIDs := make(map[string]struct{})
+	for _, job := range jobs {
+		if _, ok := targets[job.ParentSessionID]; ok {
+			jobIDs[job.ID] = struct{}{}
+			continue
+		}
+		if _, ok := targets[job.SessionID]; ok {
+			jobIDs[job.ID] = struct{}{}
+			continue
+		}
+		if _, ok := targets[job.RootSessionID]; ok {
+			jobIDs[job.ID] = struct{}{}
+		}
+	}
+	orderedJobIDs := make([]string, 0, len(jobIDs))
+	for id := range jobIDs {
+		orderedJobIDs = append(orderedJobIDs, id)
+	}
+	sort.Strings(orderedJobIDs)
+	for _, jobID := range orderedJobIDs {
+		for _, status := range webQueueStatuses() {
+			jobPath := filepath.Join(s.store.Root(), "_queue", status, jobID+".json")
+			if err := tx.MovePathIfExists(jobPath); err != nil {
+				return nil, err
+			}
+		}
+	}
+	committed = true
+	return tx, nil
+}
+
+func (s *Service) prepareClearHistoryTransaction() (*webHistoryMutationTransaction, error) {
+	if err := s.store.EnsureRoot(); err != nil {
+		return nil, err
+	}
+	tx, err := newWebHistoryMutationTransaction(s.store.Root(), "clear")
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	entries, err := os.ReadDir(s.store.Root())
+	if err != nil {
+		if os.IsNotExist(err) {
+			committed = true
+			return tx, nil
+		}
+		return nil, err
+	}
+	for _, entry := range entries {
+		if err := tx.MovePath(filepath.Join(s.store.Root(), entry.Name())); err != nil {
+			return nil, err
+		}
+	}
+	committed = true
+	return tx, nil
+}
+
+func webQueueStatuses() []string {
+	return []string{
+		session.QueueStatusQueued,
+		session.QueueStatusRunning,
+		session.QueueStatusBlocked,
+		session.QueueStatusCompleted,
+		session.QueueStatusFailed,
+	}
 }
 
 func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailResponse, error) {

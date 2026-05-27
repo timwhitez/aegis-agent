@@ -6205,6 +6205,125 @@ func TestServiceClearSessionsRouteRemovesHistory(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionRollsBackWhenAuditAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	parentMeta := testSessionMetadata(t, "delete_audit_failure_parent")
+	parentMeta.RootSessionID = parentMeta.ID
+	if err := svc.store.Create(parentMeta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+	childMeta := testSessionMetadata(t, "delete_audit_failure_child")
+	childMeta.ParentSessionID = parentMeta.ID
+	childMeta.RootSessionID = parentMeta.ID
+	childMeta.QueueJobID = "delete_audit_failure_job"
+	if err := svc.store.Create(childMeta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       childMeta.ID,
+		Prompt:          "done",
+		Mode:            "exec",
+	}); err != nil {
+		t.Fatalf("save queue job: %v", err)
+	}
+	svc.beforeAppendAuditEvent = func(eventType string, data map[string]any) error {
+		if eventType == "web.session.delete" {
+			return errors.New("blocked session delete audit append")
+		}
+		return nil
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, "/api/sessions/"+parentMeta.ID, nil)
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	req.Header.Set(webMutationHeader, "1")
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "blocked session delete audit append") {
+		t.Fatalf("expected blocked delete audit append response, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := svc.store.LoadMetadata(parentMeta.ID); err != nil {
+		t.Fatalf("failed session delete audit append should restore parent session: %v", err)
+	}
+	if _, err := svc.store.LoadMetadata(childMeta.ID); err != nil {
+		t.Fatalf("failed session delete audit append should restore child session: %v", err)
+	}
+	if _, err := svc.store.LoadJob(childMeta.QueueJobID); err != nil {
+		t.Fatalf("failed session delete audit append should restore queue job: %v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.session.delete") {
+		t.Fatalf("failed session delete audit append should not append delete event, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
+func TestClearSessionsRollsBackWhenAuditAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "clear_audit_failure_session")
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "clear_audit_failure_job",
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: meta.ID,
+		RootSessionID:   meta.ID,
+		SessionID:       meta.ID,
+		Prompt:          "done",
+		Mode:            "exec",
+	}); err != nil {
+		t.Fatalf("save queue job: %v", err)
+	}
+	svc.beforeAppendAuditEvent = func(eventType string, data map[string]any) error {
+		if eventType == "web.sessions.clear" {
+			return errors.New("blocked sessions clear audit append")
+		}
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "blocked sessions clear audit append") {
+		t.Fatalf("expected blocked clear audit append response, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := svc.store.LoadMetadata(meta.ID); err != nil {
+		t.Fatalf("failed session clear audit append should restore session: %v", err)
+	}
+	if _, err := svc.store.LoadJob("clear_audit_failure_job"); err != nil {
+		t.Fatalf("failed session clear audit append should restore queue job: %v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.sessions.clear") {
+		t.Fatalf("failed session clear audit append should not append clear event, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
 func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
