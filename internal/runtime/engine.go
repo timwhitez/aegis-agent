@@ -351,7 +351,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if providerRawSidecarEnabled(meta) {
 			if err := e.store.SaveProviderRawSidecar(meta.ID, providerRawSidecarEnvelope(meta, state.Turn, result)); err != nil {
-				return RunResult{}, err
+				return e.fail(ctx, meta, state, fmt.Errorf("save provider raw sidecar: %w", err), hookManager)
 			}
 		}
 		if err := recordProviderSuccess(e.store, meta, state.Turn, result); err != nil {

@@ -7632,6 +7632,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-027 and FCA-20260527-203. Those slices covered duplicate stale handle releases and released owner clues in session detail; this slice covers `pruneInactiveHandles` treating an unreadable `state.json` as proof that a current-process handle is stale.
 - Confirmed the minimal fix belongs in WebConsole handle pruning: only prune handles after reading a terminal durable state, and keep the handle on state-load errors so local cancellation remains possible while the operator repairs or inspects the broken session fact.
 
+### Review 258
+
+- Confirmed FCA-20260528-265 against `spec/01-runtime-architecture.md` and `spec/03-provider-contracts.md`'s provider raw sidecar contract: raw sidecars are optional diagnostic facts, but when enabled their write failure is a local persistence failure that must leave the session in a durable failed state rather than returning an unsettled blank runtime result.
+- Confirmed this is distinct from existing provider-attempt and raw-sidecar coverage. Existing tests covered provider retry/failure/success ledger append errors, raw sidecar disabled-by-default behavior, and successful raw sidecar envelope writes; this slice covers the missing error path when `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json` cannot be written after a successful provider turn and before assistant output persistence.
+- Confirmed the minimal fix belongs in the runtime engine's raw-sidecar persistence boundary: route the sidecar write error through `Engine.fail` before recording provider success or appending the assistant message, preserving provider adapter replay ownership, optional sidecar semantics, and the local session store as the authoritative recovery source.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7693,6 +7699,46 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-265
+
+Slice: `fix(runtime): fail durably on raw sidecar errors`
+
+Finding:
+
+- When `provider_options.raw_sidecar=true`, `Engine.Run` wrote the provider raw diagnostic sidecar immediately after a successful provider turn and before recording provider success or appending the assistant message.
+- If `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json` could not be written, the engine returned the write error directly as an empty `RunResult` without setting `state.json` to failed or appending a `session.failed` event.
+
+Impact:
+
+- A local diagnostic persistence failure left the runtime caller with no settled session result even though the provider turn had completed and the session remained durably `running`.
+- Operators and recovery paths could not distinguish an active run from a failed raw-sidecar write using the session file facts, weakening the file-first recovery model.
+
+Changes:
+
+- Routed raw sidecar write failures through `Engine.fail`, before provider-success ledger writes and before assistant message persistence.
+- Added a focused regression that blocks the `provider-raw` directory path and proves the failed run records `state.status=failed`, a `session.failed` event, the sidecar error text, and no assistant message.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestProviderRawSidecarWriteErrorFailsSessionDurably -count=1`: failed before the fix because the runtime returned an empty `RunResult` instead of a durable failed result.
+- `go test -timeout 120s ./internal/runtime -run 'TestProviderRawSidecar(WriteErrorFailsSessionDurably|WritesEnvelopeWhenEnabled|DisabledByDefault)|TestEnginePersistsProviderTurnMetadata|TestEngineProviderParseErrorFailsBeforeAssistantPersist' -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-264
 

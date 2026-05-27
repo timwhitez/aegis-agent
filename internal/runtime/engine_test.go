@@ -1126,6 +1126,63 @@ func TestProviderRawSidecarWritesEnvelopeWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestProviderRawSidecarWriteErrorFailsSessionDurably(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	enabled := true
+	meta.ProviderOptions.RawSidecar = &enabled
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(engine.store.SessionDir(meta.ID), "provider-raw"), []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("block provider raw sidecar dir: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			Text:               "should not persist",
+			StopReason:         "done_candidate",
+			ProviderResponseID: "resp_test_1",
+			RawProvider: map[string]any{
+				"provider_stop_reason": "completed",
+				"status":               "completed",
+			},
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "provider-raw") {
+		t.Fatalf("expected provider raw sidecar write error, result=%#v err=%v", result, err)
+	}
+	if result.SessionID != meta.ID || result.Status != session.StatusFailed {
+		t.Fatalf("expected durable failed result for sidecar write error, got %#v", result)
+	}
+	loaded, loadErr := engine.store.LoadState(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if loaded.Status != session.StatusFailed || !strings.Contains(loaded.LastError, "provider-raw") {
+		t.Fatalf("expected failed state with sidecar error, got %#v", loaded)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			t.Fatalf("assistant should not persist after sidecar write error, got %#v", messages)
+		}
+	}
+	events, loadErr := loadEvents(engine.store, meta.ID)
+	if loadErr != nil {
+		t.Fatalf("events: %v", loadErr)
+	}
+	if !hasEventType(events, "session.failed") {
+		t.Fatalf("expected session.failed event for sidecar write error, got %#v", events)
+	}
+}
+
 func writeEvidenceFile(t *testing.T, workdir, rel, content string) {
 	t.Helper()
 	path := filepath.Join(workdir, filepath.FromSlash(rel))
