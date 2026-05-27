@@ -6664,7 +6664,47 @@ Evidence gates:
 - Confirmed `Engine.Run` passed `compactor.BuildWithProfile` a callback that ignored `AppendEvent` errors, while `compactor.BuildWithProfile` accepted an errorless emitter; blocked `events.jsonl` could therefore let runtime continue to provider preparation with a compacted context view whose required event evidence was missing.
 - Confirmed the minimal fix belongs in the compactor/runtime boundary: make compaction event emission error-returning, stop fresh and reused compaction when the required event cannot be written, and keep ordinary no-compaction provider-view construction unchanged.
 
+### Review 200
+
+- Confirmed FCA-20260527-207 against the CompletionController contract in `spec/01-runtime-architecture.md`: `artifact.tracked` is a durable session event written by the completion controller when a required artifact is touched by `write_file` or `edit_file`.
+- Confirmed `CompletionController.TrackToolResult` persisted `artifact-tracker.json` and mirrored `contract.json`, then emitted `artifact.tracked` through a best-effort callback. A blocked `events.jsonl` could therefore let the runtime continue to the next same-turn tool call, including `finish`, while the artifact state had advanced without the required event evidence.
+- Confirmed the minimal fix belongs in the runtime completion boundary: make completion-controller event emission error-returning for the runtime path, require `artifact.tracked` after the artifact state update, roll back tracker/contract derived state if the event cannot be written, preserve the already executed tool result for provider replay, and stop later same-turn tool calls.
+
 ## Update Log
+
+### FCA-20260527-207
+
+Slice: `fix(runtime): require artifact tracked events`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` lists `artifact.tracked` among the CompletionController events written back to the session.
+- `TrackToolResult` updated `artifact-tracker.json` and `contract.json`, then emitted `artifact.tracked` through a best-effort callback.
+- A focused runtime regression blocked `events.jsonl` exactly at `artifact.tracked`; before the fix, the run completed through the same-turn `finish` call even though the required artifact-tracking event was missing.
+
+Changes:
+
+- Changed the CompletionController event callback to return `error` and wired the runtime path through required `appendEvent`.
+- Required `artifact.tracked` persistence after successful required-artifact tracking updates.
+- Restored the previous artifact tracker and contract required-artifact snapshot when `artifact.tracked` event append fails.
+- Preserved the already executed `write_file` result plus synthetic results for later same-turn tool calls, then returned the event error instead of continuing to `finish`.
+- Added focused controller and engine regressions for the blocked `artifact.tracked` event boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineArtifactTrackedReportsEventAppendErrorWithReplayResult -count=1`: failed before the fix because the run completed with the missing `artifact.tracked` event.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineArtifactTrackedReportsEventAppendErrorWithReplayResult|TestCompletionControllerTrackToolResultReportsArtifactTrackedEventErrorAndRollsBack|TestEngineArtifactTrackingFailureWritesReplayCompleteToolResult|TestCompletionControllerRequiresSessionTouchedArtifact' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/completion_controller.go internal/runtime/contract_controller_test.go internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-206
 

@@ -1657,6 +1657,78 @@ func TestEngineArtifactTrackingFailureWritesReplayCompleteToolResult(t *testing.
 	}
 }
 
+func TestEngineArtifactTrackedReportsEventAppendErrorWithReplayResult(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := refreshContractForSession(engine.store, nil, meta); err != nil {
+		t.Fatalf("refresh contract: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "artifact.tracked" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:        "call_write",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"reports/final.md","content":"final summary"}`),
+				},
+				{
+					ID:        "call_finish",
+					Name:      "finish",
+					Arguments: json.RawMessage(`{"message":"done"}`),
+				},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "artifact.tracked") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected artifact.tracked events.jsonl error, result=%#v err=%v", result, err)
+	}
+	if data, readErr := os.ReadFile(artifactPath); readErr != nil || string(data) != "final summary" {
+		t.Fatalf("expected write_file side effect to remain recorded on disk, data=%q err=%v", data, readErr)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var toolMessages []session.Message
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			toolMessages = append(toolMessages, msg)
+		}
+	}
+	if len(toolMessages) != 1 {
+		t.Fatalf("expected one replay-complete tool message, got %#v", toolMessages)
+	}
+	results := toolMessages[0].ToolResults
+	if len(results) != 2 {
+		t.Fatalf("expected failed write result plus synthetic finish result, got %#v", results)
+	}
+	if results[0].ToolCallID != "call_write" || !results[0].IsError || !strings.Contains(results[0].LLMOutput, "artifact.tracked") {
+		t.Fatalf("expected artifact.tracked failure on write result, got %#v", results[0])
+	}
+	if results[1].ToolCallID != "call_finish" || !results[1].IsError || !strings.Contains(results[1].LLMOutput, "artifact tracker update failed before this call ran") {
+		t.Fatalf("expected synthetic later result for finish, got %#v", results[1])
+	}
+	tracker, err := engine.store.LoadArtifactTracker(meta.ID)
+	if err != nil {
+		t.Fatalf("load artifact tracker: %v", err)
+	}
+	if len(tracker) != 1 || tracker[0].Status.TouchedBySession || tracker[0].Status.Present {
+		t.Fatalf("expected artifact tracker rollback after missing event, got %#v", tracker)
+	}
+}
+
 func TestEngineAllowsSingleResolutionTurnAfterHardLimitToolResult(t *testing.T) {
 	cfg := config.Default()
 	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)

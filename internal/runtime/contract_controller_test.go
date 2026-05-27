@@ -217,8 +217,9 @@ func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 	}
 
 	var events []string
-	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) {
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) error {
 		events = append(events, eventType)
+		return nil
 	})
 	kind, text := controller.requiredArtifactGate("finish")
 	if kind != "required_artifact" || !strings.Contains(text, "not touched or changed") {
@@ -301,6 +302,61 @@ func TestCompletionControllerTrackToolResultReportsContractLoadError(t *testing.
 	}, 2)
 	if err == nil || !strings.Contains(err.Error(), "contract.json") {
 		t.Fatalf("expected contract load error, got %v", err)
+	}
+}
+
+func TestCompletionControllerTrackToolResultReportsArtifactTrackedEventErrorAndRollsBack(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh contract: %v", err)
+	}
+	previousTracker, err := store.LoadArtifactTracker(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous tracker: %v", err)
+	}
+	previousContract, err := store.LoadContract(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous contract: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("new content"), 0o600); err != nil {
+		t.Fatalf("update artifact: %v", err)
+	}
+
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) error {
+		if eventType == "artifact.tracked" {
+			return errors.New("events.jsonl is blocked")
+		}
+		return nil
+	})
+	err = controller.TrackToolResult("write_file", session.ToolResult{
+		Name:          "write_file",
+		LLMOutput:     "wrote reports/final.md",
+		DisplayOutput: "wrote reports/final.md",
+		Metadata:      map[string]any{"path": artifactPath},
+	}, 2)
+	if err == nil || !strings.Contains(err.Error(), "artifact.tracked") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected artifact.tracked event error, got %v", err)
+	}
+	tracker, err := store.LoadArtifactTracker(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored tracker: %v", err)
+	}
+	if !reflect.DeepEqual(tracker, previousTracker) {
+		t.Fatalf("expected tracker rollback, got %#v want %#v", tracker, previousTracker)
+	}
+	contract, err := store.LoadContract(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored contract: %v", err)
+	}
+	if !reflect.DeepEqual(contract.RequiredArtifacts, previousContract.RequiredArtifacts) {
+		t.Fatalf("expected contract artifact rollback, got %#v want %#v", contract.RequiredArtifacts, previousContract.RequiredArtifacts)
 	}
 }
 
@@ -1320,8 +1376,9 @@ func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *
 		t.Fatalf("append background notification: %v", err)
 	}
 	var events []string
-	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) {
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) error {
 		events = append(events, eventType)
+		return nil
 	})
 
 	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))

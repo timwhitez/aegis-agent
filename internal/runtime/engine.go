@@ -498,8 +498,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if len(toolResults) > 0 {
 					currentMessages = append(currentMessages, session.NewToolMessage(toolResults))
 				}
-				controller := NewCompletionController(e.store, meta.ID, meta.Workdir, e.guardrailsYolo(), func(eventType string, data map[string]any) {
-					e.emit(meta.ID, eventType, "tool_execute", data)
+				controller := NewCompletionController(e.store, meta.ID, meta.Workdir, e.guardrailsYolo(), func(eventType string, data map[string]any) error {
+					return e.appendEvent(meta.ID, eventType, "tool_execute", data)
 				})
 				decision := controller.EvaluateToolCall(currentMessages, call.Name, toolArgs)
 				if decision.Status == GateAllow && call.Name == "finish" && meta.Mode == session.ModeInit && e.cfg.Runtime.PreCompletion.Enabled && e.cfg.Runtime.PreCompletion.CheckFeatures {
@@ -568,6 +568,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: artifact tracker update failed before this call ran: "+err.Error())...)
 						if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
 							return RunResult{}, appendErr
+						}
+						if isCompletionEventAppendError(err) {
+							return RunResult{}, err
 						}
 						return e.fail(ctx, meta, state, err, hookManager)
 					}

@@ -36,10 +36,10 @@ type CompletionController struct {
 	sessionID string
 	workdir   string
 	yolo      bool
-	emit      func(string, map[string]any)
+	emit      func(string, map[string]any) error
 }
 
-func NewCompletionController(store *session.Store, sessionID, workdir string, yolo bool, emit func(string, map[string]any)) *CompletionController {
+func NewCompletionController(store *session.Store, sessionID, workdir string, yolo bool, emit func(string, map[string]any) error) *CompletionController {
 	return &CompletionController{
 		store:     store,
 		sessionID: sessionID,
@@ -51,7 +51,7 @@ func NewCompletionController(store *session.Store, sessionID, workdir string, yo
 
 func (c *CompletionController) EvaluateToolCall(messages []session.Message, toolName string, rawArgs json.RawMessage) GateDecision {
 	if toolName == "finish" {
-		c.emitCompletion("completion.evaluate.started", map[string]any{"tool_name": toolName})
+		_ = c.emitCompletion("completion.evaluate.started", map[string]any{"tool_name": toolName})
 	}
 	if kind, text := toolGuard(c.workdir, messages, toolName, rawArgs, c.yolo); text != "" {
 		return c.block(kind, text, map[string]any{"source": "tool_guard", "tool_name": toolName})
@@ -89,8 +89,8 @@ func (c *CompletionController) MarkAllowed(toolName string) {
 	if toolName != "finish" {
 		return
 	}
-	c.emitCompletion("completion.gate.passed", map[string]any{"gate_id": "finish"})
-	c.emitCompletion("completion.evaluate.finished", map[string]any{"status": string(GateAllow)})
+	_ = c.emitCompletion("completion.gate.passed", map[string]any{"gate_id": "finish"})
+	_ = c.emitCompletion("completion.evaluate.finished", map[string]any{"status": string(GateAllow)})
 }
 
 func (c *CompletionController) EvaluatePreCompletionFeatures(enabled bool) GateDecision {
@@ -138,27 +138,52 @@ func (c *CompletionController) TrackToolResult(toolName string, result session.T
 	if err != nil || len(artifacts) == 0 {
 		return err
 	}
+	previousArtifacts := append([]session.RequiredArtifact(nil), artifacts...)
 	updated, changed := markArtifactWrite(artifacts, path, toolName, turn)
 	if !changed {
 		return nil
 	}
-	if err := c.store.SaveArtifactTracker(c.sessionID, updated); err != nil {
-		return err
-	}
-	if contract, err := c.store.LoadContract(c.sessionID); err == nil {
+	var previousContract session.SessionContract
+	contractExists := false
+	contract, err := c.store.LoadContract(c.sessionID)
+	if err == nil {
+		previousContract = contract
+		contractExists = true
 		contract.RequiredArtifacts = updated
 		contract.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		if err := c.store.SaveContract(c.sessionID, contract); err != nil {
-			return err
-		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("load contract.json: %w", err)
 	}
-	c.emitCompletion("artifact.tracked", map[string]any{
+	if err := c.store.SaveArtifactTracker(c.sessionID, updated); err != nil {
+		return err
+	}
+	contractUpdated := false
+	if contractExists {
+		if err := c.store.SaveContract(c.sessionID, contract); err != nil {
+			_ = c.store.SaveArtifactTracker(c.sessionID, previousArtifacts)
+			return err
+		}
+		contractUpdated = true
+	}
+	if err := c.emitCompletion("artifact.tracked", map[string]any{
 		"path":      path,
 		"tool_name": toolName,
 		"turn":      turn,
-	})
+	}); err != nil {
+		var rollbackErr error
+		if restoreErr := c.store.SaveArtifactTracker(c.sessionID, previousArtifacts); restoreErr != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore artifact-tracker.json: %w", restoreErr))
+		}
+		if contractUpdated {
+			if restoreErr := c.store.SaveContract(c.sessionID, previousContract); restoreErr != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore contract.json: %w", restoreErr))
+			}
+		}
+		if rollbackErr != nil {
+			return &completionEventAppendError{eventType: "artifact.tracked", err: fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)}
+		}
+		return &completionEventAppendError{eventType: "artifact.tracked", err: err}
+	}
 	_ = writeSessionSummary(c.store, c.sessionID)
 	_ = writeLongRunCheckpoint(c.store, c.sessionID)
 	return nil
@@ -207,10 +232,10 @@ func (c *CompletionController) requiredArtifactGate(toolName string) (string, st
 		}
 	}
 	if len(missing) == 0 && len(stale) == 0 {
-		c.emitCompletion("artifact.gate.passed", map[string]any{"required_count": len(artifacts)})
+		_ = c.emitCompletion("artifact.gate.passed", map[string]any{"required_count": len(artifacts)})
 		return "", ""
 	}
-	c.emitCompletion("artifact.gate.blocked", map[string]any{
+	_ = c.emitCompletion("artifact.gate.blocked", map[string]any{
 		"missing": missing,
 		"stale":   stale,
 	})
@@ -247,7 +272,7 @@ func (c *CompletionController) parentCoordinationGate(toolName string) (string, 
 		pending = append(pending, id)
 	}
 	if len(pending) > 0 {
-		c.emitCompletion("completion.gate.parent_background_pending", map[string]any{
+		_ = c.emitCompletion("completion.gate.parent_background_pending", map[string]any{
 			"pending_background_notifications": pending,
 		})
 		return "parent_background_pending", fmt.Sprintf("Parent-background gate: completed child or background results are pending transcript acceptance before finish (%s). Continue one more turn so the harness can accept those durable facts, then reconcile them before the final conclusion.", joinPromptItems(pending))
@@ -266,7 +291,7 @@ func (c *CompletionController) parentCoordinationGate(toolName string) (string, 
 		return "", ""
 	}
 	if coordination.WaitMode == "wait-any" && (len(coordination.CompletedChildSessions) > 0 || len(coordination.CompletedQueueJobs) > 0) {
-		c.emitCompletion("parent_coordination.gate.warned", map[string]any{
+		_ = c.emitCompletion("parent_coordination.gate.warned", map[string]any{
 			"unresolved_child_sessions": coordination.UnresolvedChildSessions,
 			"unresolved_queue_jobs":     coordination.UnresolvedQueueJobs,
 		})
@@ -308,12 +333,12 @@ func (c *CompletionController) goalCompletionGate(toolName string) (string, stri
 }
 
 func (c *CompletionController) block(kind, text string, evidence map[string]any) GateDecision {
-	c.emitCompletion("completion.gate.blocked", map[string]any{
+	_ = c.emitCompletion("completion.gate.blocked", map[string]any{
 		"gate_id":  kind,
 		"severity": "block",
 		"evidence": evidence,
 	})
-	c.emitCompletion("completion.evaluate.finished", map[string]any{
+	_ = c.emitCompletion("completion.evaluate.finished", map[string]any{
 		"status":  string(GateBlock),
 		"gate_id": kind,
 	})
@@ -328,8 +353,27 @@ func (c *CompletionController) block(kind, text string, evidence map[string]any)
 	}
 }
 
-func (c *CompletionController) emitCompletion(eventType string, data map[string]any) {
+func (c *CompletionController) emitCompletion(eventType string, data map[string]any) error {
 	if c.emit != nil {
-		c.emit(eventType, data)
+		return c.emit(eventType, data)
 	}
+	return nil
+}
+
+type completionEventAppendError struct {
+	eventType string
+	err       error
+}
+
+func (e *completionEventAppendError) Error() string {
+	return fmt.Sprintf("record %s event: %v", e.eventType, e.err)
+}
+
+func (e *completionEventAppendError) Unwrap() error {
+	return e.err
+}
+
+func isCompletionEventAppendError(err error) bool {
+	var target *completionEventAppendError
+	return errors.As(err, &target)
 }
