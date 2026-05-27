@@ -3590,17 +3590,28 @@ type skillZipPlan struct {
 }
 
 func processSkillZip(src string, globalDest string) (int, error) {
-	r, err := zip.OpenReader(src)
+	tx, err := processSkillZipTransaction(src, globalDest)
 	if err != nil {
 		return 0, err
+	}
+	if err := tx.Finalize(); err != nil {
+		return tx.Count(), err
+	}
+	return tx.Count(), nil
+}
+
+func processSkillZipTransaction(src string, globalDest string) (*skillZipInstallTransaction, error) {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return nil, err
 	}
 	defer r.Close()
 	globalDest, err = prepareSkillZipDestination(globalDest)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if len(r.File) > maxSkillZipFiles {
-		return 0, fmt.Errorf("skill zip has too many entries: %d > %d", len(r.File), maxSkillZipFiles)
+		return nil, fmt.Errorf("skill zip has too many entries: %d > %d", len(r.File), maxSkillZipFiles)
 	}
 	var totalUncompressed uint64
 	for _, f := range r.File {
@@ -3608,10 +3619,10 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			continue
 		}
 		if f.UncompressedSize64 > uint64(maxSkillZipEntryBytes) {
-			return 0, fmt.Errorf("skill zip entry too large: %s exceeds %d bytes", f.Name, maxSkillZipEntryBytes)
+			return nil, fmt.Errorf("skill zip entry too large: %s exceeds %d bytes", f.Name, maxSkillZipEntryBytes)
 		}
 		if totalUncompressed > uint64(maxSkillZipTotalBytes)-f.UncompressedSize64 {
-			return 0, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
+			return nil, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
 		}
 		totalUncompressed += f.UncompressedSize64
 	}
@@ -3621,7 +3632,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 	for _, f := range r.File {
 		cleaned, err := cleanZipEntryName(f.Name)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		cleanNames[f] = cleaned
 		if path.Base(cleaned) == "SKILL.md" {
@@ -3631,7 +3642,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 	}
 
 	if len(skillRoots) == 0 {
-		return 0, errors.New("no SKILL.md found in zip, not a valid skill package")
+		return nil, errors.New("no SKILL.md found in zip, not a valid skill package")
 	}
 
 	plans := make([]skillZipPlan, 0, len(skillRoots))
@@ -3649,7 +3660,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			if cleanNames[f] == path.Clean(mdPath) {
 				data, err := readZipFileLimited(f, maxSkillZipEntryBytes)
 				if err != nil {
-					return 0, err
+					return nil, err
 				}
 				targetDirName = extractSkillNameFromMd(data)
 				break
@@ -3666,32 +3677,32 @@ func processSkillZip(src string, globalDest string) (int, error) {
 
 		targetDirName = sanitizeDirName(targetDirName)
 		if targetDirName == "" {
-			return 0, fmt.Errorf("skill target directory name is empty for zip root %s", root)
+			return nil, fmt.Errorf("skill target directory name is empty for zip root %s", root)
 		}
 		targetPath := filepath.Join(globalDest, targetDirName)
 		if !pathWithinRoot(globalDest, targetPath) || filepath.Clean(targetPath) == filepath.Clean(globalDest) || filepath.Dir(targetPath) != globalDest {
-			return 0, fmt.Errorf("invalid skill target directory: %s", targetDirName)
+			return nil, fmt.Errorf("invalid skill target directory: %s", targetDirName)
 		}
 		if previousRoot, exists := seenTargets[targetDirName]; exists {
-			return 0, fmt.Errorf("duplicate skill target directory %s from zip roots %s and %s", targetDirName, previousRoot, root)
+			return nil, fmt.Errorf("duplicate skill target directory %s from zip roots %s and %s", targetDirName, previousRoot, root)
 		}
 		seenTargets[targetDirName] = root
 		if err := validateSkillZipRootEntries(cleanNames, r.File, root); err != nil {
-			return 0, err
+			return nil, err
 		}
 		if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return 0, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
+			return nil, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
 		} else if err == nil && !info.IsDir() {
-			return 0, fmt.Errorf("refusing to replace non-directory skill path: %s", targetPath)
+			return nil, fmt.Errorf("refusing to replace non-directory skill path: %s", targetPath)
 		} else if err != nil && !os.IsNotExist(err) {
-			return 0, err
+			return nil, err
 		}
 		plans = append(plans, skillZipPlan{Root: root, TargetPath: targetPath})
 	}
 
 	stagingRoot, err := os.MkdirTemp(globalDest, ".skill-upload-*")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer func() {
 		_ = fileutil.RemoveDirAllNoSymlink(stagingRoot)
@@ -3705,7 +3716,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		targetPath := stagedSkillTargetPath(stagingRoot, plan.TargetPath)
 
 		if err := fileutil.MkdirAllNoSymlink(targetPath, 0o755); err != nil {
-			return extractedCount, err
+			return nil, err
 		}
 
 		for _, f := range r.File {
@@ -3736,41 +3747,42 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			}
 			outPath := filepath.Join(targetPath, filepath.FromSlash(rel))
 			if !pathWithinRoot(targetPath, outPath) {
-				return extractedCount, fmt.Errorf("zip entry escapes skill target: %s", f.Name)
+				return nil, fmt.Errorf("zip entry escapes skill target: %s", f.Name)
 			}
 
 			if f.FileInfo().IsDir() {
 				if err := fileutil.MkdirAllNoSymlink(outPath, f.Mode()); err != nil {
-					return extractedCount, err
+					return nil, err
 				}
 				continue
 			}
 			if err := fileutil.MkdirAllNoSymlink(filepath.Dir(outPath), 0o755); err != nil {
-				return extractedCount, err
+				return nil, err
 			}
 
 			data, err := readZipFileLimited(f, maxSkillZipEntryBytes)
 			if err != nil {
-				return extractedCount, err
+				return nil, err
 			}
 			extractedBytes += int64(len(data))
 			if extractedBytes > maxSkillZipTotalBytes {
-				return extractedCount, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
+				return nil, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
 			}
 			mode := f.Mode().Perm()
 			if mode == 0 {
 				mode = 0o644
 			}
 			if err := fileutil.AtomicWriteFileNoSymlink(outPath, data, mode); err != nil {
-				return extractedCount, err
+				return nil, err
 			}
 		}
 		extractedCount++
 	}
-	if err := commitStagedSkillZipPlans(plans, stagingRoot); err != nil {
-		return 0, err
+	committed, err := commitStagedSkillZipPlans(plans, stagingRoot)
+	if err != nil {
+		return nil, err
 	}
-	return extractedCount, nil
+	return &skillZipInstallTransaction{count: extractedCount, committed: committed}, nil
 }
 
 func stagedSkillTargetPath(stagingRoot, targetPath string) string {
@@ -3783,46 +3795,83 @@ type committedSkillZipPlan struct {
 	installed  bool
 }
 
-func commitStagedSkillZipPlans(plans []skillZipPlan, stagingRoot string) error {
+type skillZipInstallTransaction struct {
+	count     int
+	committed []committedSkillZipPlan
+}
+
+func (tx *skillZipInstallTransaction) Count() int {
+	if tx == nil {
+		return 0
+	}
+	return tx.count
+}
+
+func (tx *skillZipInstallTransaction) Finalize() error {
+	if tx == nil {
+		return nil
+	}
+	if err := finalizeCommittedSkillZipPlans(tx.committed); err != nil {
+		return err
+	}
+	tx.committed = nil
+	return nil
+}
+
+func (tx *skillZipInstallTransaction) Rollback() error {
+	if tx == nil {
+		return nil
+	}
+	if err := restoreCommittedSkillZipPlans(tx.committed); err != nil {
+		return err
+	}
+	tx.committed = nil
+	return nil
+}
+
+func commitStagedSkillZipPlans(plans []skillZipPlan, stagingRoot string) ([]committedSkillZipPlan, error) {
 	committed := make([]committedSkillZipPlan, 0, len(plans))
 	for _, plan := range plans {
 		stagePath := stagedSkillTargetPath(stagingRoot, plan.TargetPath)
 		if !pathWithinRoot(stagingRoot, stagePath) || filepath.Dir(stagePath) != stagingRoot {
-			return rollbackCommittedSkillZipPlans(committed, fmt.Errorf("invalid staged skill path: %s", stagePath))
+			return nil, rollbackCommittedSkillZipPlans(committed, fmt.Errorf("invalid staged skill path: %s", stagePath))
 		}
 		if _, err := os.Lstat(stagePath); err != nil {
-			return rollbackCommittedSkillZipPlans(committed, err)
+			return nil, rollbackCommittedSkillZipPlans(committed, err)
 		}
 
 		entry := committedSkillZipPlan{targetPath: plan.TargetPath}
 		if info, err := os.Lstat(plan.TargetPath); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 {
-				return rollbackCommittedSkillZipPlans(committed, fmt.Errorf("refusing to replace symlinked skill directory: %s", plan.TargetPath))
+				return nil, rollbackCommittedSkillZipPlans(committed, fmt.Errorf("refusing to replace symlinked skill directory: %s", plan.TargetPath))
 			}
 			if !info.IsDir() {
-				return rollbackCommittedSkillZipPlans(committed, fmt.Errorf("refusing to replace non-directory skill path: %s", plan.TargetPath))
+				return nil, rollbackCommittedSkillZipPlans(committed, fmt.Errorf("refusing to replace non-directory skill path: %s", plan.TargetPath))
 			}
 			backupPath, err := reserveSkillBackupPath(filepath.Dir(plan.TargetPath), filepath.Base(plan.TargetPath))
 			if err != nil {
-				return rollbackCommittedSkillZipPlans(committed, err)
+				return nil, rollbackCommittedSkillZipPlans(committed, err)
 			}
 			if err := os.Rename(plan.TargetPath, backupPath); err != nil {
-				return rollbackCommittedSkillZipPlans(committed, err)
+				return nil, rollbackCommittedSkillZipPlans(committed, err)
 			}
 			entry.backupPath = backupPath
 			committed = append(committed, entry)
 		} else if !os.IsNotExist(err) {
-			return rollbackCommittedSkillZipPlans(committed, err)
+			return nil, rollbackCommittedSkillZipPlans(committed, err)
 		} else {
 			committed = append(committed, entry)
 		}
 
 		if err := os.Rename(stagePath, plan.TargetPath); err != nil {
-			return rollbackCommittedSkillZipPlans(committed, err)
+			return nil, rollbackCommittedSkillZipPlans(committed, err)
 		}
 		committed[len(committed)-1].installed = true
 	}
+	return committed, nil
+}
 
+func finalizeCommittedSkillZipPlans(committed []committedSkillZipPlan) error {
 	for _, entry := range committed {
 		if entry.backupPath == "" {
 			continue
@@ -3850,6 +3899,13 @@ func reserveSkillBackupPath(parent, name string) (string, error) {
 }
 
 func rollbackCommittedSkillZipPlans(committed []committedSkillZipPlan, cause error) error {
+	if err := restoreCommittedSkillZipPlans(committed); err != nil {
+		return fmt.Errorf("%w (%v)", cause, err)
+	}
+	return cause
+}
+
+func restoreCommittedSkillZipPlans(committed []committedSkillZipPlan) error {
 	var rollbackErrs []string
 	for i := len(committed) - 1; i >= 0; i-- {
 		entry := committed[i]
@@ -3865,9 +3921,9 @@ func rollbackCommittedSkillZipPlans(committed []committedSkillZipPlan, cause err
 		}
 	}
 	if len(rollbackErrs) > 0 {
-		return fmt.Errorf("%w (rollback failed: %s)", cause, strings.Join(rollbackErrs, "; "))
+		return fmt.Errorf("rollback failed: %s", strings.Join(rollbackErrs, "; "))
 	}
-	return cause
+	return nil
 }
 
 func validateSkillZipRootEntries(cleanNames map[*zip.File]string, files []*zip.File, root string) error {
@@ -4075,20 +4131,28 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	count, err := processSkillZip(tmpFile.Name(), dest)
+	installTx, err := processSkillZipTransaction(tmpFile.Name(), dest)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if err := s.appendAuditEvent("web.skill.install", map[string]any{
 		"skill_dir":       dest,
-		"installed_count": count,
+		"installed_count": installTx.Count(),
 	}); err != nil {
+		if rollbackErr := installTx.Rollback(); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore skill install after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := installTx.Finalize(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "installed_count": count})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "installed_count": installTx.Count()})
 }
 
 func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
@@ -4139,7 +4203,8 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := fileutil.RemoveDirAllNoSymlink(targetDir); err != nil {
+	removeTx, err := removeSkillDirTransaction(rootDir, targetDir)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -4147,10 +4212,69 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		"skill_id":  skillID,
 		"skill_dir": targetDir,
 	}); err != nil {
+		if rollbackErr := removeTx.Rollback(); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore skill uninstall after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := removeTx.Finalize(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+type skillRemoveTransaction struct {
+	targetPath string
+	backupPath string
+}
+
+func removeSkillDirTransaction(rootDir, targetDir string) (*skillRemoveTransaction, error) {
+	if !pathWithinRoot(rootDir, targetDir) || filepath.Dir(targetDir) != rootDir {
+		return nil, fmt.Errorf("invalid skill target: %s", targetDir)
+	}
+	info, err := os.Lstat(targetDir)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to remove symlinked skill directory: %s", targetDir)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("refusing to remove non-directory skill path: %s", targetDir)
+	}
+	backupPath, err := reserveSkillBackupPath(rootDir, filepath.Base(targetDir))
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Rename(targetDir, backupPath); err != nil {
+		return nil, err
+	}
+	return &skillRemoveTransaction{targetPath: targetDir, backupPath: backupPath}, nil
+}
+
+func (tx *skillRemoveTransaction) Finalize() error {
+	if tx == nil || tx.backupPath == "" {
+		return nil
+	}
+	if err := fileutil.RemoveDirAllNoSymlink(tx.backupPath); err != nil {
+		return err
+	}
+	tx.backupPath = ""
+	return nil
+}
+
+func (tx *skillRemoveTransaction) Rollback() error {
+	if tx == nil || tx.backupPath == "" {
+		return nil
+	}
+	if err := os.Rename(tx.backupPath, tx.targetPath); err != nil {
+		return err
+	}
+	tx.backupPath = ""
+	return nil
 }
 
 func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error) {

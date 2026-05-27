@@ -4498,6 +4498,146 @@ func TestAPIKeyWriteRollsBackWhenAPIKeyAuditAppendFails(t *testing.T) {
 	}
 }
 
+func TestSkillUploadRollsBackWhenAuditAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	existing := filepath.Join(skillsDir, "demo-skill")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "SKILL.md"), []byte("---\nname: demo-skill\n---\nold body\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "old.txt"), []byte("old payload\n"), 0o600); err != nil {
+		t.Fatalf("write existing payload: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	svc.beforeAppendAuditEvent = func(eventType string, data map[string]any) error {
+		if eventType == "web.skill.install" {
+			return errors.New("blocked skill install audit append")
+		}
+		return nil
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	createZipEntries(t, zipPath, map[string]string{
+		"demo-skill/SKILL.md": "---\nname: demo-skill\n---\nnew body\n",
+		"demo-skill/new.txt":  "new payload\n",
+	})
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(zipPath))
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	zipBytes, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	if _, err := part.Write(zipBytes); err != nil {
+		t.Fatalf("write zip to multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/upload", body)
+	if err != nil {
+		t.Fatalf("new upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(respBody), "blocked skill install audit append") {
+		t.Fatalf("expected blocked audit append response, got status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+
+	data, err := os.ReadFile(filepath.Join(existing, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read restored existing skill: %v", err)
+	}
+	if !strings.Contains(string(data), "old body") || strings.Contains(string(data), "new body") {
+		t.Fatalf("failed skill install audit append should restore existing SKILL.md, got %q", string(data))
+	}
+	if data, err := os.ReadFile(filepath.Join(existing, "old.txt")); err != nil || string(data) != "old payload\n" {
+		t.Fatalf("failed skill install audit append should restore existing payload, data=%q err=%v", string(data), err)
+	}
+	if _, err := os.Stat(filepath.Join(existing, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed skill install audit append should remove new payload, err=%v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.skill.install") {
+		t.Fatalf("failed skill install audit append should not append install event, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
+func TestSkillUninstallRollsBackWhenAuditAppendFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	target := filepath.Join(skillsDir, "demo-skill")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "SKILL.md"), []byte("---\nname: demo-skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "payload.txt"), []byte("payload\n"), 0o600); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	svc.beforeAppendAuditEvent = func(eventType string, data map[string]any) error {
+		if eventType == "web.skill.uninstall" {
+			return errors.New("blocked skill uninstall audit append")
+		}
+		return nil
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/skills/demo-skill/uninstall", map[string]any{}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "blocked skill uninstall audit append") {
+		t.Fatalf("expected blocked uninstall audit append error, got %#v", errResp)
+	}
+	data, err := os.ReadFile(filepath.Join(target, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("failed skill uninstall audit append should restore SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(data), "body") {
+		t.Fatalf("failed skill uninstall audit append should restore skill body, got %q", string(data))
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "payload.txt")); err != nil || string(data) != "payload\n" {
+		t.Fatalf("failed skill uninstall audit append should restore payload, data=%q err=%v", string(data), err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.skill.uninstall") {
+		t.Fatalf("failed skill uninstall audit append should not append uninstall event, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
 func TestUpdateConfigRejectsConfigPathAsAuditLog(t *testing.T) {
 	cfg := testConfig(t, "")
 	configPath := webAuditLogPath(cfg.Session.Dir)

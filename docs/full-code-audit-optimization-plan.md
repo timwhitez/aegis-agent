@@ -4872,6 +4872,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-224: Skill mutation audit append failures can leave install/uninstall side effects
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats skill install/uninstall as risky local WebConsole mutations that must write searchable audit events.
+- `internal/webconsole/service.go` `handleUploadSkill` preflighted audit-log writability, then committed uploaded skills into the managed skill root before appending `web.skill.install`.
+- `internal/webconsole/service.go` `handleUninstallSkill` preflighted audit-log writability, then removed the skill directory before appending `web.skill.uninstall`.
+- Focused regressions forced failures at `web.skill.install` and `web.skill.uninstall`. Before the fix, a failed upload audit append left an existing skill replaced by the new package, and a failed uninstall audit append left the skill directory deleted.
+
+Impact:
+
+The WebConsole could return HTTP 500 for a failed audited skill operation while the local skill root was already changed without the required audit record. This makes local extension state disagree with operator-visible failure and weakens the recovery trail for risky local skill mutations.
+
+Minimal fix:
+
+- Split skill upload commit into a transaction that keeps replaced skill directories in backup until the audit event succeeds.
+- Roll back installed/replaced skill directories when `web.skill.install` cannot be appended, and only finalize backup deletion after the audit event succeeds.
+- Change skill uninstall to rename the target skill into a backup path first, append `web.skill.uninstall`, then permanently delete the backup only after audit success.
+- Preserve the existing direct-child, symlink, and non-directory safety checks while adding rollback behavior.
+
+Validation:
+
+- Focused pre-fix WebConsole regressions proving failed skill install/uninstall audit appends left local skill side effects.
+- Focused post-fix regressions proving failed audit append restores the previous skill state and emits no failed audit event.
+- Adjacent skill upload/uninstall/symlink/process-zip, sensitive-audit, full WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-223: Settings audit append failures can leave saved config/API key state
 
 Severity: Medium
@@ -7091,6 +7119,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 217
+
+- Confirmed FCA-20260527-224 against the WebConsole skill safety and auditability requirements in `spec/17-web-console.md`: skill install/uninstall are risky local mutations and must not leave local skill root changes when the required audit event cannot be persisted.
+- Confirmed this is distinct from FCA-20260527-211 and FCA-20260527-222. Those slices covered malformed uploads before/during extraction and commit; this slice covers late required audit append failure after a structurally valid skill mutation has already been applied.
+- Confirmed the minimal fix belongs in the WebConsole skill mutation handlers and local skill commit helpers: keep temporary backups until audit success, then finalize, without changing SkillCatalog discovery, runtime skill loading, provider adapters, or adding a broad transaction layer.
+
 ### Review 216
 
 - Confirmed FCA-20260527-223 against `spec/17-web-console.md`: `POST /api/config` must persist Settings changes and API key changes with searchable audit events, and API key audit data must not include the secret value.
@@ -7134,6 +7168,43 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-224
+
+Slice: `fix(webconsole): roll back skill audit failures`
+
+Finding:
+
+- `handleUploadSkill` committed uploaded skill directories before appending `web.skill.install`.
+- `handleUninstallSkill` removed the skill directory before appending `web.skill.uninstall`.
+- If the actual audit append failed after audit preflight, the HTTP request returned 500 while the local skill root remained changed without the required audit event.
+
+Changes:
+
+- Added a skill install transaction that keeps replaced skill directories as backups until the install audit event succeeds.
+- Rolled back uploaded/replaced skill directories when `web.skill.install` append fails.
+- Changed skill uninstall to rename the target skill into a backup first, append `web.skill.uninstall`, and only then permanently delete the backup.
+- Preserved symlink/non-directory/direct-child safety checks for uninstall rollback transactions.
+- Added focused regressions for skill upload and uninstall audit append failures.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestSkill(Upload|Uninstall)RollsBackWhenAuditAppendFails' -count=1`: failed before the fix because upload replaced `SKILL.md` and uninstall removed the skill on audit append failure.
+- `go test -timeout 120s ./internal/webconsole -run 'TestSkill(Upload|Uninstall)RollsBackWhenAuditAppendFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZip|TestServiceSkill' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZip|TestServiceSkill|TestSensitiveWebActionsEmitAuditEvents|TestSensitiveActionsPreflightAuditBeforeMutating' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-223
 
