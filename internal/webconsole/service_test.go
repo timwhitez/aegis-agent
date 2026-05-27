@@ -7088,6 +7088,21 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "credentials.json"), []byte(`{"token":"workspace"}`), 0o600); err != nil {
 		t.Fatalf("write workspace credentials file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "env-real"), []byte("WORKSPACE_SECRET_ALIAS=1"), 0o600); err != nil {
+		t.Fatalf("write workspace env alias target: %v", err)
+	}
+	if err := os.Symlink("env-real", filepath.Join(workspaceRoot, ".env.local")); err != nil {
+		t.Fatalf("symlink workspace env alias: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "ssh-real"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace ssh alias target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "ssh-real", "config"), []byte("Host workspace"), 0o600); err != nil {
+		t.Fatalf("write workspace ssh alias target: %v", err)
+	}
+	if err := os.Symlink("ssh-real", filepath.Join(workspaceRoot, ".ssh")); err != nil {
+		t.Fatalf("symlink workspace ssh alias: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("server cwd file"), 0o644); err != nil {
 		t.Fatalf("write root-only file: %v", err)
 	}
@@ -7169,6 +7184,26 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected forbidden for workspace credential read %s, got %d body=%s", deniedPath, resp.StatusCode, string(body))
 		}
+	}
+	for _, deniedAlias := range []string{".env.local", ".ssh/config"} {
+		resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(deniedAlias))
+		if err != nil {
+			t.Fatalf("workspace sensitive symlink read request %s: %v", deniedAlias, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected forbidden for workspace sensitive symlink read %s, got %d body=%s", deniedAlias, resp.StatusCode, string(body))
+		}
+	}
+	resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape(".ssh"))
+	if err != nil {
+		t.Fatalf("workspace sensitive symlink list request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected forbidden for workspace sensitive symlink list, got %d body=%s", resp.StatusCode, string(body))
 	}
 
 	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../.env"))

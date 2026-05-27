@@ -2992,7 +2992,11 @@ func resolveWorkspaceBrowserPath(workspaceRoot, browseRoot, requestedPath string
 	if err != nil {
 		return "", err
 	}
-	return tools.ResolveWorkspacePath(browseRoot, filepath.Join(workspaceRel, requestedPath))
+	lexicalPath := filepath.Join(workspaceRel, requestedPath)
+	if webFileBrowserPathDenied(browseRoot, filepath.Join(browseRoot, lexicalPath)) {
+		return "", errors.New("path denied")
+	}
+	return tools.ResolveWorkspacePath(browseRoot, lexicalPath)
 }
 
 func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {

@@ -4872,6 +4872,33 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-226: Workspace browser sensitive symlink aliases can bypass name filtering
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` defines the Workspace panel as a local, read-only browser for the current server workspace, not a general filesystem or secret viewer.
+- `internal/webconsole/service.go` `handleReadFile` and `handleListFiles` resolved the requested path through `ResolveWorkspacePath` before applying `webFileBrowserPathDenied` to the resolved real path.
+- `ResolveWorkspacePath` intentionally evaluates symlinks. A request for `.env.local` pointing to `env-real`, or `.ssh/config` where `.ssh` points to `ssh-real`, therefore reached a non-sensitive resolved name and bypassed the `.env.*` / `.ssh` deny rules.
+- A focused regression created those in-workspace symlink aliases. Before the fix, `GET /api/file/read?path=.env.local` returned the secret-like file content with HTTP 200.
+
+Impact:
+
+The WebConsole Workspace browser could expose files through sensitive lexical aliases even though the same aliases were hidden from normal listing and direct sensitive-name reads. This weakens the local Web-first safety boundary because a browser/API caller could use `.env.*`, `.ssh`, or credential-like symlink names to inspect content that the Workspace view is supposed to suppress.
+
+Minimal fix:
+
+- Apply the existing `webFileBrowserPathDenied` filter to the lexical request path joined under the server browse root before symlink resolution.
+- Keep the existing resolved-path deny check after `ResolveWorkspacePath` so both alias names and real target names are filtered.
+- Preserve the current product decision that the browser can navigate from the default `workspace/` directory up to the server cwd, while still rejecting paths outside the server cwd.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving `.env.local` and `.ssh/config` symlink aliases could bypass sensitive-name filtering.
+- Focused post-fix regression proving the same read/list requests return HTTP 403 while ordinary workspace and server-cwd reads still work.
+- Adjacent Workspace route, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-225: Session delete/clear audit append failures can erase history
 
 Severity: Medium
@@ -7147,6 +7174,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 219
+
+- Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
+- Confirmed this is distinct from prior path-escape and direct sensitive-name coverage. Existing tests rejected `../../outside.txt`, direct `.env`, private-key, and credential names; this slice covers the symlink-alias window where lexical `.env.*` / `.ssh` names are resolved away before filtering.
+- Confirmed the minimal fix belongs in WebConsole request-path resolution: filter the lexical browser path before `ResolveWorkspacePath`, keep the resolved-path filter after symlink resolution, and do not change runtime tool path semantics or add a broader filesystem policy.
+
 ### Review 218
 
 - Confirmed FCA-20260527-225 against the WebConsole session history safety and auditability requirements in `spec/17-web-console.md`: session delete and session history clear are risky local mutations and must not erase local session/queue facts when the required audit event cannot be persisted.
@@ -7202,6 +7235,41 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-226
+
+Slice: `fix(webconsole): reject sensitive workspace symlink aliases`
+
+Finding:
+
+- `handleReadFile` and `handleListFiles` resolved requested Workspace paths before applying sensitive-name filtering.
+- Since `ResolveWorkspacePath` evaluates symlinks, a request such as `.env.local` pointing to `env-real` or `.ssh/config` through a `.ssh -> ssh-real` symlink could reach a non-sensitive real path.
+- Before the fix, the focused regression showed `/api/file/read?path=.env.local` returning HTTP 200 with secret-like content.
+
+Changes:
+
+- Added a lexical request-path sensitive-name check inside `resolveWorkspaceBrowserPath` before symlink resolution.
+- Kept the existing resolved-path filter after path resolution so sensitive real targets remain denied.
+- Extended the Workspace route regression to cover sensitive file and directory symlink aliases while preserving existing workspace, parent-cwd, and outside-cwd behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: failed before the fix because `.env.local` symlink alias returned HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspace(Route|Root|Meta|ServesEmbeddedShellAndAssets)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-225
 
