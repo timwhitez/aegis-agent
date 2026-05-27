@@ -2908,7 +2908,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, workspaceBrowserStatStatus(err), err)
 		return
 	}
 	if !info.IsDir() {
@@ -2948,12 +2948,32 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a regular file"))
+		return
+	}
 	content, _, err := fileutil.ReadRegularFileNoSymlink(fullPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, workspaceBrowserStatStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": string(content)})
+}
+
+func workspaceBrowserStatStatus(err error) int {
+	switch {
+	case os.IsNotExist(err):
+		return http.StatusNotFound
+	case os.IsPermission(err):
+		return http.StatusForbidden
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func currentServerWorkspaceRoot() (string, error) {

@@ -7406,7 +7406,37 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		t.Fatalf("expected browser parent read to stay within server cwd, got %#v", readResp)
 	}
 
-	resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(".env"))
+	resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("missing.txt"))
+	if err != nil {
+		t.Fatalf("missing workspace file read request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected not found for missing workspace file read, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("nested"))
+	if err != nil {
+		t.Fatalf("directory-as-file workspace read request: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected bad request for directory-as-file workspace read, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape("missing-dir"))
+	if err != nil {
+		t.Fatalf("missing workspace directory list request: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected not found for missing workspace directory list, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(".env"))
 	if err != nil {
 		t.Fatalf("workspace env read request: %v", err)
 	}
@@ -7442,7 +7472,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workspace sensitive symlink list request: %v", err)
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected forbidden for workspace sensitive symlink list, got %d body=%s", resp.StatusCode, string(body))

@@ -4900,6 +4900,36 @@ Validation:
 - Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
 - Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
 
+### FCA-20260527-232: Workspace browser missing paths are reported as server failures
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` defines the Workspace panel as a local read-only browser and requires Web API errors to distinguish user input mistakes from infrastructure failures.
+- `internal/webconsole/service.go` `handleListFiles` resolved browser paths safely, but mapped any `os.Stat` error to HTTP 500.
+- `internal/webconsole/service.go` `handleReadFile` resolved browser paths safely, but mapped any `fileutil.ReadRegularFileNoSymlink` error to HTTP 500.
+- `tools.ResolveWorkspacePath` permits a missing leaf under an existing workspace/browse-root parent, so a mistyped in-bounds browser path reaches these handlers as a normal `os.ErrNotExist`.
+- A focused route regression requested `GET /api/file/read?path=missing.txt`. Before the fix, the route returned HTTP 500 with `open ... no such file or directory`.
+- The same route shape for `GET /api/files?path=missing-dir` and `GET /api/file/read?path=nested` should be classified as not-found and bad-request operator path errors, not local WebConsole/server failures.
+
+Impact:
+
+An operator using the read-only Workspace browser could mistype or follow a stale file link and receive a server-failure response for an ordinary missing path or directory-as-file request. That points recovery toward local service/storage repair even though the request can be corrected at the browser/API layer, and it weakens the Web-first error taxonomy for a default console surface.
+
+Minimal fix:
+
+- Add a Workspace browser status helper that maps `os.IsNotExist` to HTTP 404 and `os.IsPermission` to HTTP 403 while preserving unexpected filesystem failures as HTTP 500.
+- Use that helper for directory listing stat failures and post-resolution file read failures.
+- Check that a resolved read target is a regular file before calling `ReadRegularFileNoSymlink`, returning HTTP 400 for directory/non-regular paths.
+- Preserve existing workspace escape rejection, sensitive-name filtering, parent browsing, and server workspace-root infrastructure failures.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving missing Workspace reads returned HTTP 500.
+- Focused post-fix Workspace route regression proving missing file reads return HTTP 404, directory-as-file reads return HTTP 400, and missing directory listings return HTTP 404.
+- Adjacent Workspace, full WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-231: Settings provider test reports malformed API keys as server failures
 
 Severity: Low
@@ -7347,6 +7377,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-122 and FCA-20260526-124. Those slices cover persistent API-key saves writing invalid or unusable credentials; this slice covers the transient config-test probe path that still converted malformed form input into a raw `os.Setenv` server failure.
 - Confirmed the minimal fix belongs in `handleTestConfig`: validate only the transient probe API-key value before temporary env setup, without changing persistent Settings save ordering, provider adapters, or audit-event semantics.
 
+### Review 225
+
+- Confirmed FCA-20260527-232 against `spec/17-web-console.md`'s Workspace browser and error-handling contracts: missing in-bounds paths and directory-as-file reads are operator path/request errors, while only unexpected local filesystem/service failures should remain HTTP 500.
+- Confirmed this is distinct from FCA-20260526-042 and FCA-20260527-226. Those slices covered sensitive credential-like Workspace names and symlink aliases; this slice covers ordinary missing/non-regular path status classification after path resolution and sensitive filtering have already succeeded.
+- Confirmed the minimal fix belongs in the WebConsole Workspace handlers: classify stat/read errors and regular-file shape at the local browser adapter boundary, without changing runtime file tools, workspace escape policy, frontend state, or provider behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7408,6 +7444,43 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-232
+
+Slice: `fix(webconsole): classify workspace path errors`
+
+Finding:
+
+- `handleListFiles` returned HTTP 500 for every `os.Stat` failure after Workspace browser path resolution.
+- `handleReadFile` returned HTTP 500 for every `ReadRegularFileNoSymlink` failure, including ordinary in-bounds missing files and directory-as-file reads.
+- Before the fix, a focused route regression showed `/api/file/read?path=missing.txt` returning HTTP 500 with `open ... no such file or directory`.
+
+Changes:
+
+- Added `workspaceBrowserStatStatus` to classify missing Workspace browser targets as HTTP 404 and permission failures as HTTP 403 while preserving unexpected filesystem failures as HTTP 500.
+- Applied the classifier to Workspace directory stat failures and read failures.
+- Added an explicit regular-file check before Workspace file reads so directory/non-regular paths return HTTP 400.
+- Extended Workspace route coverage for missing file reads, directory-as-file reads, and missing directory listings.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: failed before the fix because a missing Workspace read returned HTTP 500.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspace(Route|Root|Meta|ServesEmbeddedShellAndAssets)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
 
 ### FCA-20260527-231
 
