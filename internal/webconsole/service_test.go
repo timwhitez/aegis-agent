@@ -8265,6 +8265,9 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	if listed[0]["id"] != "demo-skill" {
 		t.Fatalf("unexpected listed skill: %#v", listed[0])
 	}
+	if listed[0]["read_only"] == true || listed[0]["disabled_reason"] != nil {
+		t.Fatalf("managed uploaded skill should remain mutable, got %#v", listed[0])
+	}
 
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {
 		req, err := http.NewRequest(method, ts.URL+"/api/skills/demo-skill/uninstall", nil)
@@ -8323,6 +8326,41 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	postGetJSON(t, ts.URL+"/api/skills", &listed)
 	if len(listed) != 0 {
 		t.Fatalf("expected skill list to be empty after uninstall, got %#v", listed)
+	}
+}
+
+func TestServiceSkillListMarksNonManagedSkillDirsReadOnly(t *testing.T) {
+	cfg := testConfig(t, "")
+	managedDir := filepath.Join(t.TempDir(), "managed-skills")
+	externalDir := filepath.Join(t.TempDir(), "external-skills")
+	cfg.Skills.Dirs = []string{managedDir, externalDir}
+	externalSkill := filepath.Join(externalDir, "external-skill")
+	if err := os.MkdirAll(externalSkill, 0o755); err != nil {
+		t.Fatalf("mkdir external skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(externalSkill, "SKILL.md"), []byte("---\nname: external-skill\ndescription: external skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write external skill: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 1 {
+		t.Fatalf("expected one external skill, got %#v", listed)
+	}
+	if listed[0]["id"] != "external-skill" || listed[0]["read_only"] != true {
+		t.Fatalf("external skill should be listed read-only, got %#v", listed[0])
+	}
+	if listed[0]["disabled_reason"] == "" {
+		t.Fatalf("external read-only skill should explain why uninstall is disabled, got %#v", listed[0])
 	}
 }
 

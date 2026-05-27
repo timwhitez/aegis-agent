@@ -7764,6 +7764,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-285 and the stale-response cluster. This slice covers backend queue submit validation, not frontend polling or settings rendering.
 - Confirmed the minimal fix belongs in `handleCreateJob`: reuse the existing provider override preflight before constructing the queue runner, preserving runtime `QueueSubmit` provider/model resolution and queue persistence behavior.
 
+### Review 280
+
+- Confirmed FCA-20260528-287 against `spec/17-web-console.md`'s local Skills control contract: `/api/skills` is the WebConsole catalog projection, but upload and uninstall mutations are bounded to the first configured managed skill directory.
+- Confirmed this is distinct from FCA-20260528-284 and FCA-20260528-286. Those slices covered stale Skills catalog refresh ordering and queue provider errors; this slice covers backend skill catalog mutability metadata across multiple configured skill directories.
+- Confirmed the minimal fix belongs in `handleListSkills`: keep discovery across all configured skill dirs, but mark non-first dirs read-only with a disabled reason so the WebConsole no longer presents unsupported or wrong-target uninstall actions.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7825,6 +7831,31 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-287
+
+Slice: `fix(webconsole): mark non-managed skills read-only`
+
+Finding:
+
+- `handleListSkills()` listed local skills from every configured `cfg.Skills.Dirs` entry and marked each discovered local skill as installed.
+- `handleUploadSkill()` and `handleUninstallSkill()` intentionally operate on `cfg.Skills.Dirs[0]` through `resolveManagedSkillDir()`.
+- A skill discovered only in a secondary configured directory was therefore projected as installed and uninstallable even though the uninstall endpoint would target the first managed directory by skill id.
+
+Impact:
+
+- The WebConsole Skills page could offer an unsupported uninstall action for skills outside the managed directory.
+- If the same skill id existed in both the managed directory and a secondary discovery directory, the UI projection did not distinguish the secondary read-only entry from the first-dir mutation target.
+
+Changes:
+
+- Added a WebConsole service regression with a first managed skill directory and a second external skill directory.
+- Updated `handleListSkills()` to keep listing all configured skill dirs but mark entries outside the first configured directory as `read_only`.
+- Added a disabled reason explaining that only the first configured skill directory is managed by this WebConsole.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillListMarksNonManagedSkillDirsReadOnly -count=1`: passed after `handleListSkills()` marked the secondary-dir skill read-only.
 
 ### FCA-20260528-286
 

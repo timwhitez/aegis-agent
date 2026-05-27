@@ -3827,6 +3827,13 @@ func providerReasoningFamily(providerName string, provider config.Provider) stri
 	}
 }
 
+func readOnlySkillDirReason(managed bool) string {
+	if managed {
+		return ""
+	}
+	return "Only the first configured skill directory is managed by this WebConsole."
+}
+
 func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	type skillMeta struct {
 		ID             string   `json:"id"`
@@ -3851,7 +3858,8 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	for _, rawDir := range cfg.Skills.Dirs {
+	managedSkillDir := ""
+	for index, rawDir := range cfg.Skills.Dirs {
 		if strings.TrimSpace(rawDir) == "" {
 			continue
 		}
@@ -3860,6 +3868,10 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		if managedSkillDir == "" {
+			managedSkillDir = dir
+		}
+		managed := index == 0 && filepath.Clean(dir) == filepath.Clean(managedSkillDir)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -3901,14 +3913,17 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			skills = append(skills, skillMeta{
-				ID:          entry.Name(),
-				Name:        name,
-				Author:      "Local",
-				Description: desc,
-				Icon:        "Box",
-				Tags:        []string{"local", entry.Name()},
-				Downloads:   1,
-				Installed:   true,
+				ID:             entry.Name(),
+				Name:           name,
+				Author:         "Local",
+				Description:    desc,
+				Icon:           "Box",
+				Tags:           []string{"local", entry.Name()},
+				Downloads:      1,
+				Installed:      true,
+				ReadOnly:       !managed,
+				DiscoveryPath:  dir,
+				DisabledReason: readOnlySkillDirReason(managed),
 			})
 		}
 	}
