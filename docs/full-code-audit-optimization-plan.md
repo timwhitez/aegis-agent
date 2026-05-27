@@ -7500,6 +7500,12 @@ Evidence gates:
 - Confirmed this is distinct from backend overview/list slices and the quiet polling decision in FCA-20260527-237. This slice covers the no-prior-snapshot frontend state where an overview failure is object-level initial UI feedback, while later refresh failures can keep using the last good overview without repeated toasts.
 - Confirmed the minimal fix belongs in `app.js` plus `session-view.js`: store an `overviewError` only when no previous overview exists, surface the backend `APIError.message`, and render that error in the Session rail instead of changing `/api/overview`, session store listing, or polling authority.
 
+### Review 236
+
+- Confirmed FCA-20260527-243 against `spec/04-tools-and-skills.md`'s built-in search-tool contract: explicit `grep` / `grep_files` paths are operator-selected search roots, so a missing root is an access/path error rather than an empty match set.
+- Confirmed this is distinct from generated-artifact filtering and broad search skip behavior. Those paths intentionally skip build/cache/internal artifacts or incidental unreadable files during workspace discovery; this slice covers the false no-match result after an explicit missing target survived workspace path resolution.
+- Confirmed the minimal fix belongs in the built-in tool registry: validate explicit search roots with `os.Lstat`, share the root resolver between `grep` and `grep_files`, and propagate root-level walk/read failures while preserving broad recursive skip semantics, provider adapters, WebConsole state, and workspace write policy.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7561,6 +7567,51 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-243
+
+Slice: `fix(tools): report missing grep paths`
+
+Finding:
+
+- `ResolveWorkspacePath()` intentionally allows missing leaves under an existing workspace parent so write-like tools can prepare new paths safely.
+- `grep` used that resolver for explicit `path` input, then called `filepath.Walk(root, ...)` and ignored both root walk errors and the returned walk error.
+- `grep_files` used the same permissive resolver through `resolveGrepRoot()` and its shared walker skipped callback errors, including root `lstat` failures.
+- Before the fix, the focused regression failed because `grep` returned non-error `(no matches)` for explicit `"path":"missing.txt"` instead of reporting that the selected search root did not exist.
+
+Impact:
+
+- An agent or operator could explicitly search a mistyped or deleted file/directory and receive `(no matches)`, incorrectly treating absence of evidence as a real search result.
+- This weakened audit traceability for file-specific evidence gathering because the missing target was indistinguishable from a valid file with no matching lines.
+
+Changes:
+
+- Added a focused `grep` / `grep_files` regression for explicit missing `path` input.
+- Updated `resolveGrepRoot()` to require explicit search roots to exist and return a path-specific error when they do not.
+- Updated `grep` to use the shared root resolver, preserve generated-artifact blocking, and check non-limit `filepath.Walk` errors.
+- Updated both grep walkers to propagate root-level walk/read errors while continuing to skip incidental unreadable files during broad recursive discovery.
+- Left broad workspace search, build/cache/internal artifact skips, binary-file skips, include filtering, provider behavior, WebConsole state, and workspace write path semantics unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestGrepToolsReportMissingExplicitPath -count=1`: failed before the fix because `grep` returned `(no matches)` for an explicit missing path.
+- `go test -timeout 120s ./internal/tools -run 'TestGrepToolsReportMissingExplicitPath|TestGrepToolsBlockExplicitInternalArtifacts|TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault|TestGrepFilesReturnsPathsOnlyAndSkipsArtifacts|TestGrepAndGrepFilesSkipValidationRunArtifactsByDefault' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-242
 

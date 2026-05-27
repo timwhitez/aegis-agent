@@ -989,22 +989,26 @@ func defGrep() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("grep", err), nil
 			}
-			root := execCtx.Workdir
 			if input.Path != "" {
-				path, err := ResolveWorkspacePath(execCtx.Workdir, input.Path)
-				if err != nil {
-					return errorResult("grep", err), nil
-				}
-				if isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path) {
+				if isInternalGeneratedArtifactInput(input.Path) {
 					return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 				}
-				root = path
+			}
+			root, err := resolveGrepRoot(execCtx.Workdir, input.Path)
+			if err != nil {
+				return errorResult("grep", err), nil
+			}
+			if input.Path != "" && isInternalGeneratedArtifactPath(execCtx.Workdir, root) {
+				return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			matcher, regexErr := regexp.Compile(input.Pattern)
 			useRegex := regexErr == nil
 			var lines []string
-			_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
+					if sameCleanPath(path, root) {
+						return err
+					}
 					return nil
 				}
 				if info.IsDir() {
@@ -1018,6 +1022,9 @@ func defGrep() Definition {
 				}
 				data, _, readErr := fileutil.ReadRegularFileNoSymlink(path)
 				if readErr != nil {
+					if sameCleanPath(path, root) {
+						return readErr
+					}
 					return nil
 				}
 				if shouldSkipGrepBinary(data) {
@@ -1033,12 +1040,15 @@ func defGrep() Definition {
 					if matched {
 						lines = append(lines, fmt.Sprintf("%s:%d:%s", relativeOrAbsolute(execCtx.Workdir, path), lineNo+1, strings.TrimSpace(line)))
 						if len(lines) >= 200 {
-							return errors.New("limit reached")
+							return errGrepLimitReached
 						}
 					}
 				}
 				return nil
 			})
+			if walkErr != nil && !errors.Is(walkErr, errGrepLimitReached) {
+				return errorResult("grep", walkErr), nil
+			}
 			output := strings.Join(lines, "\n")
 			if output == "" {
 				output = "(no matches)"
@@ -1086,11 +1096,14 @@ func defGrepFiles() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("grep_files", err), nil
 			}
+			if input.Path != "" && isInternalGeneratedArtifactInput(input.Path) {
+				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
+			}
 			root, err := resolveGrepRoot(execCtx.Workdir, input.Path)
 			if err != nil {
 				return errorResult("grep_files", err), nil
 			}
-			if input.Path != "" && (isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, root)) {
+			if input.Path != "" && isInternalGeneratedArtifactPath(execCtx.Workdir, root) {
 				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			matcher, useRegex := compileGrepMatcher(input.Pattern)
@@ -1423,6 +1436,9 @@ func resolveGrepRoot(workdir, inputPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if _, err := os.Lstat(path); err != nil {
+		return "", fmt.Errorf("path %q does not exist or is not accessible: %w", inputPath, err)
+	}
 	return path, nil
 }
 
@@ -1441,6 +1457,9 @@ func textMatchesPattern(text string, matcher *regexp.Regexp, useRegex bool, patt
 func walkTextSearchFiles(workdir, root, include string, fn func(path string, data string) error) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if sameCleanPath(path, root) {
+				return err
+			}
 			return nil
 		}
 		if info.IsDir() {
@@ -1457,6 +1476,9 @@ func walkTextSearchFiles(workdir, root, include string, fn func(path string, dat
 		}
 		data, _, readErr := fileutil.ReadRegularFileNoSymlink(path)
 		if readErr != nil {
+			if sameCleanPath(path, root) {
+				return readErr
+			}
 			return nil
 		}
 		if shouldSkipGrepBinary(data) {
