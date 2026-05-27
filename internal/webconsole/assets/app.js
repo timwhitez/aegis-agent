@@ -1676,30 +1676,51 @@ async function handleGoalAction(button) {
     showToast('No durable session is loaded.', 'info');
     return;
   }
+  const sessionID = state.sessionId;
   const action = button.getAttribute('data-goal-action');
   button.disabled = true;
   try {
     if (action === 'pause') {
-      await pauseGoal(state.sessionId);
+      await pauseGoal(sessionID);
+      if (state.sessionId !== sessionID) {
+        return;
+      }
       showToast('Goal paused.', 'success');
     } else if (action === 'resume') {
-      await resumeGoal(state.sessionId);
+      await resumeGoal(sessionID);
+      if (state.sessionId !== sessionID) {
+        return;
+      }
       showToast('Goal resumed.', 'success');
     } else if (action === 'complete') {
-      await completeGoal(state.sessionId);
+      await completeGoal(sessionID);
+      if (state.sessionId !== sessionID) {
+        return;
+      }
       showToast('Goal marked complete.', 'success');
     } else if (action === 'clear') {
       if (!await confirmGoalClear()) {
-        showToast('Goal clear cancelled.', 'info');
+        if (state.sessionId === sessionID) {
+          showToast('Goal clear cancelled.', 'info');
+        }
         return;
       }
-      await deleteGoal(state.sessionId);
+      if (state.sessionId !== sessionID) {
+        return;
+      }
+      await deleteGoal(sessionID);
+      if (state.sessionId !== sessionID) {
+        return;
+      }
       showToast('Goal cleared.', 'success');
     } else if (action === 'approve-plan') {
       let response = null;
       try {
-        response = await approveMissionPlan(state.sessionId);
+        response = await approveMissionPlan(sessionID);
       } catch (err) {
+        if (state.sessionId !== sessionID) {
+          return;
+        }
         if (!isCoverageApprovalBlock(err)) {
           throw err;
         }
@@ -1707,7 +1728,13 @@ async function handleGoalAction(button) {
           showToast('Goal plan approval was not overridden.', 'info');
           return;
         }
-        response = await approveMissionPlan(state.sessionId, { override_coverage: true });
+        if (state.sessionId !== sessionID) {
+          return;
+        }
+        response = await approveMissionPlan(sessionID, { override_coverage: true });
+      }
+      if (state.sessionId !== sessionID) {
+        return;
       }
       if (isAcceptedLaunchResponse(response)) {
         setGenerating(true, {
@@ -1718,15 +1745,21 @@ async function handleGoalAction(button) {
       }
       showToast('Goal plan approved.', 'success');
     }
-    await refreshCurrentSession();
-    queueOverviewRefresh(160);
+    if (state.sessionId === sessionID) {
+      await refreshCurrentSession();
+      queueOverviewRefresh(160);
+    }
   } catch (err) {
-    showToast(err.message || 'Goal action failed.', 'error');
+    if (state.sessionId === sessionID) {
+      showToast(err.message || 'Goal action failed.', 'error');
+    }
   } finally {
     if (document.body.contains(button)) {
       button.disabled = false;
     }
-    renderCurrentSession();
+    if (state.sessionId === sessionID) {
+      renderCurrentSession();
+    }
   }
 }
 

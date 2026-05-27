@@ -7686,6 +7686,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-270, FCA-20260528-271, and FCA-20260528-272. Those slices covered stale full session detail responses, older-message paging responses, and Workspace browser responses; this slice covers a user-triggered Plan Mode mutation whose REST request correctly targets the original session but whose async completion updated the current session UI after selection changed.
 - Confirmed the minimal fix belongs in `handlePlanModeAction`: capture the session id at click time, use that id for approve/cancel calls and coverage override retries, and apply success/error/generating/refresh UI side effects only while that same session remains selected.
 
+### Review 267
+
+- Confirmed FCA-20260528-274 against `spec/17-web-console.md`'s Goal control contract: Goal pause/resume/clear/complete/plan approval are local controls over the selected session's `goal.json`, and a stale action completion must not refresh or render a different newly selected session as if it were the action target.
+- Confirmed this is distinct from FCA-20260528-273. That slice covered Plan Mode approve/cancel actions; this slice covers the separate Goal inspector handler, including simple status actions and mission plan approval with coverage override.
+- Confirmed the minimal fix belongs in `handleGoalAction`: capture the session id at click time, use it for all Goal REST calls and coverage override retries, and apply toast/refresh/render/generating side effects only while that captured session remains selected.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7747,6 +7753,48 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-274
+
+Slice: `fix(webconsole): ignore stale goal actions`
+
+Finding:
+
+- `handleGoalAction()` issued Goal inspector mutations from the currently selected session, but after awaited calls it unconditionally showed success/error toasts, called `refreshCurrentSession()`, queued overview refreshes, rendered the current session, and in the mission approval path could call `setGenerating(true)`.
+- If the operator clicked a Goal action for session A and switched to session B before the response settled, the stale completion could trigger `/api/sessions/session_B?limit=40` and update session B's UI even though the mutation applied to session A.
+- The same handler also reused mutable `state.sessionId` for coverage override retries, so an old mission approval flow could drift from its original session after a coverage conflict or confirmation wait.
+
+Impact:
+
+- The WebConsole could show stale Goal action feedback or refresh the wrong selected session after an in-flight Goal action completed.
+- Mission plan approval had a higher-impact variant: a stale accepted launch response could mark the newly selected session as generating for the old session's approved goal plan.
+- This did not mutate the wrong session on the initial REST call, but it let the browser-side Goal control flow become a stale authority over the selected session view.
+
+Changes:
+
+- Captured the Goal action's `sessionID` at click time.
+- Used the captured session id for pause/resume/complete/clear/mission-approve requests and coverage override approval retries.
+- Suppressed success/error toasts, current-session refreshes, render calls, and generating state when the selected session no longer matches the captured action session.
+- Added a VM-level WebConsole regression proving that a slow Goal pause completion for session A does not refresh newly selected session B.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because stale `session_goal_slow_a` pause completion issued `/api/sessions/session_fast_b?limit=40`.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after binding Goal action side effects to the captured session id.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-273
 

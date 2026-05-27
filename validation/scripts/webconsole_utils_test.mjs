@@ -244,6 +244,27 @@ function installPlanModeAPITestWrappers(appContext) {
   `, appContext);
 }
 
+function installGoalAPITestWrappers(appContext) {
+  vm.runInContext(`
+    pauseGoal = function(sessionID) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/goal/pause', { method: 'POST' });
+    };
+    resumeGoal = function(sessionID) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/goal/resume', { method: 'POST' });
+    };
+    completeGoal = function(sessionID) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/goal/complete', { method: 'POST' });
+    };
+    deleteGoal = function(sessionID) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/goal', { method: 'DELETE' });
+    };
+    approveMissionPlan = function(sessionID, payload = {}) {
+      const suffix = payload.override_coverage ? '?override=1' : '';
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/mission/plan/approve' + suffix, { method: 'POST' });
+    };
+  `, appContext);
+}
+
 function createWorkspaceHarnessContext() {
   const pendingRequests = [];
   const workspaceContext = {
@@ -702,6 +723,53 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
     generating: false,
     activityTitle: 'Loaded session B'
   });
+});
+
+test('Goal actions do not refresh a newly selected session after stale completion', async () => {
+  const appContext = createAppHarnessContext();
+  installGoalAPITestWrappers(appContext);
+  appContext.goalPauseButton = fakeActionButton({ 'data-goal-action': 'pause' });
+
+  const action = vm.runInContext(`
+    state.sessionId = 'session_goal_slow_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_slow_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_a', status: 'active' }
+    };
+    handleGoalAction(goalPauseButton);
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_goal_slow_a\/goal\/pause/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      goal: { goal_id: 'goal_b', status: 'active' }
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ goal_id: 'goal_a', status: 'paused' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const requestURLs = appContext.pendingRequests.map((request) => request.url);
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: [],
+      timeline: []
+    });
+  }
+  await action;
+
+  assert.deepEqual(sameRealm(requestURLs), [
+    '/api/sessions/session_goal_slow_a/goal/pause'
+  ]);
 });
 
 test('loadWorkspaceDirectory ignores stale directory responses after navigation changes', async () => {
