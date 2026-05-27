@@ -873,6 +873,9 @@ func defEditFile() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("edit_file", err), nil
 			}
+			if input.OldText == "" {
+				return errorResult("edit_file", errors.New("old_text is required")), nil
+			}
 			if err := CheckWorkspaceWriteInputAllowed(execCtx.Workdir, input.Path); err != nil {
 				return errorResult("edit_file", err), nil
 			}

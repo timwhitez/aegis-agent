@@ -1467,6 +1467,56 @@ func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
 	}
 }
 
+func TestEditFileRejectsEmptyOldText(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	target := filepath.Join(workdir, "notes.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "edit_file", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"path":"notes.txt",
+		"old_text":"",
+		"new_text":"prefix\n"
+	}`))
+	if err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "old_text is required") {
+		t.Fatalf("expected edit_file to reject empty old_text, got %#v", result)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != "alpha\nbeta\n" {
+		t.Fatalf("empty old_text edit mutated file: %q", string(data))
+	}
+}
+
 func TestWriteFileRejectsSymlinkedTempAlias(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
