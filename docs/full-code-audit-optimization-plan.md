@@ -7488,6 +7488,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-233. That slice fixed backend `/api/history` query bounds and overflow metadata; this slice covers the frontend catch path that still discarded actionable backend messages after `requestJSON` parsed them.
 - Confirmed the minimal fix belongs in `app.js`: derive displayed history failures from `requestJSON`'s `APIError.message` while keeping a generic fallback for non-API failures, without changing session store pagination, backend history status mapping, or runtime/session authority.
 
+### Review 234
+
+- Confirmed FCA-20260527-241 against `spec/17-web-console.md`'s Session timeline paging contract: user-triggered `GET /api/sessions/{id}/messages?before_id=...` failures are object-level feedback and should not be reduced to a console-only error.
+- Confirmed this is distinct from FCA-20260525-023. That slice fixed the frontend gap-detection state when old history and a new server tail no longer overlapped; this slice covers the residual catch path when the load-earlier request itself fails.
+- Confirmed the minimal fix belongs in `app.js`: surface the parsed backend `APIError.message` as a toast while preserving existing message-window, gap-anchor, and polling merge state.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7549,6 +7555,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-241
+
+Slice: `fix(webconsole): surface message paging errors`
+
+Finding:
+
+- `loadEarlierMessages()` calls `requestJSON()` for `GET /api/sessions/{id}/messages?before_id=...&limit=40`.
+- When that request failed, the catch path logged `load earlier messages error`, cleared the loading flag, and re-rendered without showing the parsed backend message to the operator.
+- Before the fix, the focused embedded-asset contract failed because `app.js` had no helper or toast path proving load-earlier failures displayed backend API errors.
+
+Impact:
+
+- A user clicking "Load earlier messages" in the Session timeline could receive no visible feedback if the backing message window failed to load.
+- The preserved message stream and load-earlier button remained usable, but the actionable backend diagnostic was only in the browser console, weakening the Web-first timeline recovery experience.
+
+Changes:
+
+- Added `earlierMessagesErrorMessage()` to prefer `APIError.message` from `requestJSON` and keep a generic fallback for non-API failures.
+- Updated the `loadEarlierMessages()` catch path to show that message via the existing toast rack after clearing the loading state.
+- Added an embedded frontend asset contract assertion that load-earlier message failures surface backend API messages.
+- Left message pagination, merge/gap-anchor state, session polling, and backend message APIs unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because load-earlier failures did not surface backend API errors.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceServesEmbeddedShellAndAssets|TestServiceSessionMessagePaginationAndLimits' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-240
 

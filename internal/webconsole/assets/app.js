@@ -2016,6 +2016,10 @@ function showSessionLoadError(err, options = {}) {
   updateUI();
 }
 
+function earlierMessagesErrorMessage(err, fallback = 'Failed to load earlier messages.') {
+  return err?.message || fallback;
+}
+
 async function loadEarlierMessages() {
   if (state.loadingEarlier || !state.hasMoreMessages || !(state.messageGapAnchorId || state.oldestMessageId)) {
     return;
@@ -2053,7 +2057,9 @@ async function loadEarlierMessages() {
     renderCurrentSession();
   } catch (err) {
     console.error('load earlier messages error', err);
+    const message = earlierMessagesErrorMessage(err);
     state.loadingEarlier = false;
+    showToast(message, 'error');
     renderCurrentSession();
   } finally {
     state.preserveScrollAfterRender = null;
