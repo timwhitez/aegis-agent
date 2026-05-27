@@ -6640,7 +6640,46 @@ Evidence gates:
 - Confirmed this boundary is more complex than `tool.before`: the tool side effect already happened, so the minimal fix must append the current tool result plus synthetic results for remaining same-turn calls before returning the missing `tool.after` event error.
 - Confirmed the fix should stop later tool execution in the same provider batch when the prior `tool.after` event is missing, preventing additional side effects from running after the durable timeline has already diverged.
 
+### Review 196
+
+- Confirmed FCA-20260527-203 against the WebConsoleService contract in `spec/01-runtime-architecture.md` and `spec/17-web-console.md`: WebConsole active handles remain in-memory only, but their owner/process clues must be written to `events.jsonl` as `webconsole.handle.acquired/released` events for session detail, `session.md`, checkpoint, and restart diagnostics.
+- Confirmed `internal/webconsole/service.go` made both `addHandle` and `promotePendingStart` publish `webconsole.handle.acquired` best-effort after inserting the in-memory handle, so blocked `events.jsonl` could leave a successful current-process handle with no durable owner clue.
+- Confirmed the minimal fix belongs in the Web service adapter: require `webconsole.handle.acquired` during handle acquisition before the handle becomes visible to local readers; keep release events best-effort because release is cleanup-oriented and must not strand active handles.
+
 ## Update Log
+
+### FCA-20260527-203
+
+Slice: `fix(webconsole): require handle acquired events`
+
+Finding:
+
+- `Service.addHandle` and `Service.promotePendingStart` inserted a WebConsole active handle, then ignored failures appending `webconsole.handle.acquired`.
+- If `events.jsonl` was blocked during Web `continue`, Plan Mode continue, or start promotion, the Web process could report/own an active in-memory handle with no durable owner/process clue.
+- A restarted or separate WebConsole process derives `running_not_owned` / settled owner details from events, so the missing acquired event broke the file-fact boundary required by the WebConsoleService contract.
+
+Changes:
+
+- Required `webconsole.handle.acquired` event persistence from both direct handle acquisition and pending-start promotion.
+- Wrote the acquired event before inserting the handle into the service map, so the service does not expose an in-memory authority without the matching durable clue.
+- Kept `webconsole.handle.released` best-effort because release runs during cleanup/close and must not prevent handle removal.
+- Added focused regressions for direct `addHandle` and `promotePendingStart` with blocked `events.jsonl`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(AddHandleRequiresAcquiredEvent|PromotePendingStartRequiresAcquiredEvent)' -count=1`: failed before the fix because both paths returned nil while `events.jsonl` was blocked.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(AddHandleRequiresAcquiredEvent|PromotePendingStartRequiresAcquiredEvent|RejectsDuplicateHandleAndPreservesOwner|SessionDetailReportsActiveHandleOwner|InterruptNonOwnedSessionReturnsStructuredError|StopNonOwnedSessionReturnsStructuredError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-202
 

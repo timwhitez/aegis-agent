@@ -2462,9 +2462,12 @@ func (s *Service) addHandle(handle *launchHandle) error {
 		s.mu.Unlock()
 		return errSessionAlreadyActive
 	}
+	if err := s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil); err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("append webconsole.handle.acquired: %w", err)
+	}
 	s.handles[handle.sessionID] = handle
 	s.mu.Unlock()
-	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil)
 	return nil
 }
 
@@ -2508,9 +2511,12 @@ func (s *Service) promotePendingStart(id int, handle *launchHandle) error {
 		return errSessionAlreadyActive
 	}
 	delete(s.pendingStarts, id)
+	if err := s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil); err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("append webconsole.handle.acquired: %w", err)
+	}
 	s.handles[handle.sessionID] = handle
 	s.mu.Unlock()
-	_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.acquired", nil)
 	return nil
 }
 

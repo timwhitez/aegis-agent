@@ -3610,6 +3610,74 @@ func TestServiceRejectsDuplicateHandleAndPreservesOwner(t *testing.T) {
 	}
 }
 
+func TestServiceAddHandleRequiresAcquiredEvent(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_add_handle_requires_event")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	err = svc.addHandle(&launchHandle{
+		sessionID:      meta.ID,
+		cancel:         func() {},
+		startedAt:      "2026-05-08T00:00:00Z",
+		processStartID: "blocked-acquire-process",
+		pid:            111,
+	})
+	if err == nil || !strings.Contains(err.Error(), "webconsole.handle.acquired") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected acquired event append error, got %v", err)
+	}
+	if _, ok := svc.handleForSession(meta.ID); ok {
+		t.Fatal("expected failed acquired event to leave no active handle")
+	}
+}
+
+func TestServicePromotePendingStartRequiresAcquiredEvent(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_promote_handle_requires_event")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	pendingID, err := svc.registerPendingStart(func() {})
+	if err != nil {
+		t.Fatalf("register pending start: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	err = svc.promotePendingStart(pendingID, &launchHandle{
+		sessionID:      meta.ID,
+		cancel:         func() {},
+		startedAt:      "2026-05-08T00:00:00Z",
+		processStartID: "blocked-promote-process",
+		pid:            222,
+	})
+	if err == nil || !strings.Contains(err.Error(), "webconsole.handle.acquired") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected acquired event append error, got %v", err)
+	}
+	if _, ok := svc.handleForSession(meta.ID); ok {
+		t.Fatal("expected failed acquired event to leave no active handle")
+	}
+	svc.mu.RLock()
+	_, pending := svc.pendingStarts[pendingID]
+	svc.mu.RUnlock()
+	if pending {
+		t.Fatal("expected failed promotion to consume pending start")
+	}
+}
+
 func TestContinueRESTCarriesRuntimeFields(t *testing.T) {
 	captured := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
