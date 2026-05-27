@@ -1049,6 +1049,7 @@ async function sendMessage() {
       return;
     }
     try {
+      const launchClientSessionID = state.sessionId;
       state.launchInFlight = true;
       setGenerating(true, {
         title: 'Launching session',
@@ -1062,6 +1063,10 @@ async function sendMessage() {
         goal: goalDraft || undefined,
         planMode: planDraft || undefined
       });
+      if (state.sessionId !== launchClientSessionID || state.sessionBacked) {
+        state.launchInFlight = false;
+        return;
+      }
       state.goalEnabled = false;
       state.planModeEnabled = false;
       adoptSession(resp.session_id, true);

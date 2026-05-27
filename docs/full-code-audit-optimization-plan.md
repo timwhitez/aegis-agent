@@ -7776,6 +7776,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-287. That slice corrected backend `/api/skills` mutability metadata for non-managed skill dirs; this slice covers the frontend renderer dropping the backend `disabled_reason` for read-only local skills that do not have workspace-extension `trust` metadata.
 - Confirmed the minimal fix belongs in `renderSkills`: keep the existing workspace trust line behavior, but render a separate disabled-reason line for non-trust read-only skills so the disabled action is explainable without changing backend catalog, skill upload, or uninstall semantics.
 
+### Review 282
+
+- Confirmed FCA-20260528-289 against `spec/17-web-console.md`'s Session workspace contract: the selected session is the operator's current object, and stale async completions must not make the browser switch away from a newer selected durable session.
+- Confirmed this is distinct from FCA-20260528-270, FCA-20260528-283, and the action completion stale-response cluster. Those slices covered detail refresh, steer/continue/plan/goal/stop completions, history, overview, skills, and settings loaders; this slice covers the new-session launch completion path that calls `adoptSession()` after `/api/sessions/start` returns.
+- Confirmed the minimal fix belongs in the `sendMessage()` start branch: remember the launch-time client session id and only adopt the returned durable session if the user is still on that same pending launch, preserving backend start/session creation semantics and avoiding Web UI state authority changes.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7837,6 +7843,32 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-289
+
+Slice: `fix(webconsole): ignore stale session launch completions`
+
+Finding:
+
+- In the new-session branch, `sendMessage()` awaited `/api/sessions/start` and then unconditionally called `adoptSession(resp.session_id, true)`.
+- Other WebConsole action paths already checked whether the selected session had changed before applying async completion effects.
+- If a slow start request completed after the operator selected another durable session, the stale launch completion replaced the current selection with the newly created session.
+
+Impact:
+
+- The Session workspace could jump away from the user's newer selected session when an older new-session launch finally returned.
+- This weakened the WebConsole selected-object contract even though backend session creation remained valid and durable.
+
+Changes:
+
+- Added a frontend VM regression that starts from an ephemeral session, begins a slow launch, switches to another durable session, and then resolves the start request.
+- Updated the `sendMessage()` start branch to record the launch-time client session id and only adopt the returned session if the browser is still on that same pending launch and has not already selected a durable session.
+- Preserved backend `/api/sessions/start`, session creation, optimistic message, overview refresh, and runtime launch behavior.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'start completion does not replace'`: failed before the fix because `state.sessionId` became `session_created_slow_a`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'start completion does not replace'`: passed after stale launch completions stopped replacing the selected session.
 
 ### FCA-20260528-288
 

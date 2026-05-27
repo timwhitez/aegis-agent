@@ -1051,6 +1051,56 @@ test('continue completion does not mark a newly selected session as generating',
   });
 });
 
+test('start completion does not replace a session selected while launch is pending', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    selectedWorkspaceWorkdir = function() { return ''; };
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = false;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    state.sessionDetail = null;
+    nodes.chatInput.value = 'start a slow session';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/start');
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_created_slow_a', status: 'accepted' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    backed: state.sessionBacked,
+    generating: state.isGenerating,
+    launchInFlight: state.launchInFlight,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    backed: true,
+    generating: false,
+    launchInFlight: false,
+    activityTitle: 'Loaded session B'
+  });
+});
+
 test('inline continue action does not refresh a newly selected session after stale completion', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
