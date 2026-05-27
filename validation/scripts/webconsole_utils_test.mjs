@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const utilsSource = readFileSync(new URL('../../internal/webconsole/assets/utils.js', import.meta.url), 'utf8');
 const sessionViewSource = readFileSync(new URL('../../internal/webconsole/assets/session-view.js', import.meta.url), 'utf8');
 const settingsViewSource = readFileSync(new URL('../../internal/webconsole/assets/settings-view.js', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../../internal/webconsole/assets/app.js', import.meta.url), 'utf8');
 const context = {
   console: {
     warn() {}
@@ -98,6 +99,126 @@ vm.runInContext(settingsViewSource, context, { filename: 'settings-view.js' });
 
 function sameRealm(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function fakeAppElement(initial = {}) {
+  return {
+    value: initial.value || '',
+    checked: Boolean(initial.checked),
+    disabled: false,
+    dataset: {},
+    style: {},
+    classList: {
+      add() {},
+      remove() {},
+      toggle() {},
+      contains() {
+        return false;
+      }
+    },
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    innerHTML: '',
+    innerText: '',
+    textContent: '',
+    hidden: false,
+    addEventListener() {},
+    appendChild() {},
+    remove() {},
+    focus() {},
+    click() {},
+    dispatchEvent() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    getAttribute() {
+      return null;
+    },
+    setAttribute() {},
+    removeAttribute() {},
+    scrollTo() {}
+  };
+}
+
+function createAppHarnessContext() {
+  const pendingRequests = [];
+  const appContext = {
+    console: {
+      error() {},
+      warn() {}
+    },
+    window: {
+      location: {
+        protocol: 'http:',
+        host: '127.0.0.1:8080'
+      },
+      innerWidth: 1280,
+      getComputedStyle() {
+        return { display: 'block' };
+      },
+      matchMedia() {
+        return { matches: false };
+      },
+      setTimeout() {
+        return 0;
+      },
+      clearTimeout() {},
+      setInterval() {
+        return 0;
+      },
+      clearInterval() {},
+      confirm() {
+        return true;
+      }
+    },
+    document: {
+      getElementById() {
+        return fakeAppElement();
+      },
+      querySelector() {
+        return fakeAppElement();
+      },
+      querySelectorAll() {
+        return [];
+      },
+      addEventListener() {},
+      body: {
+        contains() {
+          return true;
+        },
+        appendChild() {}
+      }
+    },
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      setItem() {},
+      removeItem() {}
+    },
+    setTimeout() {
+      return 0;
+    },
+    clearTimeout() {},
+    setInterval() {
+      return 0;
+    },
+    clearInterval() {},
+    requestJSON(url) {
+      return new Promise((resolve, reject) => {
+        pendingRequests.push({ url, resolve, reject });
+      });
+    }
+  };
+  vm.createContext(appContext);
+  vm.runInContext(utilsSource, appContext, { filename: 'utils.js' });
+  vm.runInContext(appSource, appContext, { filename: 'app.js' });
+  appContext.pendingRequests = pendingRequests;
+  return appContext;
 }
 
 test('safeMarkdown keeps language-tagged fences inside an open code block', () => {
@@ -327,6 +448,46 @@ test('background notification cards expose queue job detail actions', () => {
   assert.match(full, /data-open-session="child_notification_open"/);
   assert.match(preview, /data-open-job="job_notification_open"/);
   assert.match(preview, />Open job<\/button>/);
+});
+
+test('refreshSelectedQueueJobDetail ignores stale async responses after selection changes', async () => {
+  const appContext = createAppHarnessContext();
+  const slowRefresh = vm.runInContext(`
+    state.selectedQueueJobId = 'job_slow_a';
+    state.selectedQueueJobDetail = null;
+    refreshSelectedQueueJobDetail();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /job_slow_a/);
+
+  await vm.runInContext(`
+    state.selectedQueueJobId = 'job_fast_b';
+    refreshSelectedQueueJobDetail([{ id: 'job_fast_b', prompt: 'fast selected' }]);
+  `, appContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.selectedQueueJobId,
+    detailID: state.selectedQueueJobDetail?.id,
+    prompt: state.selectedQueueJobDetail?.prompt
+  })`, appContext)), {
+    selected: 'job_fast_b',
+    detailID: 'job_fast_b',
+    prompt: 'fast selected'
+  });
+
+  appContext.pendingRequests[0].resolve({ id: 'job_slow_a', prompt: 'stale slow' });
+  await slowRefresh;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.selectedQueueJobId,
+    detailID: state.selectedQueueJobDetail?.id,
+    prompt: state.selectedQueueJobDetail?.prompt
+  })`, appContext)), {
+    selected: 'job_fast_b',
+    detailID: 'job_fast_b',
+    prompt: 'fast selected'
+  });
 });
 
 test('task panel renders cancelled count separately from completed tasks', () => {

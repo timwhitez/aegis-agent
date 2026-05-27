@@ -7656,6 +7656,12 @@ Evidence gates:
 - Confirmed this is distinct from earlier queue lifecycle hardening. Prior slices promoted worker claimed/notified/terminal event append errors and rolled back notification / parent-coordination side effects after child completion; this slice covers the earlier claim boundary where `ClaimNextQueuedJob` has already moved the job from queued to running before the parent event append can fail.
 - Confirmed the minimal fix belongs in the runtime queue worker path: on `queue.job.claimed` event persistence failure, restore the claimed job to its pre-child queued state with lease fields cleared, without changing queue submission, provider adapters, worker-pool scaling, or parent completion gates.
 
+### Review 262
+
+- Confirmed FCA-20260528-269 against `spec/17-web-console.md`'s selected background job facts panel requirement: opening a queue job from Background must show facts for the currently selected queue job, while WebConsole remains a view over session / queue file facts rather than an authority itself.
+- Confirmed this is distinct from FCA-20260525-040 and later queue fact-source repairs. Those slices added `Open job` actions and hardened backend queue/session/background facts; this slice covers the client-side async race where an older `/api/queue/jobs/{id}` response could overwrite `selectedQueueJobDetail` after the user had selected a different job.
+- Confirmed the minimal fix belongs in `refreshSelectedQueueJobDetail`: apply an async queue-detail success or error only if `state.selectedQueueJobId` still matches the captured request id, without changing session store, queue reconciliation, worker lifecycle, or background notification semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7717,6 +7723,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-269
+
+Slice: `fix(webconsole): ignore stale queue detail responses`
+
+Finding:
+
+- `refreshSelectedQueueJobDetail` captured the selected queue job id and then asynchronously loaded `/api/queue/jobs/{id}` when the job was not already present in the current session children list.
+- If the operator selected another queue job before the older request settled, the older success response overwrote `state.selectedQueueJobDetail` while `state.selectedQueueJobId` already pointed at the new job.
+- The same stale-request window existed on the error path, where an old failure could render the current selected job as `unavailable`.
+
+Impact:
+
+- The Background inspector's selected queue job panel could show facts, final text, or errors for a queue job different from the active selection.
+- This did not corrupt durable queue/session files, but it weakened local Web traceability because a stale async response could make the Web view disagree with the current selected object.
+
+Changes:
+
+- `refreshSelectedQueueJobDetail` now checks that `state.selectedQueueJobId` still equals the captured request id before applying async success data.
+- The same current-selection guard is applied before writing the synthetic unavailable detail in the catch path.
+- Added a VM-level WebConsole JS regression that starts a slow job-detail request, switches selection to another job, resolves the old request, and proves the current selection/detail remain aligned.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the stale `job_slow_a` response replaced the selected `job_fast_b` detail.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after the current-selection guard.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
 
 ### FCA-20260528-268
 

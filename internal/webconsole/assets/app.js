@@ -1865,8 +1865,15 @@ async function refreshSelectedQueueJobDetail(jobs = queueJobItems()) {
     return;
   }
   try {
-    state.selectedQueueJobDetail = await requestJSON(`/api/queue/jobs/${encodeURIComponent(jobID)}`);
+    const detail = await requestJSON(`/api/queue/jobs/${encodeURIComponent(jobID)}`);
+    if (String(state.selectedQueueJobId || '') !== jobID) {
+      return;
+    }
+    state.selectedQueueJobDetail = detail;
   } catch (err) {
+    if (String(state.selectedQueueJobId || '') !== jobID) {
+      return;
+    }
     state.selectedQueueJobDetail = {
       id: jobID,
       status: 'unavailable',
