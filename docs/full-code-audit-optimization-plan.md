@@ -7590,6 +7590,12 @@ Evidence gates:
 - Confirmed this is distinct from runtime `Runner.SpawnAgent` validation and Web queue-submit validation. Those protect the built-in runtime control plane and Web REST path; this slice covers the tool wrapper boundary before any `ControlPlane` implementation receives the request.
 - Confirmed the minimal fix belongs in `defAgentSpawn`: reject blank prompts before setting `ParentSessionID` and calling the control plane, preserving model-led delegation, role/provider overrides, background queue semantics, Plan Mode gates, and the existing runtime defense-in-depth check.
 
+### Review 251
+
+- Confirmed FCA-20260528-258 against `spec/17-web-console.md`'s continue-provider controls and `spec/01-runtime-architecture.md`'s provider option persistence requirement: Web/CLI continue may override provider/model, but the sentinel value `default` should mean "use configured default" rather than become a literal provider model.
+- Confirmed this is distinct from provider-selection validation and provider-default inheritance. Existing code rejected unknown providers and already used a new provider's default model when only `provider` changed; this slice covers explicit `model:"default"` on `continue`, which bypassed `normalizeModelOverride`.
+- Confirmed the minimal fix belongs in `Runner.Continue`: normalize provider and model overrides before mutating session metadata, preserving explicit model overrides, provider default inheritance, persisted provider options, Web adapter thinness, and provider-adapter replay boundaries.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7651,6 +7657,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-258
+
+Slice: `fix(runtime): normalize continue default model`
+
+Finding:
+
+- `normalizeModelOverride("default")` existed and was used by start/delegation/provider-resolution paths, but `Runner.Continue` checked raw `req.Model`.
+- Before the fix, `ContinueRequest{Provider:"openai-compatible", Model:"default"}` saved `meta.Model = "default"` and sent `"model":"default"` to the provider instead of using the configured provider default model.
+- The Web REST continue route passed `model:"default"` through to runtime, so the same literal model was observable from Web continue requests.
+
+Impact:
+
+- A user selecting the UI/API sentinel value for provider default could corrupt durable session metadata with a non-model string and issue an invalid provider request.
+- This weakened provider option traceability because `session.json` no longer reflected the actual configured model contract intended by the operator.
+
+Changes:
+
+- Added runtime coverage proving `ContinueRequest.Model = "default"` resolves to the configured provider model in both persisted metadata and the provider request.
+- Added WebConsole REST coverage proving `POST /api/sessions/{id}/continue` with `model:"default"` resolves through the runtime path instead of persisting a literal default string.
+- Updated `Runner.Continue` to normalize provider and model overrides before mutating `SessionMetadata`.
+- Preserved explicit model override behavior, provider override behavior, and provider option persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerContinueModelDefaultUsesProviderDefaultModel -count=1`: failed before the fix because metadata and provider request both used literal `"default"`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinue(ModelDefaultUsesProviderDefaultModel|ProviderOverrideUsesNewProviderDefaultModel|PersistsProviderTimeoutPolicyAcrossRunnerReconstruction)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestContinueREST(ModelDefaultUsesProviderDefault|CarriesRuntimeFields)|TestContinueSessionRejectsUnknownField|TestContinueNonResumableSessionReturnsStructuredError' -count=1`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/runner_test.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-257
 

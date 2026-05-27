@@ -1702,6 +1702,68 @@ func TestRunnerContinueProviderOverrideUsesNewProviderDefaultModel(t *testing.T)
 	}
 }
 
+func TestRunnerContinueModelDefaultUsesProviderDefaultModel(t *testing.T) {
+	var seenModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &body)
+		if model, _ := body["model"].(string); model != "" {
+			seenModel = model
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"done\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	openaiCompatible := cfg.Providers["openai-compatible"]
+	openaiCompatible.BaseURL = server.URL
+	openaiCompatible.Model = "gpt-provider-default"
+	cfg.Providers["openai-compatible"] = openaiCompatible
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-old",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+	}
+	state := session.State{Status: session.StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "continue")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Provider: "openai-compatible", Model: "default"})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	loadedMeta, err := runner.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if loadedMeta.Model != "gpt-provider-default" || seenModel != "gpt-provider-default" {
+		t.Fatalf("expected provider default model, meta=%#v seen=%q", loadedMeta, seenModel)
+	}
+}
+
 func TestAutoContinuePersistsRalphLoopCountBeforeResume(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

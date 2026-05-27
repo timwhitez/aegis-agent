@@ -709,21 +709,23 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return RunResult{}, err
 	}
 	defer releaseRunSlot()
-	if req.Provider != "" {
-		providerName := normalizeProviderOverride(req.Provider)
+	providerNameOverride := normalizeProviderOverride(req.Provider)
+	modelOverride := normalizeModelOverride(req.Model)
+	if providerNameOverride != "" {
+		providerName := providerNameOverride
 		providerCfg, err := r.cfg.ProviderConfig(providerName)
 		if err != nil {
 			return RunResult{}, WrapConfigError(err)
 		}
 		meta.Provider = providerName
-		if req.Model != "" {
-			providerCfg.Model = req.Model
+		if modelOverride != "" {
+			providerCfg.Model = modelOverride
 		}
 		meta.Model = providerCfg.Model
 		meta.ProviderOptions = providerOptionsFromConfig(providerName, providerCfg)
 	}
-	if req.Model != "" {
-		meta.Model = req.Model
+	if modelOverride != "" {
+		meta.Model = modelOverride
 	}
 	state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed)
 	if err != nil {
