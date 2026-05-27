@@ -105,6 +105,32 @@ func TestBuiltinToolExecutionRejectsNestedUnknownField(t *testing.T) {
 	}
 }
 
+func TestFinishRejectsBlankMessage(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	cases := []struct {
+		name string
+		args json.RawMessage
+	}{
+		{name: "missing", args: json.RawMessage(`{}`)},
+		{name: "blank", args: json.RawMessage(`{"message":" \n\t "}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), "finish", ExecContext{}, tc.args)
+			if err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+			if !result.IsError || result.Final || !strings.Contains(result.DisplayOutput, "message is required") {
+				t.Fatalf("expected blank finish message rejection, got %#v", result)
+			}
+		})
+	}
+}
+
 func assertObjectSchemasClosed(t *testing.T, path string, value any) {
 	t.Helper()
 	switch typed := value.(type) {

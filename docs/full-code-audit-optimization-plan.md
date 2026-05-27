@@ -7572,6 +7572,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-143 and FCA-20260526-151. Those slices covered corrupt existing `feature_list.json` handling during completion and compaction; this slice covers malformed but schema-valid create/update inputs and direct durable writes before invalid feature-list state exists.
 - Confirmed the minimal fix belongs in the feature-list tool plus `SessionStore.SaveFeatureList`: reject empty feature lists, blank IDs/descriptions/steps, invalid statuses, duplicate IDs, and negative pass counts without changing optional absent `feature_list.json`, completion/compaction read behavior, provider adapters, WebConsole state authority, or runtime workflow autonomy.
 
+### Review 248
+
+- Confirmed FCA-20260527-255 against `spec/04-tools-and-skills.md`'s `finish` contract: `finish` is the explicit completion signal and must provide the final concise user-facing result, including validation status or blockers when relevant.
+- Confirmed this is distinct from artifact/goal/Plan Mode completion gates. Those gates decide whether a valid `finish` call is allowed; this slice covers the malformed but schema-valid `finish` payload itself, where `message` was omitted or whitespace-only.
+- Confirmed the minimal fix belongs in the built-in `finish` handler: reject blank final messages before setting `Final=true`, preserving valid finish output text, same-turn synthetic tool results after valid finish, provider adapter behavior, and runtime completion gate ordering.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7633,6 +7639,37 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-255
+
+Slice: `fix(tools): reject blank finish messages`
+
+Finding:
+
+- `finish` is the explicit runtime completion signal, and `spec/04-tools-and-skills.md` requires a final concise user-facing `message`.
+- `defFinish` unmarshaled the `message` field but did not validate that it was present or nonblank before returning `Final: true`.
+- Before the fix, `finish {}` returned a final tool result with empty output, and `finish {"message":" \n\t "}` returned a final tool result with whitespace output.
+- Before the fix, an engine regression showed a model `finish` tool call with a whitespace-only message completed an exec session with blank final text.
+
+Impact:
+
+- Sessions could be marked `completed` without a meaningful final answer, validation status, blocker, or handoff summary.
+- That weakens CLI/Web operator visibility and durable session summaries because the terminal completion fact had no actionable content.
+
+Changes:
+
+- Added focused tool-level coverage proving missing and whitespace-only `finish.message` are rejected as non-final tool errors.
+- Added focused engine coverage proving a blank `finish` message does not complete the session and is persisted as a non-final tool error result.
+- Updated `defFinish` to reject `strings.TrimSpace(input.Message) == ""` before returning a final result.
+- Preserved valid `finish` behavior and the existing same-turn synthetic results for tool calls that appear after a valid final finish.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestFinishRejectsBlankMessage -count=1`: failed before the fix because missing/blank messages returned `Final:true`.
+- `go test -timeout 120s ./internal/runtime -run TestEngineDoesNotCompleteOnBlankFinishMessage -count=1`: failed before the fix because the session completed with blank final text.
+- `go test -timeout 120s ./internal/tools -run TestFinishRejectsBlankMessage -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(DoesNotCompleteOnBlankFinishMessage|WritesSyntheticToolResultsAfterFinishInSameTurn)' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools ./internal/runtime -count=1`: passed.
 
 ### FCA-20260527-254
 

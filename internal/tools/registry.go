@@ -1587,6 +1587,9 @@ func defFinish() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("finish", err), nil
 			}
+			if strings.TrimSpace(input.Message) == "" {
+				return errorResult("finish", errors.New("message is required")), nil
+			}
 			return session.ToolResult{
 				Name:          "finish",
 				LLMOutput:     input.Message,

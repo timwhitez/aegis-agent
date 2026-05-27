@@ -927,6 +927,46 @@ func TestEngineWritesSyntheticToolResultsAfterFinishInSameTurn(t *testing.T) {
 	}
 }
 
+func TestEngineDoesNotCompleteOnBlankFinishMessage(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish with malformed message")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	var calls int
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		calls++
+		if calls > 1 {
+			return provider.TurnResult{Text: "blocked after invalid finish", StopReason: "done_candidate"}, nil
+		}
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":" \n\t "}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status == session.StatusCompleted {
+		t.Fatalf("blank finish message completed session: %#v", result)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var finishResult *session.ToolResult
+	for _, msg := range messages {
+		for i := range msg.ToolResults {
+			if msg.ToolResults[i].ToolCallID == "call_finish" {
+				finishResult = &msg.ToolResults[i]
+			}
+		}
+	}
+	if finishResult == nil || !finishResult.IsError || finishResult.Final || !strings.Contains(finishResult.DisplayOutput, "message is required") {
+		t.Fatalf("expected non-final finish error result, got %#v in messages %#v", finishResult, messages)
+	}
+}
+
 func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
 	for _, stopReason := range []string{"max_tokens", "blocked", "error"} {
 		t.Run(stopReason, func(t *testing.T) {
