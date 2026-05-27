@@ -7464,6 +7464,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-235. That slice made `/api/skills` return path-specific manifest/root read errors; this slice covers the frontend catch path that still discarded those actionable backend messages.
 - Confirmed the minimal fix belongs in the Skills view renderer: show the `requestJSON` error message in the empty panel and toast using text-only DOM insertion, without changing SkillCatalog discovery, upload/uninstall mutations, backend status mapping, or runtime skill loading.
 
+### Review 230
+
+- Confirmed FCA-20260527-237 against `spec/17-web-console.md`'s Session detail and error-display contracts: object-level session failures must remain visible in the Session workspace, while background polling can stay quiet to avoid repeated toasts.
+- Confirmed this is distinct from backend session-detail corruption/status classification slices. Those make `/api/sessions/{id}` return useful HTTP errors; this slice covers the frontend path that swallowed the `requestJSON` error before direct session-open and restore callers could show it.
+- Confirmed the minimal fix belongs in `app.js`: add an explicit surfaced-error mode for user-triggered session detail loads and preserve the silent behavior for polling/WebSocket refreshes, without changing runtime/session store facts or Web API status mapping.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7525,6 +7531,50 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-237
+
+Slice: `fix(webconsole): surface session load errors`
+
+Finding:
+
+- `refreshCurrentSession()` caught `requestJSON('/api/sessions/{id}')` errors, logged them, and returned without surfacing the backend error.
+- `openSession()` and startup restore wrapped `refreshCurrentSession()` in their own error handlers, but those handlers were unreachable because the lower-level refresh swallowed the error first.
+- Before the fix, the focused embedded-asset contract failed because `app.js` did not have a surfaced-error option for direct session loads.
+
+Impact:
+
+- Opening a session whose detail endpoint returned a backend error, such as corrupt durable session facts or a missing selected session, could leave the Session workspace stuck on a loading activity instead of showing the actionable API error.
+- Background polling remaining quiet is useful, but direct user-triggered opens need an object-level error summary and one-shot toast so operators can diagnose local durable session failures.
+
+Changes:
+
+- Added `refreshCurrentSession(options = {})` with `surfaceError` and `toastError` controls.
+- Added `showSessionLoadError()` to update the Session workspace activity panel with the backend error, stop generating state, render the view, and optionally toast once.
+- Changed startup durable-session restore and explicit `openSession()` to call `refreshCurrentSession({ surfaceError: true })`.
+- Kept polling, WebSocket-triggered refreshes, post-action refreshes, and queued refreshes on the default quiet path.
+- Added an embedded asset contract assertion that direct session opens surface backend detail-load errors while polling remains quiet.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because `refreshCurrentSession()` had no surfaced-error mode and `openSession()` could not show swallowed backend errors.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceServesEmbeddedShellAndAssets|TestServiceSessionDetailReportsGoalHistoryLoadError|TestServiceSessionDetailReportsSnapshotLoadErrors' -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
 
 ### FCA-20260527-236
 

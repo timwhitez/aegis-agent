@@ -5033,6 +5033,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "sessionDetailHasActiveDescendants") || !strings.Contains(jsBody, "needsSessionRefresh") {
 		t.Fatalf("expected current session polling to track active descendants and coalesced refreshes, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "async function refreshCurrentSession(options = {})") || !strings.Contains(jsBody, "if (options.surfaceError)") || !strings.Contains(jsBody, "showSessionLoadError(err, { toast: options.toastError !== false })") || !strings.Contains(jsBody, "refreshCurrentSession({ surfaceError: true })") {
+		t.Fatalf("expected direct session opens to surface backend detail load errors while keeping polling quiet, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "launchInFlight") || !strings.Contains(jsBody, "Session launch is already in progress") || !strings.Contains(jsBody, "launchPendingWithoutSession") {
 		t.Fatalf("expected initial session launch to have a pending-submit guard, got app.js body: %s", jsBody)
 	}

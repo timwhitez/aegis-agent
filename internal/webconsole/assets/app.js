@@ -160,7 +160,7 @@ async function init() {
   refreshOverview();
   if (hasDurableSession()) {
     try {
-      await refreshCurrentSession();
+      await refreshCurrentSession({ surfaceError: true });
     } catch (err) {
       console.error('session restore error', err);
       state.liveActivity = {
@@ -1947,7 +1947,7 @@ async function refreshOverview() {
   }
 }
 
-async function refreshCurrentSession() {
+async function refreshCurrentSession(options = {}) {
   if (!hasDurableSession() || isEphemeralSessionId(state.sessionId)) {
     return;
   }
@@ -1989,6 +1989,9 @@ async function refreshCurrentSession() {
     syncPollingForState();
   } catch (err) {
     console.error('session detail error', err);
+    if (options.surfaceError) {
+      showSessionLoadError(err, { toast: options.toastError !== false });
+    }
   } finally {
     state.refreshingSession = false;
     if (state.needsSessionRefresh) {
@@ -1996,6 +1999,21 @@ async function refreshCurrentSession() {
       queueSessionRefresh(80);
     }
   }
+}
+
+function showSessionLoadError(err, options = {}) {
+  const message = err?.message || 'The session data could not be loaded.';
+  state.isGenerating = false;
+  state.liveActivity = {
+    title: 'Error loading session',
+    copy: message,
+    tone: 'danger'
+  };
+  if (options.toast) {
+    showToast(message, 'error');
+  }
+  renderCurrentSession();
+  updateUI();
 }
 
 async function loadEarlierMessages() {
@@ -2131,18 +2149,7 @@ async function openSession(sessionID, options = {}) {
   if (options.switchToChat !== false) {
     switchView('chat');
   }
-  try {
-    await refreshCurrentSession();
-  } catch (err) {
-    console.error('Failed to open session:', err);
-    state.liveActivity = {
-      title: 'Error loading session',
-      copy: err.message || 'The session data could not be loaded.',
-      tone: 'danger'
-    };
-    showToast('Error loading session.', 'error');
-    renderCurrentSession();
-  }
+  await refreshCurrentSession({ surfaceError: true });
 }
 
 function collectRecentToolEntries(messages) {
