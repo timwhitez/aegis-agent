@@ -679,7 +679,15 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if len(toolResult.Metadata) > 0 {
 					eventData["metadata"] = toolResult.Metadata
 				}
-				e.emit(meta.ID, "tool.after", "tool_execute", eventData)
+				if err := e.appendEvent(meta.ID, "tool.after", "tool_execute", eventData); err != nil {
+					if callIndex+1 < len(result.ToolCalls) {
+						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.after event failed before this call ran: "+err.Error())...)
+					}
+					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+						return RunResult{}, fmt.Errorf("record tool results after tool.after event failure for %s (%v): %w", call.Name, err, appendErr)
+					}
+					return RunResult{}, fmt.Errorf("record tool.after event for %s: %w", call.Name, err)
+				}
 				if action := terminalPlanModeAction(toolResult); action != "" {
 					planModeTerminal = action
 					if callIndex+1 < len(result.ToolCalls) {

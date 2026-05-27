@@ -6634,7 +6634,49 @@ Evidence gates:
 - Confirmed this is a different boundary from `tool.before`. The tool has already been interrupted, so the minimal fix must report the missing event without discarding the synthetic interrupted tool result needed for provider replay.
 - Confirmed the existing `session.paused` event regression needed a later failure point after `tool.interrupted`; retargeting it through a successful `session.pause` hook preserves downstream pause-event coverage while adding direct interrupted-event coverage.
 
+### Review 195
+
+- Confirmed FCA-20260527-202 against the tool lifecycle event catalog in `spec/01-runtime-architecture.md`: `tool.after` is the durable post-execution event, and the tool loop must still preserve provider replay results when the event cannot be written.
+- Confirmed this boundary is more complex than `tool.before`: the tool side effect already happened, so the minimal fix must append the current tool result plus synthetic results for remaining same-turn calls before returning the missing `tool.after` event error.
+- Confirmed the fix should stop later tool execution in the same provider batch when the prior `tool.after` event is missing, preventing additional side effects from running after the durable timeline has already diverged.
+
 ## Update Log
+
+### FCA-20260527-202
+
+Slice: `fix(runtime): require tool after events`
+
+Finding:
+
+- `Engine.Run` emitted `tool.after` through unchecked `e.emit` after a tool finished.
+- In a same-turn multi-tool batch, a blocked `events.jsonl` after the first tool completed could be ignored at `tool.after`, then the next required `tool.before` would fail.
+- That failure reported the wrong boundary and, more importantly, returned before the already-executed first tool result was persisted, leaving recovery without replay-complete tool results for the provider tool call.
+
+Changes:
+
+- Switched `tool.after` from best-effort `emit` to checked `appendEvent`.
+- On `tool.after` append failure, persisted the current tool result plus synthetic results for remaining same-turn tool calls before returning the event error.
+- Stopped later tool execution after a missing `tool.after` event so no additional side effects run after the durable lifecycle timeline has diverged.
+- Retargeted downstream `session.completed`, `todo_write`, and `submit_plan` event regressions to the new event ordering where `tool.after` is the next required post-result boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineToolAfterReportsEventAppendErrorWithReplayResult -count=1`: failed before the fix because the runtime reported the next `tool.before` and did not persist a replay-complete tool result.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineToolAfterReportsEventAppendErrorWithReplayResult|TestEngineCompleteReportsCompletedEventAppendError|TestEngineTodoWriteReportsRequiredEventAppendError|TestEngineSubmitPlanReportsPlanSubmittedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineToolAfterReportsEventAppendErrorWithReplayResult|TestEngineBudgetWrapUpAwaitingReportsEventAppendError|TestEngineCompleteReportsCompletedEventAppendError|TestEngineTodoWriteReportsRequiredEventAppendError|TestEngineSubmitPlanReportsPlanSubmittedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go internal/runtime/planmode_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-201
 

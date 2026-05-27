@@ -324,13 +324,13 @@ func TestEngineSubmitPlanReportsPlanSubmittedEventAppendError(t *testing.T) {
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err == nil {
-		t.Fatalf("expected context-loaded append error after failed submit_plan event, got result=%#v", result)
+		t.Fatalf("expected tool.after append error after failed submit_plan event, got result=%#v", result)
 	}
 	if !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected events append error with path context, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "session.context.loaded") {
-		t.Fatalf("expected next-turn context-loaded event context, got %v", err)
+	if !strings.Contains(err.Error(), "tool.after") {
+		t.Fatalf("expected tool.after event context, got %v", err)
 	}
 	planMode, err := engine.store.LoadPlanMode(meta.ID)
 	if err != nil {

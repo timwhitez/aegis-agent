@@ -711,6 +711,86 @@ func TestEngineToolBeforeReportsEventAppendErrorBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestEngineToolAfterReportsEventAppendErrorWithReplayResult(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	firstExecuted := false
+	secondExecuted := false
+	registry.Register(tools.Definition{
+		Name:        "first_side_effect",
+		Description: "first side effect",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			firstExecuted = true
+			return session.ToolResult{
+				LLMOutput:     "first ran",
+				DisplayOutput: "first ran",
+			}, nil
+		},
+	})
+	registry.Register(tools.Definition{
+		Name:        "second_side_effect",
+		Description: "second side effect",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			secondExecuted = true
+			return session.ToolResult{
+				LLMOutput:     "second ran",
+				DisplayOutput: "second ran",
+			}, nil
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run side effects")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.cfg.Hooks.ToolAfter = append(engine.cfg.Hooks.ToolAfter, config.HookDefinition{
+		Name:    "block-events-after-first-tool",
+		Match:   config.HookMatch{Tool: "first_side_effect"},
+		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-after-first-tool", eventsPath},
+	})
+	hookManager = hooks.New(engine.cfg.Hooks, meta.Workdir)
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_first", Name: "first_side_effect", Arguments: json.RawMessage(`{}`)},
+				{ID: "call_second", Name: "second_side_effect", Arguments: json.RawMessage(`{}`)},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected tool.after event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tool.after") {
+		t.Fatalf("expected tool.after event context, got %v", err)
+	}
+	if !firstExecuted {
+		t.Fatal("first tool should execute before tool.after event failure")
+	}
+	if secondExecuted {
+		t.Fatal("second tool should not execute after missing first tool.after event")
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "tool" || len(last.ToolResults) != 2 {
+		t.Fatalf("expected replay-complete tool results, got %#v", last)
+	}
+	if last.ToolResults[0].ToolCallID != "call_first" || last.ToolResults[0].DisplayOutput != "first ran" || last.ToolResults[0].IsError {
+		t.Fatalf("expected successful first tool result, got %#v", last.ToolResults[0])
+	}
+	if last.ToolResults[1].ToolCallID != "call_second" || !last.ToolResults[1].IsError || !strings.Contains(last.ToolResults[1].DisplayOutput, "tool.after event failed") {
+		t.Fatalf("expected synthetic second result after tool.after failure, got %#v", last.ToolResults[1])
+	}
+}
+
 func TestEngineWritesSyntheticToolResultsAfterFinishInSameTurn(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish then ignore later tools")); err != nil {
@@ -1128,11 +1208,10 @@ func TestEngineBudgetWrapUpAwaitingReportsEventAppendError(t *testing.T) {
 		t.Fatalf("append user: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	cfg.Hooks.ToolAfter = []config.HookDefinition{
+	cfg.Hooks.SessionAwaiting = []config.HookDefinition{
 		{
-			Name:    "block-events-after-wrapup",
-			Match:   config.HookMatch{Tool: "record_goal_progress"},
-			Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-after-wrapup", eventsPath},
+			Name:    "block-events-before-budget-awaiting",
+			Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-before-budget-awaiting", eventsPath},
 		},
 	}
 	hookManager = hooks.New(cfg.Hooks, meta.Workdir)
@@ -3329,7 +3408,11 @@ func TestEngineCompleteReportsCompletedEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	hookManager = blockRuntimeEventsAfterToolBefore(t, engine, meta, eventsPath, "finish")
+	engine.cfg.Hooks.SessionComplete = append(engine.cfg.Hooks.SessionComplete, config.HookDefinition{
+		Name:    "block-events-during-complete",
+		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-during-complete", eventsPath},
+	})
+	hookManager = hooks.New(engine.cfg.Hooks, meta.Workdir)
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		return provider.TurnResult{
 			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
@@ -3527,8 +3610,8 @@ func TestEngineTodoWriteReportsRequiredEventAppendError(t *testing.T) {
 	)
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
-	if err == nil || !strings.Contains(err.Error(), "session.context.loaded") || !strings.Contains(err.Error(), "events.jsonl") {
-		t.Fatalf("expected next-turn context-loaded event error, result=%#v err=%v", result, err)
+	if err == nil || !strings.Contains(err.Error(), "tool.after") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected tool.after event error after todo.updated failure, result=%#v err=%v", result, err)
 	}
 	if turns != 1 {
 		t.Fatalf("expected one provider turn, got %d", turns)
