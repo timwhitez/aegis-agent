@@ -7631,6 +7631,67 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	}
 }
 
+func TestSkillUploadRejectsMalformedPackageAsBadRequest(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	zipPath := filepath.Join(t.TempDir(), "not-a-skill.zip")
+	createZipEntries(t, zipPath, map[string]string{
+		"README.md": "not a skill package\n",
+	})
+	zipBytes, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(zipPath))
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(zipBytes); err != nil {
+		t.Fatalf("write zip to multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/upload", body)
+	if err != nil {
+		t.Fatalf("new upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(respBody), "no SKILL.md found") {
+		t.Fatalf("expected malformed package to return 400 with validation error, got status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+	if entries, err := os.ReadDir(skillsDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read skills dir after malformed upload: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("malformed upload should not install skills, got %d entries", len(entries))
+	}
+	if data, err := os.ReadFile(webAuditLogPath(cfg.Session.Dir)); err == nil && strings.Contains(string(data), "web.skill.install") {
+		t.Fatalf("malformed upload should not append install audit event, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
 func TestServiceSkillUninstallRejectsSymlinkedSkillDir(t *testing.T) {
 	cfg := testConfig(t, "")
 	base := t.TempDir()

@@ -3876,6 +3876,45 @@ type skillZipPlan struct {
 	TargetPath string
 }
 
+type skillZipPackageError struct {
+	err error
+}
+
+func (e *skillZipPackageError) Error() string {
+	return e.err.Error()
+}
+
+func (e *skillZipPackageError) Unwrap() error {
+	return e.err
+}
+
+func skillZipPackageErrorf(format string, args ...any) error {
+	return &skillZipPackageError{err: fmt.Errorf(format, args...)}
+}
+
+func wrapSkillZipPackageError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var packageErr *skillZipPackageError
+	if errors.As(err, &packageErr) {
+		return err
+	}
+	return &skillZipPackageError{err: err}
+}
+
+func isSkillZipPackageError(err error) bool {
+	var packageErr *skillZipPackageError
+	return errors.As(err, &packageErr)
+}
+
+func skillUploadProcessErrorStatus(err error) int {
+	if isSkillZipPackageError(err) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
 func processSkillZip(src string, globalDest string) (int, error) {
 	tx, err := processSkillZipTransaction(src, globalDest)
 	if err != nil {
@@ -3890,7 +3929,7 @@ func processSkillZip(src string, globalDest string) (int, error) {
 func processSkillZipTransaction(src string, globalDest string) (*skillZipInstallTransaction, error) {
 	r, err := zip.OpenReader(src)
 	if err != nil {
-		return nil, err
+		return nil, wrapSkillZipPackageError(err)
 	}
 	defer r.Close()
 	globalDest, err = prepareSkillZipDestination(globalDest)
@@ -3898,7 +3937,7 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 		return nil, err
 	}
 	if len(r.File) > maxSkillZipFiles {
-		return nil, fmt.Errorf("skill zip has too many entries: %d > %d", len(r.File), maxSkillZipFiles)
+		return nil, skillZipPackageErrorf("skill zip has too many entries: %d > %d", len(r.File), maxSkillZipFiles)
 	}
 	var totalUncompressed uint64
 	for _, f := range r.File {
@@ -3906,10 +3945,10 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 			continue
 		}
 		if f.UncompressedSize64 > uint64(maxSkillZipEntryBytes) {
-			return nil, fmt.Errorf("skill zip entry too large: %s exceeds %d bytes", f.Name, maxSkillZipEntryBytes)
+			return nil, skillZipPackageErrorf("skill zip entry too large: %s exceeds %d bytes", f.Name, maxSkillZipEntryBytes)
 		}
 		if totalUncompressed > uint64(maxSkillZipTotalBytes)-f.UncompressedSize64 {
-			return nil, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
+			return nil, skillZipPackageErrorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
 		}
 		totalUncompressed += f.UncompressedSize64
 	}
@@ -3919,7 +3958,7 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 	for _, f := range r.File {
 		cleaned, err := cleanZipEntryName(f.Name)
 		if err != nil {
-			return nil, err
+			return nil, wrapSkillZipPackageError(err)
 		}
 		cleanNames[f] = cleaned
 		if path.Base(cleaned) == "SKILL.md" {
@@ -3929,7 +3968,7 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 	}
 
 	if len(skillRoots) == 0 {
-		return nil, errors.New("no SKILL.md found in zip, not a valid skill package")
+		return nil, wrapSkillZipPackageError(errors.New("no SKILL.md found in zip, not a valid skill package"))
 	}
 
 	plans := make([]skillZipPlan, 0, len(skillRoots))
@@ -3947,7 +3986,7 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 			if cleanNames[f] == path.Clean(mdPath) {
 				data, err := readZipFileLimited(f, maxSkillZipEntryBytes)
 				if err != nil {
-					return nil, err
+					return nil, wrapSkillZipPackageError(err)
 				}
 				targetDirName = extractSkillNameFromMd(data)
 				break
@@ -3964,18 +4003,18 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 
 		targetDirName = sanitizeDirName(targetDirName)
 		if targetDirName == "" {
-			return nil, fmt.Errorf("skill target directory name is empty for zip root %s", root)
+			return nil, skillZipPackageErrorf("skill target directory name is empty for zip root %s", root)
 		}
 		targetPath := filepath.Join(globalDest, targetDirName)
 		if !pathWithinRoot(globalDest, targetPath) || filepath.Clean(targetPath) == filepath.Clean(globalDest) || filepath.Dir(targetPath) != globalDest {
 			return nil, fmt.Errorf("invalid skill target directory: %s", targetDirName)
 		}
 		if previousRoot, exists := seenTargets[targetDirName]; exists {
-			return nil, fmt.Errorf("duplicate skill target directory %s from zip roots %s and %s", targetDirName, previousRoot, root)
+			return nil, skillZipPackageErrorf("duplicate skill target directory %s from zip roots %s and %s", targetDirName, previousRoot, root)
 		}
 		seenTargets[targetDirName] = root
 		if err := validateSkillZipRootEntries(cleanNames, r.File, root); err != nil {
-			return nil, err
+			return nil, wrapSkillZipPackageError(err)
 		}
 		if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
@@ -4034,7 +4073,7 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 			}
 			outPath := filepath.Join(targetPath, filepath.FromSlash(rel))
 			if !pathWithinRoot(targetPath, outPath) {
-				return nil, fmt.Errorf("zip entry escapes skill target: %s", f.Name)
+				return nil, skillZipPackageErrorf("zip entry escapes skill target: %s", f.Name)
 			}
 
 			if f.FileInfo().IsDir() {
@@ -4049,11 +4088,11 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 
 			data, err := readZipFileLimited(f, maxSkillZipEntryBytes)
 			if err != nil {
-				return nil, err
+				return nil, wrapSkillZipPackageError(err)
 			}
 			extractedBytes += int64(len(data))
 			if extractedBytes > maxSkillZipTotalBytes {
-				return nil, fmt.Errorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
+				return nil, skillZipPackageErrorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
 			}
 			mode := f.Mode().Perm()
 			if mode == 0 {
@@ -4420,7 +4459,7 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	installTx, err := processSkillZipTransaction(tmpFile.Name(), dest)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, skillUploadProcessErrorStatus(err), err)
 		return
 	}
 	if err := s.appendAuditEvent("web.skill.install", map[string]any{

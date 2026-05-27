@@ -4900,6 +4900,34 @@ Validation:
 - Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
 - Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
 
+### FCA-20260527-229: Malformed skill upload packages are reported as server failures
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires WebConsole error handling to distinguish user input errors from runtime and infrastructure errors, and separately requires skill upload to enforce request body, zip entry, per-entry, and total extraction limits.
+- `internal/webconsole/service.go` `handleUploadSkill` already returned HTTP 400 for malformed multipart requests and missing `file` form fields, but returned HTTP 500 for every `processSkillZipTransaction` error.
+- `processSkillZipTransaction` returns malformed package validation errors for invalid zip files, missing `SKILL.md`, path traversal entries, excessive entry counts, oversized entries, duplicate sanitized skill targets, empty sanitized target names, and file/directory path conflicts.
+- A focused route regression uploaded a syntactically valid zip with no `SKILL.md`. Before the fix, `/api/skills/upload` returned HTTP 500 with `no SKILL.md found...` even though the request package was invalid and no skill install/audit mutation occurred.
+
+Impact:
+
+Malformed upload packages looked like local WebConsole storage or infrastructure failures. That weakens operator recovery and API automation diagnostics because retrying the same package cannot repair a reported server failure, while genuine destination, audit-log, filesystem, rename, and rollback failures still need to remain HTTP 500.
+
+Minimal fix:
+
+- Mark only zip/package validation and package read failures with a package-local error type.
+- Map those package errors to HTTP 400 in `handleUploadSkill`.
+- Preserve destination resolution, managed skill root creation, temp-file, audit-log, commit, finalize, rollback, and local filesystem failures as HTTP 500.
+- Add route-level coverage proving a malformed package returns HTTP 400, installs no skill, and writes no `web.skill.install` audit event.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving a zip without `SKILL.md` returned HTTP 500.
+- Focused post-fix regression proving the same upload returns HTTP 400 without installing a skill or appending an install audit event.
+- Adjacent skill upload/uninstall/process-zip, full WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-228: Settings provider-scoped fields can be silently ignored without provider
 
 Severity: Medium
@@ -7243,6 +7271,12 @@ Evidence gates:
 - Confirmed the browser path is not the source: `settings-view.js` always includes the selected provider in the save payload. The bug is the direct API route silently skipping provider-scoped fields when `req.Provider` is blank.
 - Confirmed the minimal fix belongs in `handleUpdateConfig`: normalize a provider target for provider-scoped fields and API-key writes, defaulting only those fields to `DefaultProvider` when the request omits `provider`, without changing guardrails-only or role-provider-only saves.
 
+### Review 222
+
+- Confirmed FCA-20260527-229 against the WebConsole error-handling and skill-upload bounds in `spec/17-web-console.md`: malformed operator packages should be classified as client request errors, while local durable fact, audit, and filesystem failures remain infrastructure errors.
+- Confirmed this is distinct from FCA-20260527-211, FCA-20260527-222, and FCA-20260527-224. Those slices prevented malformed upload side effects and late audit side effects; this slice covers the residual route-level status classification after `processSkillZipTransaction` has already rejected the package safely.
+- Confirmed the minimal fix belongs at the skill zip processing/upload handler boundary: mark only malformed package errors with a package-local type and map that type to HTTP 400, without changing SkillCatalog discovery, frontend upload state, audit event schema, or filesystem/audit failure handling.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7304,6 +7338,44 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-229
+
+Slice: `fix(webconsole): classify malformed skill uploads`
+
+Finding:
+
+- `handleUploadSkill` mapped every `processSkillZipTransaction` failure to HTTP 500.
+- That included package validation errors such as a valid zip archive with no `SKILL.md`, which is a malformed upload package rather than a local WebConsole storage or audit failure.
+- Before the fix, a focused route regression showed `/api/skills/upload` returning HTTP 500 with `no SKILL.md found...` while installing no skill and appending no `web.skill.install` audit event.
+
+Changes:
+
+- Added a package-local `skillZipPackageError` marker for malformed zip/package validation and package read failures.
+- Wrapped invalid zip, missing `SKILL.md`, traversal, zip limit, duplicate target, empty target name, file/directory conflict, and package read failures with that marker.
+- Mapped only marked package errors to HTTP 400 in `handleUploadSkill`.
+- Preserved destination, managed-root, temp-file, audit-log, commit, finalize, rollback, and local filesystem failures as HTTP 500.
+- Added route-level regression coverage proving malformed packages return HTTP 400 without installing a skill or appending an install audit event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestSkillUploadRejectsMalformedPackageAsBadRequest -count=1`: failed before the fix because the malformed package returned HTTP 500.
+- `go test -timeout 120s ./internal/webconsole -run TestSkillUploadRejectsMalformedPackageAsBadRequest -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(SkillUploadRejectsMalformedPackageAsBadRequest|ProcessSkillZip|ServiceSkill|SensitiveWebActionsEmitAuditEvents|SensitiveActionsPreflightAuditBeforeMutating)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-228
 
