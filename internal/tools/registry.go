@@ -2861,6 +2861,9 @@ func defAgentSpawn(control ControlPlane) Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("agent_spawn", err), nil
 			}
+			if strings.TrimSpace(input.Prompt) == "" {
+				return errorResult("agent_spawn", errors.New("prompt is required")), nil
+			}
 			input.ParentSessionID = execCtx.SessionID
 			result, err := control.SpawnAgent(ctx, input)
 			if err != nil {

@@ -7584,6 +7584,12 @@ Evidence gates:
 - Confirmed this is distinct from the recent blank-value slices. Those rejected whitespace or malformed values after a field was present; this slice covers omitted required fields that were allowed through generic built-in validation and could reach side-effecting handlers.
 - Confirmed the minimal fix belongs in the shared built-in tool argument validator: enforce `required` fields before dispatch while preserving closed-object unknown-field checks, explicit empty-string values, existing tool-specific blank-string validators, command-tool validation, provider adapters, and runtime workflow autonomy.
 
+### Review 250
+
+- Confirmed FCA-20260528-257 against `spec/04-tools-and-skills.md`'s `agent_spawn` contract: the `prompt` is the self-contained child task instruction, so a whitespace-only prompt is not a valid delegation request.
+- Confirmed this is distinct from runtime `Runner.SpawnAgent` validation and Web queue-submit validation. Those protect the built-in runtime control plane and Web REST path; this slice covers the tool wrapper boundary before any `ControlPlane` implementation receives the request.
+- Confirmed the minimal fix belongs in `defAgentSpawn`: reject blank prompts before setting `ParentSessionID` and calling the control plane, preserving model-led delegation, role/provider overrides, background queue semantics, Plan Mode gates, and the existing runtime defense-in-depth check.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7645,6 +7651,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-257
+
+Slice: `fix(tools): reject blank agent spawn prompts`
+
+Finding:
+
+- `agent_spawn` declares `prompt` as the self-contained child task prompt, and runtime `Runner.SpawnAgent` already rejects blank prompts.
+- The tool wrapper itself unmarshaled `prompt` and called the configured `ControlPlane` without rejecting whitespace-only values.
+- Before the fix, a focused regression with a recording `ControlPlane` showed `agent_spawn {"prompt":" \n\t "}` returned a successful child result and the blank prompt reached the control plane.
+
+Impact:
+
+- Any non-runtime or test control plane wired into the tool registry could receive malformed delegation requests, weakening tool contract integrity at the registry boundary.
+- Even with the current runtime defense-in-depth check, the model-visible tool could waste a tool turn routing invalid delegation requests into lower layers instead of returning an immediate actionable error.
+
+Changes:
+
+- Added a focused regression proving blank `agent_spawn.prompt` is rejected before `ControlPlane.SpawnAgent` is called.
+- Updated `defAgentSpawn` to reject `strings.TrimSpace(input.Prompt) == ""` with `prompt is required`.
+- Preserved valid agent tool registration, model-led delegation descriptions, role/provider override behavior, background queue semantics, and runtime `Runner.SpawnAgent` validation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestAgentSpawnRejectsBlankPromptBeforeControlPlane -count=1`: failed before the fix because the blank prompt reached the control plane and returned success.
+- `go test -timeout 120s ./internal/tools -run 'TestAgent(SpawnRejectsBlankPromptBeforeControlPlane|ToolsAreEnabledByDefaultAndCanBeDisabled|ToolsDescribeModelLedDelegation)' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(DelegateRejectsDepthLimit|QueueSubmitAndWorkerCompletesJob|QueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-256
 

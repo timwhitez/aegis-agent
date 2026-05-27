@@ -47,6 +47,25 @@ func containsString(items []string, target string) bool {
 	return false
 }
 
+type recordingControlPlane struct {
+	spawnCalls int
+	spawnReq   AgentSpawnRequest
+}
+
+func (r *recordingControlPlane) SpawnAgent(_ context.Context, req AgentSpawnRequest) (AgentSpawnResult, error) {
+	r.spawnCalls++
+	r.spawnReq = req
+	return AgentSpawnResult{SessionID: "child_1", Status: session.StatusCompleted}, nil
+}
+
+func (r *recordingControlPlane) AgentStatus(context.Context, AgentStatusRequest) (AgentStatusResult, error) {
+	return AgentStatusResult{}, nil
+}
+
+func (r *recordingControlPlane) AgentList(context.Context, string) (AgentListResult, error) {
+	return AgentListResult{}, nil
+}
+
 func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
@@ -2272,6 +2291,30 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	}
 	if !strings.Contains(listDef.Description, "recover delegated work") {
 		t.Fatalf("expected agent_list description to guide delegated work recovery, got %q", listDef.Description)
+	}
+}
+
+func TestAgentSpawnRejectsBlankPromptBeforeControlPlane(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	control := &recordingControlPlane{}
+	registry, err := NewRegistry(cfg, nil, store, control)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "agent_spawn", ExecContext{
+		SessionID: "sess_parent",
+		Store:     store,
+		Config:    cfg,
+	}, json.RawMessage(`{"prompt":" \n\t "}`))
+	if err != nil {
+		t.Fatalf("agent_spawn execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "prompt is required") {
+		t.Fatalf("expected blank prompt rejection, got %#v", result)
+	}
+	if control.spawnCalls != 0 {
+		t.Fatalf("blank prompt reached control plane: calls=%d req=%#v", control.spawnCalls, control.spawnReq)
 	}
 }
 
