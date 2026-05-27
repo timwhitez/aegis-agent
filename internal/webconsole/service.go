@@ -4911,23 +4911,30 @@ func (s *Service) pruneInactiveHandles() {
 	if len(ids) == 0 {
 		return
 	}
-	stale := make([]string, 0, len(ids))
+	stale := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		state, err := s.store.LoadState(id)
 		if err != nil {
 			continue
 		}
 		if currentProcessHandleCanBePruned(state.Status) {
-			stale = append(stale, id)
+			stale[id] = struct{}{}
 		}
 	}
 	if len(stale) == 0 {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, id := range stale {
-		delete(s.handles, id)
+	prunedHandles := make([]*launchHandle, 0, len(stale))
+	for id := range stale {
+		if handle, ok := s.handles[id]; ok {
+			prunedHandles = append(prunedHandles, handle)
+			delete(s.handles, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, handle := range prunedHandles {
+		_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "pruned_terminal_state"})
 	}
 }
 

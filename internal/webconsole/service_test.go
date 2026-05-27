@@ -3710,6 +3710,44 @@ func TestServicePromotePendingStartRequiresAcquiredEvent(t *testing.T) {
 	}
 }
 
+func TestServicePruneInactiveHandlesRecordsReleaseEvent(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_prune_release_event")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := svc.addHandle(&launchHandle{
+		sessionID:      meta.ID,
+		cancel:         func() {},
+		startedAt:      "2026-05-08T00:00:00Z",
+		processStartID: "prune-release-process",
+		pid:            5150,
+	}); err != nil {
+		t.Fatalf("add handle: %v", err)
+	}
+	if err := svc.store.SaveState(meta.ID, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("save completed state: %v", err)
+	}
+
+	if svc.hasAnyActiveHandle() {
+		t.Fatal("expected completed handle to be pruned")
+	}
+	eventsList, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	owner := latestActiveOwnerFromEvents(eventsList)
+	if owner.EventType != "webconsole.handle.released" || owner.ProcessStartID != "prune-release-process" || owner.ReleasedAt == "" {
+		t.Fatalf("expected prune to record release owner clue, got %#v", owner)
+	}
+}
+
 func TestContinueRESTCarriesRuntimeFields(t *testing.T) {
 	captured := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

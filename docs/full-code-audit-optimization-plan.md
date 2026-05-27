@@ -7788,6 +7788,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-289. That slice stopped stale `/api/sessions/start` success from adopting an old durable session; this slice covers the remaining ownership side effects: stale success clearing a newer pending launch, stale error clearing a newly selected running session, and durable session selection leaving the old ephemeral launch flag active.
 - Confirmed the minimal fix belongs in `sendMessage()` start ownership guards plus durable `adoptSession()`: only the owning pending launch may apply success/error side effects, and explicit durable adoption should cancel the old ephemeral launch UI state without changing backend session creation, WebSocket event handling, or runtime facts.
 
+### Review 284
+
+- Confirmed FCA-20260528-291 against `spec/17-web-console.md`'s active-handle diagnostics contract: WebConsole current-process handles remain in memory, but durable `webconsole.handle.acquired/released` events are the recovery/ownership clues used by session detail and restart diagnostics.
+- Confirmed this is distinct from FCA-20260527-203, FCA-20260525-027, FCA-20260526-055, and FCA-20260528-264. Those slices required acquired events, protected duplicate handle ownership, mapped released clues correctly, and retained handles on state-load errors; this slice covers terminal-state pruning deleting the in-memory handle while leaving the latest durable owner clue as `webconsole.handle.acquired`.
+- Confirmed the minimal fix belongs in `pruneInactiveHandles`: when a readable terminal state proves a current-process handle is stale and should be removed, capture that handle and best-effort append `webconsole.handle.released` with a prune reason, preserving cleanup semantics and not making release events authoritative.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7849,6 +7855,32 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-291
+
+Slice: `fix(webconsole): record releases for pruned handles`
+
+Finding:
+
+- `finishHandle()` removed active Web handles after attempting to append `webconsole.handle.released`.
+- `pruneInactiveHandles()` separately removed current-process handles when `state.json` was readable and terminal (`completed` / `failed`), but it only deleted the in-memory handle map entry.
+- After pruning, `events.jsonl` could still show the latest Web owner clue as `webconsole.handle.acquired`.
+
+Impact:
+
+- Session detail and recovery diagnostics could report stale acquired owner clues for a session whose current Web process had already discarded the active handle.
+- This weakened traceability for stop/interrupt ownership and restart recovery, even though the in-memory handle cleanup itself was correct.
+
+Changes:
+
+- Added a focused service regression that acquires a handle, marks the session completed, triggers pruning, and verifies the latest durable owner clue becomes `webconsole.handle.released`.
+- Updated `pruneInactiveHandles()` to capture handles removed because of readable terminal state and best-effort append `webconsole.handle.released` with `reason=pruned_terminal_state`.
+- Preserved cleanup behavior when release append fails; release events remain diagnostic clues and do not become authority that can strand stale handles.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServicePruneInactiveHandlesRecordsReleaseEvent -count=1`: failed before the fix because the latest owner clue remained `webconsole.handle.acquired`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServicePruneInactiveHandlesRecordsReleaseEvent|TestServicePruneInactiveHandlesKeepsUnreadableStateHandle|TestServiceRejectsDuplicateHandleAndPreservesOwner|TestServiceAddHandleRequiresAcquiredEvent|TestServicePromotePendingStartRequiresAcquiredEvent|TestSessionDetailReportsActiveHandleOwner' -count=1`: passed after pruned terminal handles wrote release clues.
 
 ### FCA-20260528-290
 
