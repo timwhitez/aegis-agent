@@ -4872,6 +4872,33 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-220: Steer pending-count refresh failures can be silently ignored
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines `state.json` and `control/steer.jsonl` as durable session facts.
+- `spec/13-live-input-and-steering.md` requires accepted steer input to update the durable steer queue and refresh the session contract/artifact facts before the run proceeds.
+- After FCA-20260527-219, `internal/runtime/engine.go` `drainSteer` marked the request accepted and appended the acceptance event batch, then called `RefreshPendingSteerCount` with `_, _ = ...`.
+- A focused regression blocked `state.lock` after the user-message hook completed. Before the fix, `drainSteer` returned success with `accepted=1` even though the pending steer count could not be refreshed.
+
+Impact:
+
+The runtime could report a steer as accepted while silently leaving `state.json` out of sync with `control/steer.jsonl`. Web/session summaries and recovery code that read state-level pending steer count could show stale control information even though the accepting run returned success.
+
+Minimal fix:
+
+- Refresh pending steer count immediately after marking the current steer request accepted, before appending acceptance events.
+- If pending-count refresh fails, restore the steer request to its original open status, roll back optional Goal history and the just-appended steer message, and append no acceptance events.
+- When a later acceptance event batch fails after a successful count refresh, refresh the pending count again after restoring the request so `state.json` matches the restored queue.
+
+Validation:
+
+- Focused pre-fix runtime regression proving blocked `state.lock` made `drainSteer` return success with `accepted=1`.
+- Focused post-fix runtime regression proving pending-count refresh failure leaves no steer message or acceptance events and keeps the request pending.
+- Adjacent accepted-event failure, earlier accepted steer, concurrent append, runtime/session, WebConsole, JS, repo test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-219: Steer status update failures can leave accepted facts retryable
 
 Severity: Medium
@@ -6981,6 +7008,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 213
+
+- Confirmed FCA-20260527-220 against the session fact-source requirements in `spec/01-runtime-architecture.md` and the live steer acceptance requirements in `spec/13-live-input-and-steering.md`: `state.json` pending count and `control/steer.jsonl` queue status must be refreshed as part of the accepted steer boundary.
+- Confirmed this is distinct from FCA-20260527-219. That slice handled failure while marking the request accepted; this slice covers the immediately following pending-count refresh, which was still explicitly ignored.
+- Confirmed the minimal fix belongs in `Engine.drainSteer`: no store API change is required because `Store.RefreshPendingSteerCount` already returns a useful error and derives count from the durable queue.
+
 ### Review 212
 
 - Confirmed FCA-20260527-219 against the live steer acceptance boundary in `spec/13-live-input-and-steering.md`: accepted steer message, acceptance events, optional Goal history, control queue status, pending count, and contract refresh must describe one consumed instruction.
@@ -7000,6 +7033,40 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-220
+
+Slice: `fix(runtime): handle steer pending count failure`
+
+Finding:
+
+- `drainSteer` ignored `RefreshPendingSteerCount` errors after marking a steer request accepted and appending acceptance events.
+- When `state.json` could not be updated, the function still returned success and counted the steer as accepted.
+
+Changes:
+
+- Moved pending-count refresh before the acceptance event batch.
+- Report pending-count refresh errors and roll back the accepted request, optional Goal history, and just-appended steer message before returning.
+- Refresh pending count again when later event-batch rollback restores the request to an open state.
+- Added a focused runtime regression for blocked `state.lock`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineSteerAcceptanceRollsBackMessageWhenPendingCountRefreshFails -count=1`: failed before the fix because blocked `state.lock` still returned `accepted=1` with no error.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptanceRollsBackMessageWhenPendingCountRefreshFails|TestEngineSteerAcceptanceReportsAcceptedEventAppendError|TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails|TestEngineRefreshesPendingSteerCountAfterConcurrentAppend' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
 
 ### FCA-20260527-219
 

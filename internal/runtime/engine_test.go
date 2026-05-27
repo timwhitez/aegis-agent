@@ -2746,6 +2746,66 @@ func TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails(t *testing.T
 	}
 }
 
+func TestEngineSteerAcceptanceRollsBackMessageWhenPendingCountRefreshFails(t *testing.T) {
+	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	stateLockPath := filepath.Join(engine.store.SessionDir(meta.ID), "state.lock")
+	hookManager = hooks.New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{{
+			Name: "block-state-update",
+			Inject: &config.HookInject{
+				Field: "text",
+				Set:   "focus on tests",
+			},
+		}},
+	}, meta.Workdir)
+	hookManager.SetEmitter(func(eventType string, _ map[string]any) error {
+		if eventType != "hook.finished" {
+			return nil
+		}
+		blockPathAsDir(t, stateLockPath, "state lock")
+		return nil
+	})
+
+	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	if err == nil {
+		t.Fatalf("expected pending steer count refresh error, accepted=%d err=%v", accepted, err)
+	}
+	if accepted != 0 {
+		t.Fatalf("pending-count refresh failure should not count accepted steer requests, got %d", accepted)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "steer" {
+			t.Fatalf("pending-count refresh failure should roll back provider-visible steer message, got %#v", messages)
+		}
+	}
+	requests, loadErr := engine.store.LoadSteerRequests(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load steer requests: %v", loadErr)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusPending {
+		t.Fatalf("pending-count refresh failure should keep steer pending for retry, got %#v", requests)
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	for _, event := range eventsList {
+		if event.Type == "user.message" && event.Data["source"] == "steer" {
+			t.Fatalf("pending-count refresh failure should not append steer user.message event, got %#v", eventsList)
+		}
+		if event.Type == "session.steer.accepted" {
+			t.Fatalf("pending-count refresh failure should not append accepted steer event, got %#v", eventsList)
+		}
+	}
+}
+
 func TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails(t *testing.T) {
 	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
 	first := session.NewSteerRequest("first", false)
