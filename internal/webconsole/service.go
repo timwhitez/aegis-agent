@@ -3149,6 +3149,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		normalizeProviderReasoningFields(providerName, &p)
 		if _, err := effectiveWebSettingsAPIProvider(providerName, p); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -3590,6 +3591,7 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	normalizeProviderReasoningFields(providerName, &p)
 	effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(providerName, p)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -3790,6 +3792,20 @@ func applyProviderReasoningSummary(providerName string, provider *config.Provide
 		return fmt.Errorf("unsupported reasoning summary for %s: %s", providerName, summary)
 	}
 	return nil
+}
+
+func normalizeProviderReasoningFields(providerName string, provider *config.Provider) {
+	if provider == nil {
+		return
+	}
+	switch providerReasoningFamily(providerName, *provider) {
+	case "openai":
+		provider.ThinkingBudget = 0
+		provider.IncludeThoughts = nil
+	case "thinking":
+		provider.ReasoningEffort = ""
+		provider.ReasoningSummary = ""
+	}
 }
 
 func providerReasoningFamily(providerName string, provider config.Provider) string {

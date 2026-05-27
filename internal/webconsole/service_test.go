@@ -7387,6 +7387,86 @@ func TestServiceConfigRoutesPersistThinkingMaxMode(t *testing.T) {
 	}
 }
 
+func TestServiceConfigClearsStaleReasoningFieldsWhenSwitchingAdapterFamily(t *testing.T) {
+	cfg := testConfig(t, "")
+	openaiProvider := cfg.Providers["openai"]
+	openaiProvider.APIProvider = "openai-compatible"
+	openaiProvider.ReasoningEffort = "xhigh"
+	openaiProvider.ReasoningSummary = "auto"
+	cfg.Providers["openai"] = openaiProvider
+	anthropicProvider := cfg.Providers["anthropic"]
+	enabled := true
+	anthropicProvider.APIProvider = "anthropic-compatible"
+	anthropicProvider.ThinkingBudget = settingsThinkingMaxBudget
+	anthropicProvider.IncludeThoughts = &enabled
+	anthropicProvider.MaxOutputTokens = settingsThinkingMaxOutputTokens
+	cfg.Providers["anthropic"] = anthropicProvider
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":          "openai",
+		"api_provider":      "anthropic-compatible",
+		"reasoning_mode":    "default",
+		"reasoning_summary": "default",
+	}, http.StatusOK, nil)
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":          "anthropic",
+		"api_provider":      "openai-compatible",
+		"reasoning_mode":    "default",
+		"reasoning_summary": "default",
+	}, http.StatusOK, nil)
+
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	switchedThinking := updated.Providers["openai"]
+	if switchedThinking.ReasoningEffort != "" || switchedThinking.ReasoningSummary != "" {
+		t.Fatalf("expected OpenAI reasoning fields to clear for thinking adapter, got %#v", switchedThinking)
+	}
+	switchedOpenAI := updated.Providers["anthropic"]
+	if switchedOpenAI.ThinkingBudget != 0 || switchedOpenAI.IncludeThoughts != nil {
+		t.Fatalf("expected thinking fields to clear for OpenAI adapter, got %#v", switchedOpenAI)
+	}
+
+	var after map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &after)
+	providers, _ := after["providers"].(map[string]any)
+	openaiPayload, _ := providers["openai"].(map[string]any)
+	if openaiPayload["effective_api_provider"] != "anthropic-compatible" || openaiPayload["reasoning_effort"] != "" || openaiPayload["reasoning_summary"] != "default" {
+		t.Fatalf("expected thinking adapter payload without stale OpenAI reasoning fields, got %#v", openaiPayload)
+	}
+	anthropicPayload, _ := providers["anthropic"].(map[string]any)
+	if anthropicPayload["effective_api_provider"] != "openai-compatible" || anthropicPayload["thinking_budget"].(float64) != 0 || anthropicPayload["include_thoughts"] != nil {
+		t.Fatalf("expected OpenAI adapter payload without stale thinking fields, got %#v", anthropicPayload)
+	}
+
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config file: %v", err)
+	}
+	configText := string(configBytes)
+	for _, stale := range []string{
+		"reasoning_effort: xhigh",
+		"reasoning_summary: auto",
+		"thinking_budget: 32000",
+		"include_thoughts: true",
+	} {
+		if strings.Contains(configText, stale) {
+			t.Fatalf("expected stale adapter-family field %q to be absent from persisted config, got %q", stale, configText)
+		}
+	}
+}
+
 func TestServiceConfigCustomAnthropicProviderGetsThinkingModes(t *testing.T) {
 	cfg := testConfig(t, "")
 	cfg.Providers["kimi"] = config.Provider{
@@ -7638,6 +7718,84 @@ func TestServiceConfigTestUsesAnthropicPromptCacheDefault(t *testing.T) {
 	seen := <-seenRequest
 	if !webAnthropicCacheControlOnFirstSystemBlock(seen) || !webAnthropicCacheControlOnLastMessageBlock(seen) {
 		t.Fatalf("expected Web config-test probe to send default prompt cache markers, got %#v", seen)
+	}
+}
+
+func TestServiceConfigTestClearsStaleReasoningFieldsWhenSwitchingAdapterFamily(t *testing.T) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/messages":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"msg_probe_1",
+				"stop_reason":"end_turn",
+				"content":[{"type":"text","text":"provider probe ok"}],
+				"usage":{"input_tokens":10,"output_tokens":5}
+			}`))
+		case "/responses":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode provider request: %v", err)
+			}
+			if _, ok := body["reasoning"]; ok {
+				t.Errorf("unexpected stale reasoning payload in OpenAI request: %#v", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"resp_probe_1",
+				"status":"completed",
+				"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"provider probe ok"}]}],
+				"usage":{"input_tokens":10,"output_tokens":5}
+			}`))
+		default:
+			t.Errorf("unexpected provider path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	openaiProvider := cfg.Providers["openai"]
+	openaiProvider.APIProvider = "openai-compatible"
+	openaiProvider.BaseURL = providerServer.URL
+	openaiProvider.ReasoningEffort = "xhigh"
+	openaiProvider.ReasoningSummary = "auto"
+	cfg.Providers["openai"] = openaiProvider
+	anthropicProvider := cfg.Providers["anthropic"]
+	enabled := true
+	anthropicProvider.BaseURL = providerServer.URL
+	anthropicProvider.ThinkingBudget = settingsThinkingMaxBudget
+	anthropicProvider.IncludeThoughts = &enabled
+	cfg.Providers["anthropic"] = anthropicProvider
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var thinkingResult TestConfigResponse
+	postJSON(t, ts.URL+"/api/config/test", map[string]any{
+		"provider":     "openai",
+		"api_provider": "anthropic-compatible",
+		"base_url":     providerServer.URL,
+		"model":        "claude-test",
+	}, http.StatusOK, &thinkingResult)
+	if thinkingResult.EffectiveAPIProvider != "anthropic-compatible" || thinkingResult.ReasoningEffort != "" || thinkingResult.ReasoningSummary != "default" {
+		t.Fatalf("expected thinking probe response without stale OpenAI reasoning fields, got %#v", thinkingResult)
+	}
+
+	var openAIResult TestConfigResponse
+	postJSON(t, ts.URL+"/api/config/test", map[string]any{
+		"provider":     "anthropic",
+		"api_provider": "openai-compatible",
+		"base_url":     providerServer.URL,
+		"model":        "gpt-test",
+	}, http.StatusOK, &openAIResult)
+	if openAIResult.EffectiveAPIProvider != "openai-compatible" || openAIResult.ThinkingBudget != 0 || openAIResult.IncludeThoughts != nil {
+		t.Fatalf("expected OpenAI probe response without stale thinking fields, got %#v", openAIResult)
 	}
 }
 

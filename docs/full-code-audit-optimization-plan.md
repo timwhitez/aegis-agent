@@ -7644,6 +7644,12 @@ Evidence gates:
 - Confirmed this is distinct from existing Plan Mode cancellation event coverage. Existing regressions covered `planmode.cancelled` event persistence, cancellation retry idempotency, and the engine-owned `awaitingPlanCancelled` helper; this slice covers `Runner.Continue(... CancelPlan: true)`, which bypasses the engine helper and returned an awaiting-input result without a matching `session.awaiting_input` event.
 - Confirmed the minimal fix belongs in the runtime continue cancellation branch: after saving `state.status=awaiting_input` / `phase=plan_cancelled`, append `session.awaiting_input` with `reason=plan_cancelled`, without changing provider adapters, Web service state authority, or Plan Mode gate semantics.
 
+### Review 260
+
+- Confirmed FCA-20260528-267 against `spec/03-provider-contracts.md` and `spec/17-web-console.md`'s Settings provider-option contract: Web Settings exposes adapter-family-specific reasoning/thinking controls, and saved/tested provider options must match the effective API Provider family that will be passed through session metadata into the adapter.
+- Confirmed this is distinct from FCA-20260528-262 and earlier Settings API-provider validation slices. Those covered missing session `provider_options`, explicit provider/model defaults, unsupported API Provider rejection, and applying provider-scoped fields; this slice covers stale cross-family option fields left behind when a configured profile is switched between OpenAI-compatible Responses and Anthropic/Google thinking adapters.
+- Confirmed the minimal fix belongs in the Web Settings adapter boundary: normalize provider reasoning fields after applying the submitted API Provider / reasoning controls for both `/api/config` and `/api/config/test`, preserving provider adapter replay ownership, Settings UI mode selection, runtime metadata propagation, and valid same-family reasoning/thinking choices.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7705,6 +7711,51 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-267
+
+Slice: `fix(webconsole): clear stale provider reasoning`
+
+Finding:
+
+- Web Settings applied `api_provider` before applying the submitted reasoning mode and summary, so the visible controls switched to the new adapter family.
+- The route did not clear the old adapter family's stored fields. Switching an OpenAI-compatible profile with `reasoning_effort: xhigh` / `reasoning_summary: auto` to `anthropic-compatible` left stale OpenAI reasoning fields persisted; switching a thinking provider back to `openai-compatible` left stale `thinking_budget` / `include_thoughts` fields persisted.
+- `providerOptionsFromConfig` and `provider.request.prepared` carry all non-empty provider option fields into durable metadata and diagnostics, so these stale fields weakened Settings traceability even when the selected adapter ignored the irrelevant fields.
+
+Impact:
+
+- `/api/config` and `config.yaml` could report an effective thinking adapter while still carrying OpenAI-only reasoning facts, or report an OpenAI-compatible adapter while carrying thinking-budget facts from a previous Anthropic/Google mode.
+- `/api/config/test` could similarly echo stale option fields for the probe configuration, making the Settings probe response disagree with the adapter-family-specific controls shown in the Web console.
+
+Changes:
+
+- Added Web Settings normalization for provider reasoning fields after submitted API Provider / reasoning controls are applied.
+- For OpenAI-family adapters, stale `thinking_budget` and `include_thoughts` are cleared while preserving `max_output_tokens`.
+- For Anthropic-compatible / Google thinking adapters, stale `reasoning_effort` and `reasoning_summary` are cleared.
+- Routed both `/api/config` and `/api/config/test` through the same normalization helper.
+- Added focused WebConsole regressions for persisted Settings saves and non-persisting Settings probes across both adapter-family switch directions.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceConfigClearsStaleReasoningFieldsWhenSwitchingAdapterFamily -count=1`: failed before the fix because `reasoning_effort: "xhigh"` remained after switching the `openai` profile to `anthropic-compatible`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfig(ClearsStaleReasoningFieldsWhenSwitchingAdapterFamily|TestClearsStaleReasoningFieldsWhenSwitchingAdapterFamily)' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfig(RoutesUpdateActiveConfig|DefaultsProviderScopedFieldsToCurrentDefault|SaveClearsExplicitProviderFields|RejectsUnsupportedAPIProvider|RoutesPersistThinkingMaxMode|ClearsStaleReasoningFieldsWhenSwitchingAdapterFamily|CustomAnthropicProviderGetsThinkingModes|RejectsCustomProviderWithoutAPIProvider|TestRejectsUnsupportedAPIProvider|TestAppliesReasoningModeWithoutPersisting|TestUsesAnthropicPromptCacheDefault|TestClearsStaleReasoningFieldsWhenSwitchingAdapterFamily)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-266
 
