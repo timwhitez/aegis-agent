@@ -25,17 +25,17 @@ func newCompactor(store *session.Store) *compactor {
 	return &compactor{store: store}
 }
 
-func (c *compactor) Build(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent int, emit func(events.Event)) ([]session.Message, error) {
+func (c *compactor) Build(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent int, emit func(events.Event) error) ([]session.Message, error) {
 	view, _, _, err := c.BuildWithPolicy(sessionID, workdir, state, messages, todo, tasks, threshold, keepRecent, 0, 0, emit)
 	return view, err
 }
 
-func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent, lastCompactionInputChars, hysteresisDeltaChars int, emit func(events.Event)) ([]session.Message, int, bool, error) {
+func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent, lastCompactionInputChars, hysteresisDeltaChars int, emit func(events.Event) error) ([]session.Message, int, bool, error) {
 	profile := compactionProfileForPolicy(threshold, keepRecent, hysteresisDeltaChars)
 	return c.BuildWithProfile(sessionID, workdir, state, messages, todo, tasks, profile, lastCompactionInputChars, emit)
 }
 
-func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile, lastCompactionInputChars int, emit func(events.Event)) ([]session.Message, int, bool, error) {
+func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile, lastCompactionInputChars int, emit func(events.Event) error) ([]session.Message, int, bool, error) {
 	profile = normalizeCompactionProfile(profile)
 	sourceMessages := cloneMessages(messages)
 	cloned := cloneMessages(sourceMessages)
@@ -57,7 +57,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 			if err != nil {
 				return nil, size, false, err
 			}
-			emit(events.New(sessionID, "compact.reused", "compact", data))
+			if err := emit(events.New(sessionID, "compact.reused", "compact", data)); err != nil {
+				return nil, size, false, fmt.Errorf("record compact.reused event: %w", err)
+			}
 		}
 		compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
 		compacted.Meta = map[string]any{
@@ -78,7 +80,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		return nil, size, false, fmt.Errorf("load goal.json for compaction: %w", err)
 	}
 
-	emit(events.New(sessionID, "compact.started", "compact", map[string]any{
+	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.started", "compact", map[string]any{
 		"input_chars":            size,
 		"reason":                 "input_char_threshold_exceeded",
 		"context_profile":        profile,
@@ -92,7 +94,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"done_task_count":        taskSummary.Done,
 		"proof_read_budget":      proofBudget,
 		"goal_present":           goal != nil,
-	}))
+	})); err != nil {
+		return nil, size, false, fmt.Errorf("record compact.started event: %w", err)
+	}
 	transcriptName := fmt.Sprintf("transcript-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
 	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, sourceMessages)
 	if err != nil {
@@ -143,7 +147,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	}
 	compactText, _ := json.MarshalIndent(summary, "", "  ")
 	recent := recentMessagesForCompaction(cloned, 6)
-	emit(events.New(sessionID, "compact.finished", "compact", map[string]any{
+	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.finished", "compact", map[string]any{
 		"summary_path":           summaryPath,
 		"input_chars":            size,
 		"reason":                 "input_char_threshold_exceeded",
@@ -161,7 +165,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"high_value_proof_count": len(highValueProofs),
 		"proof_read_budget":      proofBudget,
 		"goal_present":           goal != nil,
-	}))
+	})); err != nil {
+		return nil, size, false, fmt.Errorf("record compact.finished event: %w", err)
+	}
 	compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
 	compacted.Meta = map[string]any{
 		"source": "compaction_summary",
@@ -169,6 +175,13 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 	out := []session.Message{compacted}
 	out = append(out, recent...)
 	return out, size, true, nil
+}
+
+func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error {
+	if emit == nil {
+		return nil
+	}
+	return emit(evt)
 }
 
 func (c *compactor) reusableCompactionSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, string, error) {

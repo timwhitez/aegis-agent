@@ -1558,7 +1558,7 @@ func TestToolGuardBlocksFinishAfterCompactionWhenPromptFallsOutOfRecentTail(t *t
 		session.NewAssistantMessage(strings.Repeat("wrap up ", 200), "", nil),
 	}
 	compactor := newCompactor(store)
-	view, err := compactor.Build("sess-1", workdir, state, messages, nil, nil, 1, 1, func(events.Event) {})
+	view, err := compactor.Build("sess-1", workdir, state, messages, nil, nil, 1, 1, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}

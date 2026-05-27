@@ -6658,7 +6658,47 @@ Evidence gates:
 - Confirmed `Engine.drainSteer` already returned `goal.updated` history append failures, but still emitted the matching `goal.updated` session event with best-effort `emit`; a blocked `events.jsonl` after `session.steer.accepted` could leave the steer message and Goal history visible while the required Goal event was missing.
 - Confirmed the minimal fix belongs in runtime steer acceptance: require `goal.updated` event persistence, restore the just-appended Goal history on event failure, and roll back the provider-visible steer message while keeping the steer request pending for retry.
 
+### Review 199
+
+- Confirmed FCA-20260527-206 against `spec/10-context-compaction.md`: every compaction must write `compact.started`, `compact.finished`, or `compact.reused` events with trigger, size, artifact, project-memory, task, and proof-budget context.
+- Confirmed `Engine.Run` passed `compactor.BuildWithProfile` a callback that ignored `AppendEvent` errors, while `compactor.BuildWithProfile` accepted an errorless emitter; blocked `events.jsonl` could therefore let runtime continue to provider preparation with a compacted context view whose required event evidence was missing.
+- Confirmed the minimal fix belongs in the compactor/runtime boundary: make compaction event emission error-returning, stop fresh and reused compaction when the required event cannot be written, and keep ordinary no-compaction provider-view construction unchanged.
+
 ## Update Log
+
+### FCA-20260527-206
+
+Slice: `fix(runtime): require compaction events`
+
+Finding:
+
+- `spec/10-context-compaction.md` requires compaction to write `compact.started`, `compact.finished`, and `compact.reused` events so compacted provider views remain traceable to local file facts.
+- `Engine.Run` wired `compactor.BuildWithProfile` with a callback that ignored `store.AppendEvent` errors, and the compactor API could not return emitter failures.
+- With `events.jsonl` blocked, fresh compaction or hysteresis reuse could still return a provider-visible compacted view and allow the provider turn to continue without the required compaction event evidence.
+
+Changes:
+
+- Changed compactor `Build`, `BuildWithPolicy`, and `BuildWithProfile` event callbacks to return `error`.
+- Returned contextual errors for missing `compact.started`, `compact.finished`, and `compact.reused` event persistence.
+- Wired `Engine.Run` compaction event emission through required `AppendEvent` before publishing to the event bus.
+- Added focused compactor coverage for fresh-start, fresh-finished, and reuse event failures.
+- Stabilized the steer Goal-event regression by replacing its asynchronous event-bus race with a deterministic test-only pre-append hook.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCompactorReportsEventEmitErrors -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactorReportsEventEmitErrors|TestCompactorWritesDurableSummaryArtifact|TestCompactorReusesSummaryWithinHysteresisWindow|TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError|TestToolGuardBlocksFinishAfterCompactionWhenPromptFallsOutOfRecentTail' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go internal/runtime/engine.go internal/runtime/engine_test.go internal/runtime/prompt_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-205
 

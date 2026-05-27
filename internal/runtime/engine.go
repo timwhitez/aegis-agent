@@ -28,6 +28,10 @@ type Engine struct {
 	control   *runControl
 	compactor *compactor
 	runner    RunnerInterface
+
+	// beforeAppendEvent is set only by package tests to force deterministic
+	// storage failures at precise event boundaries.
+	beforeAppendEvent func(events.Event)
 }
 
 type RunnerInterface interface {
@@ -207,9 +211,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Runtime retrieval, project-memory, and review-artifact guardrails are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
 		compactionProfile := compactionProfileFromConfig(meta, e.cfg.Runtime.Compact)
-		view, compactionInputChars, didCompact, err := e.compactor.BuildWithProfile(meta.ID, meta.Workdir, state, messages, todo, tasks, compactionProfile, state.LastCompactionInputChars, func(evt events.Event) {
-			_ = e.store.AppendEvent(meta.ID, evt)
+		view, compactionInputChars, didCompact, err := e.compactor.BuildWithProfile(meta.ID, meta.Workdir, state, messages, todo, tasks, compactionProfile, state.LastCompactionInputChars, func(evt events.Event) error {
+			if err := e.store.AppendEvent(meta.ID, evt); err != nil {
+				return err
+			}
 			e.bus.Publish(evt)
+			return nil
 		})
 		if err != nil {
 			return e.fail(ctx, meta, state, err, hookManager)
@@ -977,6 +984,9 @@ func (e *Engine) emit(sessionID, eventType, phase string, data map[string]any) {
 
 func (e *Engine) appendEvent(sessionID, eventType, phase string, data map[string]any) error {
 	evt := events.New(sessionID, eventType, phase, data)
+	if e.beforeAppendEvent != nil {
+		e.beforeAppendEvent(evt)
+	}
 	if err := e.store.AppendEvent(sessionID, evt); err != nil {
 		return err
 	}

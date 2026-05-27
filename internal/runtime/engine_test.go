@@ -2346,15 +2346,11 @@ func TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError(t *testing.T) {
 	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
 		return engine.appendEvent(meta.ID, eventType, "control_drain", data)
 	})
-	eventsCh := engine.bus.Subscribe(16)
-	go func() {
-		for evt := range eventsCh {
-			if evt.Type == "session.steer.accepted" {
-				blockPathAsDir(t, eventsPath, "events")
-				return
-			}
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "goal.updated" {
+			blockPathAsDir(t, eventsPath, "events")
 		}
-	}()
+	}
 
 	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err == nil || !strings.Contains(err.Error(), "goal.updated") || !strings.Contains(err.Error(), "events.jsonl") {
@@ -3806,7 +3802,7 @@ func blockRuntimeProviderAttemptsPath(t *testing.T, store *session.Store, sessio
 
 func blockPathAsDir(t *testing.T, path, label string) {
 	t.Helper()
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := os.RemoveAll(path); err != nil {
 		t.Fatalf("remove %s: %v", label, err)
 	}
 	if err := os.Mkdir(path, 0o700); err != nil {

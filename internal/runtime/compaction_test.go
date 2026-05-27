@@ -101,8 +101,9 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 
 	var emitted []events.Event
 	compactor := newCompactor(store)
-	view, err := compactor.Build(meta.ID, meta.Workdir, state, messages, todo, tasks, 32, 1, func(evt events.Event) {
+	view, err := compactor.Build(meta.ID, meta.Workdir, state, messages, todo, tasks, 32, 1, func(evt events.Event) error {
 		emitted = append(emitted, evt)
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)
@@ -227,6 +228,105 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	}
 }
 
+func TestCompactorReportsEventEmitErrors(t *testing.T) {
+	newSession := func(t *testing.T) (*session.Store, session.SessionMetadata, session.State, []session.Message) {
+		t.Helper()
+		store := session.NewStore(t.TempDir())
+		meta := session.SessionMetadata{
+			SchemaVersion:    1,
+			ID:               session.NewSessionID(),
+			CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+			Workdir:          t.TempDir(),
+			Mode:             session.ModeRun,
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			CompletionPolicy: session.CompletionPolicyInteractive,
+		}
+		state := session.State{
+			Status:    session.StatusRunning,
+			Phase:     "prepare",
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		if err := store.Create(meta, state); err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		messages := []session.Message{
+			session.NewMessage("user", strings.Repeat("context ", 80)),
+			session.NewToolMessage([]session.ToolResult{{
+				ToolCallID:    "call_1",
+				Name:          "shell",
+				LLMOutput:     strings.Repeat("output ", 80),
+				DisplayOutput: strings.Repeat("output ", 80),
+			}}),
+		}
+		return store, meta, state, messages
+	}
+	assertEventError := func(t *testing.T, err error, eventType string, sentinel error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("expected %s emit error", eventType)
+		}
+		if !strings.Contains(err.Error(), eventType) {
+			t.Fatalf("expected %s context, got %v", eventType, err)
+		}
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("expected sentinel error, got %v", err)
+		}
+	}
+
+	t.Run("started", func(t *testing.T) {
+		store, meta, state, messages := newSession(t)
+		sentinel := errors.New("append compact.started")
+		view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) error {
+			return sentinel
+		})
+		assertEventError(t, err, "compact.started", sentinel)
+		if view != nil || didCompact {
+			t.Fatalf("expected no compacted view after started event failure, got didCompact=%v view=%#v", didCompact, view)
+		}
+		summaryDir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions")
+		if entries, readErr := os.ReadDir(summaryDir); readErr == nil && len(entries) > 0 {
+			t.Fatalf("expected no summary artifact after started event failure, got %#v", entries)
+		} else if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatalf("read summary dir: %v", readErr)
+		}
+	})
+
+	t.Run("finished", func(t *testing.T) {
+		store, meta, state, messages := newSession(t)
+		sentinel := errors.New("append compact.finished")
+		emitCount := 0
+		view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) error {
+			emitCount++
+			if emitCount == 2 {
+				return sentinel
+			}
+			return nil
+		})
+		assertEventError(t, err, "compact.finished", sentinel)
+		if view != nil || didCompact {
+			t.Fatalf("expected no compacted view after finished event failure, got didCompact=%v view=%#v", didCompact, view)
+		}
+	})
+
+	t.Run("reused", func(t *testing.T) {
+		store, meta, state, messages := newSession(t)
+		if _, err := store.WriteArtifact(meta.ID, filepath.Join("compactions", "summary-20260527-010000.json"), map[string]any{
+			"current_status": "stable",
+		}); err != nil {
+			t.Fatalf("write reusable summary: %v", err)
+		}
+		sentinel := errors.New("append compact.reused")
+		view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 100000, 100000, func(events.Event) error {
+			return sentinel
+		})
+		assertEventError(t, err, "compact.reused", sentinel)
+		if view != nil || didCompact {
+			t.Fatalf("expected no compacted view after reused event failure, got didCompact=%v view=%#v", didCompact, view)
+		}
+	})
+}
+
 func TestCompactorReportsCorruptFeatureList(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()
@@ -256,7 +356,7 @@ func TestCompactorReportsCorruptFeatureList(t *testing.T) {
 		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
 
-	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, compactionProfileForPolicy(32, 1, 0), 0, func(events.Event) {})
+	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, compactionProfileForPolicy(32, 1, 0), 0, func(events.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "feature_list.json") {
 		t.Fatalf("expected corrupt feature_list.json error, got view=%#v didCompact=%t err=%v", view, didCompact, err)
 	}
@@ -300,7 +400,7 @@ func TestCompactorReportsCorruptGoalSnapshot(t *testing.T) {
 		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
 
-	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, compactionProfileForPolicy(32, 1, 0), 0, func(events.Event) {})
+	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, compactionProfileForPolicy(32, 1, 0), 0, func(events.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "goal.json") {
 		t.Fatalf("expected corrupt goal.json error, got view=%#v didCompact=%t err=%v", view, didCompact, err)
 	}
@@ -344,7 +444,7 @@ func TestCompactorReuseReportsCorruptGoalSnapshot(t *testing.T) {
 		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
 
-	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 520, 1000, func(events.Event) {})
+	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 520, 1000, func(events.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "goal.json") {
 		t.Fatalf("expected corrupt goal.json reuse error, got view=%#v didCompact=%t err=%v", view, didCompact, err)
 	}
@@ -387,8 +487,9 @@ func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	}
 
 	var emitted []events.Event
-	view, inputChars, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 520, 1000, func(evt events.Event) {
+	view, inputChars, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 520, 1000, func(evt events.Event) error {
 		emitted = append(emitted, evt)
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)
@@ -452,7 +553,7 @@ func TestCompactionAddsReferencePrefix(t *testing.T) {
 		KeepRecentToolResults: 1,
 		HysteresisDeltaChars:  100,
 	}
-	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, func(events.Event) {})
+	view, _, didCompact, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -527,7 +628,7 @@ func TestCompactionDoesNotRedactSecretLikeText(t *testing.T) {
 		}}),
 		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
-	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) {})
+	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -620,7 +721,7 @@ func TestCompactionTruncatesOldToolOutput(t *testing.T) {
 			DisplayOutput: "new output",
 		}}),
 	}
-	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) {})
+	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -724,7 +825,7 @@ func TestCompactionTruncatesProviderBlockToolArguments(t *testing.T) {
 				}}),
 			}
 
-			view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) {})
+			view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) error { return nil })
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
@@ -792,7 +893,7 @@ func TestCompactorDoesNotMutateSourceToolResultMetadata(t *testing.T) {
 		}}),
 	}
 
-	view, _, _, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) {})
+	view, _, _, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -842,7 +943,7 @@ func TestCompactionKeepsArtifactProofMemory(t *testing.T) {
 		}}),
 		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
 	}
-	if _, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) {}); err != nil {
+	if _, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(events.Event) error { return nil }); err != nil {
 		t.Fatalf("build: %v", err)
 	} else if !didCompact {
 		t.Fatal("expected compaction")
@@ -929,7 +1030,7 @@ func TestCompactorPreservesAssistantToolCallsForRetainedToolResults(t *testing.T
 		session.NewAssistantMessage("Will do.", "", nil),
 	}
 
-	view, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, messages, nil, nil, 1, 10, func(events.Event) {})
+	view, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, messages, nil, nil, 1, 10, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -1037,7 +1138,7 @@ func TestCompactorPreservesProviderBlockToolCallsForRetainedToolResults(t *testi
 				session.NewAssistantMessage("Recent answer.", "", nil),
 			}
 
-			view, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, messages, nil, nil, 1, 10, func(events.Event) {})
+			view, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, messages, nil, nil, 1, 10, func(events.Event) error { return nil })
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
