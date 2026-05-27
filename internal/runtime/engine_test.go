@@ -2330,6 +2330,54 @@ func TestEngineSteerAcceptanceReportsGoalHistoryError(t *testing.T) {
 	}
 }
 
+func TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError(t *testing.T) {
+	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Track steer in goal event",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", true)); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
+		return engine.appendEvent(meta.ID, eventType, "control_drain", data)
+	})
+	eventsCh := engine.bus.Subscribe(16)
+	go func() {
+		for evt := range eventsCh {
+			if evt.Type == "session.steer.accepted" {
+				blockPathAsDir(t, eventsPath, "events")
+				return
+			}
+		}
+	}()
+
+	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "goal.updated") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected goal.updated event append error, accepted=%d err=%v", accepted, err)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "steer" {
+			t.Fatalf("goal.updated event failure should roll back provider-visible steer message, got %#v", messages)
+		}
+	}
+	requests, loadErr := engine.store.LoadSteerRequests(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load steer requests: %v", loadErr)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusPending {
+		t.Fatalf("goal.updated event failure should keep steer pending for retry, got %#v", requests)
+	}
+}
+
 func TestEngineSteerAcceptanceReportsCorruptGoalSnapshot(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	goalPath := filepath.Join(engine.store.SessionDir(meta.ID), "goal.json")

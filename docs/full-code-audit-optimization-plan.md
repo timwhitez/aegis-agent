@@ -6652,7 +6652,46 @@ Evidence gates:
 - Confirmed `internal/hooks/manager.go` used an emitter with no error return, and both runtime call sites wired it to best-effort `emit`, so hook command side effects could run while the corresponding hook trace event was missing.
 - Confirmed the minimal fix belongs in the hook manager plus runtime adapters: make the hook emitter error-returning, require `hook.triggered` before hook command execution, require later hook trace events before continuing, and retarget downstream event tests now that hook event persistence is an earlier required boundary.
 
+### Review 198
+
+- Confirmed FCA-20260527-205 against `spec/13-live-input-and-steering.md`: accepted steer input for a session with a current Goal must write `goal.updated` history and emit Goal-related events so the target change is traceable, not only present in the provider prompt.
+- Confirmed `Engine.drainSteer` already returned `goal.updated` history append failures, but still emitted the matching `goal.updated` session event with best-effort `emit`; a blocked `events.jsonl` after `session.steer.accepted` could leave the steer message and Goal history visible while the required Goal event was missing.
+- Confirmed the minimal fix belongs in runtime steer acceptance: require `goal.updated` event persistence, restore the just-appended Goal history on event failure, and roll back the provider-visible steer message while keeping the steer request pending for retry.
+
 ## Update Log
+
+### FCA-20260527-205
+
+Slice: `fix(runtime): require steer goal update events`
+
+Finding:
+
+- `Engine.drainSteer` accepted pending steer input, appended the provider-visible steer user message, wrote `session.steer.accepted`, appended `goal.updated` history for sessions with a current Goal, and then emitted the matching `goal.updated` event through best-effort `emit`.
+- With `events.jsonl` blocked after `session.steer.accepted`, the runtime returned to provider execution before the fix; after requiring the event, the first focused regression showed the error but also exposed that the provider-visible steer message and Goal history remained advanced while the steer request stayed pending.
+
+Changes:
+
+- Changed accepted-steer `goal.updated` from best-effort `emit` to required `appendEvent`.
+- Loaded a Goal history rollback snapshot before appending accepted-steer Goal history.
+- On accepted-steer Goal history or `goal.updated` event failure, removed the just-appended steer user message and kept the original steer request pending for retry.
+- On `goal.updated` event failure, restored the previous Goal history before returning the event error.
+- Added focused runtime coverage for blocked `events.jsonl` at the accepted-steer Goal event boundary, including message rollback and pending steer retry state.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError -count=1`: failed before the fix because the provider was called after the missing `goal.updated` event; after making the event required, the strengthened regression failed until the steer message and Goal history rollback were added.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError|TestEngineSteerAcceptanceReportsGoalHistoryError|TestEngineSteerAcceptanceReportsCorruptGoalSnapshot|TestEngineAcceptsPendingSteerBeforeProviderCall|TestEngineSteerAcceptanceReportsAcceptedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-204
 
