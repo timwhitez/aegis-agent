@@ -1081,7 +1081,7 @@ func defGrepFiles() Definition {
 				},
 				"limit": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of matching file paths to return. Defaults to 100.",
+					"description": "Maximum number of matching file paths to return. Defaults to 100 and is capped at 200.",
 				},
 			},
 			"required": []string{"pattern"},
@@ -1107,10 +1107,7 @@ func defGrepFiles() Definition {
 				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			matcher, useRegex := compileGrepMatcher(input.Pattern)
-			limit := input.Limit
-			if limit <= 0 {
-				limit = 100
-			}
+			limit := normalizeGrepFilesLimit(input.Limit)
 			var matches []string
 			err = walkTextSearchFiles(execCtx.Workdir, root, input.Include, func(path string, data string) error {
 				if !textMatchesPattern(data, matcher, useRegex, input.Pattern) {
@@ -1154,6 +1151,11 @@ var grepSkippedPathFragments = []string{
 }
 
 var errGrepLimitReached = errors.New("grep limit reached")
+
+const (
+	defaultGrepFilesLimit = 100
+	maxGrepFilesLimit     = 200
+)
 
 func shouldSkipGrepDir(path string) bool {
 	if _, ok := grepSkippedDirNames[filepath.Base(path)]; ok {
@@ -1452,6 +1454,16 @@ func textMatchesPattern(text string, matcher *regexp.Regexp, useRegex bool, patt
 		return matcher.MatchString(text)
 	}
 	return strings.Contains(text, pattern)
+}
+
+func normalizeGrepFilesLimit(limit int) int {
+	if limit <= 0 {
+		return defaultGrepFilesLimit
+	}
+	if limit > maxGrepFilesLimit {
+		return maxGrepFilesLimit
+	}
+	return limit
 }
 
 func walkTextSearchFiles(workdir, root, include string, fn func(path string, data string) error) error {

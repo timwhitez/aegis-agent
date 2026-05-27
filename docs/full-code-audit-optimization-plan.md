@@ -7506,6 +7506,12 @@ Evidence gates:
 - Confirmed this is distinct from generated-artifact filtering and broad search skip behavior. Those paths intentionally skip build/cache/internal artifacts or incidental unreadable files during workspace discovery; this slice covers the false no-match result after an explicit missing target survived workspace path resolution.
 - Confirmed the minimal fix belongs in the built-in tool registry: validate explicit search roots with `os.Lstat`, share the root resolver between `grep` and `grep_files`, and propagate root-level walk/read failures while preserving broad recursive skip semantics, provider adapters, WebConsole state, and workspace write policy.
 
+### Review 237
+
+- Confirmed FCA-20260527-244 against `spec/04-tools-and-skills.md`'s search-tool context discipline: `grep_files` is the cheap candidate discovery step before `read_file`, so its caller-provided `limit` must not allow unbounded path-list output.
+- Confirmed this is distinct from FCA-20260527-243. That slice covered explicit missing path classification; this slice covers oversized but syntactically valid `grep_files.limit` values after the search root and filters are valid.
+- Confirmed the minimal fix belongs in the built-in tool registry: normalize `grep_files` limits to the existing default of 100 with a hard cap of 200, update the tool schema description, and leave matching, include filters, build/cache/internal skips, and provider/runtime behavior unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7567,6 +7573,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-244
+
+Slice: `fix(tools): cap grep_files result limits`
+
+Finding:
+
+- `grep_files` is described as the default discovery step before `read_file` when the agent needs candidate paths without flooding context.
+- The tool accepted a caller-provided `limit`, defaulted missing/non-positive values to 100, but did not cap oversized positive values.
+- Before the fix, the focused regression created 205 matching files and called `grep_files` with `"limit":1000000`; the tool returned all 205 paths.
+
+Impact:
+
+- A malformed or overbroad provider tool call could persist and replay a very large path list as one tool result.
+- This undermines the context-control role of `grep_files` and can make a discovery step behave like an unbounded workspace dump.
+
+Changes:
+
+- Added a focused regression proving oversized `grep_files.limit` values are capped.
+- Added `normalizeGrepFilesLimit()` with the existing default of 100 and a hard cap of 200 results.
+- Updated the `grep_files` tool schema description to state the cap.
+- Left broad search matching, include filters, explicit path handling, generated-artifact skips, binary skips, and `grep` line limits unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestGrepFilesLimitIsCapped -count=1`: failed before the fix because the oversized limit returned 205 paths.
+- `go test -timeout 120s ./internal/tools -run 'TestGrepFilesLimitIsCapped|TestGrepFilesReturnsPathsOnlyAndSkipsArtifacts|TestGrepToolsReportMissingExplicitPath' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-243
 

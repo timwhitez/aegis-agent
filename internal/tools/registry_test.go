@@ -2683,6 +2683,61 @@ func TestGrepFilesReturnsPathsOnlyAndSkipsArtifacts(t *testing.T) {
 	}
 }
 
+func TestGrepFilesLimitIsCapped(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	if err := os.MkdirAll(filepath.Join(workdir, "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir pkg: %v", err)
+	}
+	for i := 0; i < 205; i++ {
+		path := filepath.Join(workdir, "pkg", fmt.Sprintf("match-%03d.txt", i))
+		if err := os.WriteFile(path, []byte("needle\n"), 0o644); err != nil {
+			t.Fatalf("write match file: %v", err)
+		}
+	}
+
+	result, err := registry.Execute(context.Background(), "grep_files", execCtx, json.RawMessage(`{
+		"pattern":"needle",
+		"include":"*.txt",
+		"limit":1000000
+	}`))
+	if err != nil {
+		t.Fatalf("grep_files: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(result.DisplayOutput), "\n")
+	if len(lines) != maxGrepFilesLimit {
+		t.Fatalf("expected grep_files to cap oversized limits at %d results, got %d results", maxGrepFilesLimit, len(lines))
+	}
+	if strings.Contains(result.DisplayOutput, "match-200.txt") {
+		t.Fatalf("expected capped grep_files output not to include match-200.txt, got %q", result.DisplayOutput)
+	}
+}
+
 func TestGrepAndGrepFilesSkipValidationRunArtifactsByDefault(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
