@@ -105,6 +105,38 @@ func TestBuiltinToolExecutionRejectsNestedUnknownField(t *testing.T) {
 	}
 }
 
+func TestBuiltinToolExecutionRejectsMissingRequiredField(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	path := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(path, []byte("keep\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "write_file", ExecContext{
+		Workdir: root,
+		Store:   store,
+		Config:  cfg,
+	}, json.RawMessage(`{"path":"notes.txt"}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "content is required") {
+		t.Fatalf("expected missing required field rejection, got %#v", result)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("missing content mutated file: %q", string(data))
+	}
+}
+
 func TestFinishRejectsBlankMessage(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)

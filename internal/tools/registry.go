@@ -245,6 +245,11 @@ func validateClosedToolObject(schema map[string]any, object map[string]json.RawM
 			}
 		}
 	}
+	for _, key := range schemaRequiredFields(schema) {
+		if _, exists := object[key]; !exists {
+			return fmt.Errorf("%s is required", toolFieldPath(path, key))
+		}
+	}
 	for key, rawPropertySchema := range properties {
 		propertySchema, ok := rawPropertySchema.(map[string]any)
 		if !ok {
@@ -3169,15 +3174,27 @@ func validateCommandToolValue(schema map[string]any, value any, field string) er
 }
 
 func schemaRequiredFields(schema map[string]any) []string {
-	required, _ := schema["required"].([]any)
-	out := make([]string, 0, len(required))
-	for _, item := range required {
-		name, ok := item.(string)
-		if ok && strings.TrimSpace(name) != "" {
-			out = append(out, name)
+	switch required := schema["required"].(type) {
+	case []string:
+		out := make([]string, 0, len(required))
+		for _, item := range required {
+			if strings.TrimSpace(item) != "" {
+				out = append(out, item)
+			}
 		}
+		return out
+	case []any:
+		out := make([]string, 0, len(required))
+		for _, item := range required {
+			name, ok := item.(string)
+			if ok && strings.TrimSpace(name) != "" {
+				out = append(out, name)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
-	return out
 }
 
 func commandToolTypeError(field, expected string) error {

@@ -7578,6 +7578,12 @@ Evidence gates:
 - Confirmed this is distinct from artifact/goal/Plan Mode completion gates. Those gates decide whether a valid `finish` call is allowed; this slice covers the malformed but schema-valid `finish` payload itself, where `message` was omitted or whitespace-only.
 - Confirmed the minimal fix belongs in the built-in `finish` handler: reject blank final messages before setting `Final=true`, preserving valid finish output text, same-turn synthetic tool results after valid finish, provider adapter behavior, and runtime completion gate ordering.
 
+### Review 249
+
+- Confirmed FCA-20260528-256 against `spec/04-tools-and-skills.md`'s tool schema contract: every built-in tool publishes an `input_schema`, and required fields such as `write_file.content` are part of the executable tool contract, not only provider-facing hints.
+- Confirmed this is distinct from the recent blank-value slices. Those rejected whitespace or malformed values after a field was present; this slice covers omitted required fields that were allowed through generic built-in validation and could reach side-effecting handlers.
+- Confirmed the minimal fix belongs in the shared built-in tool argument validator: enforce `required` fields before dispatch while preserving closed-object unknown-field checks, explicit empty-string values, existing tool-specific blank-string validators, command-tool validation, provider adapters, and runtime workflow autonomy.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7639,6 +7645,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-256
+
+Slice: `fix(tools): reject missing required built-in args`
+
+Finding:
+
+- Built-in tool schemas declare required fields, but the generic built-in argument validator only rejected unknown fields and trailing JSON values.
+- Before the fix, `write_file {"path":"notes.txt"}` skipped the required `content` field check, executed the handler with Go's zero-value string, and overwrote an existing file with 0 bytes.
+- This violated the tool contract in `spec/04-tools-and-skills.md`: side-effecting tools must execute only from complete, well-formed tool inputs.
+
+Impact:
+
+- A malformed model/tool call could cause unintended destructive writes while still returning a successful `Wrote 0 bytes` result.
+- Other built-in required fields could similarly reach handlers or lower store layers as zero values, weakening schema/tool contract integrity.
+
+Changes:
+
+- Added a focused regression proving missing `write_file.content` is rejected and the target file remains unchanged.
+- Enforced required properties in the shared built-in closed-object validator before tool dispatch.
+- Extended `schemaRequiredFields` to handle both `[]string` schemas used by built-ins and `[]any` schemas used by decoded command-tool schemas.
+- Preserved valid explicit empty string values, nested unknown-field rejection, existing blank-string validators, and command-tool missing-required behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestBuiltinToolExecutionRejectsMissingRequiredField -count=1`: failed before the fix because `write_file` returned success and wrote 0 bytes.
+- `go test -timeout 120s ./internal/tools -run 'TestBuiltinToolExecutionRejects(MissingRequiredField|UnknownTopLevelField|TrailingJSONValue|NestedUnknownField)|TestFinishRejectsBlankMessage|TestTodoWriteRejectsInvalidItems' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-255
 
