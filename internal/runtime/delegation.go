@@ -391,7 +391,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		return job, ok, err
 	}
 	if job.ParentSessionID != "" {
-		if err := retryQueuePersistence("append queue claimed event for job "+job.ID, func() error {
+		if err := retryQueuePersistence("append queue.job.claimed event for job "+job.ID, func() error {
 			return r.appendEvent(job.ParentSessionID, "queue.job.claimed", "queue", map[string]any{
 				"job_id":           job.ID,
 				"claimed_by":       job.ClaimedBy,
@@ -399,7 +399,11 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 				"worker_pid":       job.WorkerPID,
 			})
 		}); err != nil {
-			return job, ok, err
+			restored := clearQueueClaim(job)
+			if restoreErr := r.store.SaveJob(restored); restoreErr != nil {
+				return job, ok, fmt.Errorf("append queue.job.claimed event for queue job %s failed with %v; restore queued job after failed queue claim: %w", job.ID, err, restoreErr)
+			}
+			return restored, ok, err
 		}
 	}
 	childRunner := NewRunner(r.cfg)
@@ -573,6 +577,22 @@ func copyQueueLeaseFields(target *session.QueueJob, source session.QueueJob) {
 	target.HeartbeatAt = source.HeartbeatAt
 	target.WorkerPID = source.WorkerPID
 	target.ProcessStartID = source.ProcessStartID
+}
+
+func clearQueueClaim(job session.QueueJob) session.QueueJob {
+	job.Status = session.QueueStatusQueued
+	job.ClaimedBy = ""
+	job.ClaimedAt = ""
+	job.HeartbeatAt = ""
+	job.WorkerPID = 0
+	job.ProcessStartID = ""
+	job.SessionID = ""
+	job.SessionStatus = ""
+	job.EffectiveWorkdir = ""
+	job.VisiblePaths = nil
+	job.LastError = ""
+	job.FinalText = ""
+	return job
 }
 
 func retryQueuePersistence(label string, fn func() error) error {

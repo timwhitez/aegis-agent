@@ -575,6 +575,45 @@ func TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError(t *testing.T)
 	}
 }
 
+func TestRunnerProcessNextJobRollsBackClaimWhenClaimedEventFails(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		AgentRole:       "planner",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	blockRuntimeEventsPath(t, runner.store, parentID)
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "queue.job.claimed") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected queue claimed event append error, got job=%#v ok=%v err=%v", processed, ok, err)
+	}
+	if !ok || processed.ID != job.ID {
+		t.Fatalf("expected claimed job to be returned, got job=%#v ok=%v", processed, ok)
+	}
+	loaded, loadErr := runner.store.LoadJob(job.ID)
+	if loadErr != nil {
+		t.Fatalf("load job after failed claim event: %v", loadErr)
+	}
+	if loaded.Status != session.QueueStatusQueued {
+		t.Fatalf("failed claimed event should restore queued job, got %#v", loaded)
+	}
+	if loaded.ClaimedBy != "" || loaded.ClaimedAt != "" || loaded.HeartbeatAt != "" || loaded.WorkerPID != 0 || loaded.ProcessStartID != "" {
+		t.Fatalf("failed claimed event should clear lease fields, got %#v", loaded)
+	}
+	if loaded.SessionID != "" || loaded.SessionStatus != "" {
+		t.Fatalf("failed claimed event should not start child session facts, got %#v", loaded)
+	}
+}
+
 func TestRunnerQueueSubmitReportsChildQueuedEventAppendError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

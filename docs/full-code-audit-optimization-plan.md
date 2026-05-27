@@ -7650,6 +7650,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-262 and earlier Settings API-provider validation slices. Those covered missing session `provider_options`, explicit provider/model defaults, unsupported API Provider rejection, and applying provider-scoped fields; this slice covers stale cross-family option fields left behind when a configured profile is switched between OpenAI-compatible Responses and Anthropic/Google thinking adapters.
 - Confirmed the minimal fix belongs in the Web Settings adapter boundary: normalize provider reasoning fields after applying the submitted API Provider / reasoning controls for both `/api/config` and `/api/config/test`, preserving provider adapter replay ownership, Settings UI mode selection, runtime metadata propagation, and valid same-family reasoning/thinking choices.
 
+### Review 261
+
+- Confirmed FCA-20260528-268 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`'s queue worker fact-source requirements: a Web-hosted worker claim is a durable queue lifecycle boundary, so a parent-linked job must not remain `running` unless the parent `queue.job.claimed` event is also durable.
+- Confirmed this is distinct from earlier queue lifecycle hardening. Prior slices promoted worker claimed/notified/terminal event append errors and rolled back notification / parent-coordination side effects after child completion; this slice covers the earlier claim boundary where `ClaimNextQueuedJob` has already moved the job from queued to running before the parent event append can fail.
+- Confirmed the minimal fix belongs in the runtime queue worker path: on `queue.job.claimed` event persistence failure, restore the claimed job to its pre-child queued state with lease fields cleared, without changing queue submission, provider adapters, worker-pool scaling, or parent completion gates.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7711,6 +7717,51 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-268
+
+Slice: `fix(queue): roll back failed claim events`
+
+Finding:
+
+- `ProcessNextJob` claimed a parent-linked queue job by moving it from `_queue/queued` to `_queue/running`, then appended the parent `queue.job.claimed` lifecycle event.
+- If the parent `events.jsonl` append failed at that point, the worker returned an error but left the queue job durably `running` with lease fields and no child session.
+- The Web worker snapshot could show only a transient worker error while the file facts claimed a worker owned the job; recovery would depend on later stale-running reconciliation instead of immediate retry once the event log is writable.
+
+Impact:
+
+- Parent session timeline and queue store could disagree at the claim boundary: the job was no longer queued and had no `queue.job.claimed` event explaining the owner lease.
+- A local Web worker or CLI worker could leave a parent-linked background job unavailable for normal polling until the stale heartbeat window elapsed, making queue recovery slower and less auditable.
+
+Changes:
+
+- Changed the queue claimed event label to include the literal `queue.job.claimed` lifecycle event.
+- Added a runtime rollback path for failed parent claimed-event persistence.
+- The rollback restores the job to `queued`, clears claim / heartbeat / process lease fields, clears child-session result fields, and leaves the job retryable.
+- Added a focused regression proving a blocked parent `events.jsonl` no longer leaves the job in `_queue/running` after the claimed-event failure.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobRollsBackClaimWhenClaimedEventFails -count=1`: failed before the fix because the claimed job stayed `running` with lease fields after `queue.job.claimed` could not be appended.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobRollsBackClaimWhenClaimedEventFails -count=1`: passed after the rollback.
+- `gofmt -l internal/runtime/delegation.go internal/runtime/delegation_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(ProcessNextJobRollsBackClaimWhenClaimedEventFails|ProcessNextJobReportsQueueLifecycleEventAppendError|QueueSubmitAndWorkerCompletesJob|ProcessNextJobReportsParentCoordinationError)|TestQueueWorkerRefreshesHeartbeat' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestClaimNextQueuedJobWritesLease|TestStoreClaimNextQueuedJobIsAtomicAcrossStores|TestListPageReconcilesLinkedQueueJobStatus|TestLoadJobKeepsNewestQueueJobCopy' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-267
 
