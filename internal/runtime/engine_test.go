@@ -1729,6 +1729,69 @@ func TestEngineArtifactTrackedReportsEventAppendErrorWithReplayResult(t *testing
 	}
 }
 
+func TestEngineArtifactGatePassedReportsEventAppendErrorBeforeFinish(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := refreshContractForSession(engine.store, nil, meta); err != nil {
+		t.Fatalf("refresh contract: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "artifact.gate.passed" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:        "call_write",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"reports/final.md","content":"final summary"}`),
+				},
+				{
+					ID:        "call_finish",
+					Name:      "finish",
+					Arguments: json.RawMessage(`{"message":"done"}`),
+				},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "artifact.gate.passed") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected artifact.gate.passed events.jsonl error, result=%#v err=%v", result, err)
+	}
+	loadedState, loadErr := engine.store.LoadState(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if loadedState.Status == session.StatusCompleted {
+		t.Fatalf("finish should not complete session after missing artifact.gate.passed event")
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var finishResult *session.ToolResult
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		for i := range msg.ToolResults {
+			if msg.ToolResults[i].ToolCallID == "call_finish" {
+				finishResult = &msg.ToolResults[i]
+			}
+		}
+	}
+	if finishResult == nil || !finishResult.IsError || !strings.Contains(finishResult.LLMOutput, "artifact.gate.passed") {
+		t.Fatalf("expected replay finish error for missing artifact gate event, got %#v in messages %#v", finishResult, messages)
+	}
+}
+
 func TestEngineAllowsSingleResolutionTurnAfterHardLimitToolResult(t *testing.T) {
 	cfg := config.Default()
 	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)

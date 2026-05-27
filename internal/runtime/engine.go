@@ -506,7 +506,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					decision = controller.EvaluatePreCompletionFeatures(true)
 				}
 				if decision.Status == GateAllow {
-					controller.MarkAllowed(call.Name)
+					if err := controller.MarkAllowed(call.Name); err != nil {
+						decision = GateDecision{
+							Status:       GateBlock,
+							GateID:       "completion_event",
+							ModelMessage: "Completion event persistence failed: " + err.Error(),
+							Err:          err,
+						}
+					}
 				}
 				guardKind := decision.GateID
 				guardText := decision.ModelMessage
@@ -514,6 +521,26 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				var toolResult session.ToolResult
 				var toolErr error
 				if guardText != "" {
+					if decision.Err != nil {
+						toolResult = session.ToolResult{
+							ToolCallID:    call.ID,
+							Name:          call.Name,
+							LLMOutput:     "Error: " + guardText,
+							DisplayOutput: "Error: " + guardText,
+							IsError:       true,
+							Metadata: map[string]any{
+								"guard": guardKind,
+							},
+						}
+						toolResults = append(toolResults, toolResult)
+						if callIndex+1 < len(result.ToolCalls) {
+							toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: completion event persistence failed before this call ran: "+decision.Err.Error())...)
+						}
+						if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+							return RunResult{}, appendErr
+						}
+						return RunResult{}, decision.Err
+					}
 					e.emit(meta.ID, "tool.blocked", "tool_execute", map[string]any{
 						"tool_name": call.Name,
 						"reason":    guardKind,

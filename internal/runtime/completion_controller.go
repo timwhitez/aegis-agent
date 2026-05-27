@@ -29,6 +29,7 @@ type GateDecision struct {
 	OperatorMessage string
 	ModelMessage    string
 	Evidence        map[string]any
+	Err             error
 }
 
 type CompletionController struct {
@@ -51,7 +52,9 @@ func NewCompletionController(store *session.Store, sessionID, workdir string, yo
 
 func (c *CompletionController) EvaluateToolCall(messages []session.Message, toolName string, rawArgs json.RawMessage) GateDecision {
 	if toolName == "finish" {
-		_ = c.emitCompletion("completion.evaluate.started", map[string]any{"tool_name": toolName})
+		if err := c.emitCompletion("completion.evaluate.started", map[string]any{"tool_name": toolName}); err != nil {
+			return c.eventErrorDecision("completion.evaluate.started", err)
+		}
 	}
 	if kind, text := toolGuard(c.workdir, messages, toolName, rawArgs, c.yolo); text != "" {
 		return c.block(kind, text, map[string]any{"source": "tool_guard", "tool_name": toolName})
@@ -59,7 +62,9 @@ func (c *CompletionController) EvaluateToolCall(messages []session.Message, tool
 	if kind, text := c.planModeGate(toolName); text != "" {
 		return c.block(kind, text, map[string]any{"source": "plan_mode", "tool_name": toolName})
 	}
-	if kind, text := c.requiredArtifactGate(toolName); text != "" {
+	if kind, text, err := c.requiredArtifactGate(toolName); err != nil {
+		return c.eventErrorDecision("artifact.gate", err)
+	} else if text != "" {
 		return c.block(kind, text, map[string]any{"source": "artifact_tracker", "tool_name": toolName})
 	}
 	if kind, text := c.parentCoordinationGate(toolName); text != "" {
@@ -85,12 +90,17 @@ func (c *CompletionController) planModeGate(toolName string) (string, string) {
 	return planModeToolGate(planMode, toolName)
 }
 
-func (c *CompletionController) MarkAllowed(toolName string) {
+func (c *CompletionController) MarkAllowed(toolName string) error {
 	if toolName != "finish" {
-		return
+		return nil
 	}
-	_ = c.emitCompletion("completion.gate.passed", map[string]any{"gate_id": "finish"})
-	_ = c.emitCompletion("completion.evaluate.finished", map[string]any{"status": string(GateAllow)})
+	if err := c.emitCompletion("completion.gate.passed", map[string]any{"gate_id": "finish"}); err != nil {
+		return &completionEventAppendError{eventType: "completion.gate.passed", err: err}
+	}
+	if err := c.emitCompletion("completion.evaluate.finished", map[string]any{"status": string(GateAllow)}); err != nil {
+		return &completionEventAppendError{eventType: "completion.evaluate.finished", err: err}
+	}
+	return nil
 }
 
 func (c *CompletionController) EvaluatePreCompletionFeatures(enabled bool) GateDecision {
@@ -189,29 +199,29 @@ func (c *CompletionController) TrackToolResult(toolName string, result session.T
 	return nil
 }
 
-func (c *CompletionController) requiredArtifactGate(toolName string) (string, string) {
+func (c *CompletionController) requiredArtifactGate(toolName string) (string, string, error) {
 	if toolName != "finish" {
-		return "", ""
+		return "", "", nil
 	}
 	artifacts, err := c.store.LoadArtifactTracker(c.sessionID)
 	if err != nil {
-		return "required_artifact_state", "Required-artifact gate could not load artifact state: " + err.Error()
+		return "required_artifact_state", "Required-artifact gate could not load artifact state: " + err.Error(), nil
 	}
 	if len(artifacts) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 	artifacts = refreshArtifactStatuses(artifacts)
 	if err := c.store.SaveArtifactTracker(c.sessionID, artifacts); err != nil {
-		return "required_artifact_state", "Required-artifact gate could not persist refreshed artifact state: " + err.Error()
+		return "required_artifact_state", "Required-artifact gate could not persist refreshed artifact state: " + err.Error(), nil
 	}
 	if contract, err := c.store.LoadContract(c.sessionID); err == nil {
 		contract.RequiredArtifacts = artifacts
 		contract.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := c.store.SaveContract(c.sessionID, contract); err != nil {
-			return "required_artifact_state", "Required-artifact gate could not persist refreshed contract state: " + err.Error()
+			return "required_artifact_state", "Required-artifact gate could not persist refreshed contract state: " + err.Error(), nil
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "required_artifact_state", "Required-artifact gate could not load contract state: load contract.json: " + err.Error()
+		return "required_artifact_state", "Required-artifact gate could not load contract state: load contract.json: " + err.Error(), nil
 	}
 	var missing []string
 	var stale []string
@@ -232,13 +242,17 @@ func (c *CompletionController) requiredArtifactGate(toolName string) (string, st
 		}
 	}
 	if len(missing) == 0 && len(stale) == 0 {
-		_ = c.emitCompletion("artifact.gate.passed", map[string]any{"required_count": len(artifacts)})
-		return "", ""
+		if err := c.emitCompletion("artifact.gate.passed", map[string]any{"required_count": len(artifacts)}); err != nil {
+			return "", "", &completionEventAppendError{eventType: "artifact.gate.passed", err: err}
+		}
+		return "", "", nil
 	}
-	_ = c.emitCompletion("artifact.gate.blocked", map[string]any{
+	if err := c.emitCompletion("artifact.gate.blocked", map[string]any{
 		"missing": missing,
 		"stale":   stale,
-	})
+	}); err != nil {
+		return "", "", &completionEventAppendError{eventType: "artifact.gate.blocked", err: err}
+	}
 	parts := []string{}
 	if len(missing) > 0 {
 		parts = append(parts, "missing "+joinPromptItems(missing))
@@ -246,7 +260,7 @@ func (c *CompletionController) requiredArtifactGate(toolName string) (string, st
 	if len(stale) > 0 {
 		parts = append(parts, "not touched or changed in this session "+joinPromptItems(stale))
 	}
-	return "required_artifact", "Required-artifact gate: before finishing, write or update the explicit required artifact(s): " + strings.Join(parts, "; ") + "."
+	return "required_artifact", "Required-artifact gate: before finishing, write or update the explicit required artifact(s): " + strings.Join(parts, "; ") + ".", nil
 }
 
 func (c *CompletionController) parentCoordinationGate(toolName string) (string, string) {
@@ -333,15 +347,19 @@ func (c *CompletionController) goalCompletionGate(toolName string) (string, stri
 }
 
 func (c *CompletionController) block(kind, text string, evidence map[string]any) GateDecision {
-	_ = c.emitCompletion("completion.gate.blocked", map[string]any{
+	if err := c.emitCompletion("completion.gate.blocked", map[string]any{
 		"gate_id":  kind,
 		"severity": "block",
 		"evidence": evidence,
-	})
-	_ = c.emitCompletion("completion.evaluate.finished", map[string]any{
+	}); err != nil {
+		return c.eventErrorDecision("completion.gate.blocked", err)
+	}
+	if err := c.emitCompletion("completion.evaluate.finished", map[string]any{
 		"status":  string(GateBlock),
 		"gate_id": kind,
-	})
+	}); err != nil {
+		return c.eventErrorDecision("completion.evaluate.finished", err)
+	}
 	return GateDecision{
 		Status:          GateBlock,
 		GateID:          kind,
@@ -350,6 +368,23 @@ func (c *CompletionController) block(kind, text string, evidence map[string]any)
 		OperatorMessage: text,
 		ModelMessage:    text,
 		Evidence:        evidence,
+	}
+}
+
+func (c *CompletionController) eventErrorDecision(eventType string, err error) GateDecision {
+	if !isCompletionEventAppendError(err) {
+		err = &completionEventAppendError{eventType: eventType, err: err}
+	}
+	text := "Completion event persistence failed: " + err.Error()
+	return GateDecision{
+		Status:          GateBlock,
+		GateID:          "completion_event",
+		Severity:        "block",
+		Reason:          "completion_event",
+		OperatorMessage: text,
+		ModelMessage:    text,
+		Evidence:        map[string]any{"event_type": eventType},
+		Err:             err,
 	}
 }
 

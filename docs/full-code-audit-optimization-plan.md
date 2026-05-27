@@ -6670,7 +6670,47 @@ Evidence gates:
 - Confirmed `CompletionController.TrackToolResult` persisted `artifact-tracker.json` and mirrored `contract.json`, then emitted `artifact.tracked` through a best-effort callback. A blocked `events.jsonl` could therefore let the runtime continue to the next same-turn tool call, including `finish`, while the artifact state had advanced without the required event evidence.
 - Confirmed the minimal fix belongs in the runtime completion boundary: make completion-controller event emission error-returning for the runtime path, require `artifact.tracked` after the artifact state update, roll back tracker/contract derived state if the event cannot be written, preserve the already executed tool result for provider replay, and stop later same-turn tool calls.
 
+### Review 201
+
+- Confirmed FCA-20260527-208 against the same CompletionController event catalog in `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`: `completion.evaluate.started`, `completion.gate.passed`, `completion.gate.blocked`, `completion.evaluate.finished`, `artifact.gate.passed`, and `artifact.gate.blocked` are durable completion-controller events.
+- Confirmed the runtime path already passed an error-returning emitter after FCA-20260527-207, but the controller still ignored those errors for finish gate evaluation and allowed `finish` execution to proceed. A focused regression blocked `events.jsonl` at `artifact.gate.passed`; before the fix, the failure surfaced later as `tool.after` after `finish` had already run.
+- Confirmed the minimal fix belongs in `CompletionController` plus the engine tool loop: propagate completion gate event errors as a non-tool-execution gate failure, persist a replayable error tool result for the affected provider call, and stop before `finish` mutates session completion state.
+
 ## Update Log
+
+### FCA-20260527-208
+
+Slice: `fix(runtime): require completion gate events`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` list completion gate and artifact gate events as CompletionController session events.
+- `CompletionController` had been changed to accept an error-returning emitter, but still ignored errors from `completion.evaluate.started`, `completion.gate.passed`, `completion.gate.blocked`, `completion.evaluate.finished`, `artifact.gate.passed`, and `artifact.gate.blocked`.
+- A focused regression blocked `events.jsonl` exactly at `artifact.gate.passed`; before the fix, the controller swallowed the event failure and the runtime executed `finish`, then failed later at `tool.after`.
+
+Changes:
+
+- Added an error channel to `GateDecision` for completion event persistence failures.
+- Required `completion.evaluate.started`, completion gate pass/block events, completion evaluate finished events, and artifact gate pass/block events.
+- Changed `MarkAllowed` and required-artifact gate evaluation to return event append errors.
+- Changed the engine tool loop to persist a replayable error result for the provider tool call and return the completion event error before executing `finish`.
+- Added focused controller and engine regressions for the missing `artifact.gate.passed` event boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineArtifactGatePassedReportsEventAppendErrorBeforeFinish -count=1`: failed before the fix because the runtime reported the later `tool.after` error after `finish` had run.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineArtifactGatePassedReportsEventAppendErrorBeforeFinish|TestCompletionControllerReportsArtifactGatePassedEventError|TestEngineArtifactTrackedReportsEventAppendErrorWithReplayResult|TestCompletionControllerTrackToolResultReportsArtifactTrackedEventErrorAndRollsBack' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/completion_controller.go internal/runtime/contract_controller_test.go internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-207
 

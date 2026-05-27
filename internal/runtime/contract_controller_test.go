@@ -221,7 +221,10 @@ func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 		events = append(events, eventType)
 		return nil
 	})
-	kind, text := controller.requiredArtifactGate("finish")
+	kind, text, err := controller.requiredArtifactGate("finish")
+	if err != nil {
+		t.Fatalf("required artifact gate: %v", err)
+	}
 	if kind != "required_artifact" || !strings.Contains(text, "not touched or changed") {
 		t.Fatalf("expected stale artifact block, kind=%q text=%q", kind, text)
 	}
@@ -235,7 +238,10 @@ func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 		DisplayOutput: "wrote reports/final.md",
 		Metadata:      map[string]any{"path": artifactPath},
 	}, 2)
-	kind, text = controller.requiredArtifactGate("finish")
+	kind, text, err = controller.requiredArtifactGate("finish")
+	if err != nil {
+		t.Fatalf("required artifact gate after write: %v", err)
+	}
 	if kind != "" || text != "" {
 		t.Fatalf("expected artifact gate to pass after tracked write, kind=%q text=%q", kind, text)
 	}
@@ -360,6 +366,46 @@ func TestCompletionControllerTrackToolResultReportsArtifactTrackedEventErrorAndR
 	}
 }
 
+func TestCompletionControllerReportsArtifactGatePassedEventError(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh contract: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("new content"), 0o600); err != nil {
+		t.Fatalf("update artifact: %v", err)
+	}
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
+	if err := controller.TrackToolResult("write_file", session.ToolResult{
+		Name:          "write_file",
+		LLMOutput:     "wrote reports/final.md",
+		DisplayOutput: "wrote reports/final.md",
+		Metadata:      map[string]any{"path": artifactPath},
+	}, 2); err != nil {
+		t.Fatalf("track artifact: %v", err)
+	}
+
+	controller = NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) error {
+		if eventType == "artifact.gate.passed" {
+			return errors.New("events.jsonl is blocked")
+		}
+		return nil
+	})
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{"message":"done"}`))
+	if decision.Status != GateBlock || decision.GateID != "completion_event" || decision.Err == nil {
+		t.Fatalf("expected completion event error decision, got %#v", decision)
+	}
+	if !strings.Contains(decision.Err.Error(), "artifact.gate.passed") || !strings.Contains(decision.Err.Error(), "events.jsonl") {
+		t.Fatalf("expected artifact.gate.passed event error, got %v", decision.Err)
+	}
+}
+
 func TestCompletionControllerRequiredArtifactGateReportsTrackerRefreshError(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
@@ -450,7 +496,7 @@ func TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction(t *test
 		DisplayOutput: "wrote reports/final.md",
 		Metadata:      map[string]any{"path": artifactPath},
 	}, 2)
-	if kind, text := controller.requiredArtifactGate("finish"); kind != "" || text != "" {
+	if kind, text, err := controller.requiredArtifactGate("finish"); err != nil || kind != "" || text != "" {
 		t.Fatalf("expected first artifact write to satisfy gate, kind=%q text=%q", kind, text)
 	}
 
@@ -475,7 +521,7 @@ func TestContractRefreshResetsArtifactFreshnessForSamePathNewInstruction(t *test
 	if len(tracker) != 1 || tracker[0].Status.TouchedBySession {
 		t.Fatalf("expected latest same-path instruction to reset artifact freshness, got %#v", tracker)
 	}
-	if kind, text := controller.requiredArtifactGate("finish"); kind != "required_artifact" || !strings.Contains(text, "not touched or changed") {
+	if kind, text, err := controller.requiredArtifactGate("finish"); err != nil || kind != "required_artifact" || !strings.Contains(text, "not touched or changed") {
 		t.Fatalf("expected stale artifact block after latest same-path instruction, kind=%q text=%q", kind, text)
 	}
 }
@@ -501,7 +547,10 @@ func TestRequiredArtifactGateRejectsSymlinkedArtifactAfterContractCreation(t *te
 	}
 
 	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
-	kind, text := controller.requiredArtifactGate("finish")
+	kind, text, err := controller.requiredArtifactGate("finish")
+	if err != nil {
+		t.Fatalf("required artifact gate: %v", err)
+	}
 	if kind != "required_artifact" || !strings.Contains(text, "missing reports/final.md") {
 		t.Fatalf("expected symlinked artifact to remain missing, kind=%q text=%q", kind, text)
 	}
