@@ -4900,6 +4900,35 @@ Validation:
 - Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
 - Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
 
+### FCA-20260527-234: Web list endpoints accept unbounded limit query values
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` defines the Web console as the default local operator surface, with `GET /api/sessions`, `GET /api/sessions/{id}/children`, and `GET /api/queue/jobs` exposing list windows through a `limit` query parameter.
+- `internal/webconsole/service.go` `handleListSessions`, the `children` subroute in `handleSessionRoute`, and `handleListJobs` parsed `limit` with raw `queryInt`, unlike session detail, message pagination, and history pagination paths that already use bounded query parsing.
+- `internal/session/store.go` `List`, `ListChildren`, and `ListJobs` only default non-positive limits. Very large positive values are accepted and can return every durable session, child, or queue job fact after the store has scanned and reconciled the full backing set.
+- A focused regression requested `/api/sessions?limit=<MaxInt>` after creating 56 sessions. Before the fix, the response returned all 56 items instead of the normal 50-item Web window.
+- The same regression covers `/api/sessions/{id}/children?limit=<MaxInt>` and `/api/queue/jobs?limit=<MaxInt>` to prevent the sibling raw-limit routes from drifting.
+
+Impact:
+
+A malformed or stale local-console URL could expand Web list responses far beyond the default browser window. This does not corrupt durable session or queue facts, but it weakens the Web-first control surface by allowing oversized operator requests to produce unnecessarily large response bodies and inconsistent list behavior compared with the already-bounded detail, message, and history routes.
+
+Minimal fix:
+
+- Parse `GET /api/sessions` `limit` through `queryBoundedInt` with the existing default of 50 and maximum of 200.
+- Parse `GET /api/sessions/{id}/children` `limit` through the same bounded helper before loading child sessions and parent queue jobs.
+- Parse `GET /api/queue/jobs` `limit` through the same bounded helper.
+- Keep the change at the Web service adapter boundary; session store list semantics, queue reconciliation, frontend routing, and runtime behavior remain unchanged.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving oversized `/api/sessions?limit=<MaxInt>` returned all 56 available sessions.
+- Focused post-fix regression proving oversized session, children, and queue-job limits fall back to the 50-item Web window.
+- Adjacent list/history/WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-233: History pagination accepts overflowing query bounds
 
 Severity: Low
@@ -7417,6 +7446,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-023. That earlier slice fixed frontend message-window gap detection; this slice covers backend `/api/history` query bounds and integer overflow in server pagination metadata.
 - Confirmed the minimal fix belongs in `handleHistory`: reuse bounded query parsing for `page_size` and add overflow-safe offset math, without changing session store listing semantics, frontend history state, or runtime/session authority.
 
+### Review 227
+
+- Confirmed FCA-20260527-234 against `spec/17-web-console.md`'s Web-first list APIs: `GET /api/sessions`, `GET /api/sessions/{id}/children`, and `GET /api/queue/jobs` expose `limit` as a browser/API list window, so malformed oversized values should not expand the local console response indefinitely.
+- Confirmed this is distinct from FCA-20260527-233. That slice fixed `/api/history` `page_size` / `page` overflow and pagination metadata; this slice covers the remaining raw `limit` parsing paths for session, child, and queue list endpoints.
+- Confirmed the minimal fix belongs in the Web service adapter: bound the query value before calling the session store, without changing durable store list ordering, queue reconciliation, frontend state, or runtime/session authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7478,6 +7513,43 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-234
+
+Slice: `fix(webconsole): bound list limits`
+
+Finding:
+
+- `handleListSessions`, the session `children` subroute, and `handleListJobs` parsed `limit` with raw `queryInt`.
+- Oversized positive values bypassed the store defaults, so list APIs could return every durable session, child, or queue job fact instead of the normal local-console window.
+- Before the fix, a focused route regression showed `/api/sessions?limit=<MaxInt>` returning all 56 available sessions.
+
+Changes:
+
+- Changed `/api/sessions` to parse `limit` with `queryBoundedInt`, falling back to 50 when invalid or oversized.
+- Changed `/api/sessions/{id}/children` to apply the same bounded limit before loading child sessions and parent-linked queue jobs.
+- Changed `/api/queue/jobs` to apply the same bounded limit before calling the queue store.
+- Added `TestServiceListLimitsRejectOversizedQueryValues` covering session lists, child lists, parent-linked queue jobs, and global queue-job lists.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceListLimitsRejectOversizedQueryValues -count=1`: failed before the fix because `/api/sessions?limit=<MaxInt>` returned 56 items.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceListLimitsRejectOversizedQueryValues -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceListLimitsRejectOversizedQueryValues|TestServiceHistoryPagination|TestServiceSessionListReportsSummarySnapshotLoadErrors|TestServiceQueueJobDetailRejectsMalformedJobID' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
 
 ### FCA-20260527-233
 

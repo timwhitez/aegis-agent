@@ -6073,6 +6073,90 @@ func TestServiceHistoryPagination(t *testing.T) {
 	}
 }
 
+func TestServiceListLimitsRejectOversizedQueryValues(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	parent := testSessionMetadata(t, "session_limit_parent")
+	parent.CreatedAt = time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	parent.RootSessionID = parent.ID
+	if err := svc.store.Create(parent, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+	for i := 0; i < 55; i++ {
+		meta := testSessionMetadata(t, "session_limit_child_"+strconv.Itoa(i))
+		meta.CreatedAt = time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		meta.ParentSessionID = parent.ID
+		meta.RootSessionID = parent.ID
+		if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+			t.Fatalf("create child session %d: %v", i, err)
+		}
+		job := session.QueueJob{
+			SchemaVersion:   1,
+			ID:              "job_limit_" + strconv.Itoa(i),
+			CreatedAt:       time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			UpdatedAt:       time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Status:          session.QueueStatusCompleted,
+			ParentSessionID: parent.ID,
+			RootSessionID:   parent.ID,
+			Prompt:          "queued prompt",
+			Mode:            session.ModeExec,
+			Background:      true,
+		}
+		if err := svc.store.SaveJob(job); err != nil {
+			t.Fatalf("save queue job %d: %v", i, err)
+		}
+	}
+
+	maxIntQuery := strconv.Itoa(int(^uint(0) >> 1))
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions?limit="+maxIntQuery, nil)
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected sessions status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var sessions []session.SessionSummary
+	if err := json.Unmarshal(recorder.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("decode sessions response: %v", err)
+	}
+	if len(sessions) != 50 {
+		t.Fatalf("expected oversized session limit to fall back to 50, got %d", len(sessions))
+	}
+
+	recorder = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/sessions/"+parent.ID+"/children?limit="+maxIntQuery, nil)
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected children status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var children ChildrenResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &children); err != nil {
+		t.Fatalf("decode children response: %v", err)
+	}
+	if len(children.Sessions) != 50 || len(children.Jobs) != 50 {
+		t.Fatalf("expected oversized children limit to fall back to 50 sessions/jobs, got %d/%d", len(children.Sessions), len(children.Jobs))
+	}
+
+	recorder = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/queue/jobs?limit="+maxIntQuery, nil)
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected jobs status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var jobs []session.QueueJob
+	if err := json.Unmarshal(recorder.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode queue jobs response: %v", err)
+	}
+	if len(jobs) != 50 {
+		t.Fatalf("expected oversized queue job limit to fall back to 50, got %d", len(jobs))
+	}
+}
+
 func TestServiceSessionListReportsSummarySnapshotLoadErrors(t *testing.T) {
 	cases := []struct {
 		name string

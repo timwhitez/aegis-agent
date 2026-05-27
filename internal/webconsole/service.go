@@ -529,7 +529,7 @@ func (s *Service) overview() (OverviewResponse, error) {
 }
 
 func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	limit := queryInt(r, "limit", 50)
+	limit := queryBoundedInt(r, "limit", 50, 1, 200)
 	items, err := s.store.List(limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -741,7 +741,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 			return
 		}
-		s.handleChildren(w, sessionID, queryInt(r, "limit", 50))
+		s.handleChildren(w, sessionID, queryBoundedInt(r, "limit", 50, 1, 200))
 	case "messages":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -2583,7 +2583,7 @@ func (s *Service) handleStopSession(w http.ResponseWriter, sessionID string) {
 }
 
 func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	limit := queryInt(r, "limit", 50)
+	limit := queryBoundedInt(r, "limit", 50, 1, 200)
 	jobs, err := s.store.ListJobs(limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
