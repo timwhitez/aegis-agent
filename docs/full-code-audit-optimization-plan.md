@@ -6598,7 +6598,40 @@ Evidence gates:
 - Confirmed the issue is distinct from the model-tool and WebConsole creation paths. `Runner.Start` owns the initial session setup path and previously used unchecked `r.emit` after writing `goal.json`, Goal history, `planmode.json`, and Plan Mode history.
 - Confirmed the minimal fix should stay in start initialization: require the start-time Goal/Plan Mode events before provider execution, append paired creation events atomically when both are created, and restore only the facts this path just created if the event append fails.
 
+### Review 189
+
+- Confirmed FCA-20260527-196 against `spec/01-runtime-architecture.md`: `planmode.linked_goal` is a catalogued durable session event for linking an existing pending Plan Mode gate to the current Goal.
+- Confirmed the issue is distinct from FCA-20260527-193 and FCA-20260527-195. Those slices covered newly created linked Plan Mode gates; this slice covers `EnsurePlanModeForGoal` reusing an already pending but unlinked Plan Mode and appending Plan Mode history without matching event evidence.
+- Confirmed the minimal fix must cover each adapter that can perform the relink outside the store: model tool `create_goal`, Web goal/mission/validation controls, and the CLI `goal plan approve` fallback. On event failure, restore Plan Mode snapshot/history and any surrounding Goal/task facts owned by the route.
+
 ## Update Log
+
+### FCA-20260527-196
+
+Slice: `fix(runtime): require linked plan mode events`
+
+Finding:
+
+- The Plan Mode event catalog includes `planmode.linked_goal`, and `EnsurePlanModeForGoal` can relink an existing pending unlinked Plan Mode to the current Goal while appending `artifacts/planmode-history.jsonl`.
+- The model tool `create_goal(require_plan_approval=true)`, Web goal/mission/validation endpoints, and CLI `goal plan approve` fallback could reuse such an existing pending gate without persisting the matching session event.
+- A blocked `events.jsonl` path could leave `planmode.json` linked to a Goal and Plan Mode history advanced while the event timeline had no durable `planmode.linked_goal` evidence.
+
+Changes:
+
+- Required `planmode.linked_goal` from the model-tool `create_goal` path when an existing pending Plan Mode is relinked.
+- Reused one model-tool rollback helper for created and relinked Plan Mode gates, restoring Plan Mode snapshot/history, just-created Goal facts, Goal history, and task snapshots on required event failure.
+- Updated Web goal create, goal patch, mission plan patch, mission validation patch, and mission plan approval fallback paths to append either `planmode.created` or `planmode.linked_goal` as appropriate.
+- Extended Web rollback paths to restore Plan Mode history together with Plan Mode snapshots after relink event failures and later goal mutation failures.
+- Updated the CLI `goal plan approve` fallback to require the same Plan Mode creation/relink event before returning the expected "submit the plan" conflict, restoring Plan Mode state/history on event failure.
+- Added focused regressions for model-tool relink failure rollback, Web goal create / goal patch / mission patch relink rollback, and CLI created/relinked gate rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'Test(GoalToolsCreateReadRejectInvalidStatusAndComplete|CreateGoalReportsRequiredEventErrorAndRestoresGoal|CreateGoalReportsLinkedPlanModeEventErrorAndRestoresGoal|CreateGoalReportsLinkedPlanModeRelinkEventErrorAndRestoresGoal|UpdateGoalReportsRequiredEventErrorAndRestoresGoal|SubmitPlanReportsRequiredEventErrorAndRestoresPlanMode|RequestUserInputReportsCancellationEventErrorAndRestoresPendingRequest)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalCreateReportsEventAppendErrorAndRollsBack|GoalCreateReportsLinkedPlanModeRelinkEventErrorAndRollsBack|GoalPatchRollsBackLinkedPlanModeWhenEventAppendFails|MissionPlanPatchReportsLinkedPlanModeRelinkEventErrorAndRollsBack|MissionPlanPatchPlanModeReportsHistoryAppendError|GoalPatchMissionPlanModeReportsHistoryAppendError|MissionValidationContractPatchReportsHistoryAppendError|MissionPlanApproveReportsLinkedPlanModeEventAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestGoalPlanApproveCommandReports(EventAppendError|LinkedPlanModeCreatedEventAppendError|LinkedPlanModeRelinkEventAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 
 ### FCA-20260527-195
 

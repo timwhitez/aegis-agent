@@ -788,7 +788,25 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, j
 		return planModeErr
 	}
 	if session.GoalRequiresPlanApproval(goal) {
-		if _, _, err := store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI); err != nil {
+		previousPlanMode, err := store.SnapshotPlanMode(sessionID)
+		if err != nil {
+			return err
+		}
+		previousPlanModeHistory, err := store.LoadPlanModeHistory(sessionID)
+		if err != nil {
+			return err
+		}
+		planMode, created, err := store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI)
+		if err != nil {
+			return err
+		}
+		if err := appendCLIPlanModeLinkEvent(store, sessionID, previousPlanMode, planMode, created); err != nil {
+			if restoreErr := store.RestorePlanModeSnapshot(sessionID, previousPlanMode); restoreErr != nil {
+				return fmt.Errorf("restore plan mode after linked plan mode event error %v: %w", err, restoreErr)
+			}
+			if restoreErr := store.RestorePlanModeHistory(sessionID, previousPlanModeHistory); restoreErr != nil {
+				return fmt.Errorf("restore plan mode history after linked plan mode event error %v: %w", err, restoreErr)
+			}
 			return err
 		}
 		return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
@@ -814,6 +832,26 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, j
 		return json.NewEncoder(stdout).Encode(goal)
 	}
 	_, _ = fmt.Fprintf(stdout, "goal plan approved: %s\n", goal.GoalID)
+	return nil
+}
+
+func appendCLIPlanModeLinkEvent(store *session.Store, sessionID string, previous session.PlanModeSnapshot, planMode session.PlanModeState, created bool) error {
+	eventType := ""
+	switch {
+	case created:
+		eventType = "planmode.created"
+	case planMode.PlanModeID != "" && planMode.LinkedGoalID != "" && previous.State.LinkedGoalID != planMode.LinkedGoalID:
+		eventType = "planmode.linked_goal"
+	default:
+		return nil
+	}
+	if err := store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", map[string]any{
+		"plan_mode_id":   planMode.PlanModeID,
+		"status":         planMode.Status,
+		"linked_goal_id": planMode.LinkedGoalID,
+	})); err != nil {
+		return fmt.Errorf("record %s event: %w", eventType, err)
+	}
 	return nil
 }
 

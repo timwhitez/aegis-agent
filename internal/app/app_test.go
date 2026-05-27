@@ -573,6 +573,141 @@ func TestGoalPlanApproveCommandReportsEventAppendError(t *testing.T) {
 	}
 }
 
+func TestGoalPlanApproveCommandReportsLinkedPlanModeCreatedEventAppendError(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_plan_approve_created_event_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_plan_approve_created_event_error",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Approve CLI mission through a newly created planning gate",
+		ValidationPlan:      []string{"manual: validate approval"},
+		Features:            []string{"CLI approval gate"},
+		Milestones:          []string{"CLI coverage"},
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.Features[0].ClaimedAssertions = []string{"validation_0001"}
+	goal.Mission.Milestones[0].ValidationIDs = []string{"validation_0001"}
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+	blockAppEventsPath(t, store, meta.ID)
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run(context.Background(), []string{"goal", "plan", "approve", meta.ID, "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "planmode.created") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected linked Plan Mode create event append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if planMode, planErr := store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
+		t.Fatalf("failed linked Plan Mode create event should restore absent plan mode, got plan=%#v err=%v", planMode, planErr)
+	}
+}
+
+func TestGoalPlanApproveCommandReportsLinkedPlanModeRelinkEventAppendError(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_plan_approve_relink_event_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_plan_approve_relink_event_error",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planMode, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Existing unlinked planning gate",
+		Source:    session.PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Approve CLI mission through an existing planning gate",
+		ValidationPlan:      []string{"manual: validate approval"},
+		Features:            []string{"CLI approval gate"},
+		Milestones:          []string{"CLI coverage"},
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.Features[0].ClaimedAssertions = []string{"validation_0001"}
+	goal.Mission.Milestones[0].ValidationIDs = []string{"validation_0001"}
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+	beforePlanHistory, err := store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	blockAppEventsPath(t, store, meta.ID)
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run(context.Background(), []string{"goal", "plan", "approve", meta.ID, "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "planmode.linked_goal") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected linked Plan Mode event append error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	loadedPlanMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode: %v", err)
+	}
+	if loadedPlanMode.PlanModeID != planMode.PlanModeID || loadedPlanMode.LinkedGoalID != "" {
+		t.Fatalf("failed linked Plan Mode event should restore unlinked plan mode, got %#v", loadedPlanMode)
+	}
+	afterPlanHistory, err := store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode history: %v", err)
+	}
+	if len(afterPlanHistory) != len(beforePlanHistory) {
+		t.Fatalf("expected plan mode history restored to %d entries, got %d: %#v", len(beforePlanHistory), len(afterPlanHistory), afterPlanHistory)
+	}
+}
+
 func TestGoalStatusCommandPreservesAccountingAndProgressFacts(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

@@ -1759,22 +1759,21 @@ func defCreateGoal() Definition {
 					"status":         planMode.Status,
 					"linked_goal_id": planMode.LinkedGoalID,
 				}); err != nil {
-					if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPlanMode); rollbackErr != nil {
-						return errorResult("create_goal", fmt.Errorf("restore plan mode after planmode.created event failure %v: %w", err, rollbackErr)), nil
-					}
-					if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousPlanModeHistory); rollbackErr != nil {
-						return errorResult("create_goal", fmt.Errorf("restore plan mode history after planmode.created event failure %v: %w", err, rollbackErr)), nil
-					}
-					if _, rollbackErr := execCtx.Store.ClearGoal(execCtx.SessionID); rollbackErr != nil {
-						return errorResult("create_goal", fmt.Errorf("restore goal after planmode.created event failure %v: %w", err, rollbackErr)), nil
-					}
-					if rollbackErr := execCtx.Store.RestoreGoalHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
-						return errorResult("create_goal", fmt.Errorf("restore goal history after planmode.created event failure %v: %w", err, rollbackErr)), nil
-					}
-					if rollbackErr := execCtx.Store.SaveTasks(execCtx.SessionID, previousTasks); rollbackErr != nil {
-						return errorResult("create_goal", fmt.Errorf("restore tasks after planmode.created event failure %v: %w", err, rollbackErr)), nil
+					if result, ok := restoreCreateGoalWithPlanMode(execCtx, previousPlanMode, previousPlanModeHistory, previousHistory, previousTasks, "planmode.created", err); ok {
+						return result, nil
 					}
 					return errorResult("create_goal", fmt.Errorf("record planmode.created event: %w", err)), nil
+				}
+			} else if planMode.PlanModeID != "" && planMode.LinkedGoalID == goal.GoalID && previousPlanMode.State.LinkedGoalID != goal.GoalID {
+				if err := emitToolEvent(execCtx, "planmode.linked_goal", map[string]any{
+					"plan_mode_id":   planMode.PlanModeID,
+					"status":         planMode.Status,
+					"linked_goal_id": planMode.LinkedGoalID,
+				}); err != nil {
+					if result, ok := restoreCreateGoalWithPlanMode(execCtx, previousPlanMode, previousPlanModeHistory, previousHistory, previousTasks, "planmode.linked_goal", err); ok {
+						return result, nil
+					}
+					return errorResult("create_goal", fmt.Errorf("record planmode.linked_goal event: %w", err)), nil
 				}
 			}
 			data, _ := json.MarshalIndent(goal, "", "  ")
@@ -1790,6 +1789,25 @@ func defCreateGoal() Definition {
 			}, nil
 		},
 	}
+}
+
+func restoreCreateGoalWithPlanMode(execCtx ExecContext, previousPlanMode session.PlanModeSnapshot, previousPlanModeHistory []session.PlanModeHistoryEntry, previousGoalHistory []session.GoalHistoryEntry, previousTasks []session.Task, eventType string, cause error) (session.ToolResult, bool) {
+	if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPlanMode); rollbackErr != nil {
+		return errorResult("create_goal", fmt.Errorf("restore plan mode after %s event failure %v: %w", eventType, cause, rollbackErr)), true
+	}
+	if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousPlanModeHistory); rollbackErr != nil {
+		return errorResult("create_goal", fmt.Errorf("restore plan mode history after %s event failure %v: %w", eventType, cause, rollbackErr)), true
+	}
+	if _, rollbackErr := execCtx.Store.ClearGoal(execCtx.SessionID); rollbackErr != nil {
+		return errorResult("create_goal", fmt.Errorf("restore goal after %s event failure %v: %w", eventType, cause, rollbackErr)), true
+	}
+	if rollbackErr := execCtx.Store.RestoreGoalHistory(execCtx.SessionID, previousGoalHistory); rollbackErr != nil {
+		return errorResult("create_goal", fmt.Errorf("restore goal history after %s event failure %v: %w", eventType, cause, rollbackErr)), true
+	}
+	if rollbackErr := execCtx.Store.SaveTasks(execCtx.SessionID, previousTasks); rollbackErr != nil {
+		return errorResult("create_goal", fmt.Errorf("restore tasks after %s event failure %v: %w", eventType, cause, rollbackErr)), true
+	}
+	return session.ToolResult{}, false
 }
 
 func defRecordGoalProgress() Definition {

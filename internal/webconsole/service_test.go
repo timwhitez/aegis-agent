@@ -329,6 +329,62 @@ func TestServiceGoalCreateReportsEventAppendErrorAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestServiceGoalCreateReportsLinkedPlanModeRelinkEventErrorAndRollsBack(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_create_planmode_relink_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planMode, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Existing unlinked planning gate",
+		Source:    session.PlanModeSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	beforePlanHistory, err := svc.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"objective":             "Create mission with existing planning gate",
+		"mode":                  "mission",
+		"require_plan_approval": true,
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "planmode.linked_goal") || !strings.Contains(apiErr.Error, "events.jsonl") {
+		t.Fatalf("expected linked Plan Mode event append error, got %#v", apiErr)
+	}
+	if _, loadErr := svc.store.LoadGoal(meta.ID); !errors.Is(loadErr, fs.ErrNotExist) {
+		t.Fatalf("failed linked Plan Mode event should not leave goal snapshot, got %v", loadErr)
+	}
+	loadedPlanMode, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode: %v", err)
+	}
+	if loadedPlanMode.PlanModeID != planMode.PlanModeID || loadedPlanMode.LinkedGoalID != "" {
+		t.Fatalf("failed linked Plan Mode event should restore unlinked plan mode, got %#v", loadedPlanMode)
+	}
+	afterPlanHistory, err := svc.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode history: %v", err)
+	}
+	if len(afterPlanHistory) != len(beforePlanHistory) {
+		t.Fatalf("expected plan mode history restored to %d entries, got %d: %#v", len(beforePlanHistory), len(afterPlanHistory), afterPlanHistory)
+	}
+}
+
 func TestServiceGoalCreateRollsBackWhenLinkedPlanModeCreationFails(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -375,6 +431,74 @@ func TestServiceGoalCreateRollsBackWhenLinkedPlanModeCreationFails(t *testing.T)
 	}
 	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
 		t.Fatalf("failed linked plan mode creation should not leave plan mode, got plan=%#v err=%v", planMode, planErr)
+	}
+}
+
+func TestServiceMissionPlanPatchReportsLinkedPlanModeRelinkEventErrorAndRollsBack(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_patch_planmode_relink_event_error")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planMode, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Existing unlinked planning gate",
+		Source:    session.PlanModeSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	original, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Patch mission plan with existing Plan Mode",
+		Source:    session.GoalSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	beforePlanHistory, err := svc.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	blockWebEventsPath(t, svc.store, meta.ID)
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"plan_status": session.MissionPlanStatusNeedsApproval,
+		"features":    []map[string]any{{"id": "feature_plan", "title": "Feature", "status": "pending"}},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "planmode.linked_goal") || !strings.Contains(apiErr.Error, "events.jsonl") {
+		t.Fatalf("expected linked Plan Mode event append error, got %#v", apiErr)
+	}
+	loaded, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored goal: %v", err)
+	}
+	if loaded.GoalID != original.GoalID || len(loaded.Mission.Features) != 0 || session.NormalizeMissionPlanStatus(loaded.Mission.PlanStatus) == session.MissionPlanStatusNeedsApproval {
+		t.Fatalf("failed linked Plan Mode event should restore goal, before=%#v after=%#v", original, loaded)
+	}
+	loadedPlanMode, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode: %v", err)
+	}
+	if loadedPlanMode.PlanModeID != planMode.PlanModeID || loadedPlanMode.LinkedGoalID != "" {
+		t.Fatalf("failed linked Plan Mode event should restore unlinked plan mode, got %#v", loadedPlanMode)
+	}
+	afterPlanHistory, err := svc.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode history: %v", err)
+	}
+	if len(afterPlanHistory) != len(beforePlanHistory) {
+		t.Fatalf("expected plan mode history restored to %d entries, got %d: %#v", len(beforePlanHistory), len(afterPlanHistory), afterPlanHistory)
 	}
 }
 
@@ -860,6 +984,10 @@ func TestServiceGoalPatchRollsBackLinkedPlanModeWhenEventAppendFails(t *testing.
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
+	beforePlanHistory, err := svc.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
 	blockWebEventsPath(t, svc.store, meta.ID)
 
 	ts := httptest.NewServer(svc)
@@ -869,7 +997,7 @@ func TestServiceGoalPatchRollsBackLinkedPlanModeWhenEventAppendFails(t *testing.
 	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
 		"control": map[string]any{"require_plan_approval": true},
 	}, http.StatusInternalServerError, &apiErr)
-	if !strings.Contains(apiErr.Error, "events.jsonl") {
+	if !strings.Contains(apiErr.Error, "planmode.linked_goal") || !strings.Contains(apiErr.Error, "events.jsonl") {
 		t.Fatalf("expected event append error, got %#v", apiErr)
 	}
 	loadedGoal, loadErr := svc.store.LoadGoal(meta.ID)
@@ -885,6 +1013,13 @@ func TestServiceGoalPatchRollsBackLinkedPlanModeWhenEventAppendFails(t *testing.
 	}
 	if loadedPlanMode.PlanModeID != planMode.PlanModeID || loadedPlanMode.LinkedGoalID != "" {
 		t.Fatalf("failed goal patch should restore unlinked plan mode, got %#v", loadedPlanMode)
+	}
+	afterPlanHistory, err := svc.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode history: %v", err)
+	}
+	if len(afterPlanHistory) != len(beforePlanHistory) {
+		t.Fatalf("expected plan mode history restored to %d entries, got %d: %#v", len(beforePlanHistory), len(afterPlanHistory), afterPlanHistory)
 	}
 }
 
