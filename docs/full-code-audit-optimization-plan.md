@@ -4844,6 +4844,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `planmode.input_requested` returns an error result before the responder is called while preserving durable pending request/state.
 - Standard grouped validation before commit.
 
+### FCA-20260527-191: Goal creation tool can lose the required creation event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `goal.created` in the session event catalog.
+- `internal/tools/registry.go` `defCreateGoal` called `Store.CreateGoal`, which writes `goal.json` and `artifacts/goal-history.jsonl`, then emitted `goal.created` through unchecked `ExecContext.Emit`.
+- `internal/runtime/engine.go` wires unchecked `ExecContext.Emit` to best-effort `e.emit`, which ignores `events.jsonl` append failures.
+- A focused plain-goal registry regression blocked the required event callback; before the fix, `create_goal` returned success and left a current goal despite the missing session event.
+
+Impact:
+
+A model-created goal could become the durable current goal without the event timeline fact that explains when the model introduced it. Retrying after event storage repair would fail as a duplicate current goal, so the missing `goal.created` event could not be repaired through the same tool call.
+
+Minimal fix:
+
+- Snapshot Goal history and task graph before model-driven `CreateGoal`.
+- Route model-tool `goal.created` through the checked tool event callback.
+- If the required event cannot be written, clear the just-created goal, restore previous Goal history and previous tasks, and return an error tool result.
+- Keep approval-gated linked Plan Mode creation as a separate atomicity concern rather than mixing it into the plain-goal event slice.
+
+Validation:
+
+- Focused pre-fix registry regression proving plain `create_goal` succeeded and left `goal.json` when required event persistence was unavailable.
+- Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6540,7 +6568,49 @@ Evidence gates:
 - Confirmed this is narrower than FCA-20260526-073. That slice made pending request and awaiting-input state durable before responder invocation; this slice handles the later event append failure after those facts already succeeded.
 - Confirmed the minimal fix should not roll back the pending request or awaiting-input state, because earlier recovery semantics intentionally preserve those facts. The tool should return an error before consuming interactive input so a later recovery path can still answer the pending request.
 
+### Review 184
+
+- Confirmed FCA-20260527-191 against `spec/01-runtime-architecture.md`: `goal.created` is a catalogued session event for durable Goal creation.
+- Confirmed the issue is distinct from store-level goal history rollback and earlier Web goal-create rollback. This path is the model tool after `CreateGoal` has already succeeded and before any optional linked Plan Mode gate is considered.
+- Confirmed the minimal fix should stay on the plain Goal creation boundary: use the checked tool event callback and restore `goal.json`, Goal history, and task snapshots if that event fails. Linked Plan Mode event rollback remains a separate, wider composition problem.
+
 ## Update Log
+
+### FCA-20260527-191
+
+Slice: `fix(tools): require goal creation events`
+
+Finding:
+
+- `create_goal` persisted `goal.json` and `goal.created` history, then emitted the required `goal.created` session event through unchecked `ExecContext.Emit`.
+- A blocked or unwritable `events.jsonl` path could therefore leave a model-created current Goal without the matching event timeline fact.
+
+Changes:
+
+- Snapshotted Goal history and task graph before model-driven Goal creation.
+- Switched model-tool `goal.created` emission to the checked tool event callback.
+- Cleared the just-created goal and restored previous Goal history/tasks when required event persistence fails, then returned an error tool result.
+- Added focused registry coverage for blocked plain `goal.created` event persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestCreateGoalReportsRequiredEventErrorAndRestoresGoal -count=1`: failed before the fix because `create_goal` returned success and left `goal.json`.
+- `go test -timeout 120s ./internal/tools -run TestCreateGoalReportsRequiredEventErrorAndRestoresGoal -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test(CreateGoalReportsRequiredEventErrorAndRestoresGoal|GoalToolsCreateReadRejectInvalidStatusAndComplete|UpdateGoalReportsRequiredEventErrorAndRestoresGoal|SubmitPlanReportsRequiredEventErrorAndRestoresPlanMode|RequestUserInputReportsRequiredEventErrorBeforeResponder)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-190
 

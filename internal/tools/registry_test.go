@@ -781,6 +781,77 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	}
 }
 
+func TestCreateGoalReportsRequiredEventErrorAndRestoresGoal(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	previousHistory, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous goal history: %v", err)
+	}
+	previousTasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous tasks: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	eventErr := errors.New("events.jsonl blocked")
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		EmitRequired: func(eventType string, _ map[string]any) error {
+			if eventType != "goal.created" {
+				t.Fatalf("unexpected required event %q", eventType)
+			}
+			return eventErr
+		},
+	}
+
+	result, err := registry.Execute(context.Background(), "create_goal", execCtx, json.RawMessage(`{
+		"objective":"Create a plain goal with a required event"
+	}`))
+	if err != nil {
+		t.Fatalf("create_goal execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "goal.created") || !strings.Contains(result.DisplayOutput, eventErr.Error()) {
+		t.Fatalf("expected goal.created event error result, got %#v", result)
+	}
+	if _, err := store.LoadGoal(meta.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected failed create_goal to remove goal snapshot, got %v", err)
+	}
+	history, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored goal history: %v", err)
+	}
+	if len(history) != len(previousHistory) {
+		t.Fatalf("expected history restored to %d entries, got %d: %#v", len(previousHistory), len(history), history)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list restored tasks: %v", err)
+	}
+	if len(tasks) != len(previousTasks) {
+		t.Fatalf("expected tasks restored to %d entries, got %d: %#v", len(previousTasks), len(tasks), tasks)
+	}
+}
+
 func TestUpdateGoalReportsRequiredEventErrorAndRestoresGoal(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()

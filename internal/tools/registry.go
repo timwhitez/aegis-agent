@@ -1694,6 +1694,14 @@ func defCreateGoal() Definition {
 				value := *input.TimeBudgetMinutes * 60
 				seconds = &value
 			}
+			previousHistory, err := execCtx.Store.LoadGoalHistory(execCtx.SessionID)
+			if err != nil {
+				return errorResult("create_goal", err), nil
+			}
+			previousTasks, err := execCtx.Store.ListTasks(execCtx.SessionID)
+			if err != nil {
+				return errorResult("create_goal", err), nil
+			}
 			goal, err := execCtx.Store.CreateGoal(execCtx.SessionID, session.GoalDraft{
 				Enabled:             true,
 				Mode:                input.Mode,
@@ -1712,13 +1720,22 @@ func defCreateGoal() Definition {
 			if err != nil {
 				return errorResult("create_goal", err), nil
 			}
-			if execCtx.Emit != nil {
-				execCtx.Emit("goal.created", map[string]any{
-					"goal_id":   goal.GoalID,
-					"mode":      goal.Mode,
-					"status":    goal.Status,
-					"objective": goal.Objective,
-				})
+			if err := emitToolEvent(execCtx, "goal.created", map[string]any{
+				"goal_id":   goal.GoalID,
+				"mode":      goal.Mode,
+				"status":    goal.Status,
+				"objective": goal.Objective,
+			}); err != nil {
+				if _, rollbackErr := execCtx.Store.ClearGoal(execCtx.SessionID); rollbackErr != nil {
+					return errorResult("create_goal", fmt.Errorf("restore goal after goal.created event failure %v: %w", err, rollbackErr)), nil
+				}
+				if rollbackErr := execCtx.Store.RestoreGoalHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
+					return errorResult("create_goal", fmt.Errorf("restore goal history after goal.created event failure %v: %w", err, rollbackErr)), nil
+				}
+				if rollbackErr := execCtx.Store.SaveTasks(execCtx.SessionID, previousTasks); rollbackErr != nil {
+					return errorResult("create_goal", fmt.Errorf("restore tasks after goal.created event failure %v: %w", err, rollbackErr)), nil
+				}
+				return errorResult("create_goal", fmt.Errorf("record goal.created event: %w", err)), nil
 			}
 			if planMode, created, err := execCtx.Store.EnsurePlanModeForGoal(execCtx.SessionID, goal, session.PlanModeSourceTool); err != nil {
 				return errorResult("create_goal", err), nil
