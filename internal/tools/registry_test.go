@@ -2341,6 +2341,53 @@ func TestGrepToolsReportMissingExplicitPath(t *testing.T) {
 	}
 }
 
+func TestGrepToolsRejectEmptyPattern(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	if err := os.WriteFile(filepath.Join(workdir, "notes.txt"), []byte("first\nsecond\n"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	for _, name := range []string{"grep", "grep_files"} {
+		result, err := registry.Execute(context.Background(), name, execCtx, json.RawMessage(`{
+			"pattern":""
+		}`))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !result.IsError || !strings.Contains(result.DisplayOutput, "pattern is required") {
+			t.Fatalf("expected %s to reject empty pattern, got %#v", name, result)
+		}
+		if strings.Contains(result.DisplayOutput, "notes.txt") {
+			t.Fatalf("expected %s empty pattern not to dump workspace matches, got %q", name, result.DisplayOutput)
+		}
+	}
+}
+
 func TestGlobSkipsSymlinkEscapes(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

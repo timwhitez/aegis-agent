@@ -989,6 +989,9 @@ func defGrep() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("grep", err), nil
 			}
+			if err := validateGrepPattern(input.Pattern); err != nil {
+				return errorResult("grep", err), nil
+			}
 			if input.Path != "" {
 				if isInternalGeneratedArtifactInput(input.Path) {
 					return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
@@ -1094,6 +1097,9 @@ func defGrepFiles() Definition {
 				Limit   int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("grep_files", err), nil
+			}
+			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("grep_files", err), nil
 			}
 			if input.Path != "" && isInternalGeneratedArtifactInput(input.Path) {
@@ -1447,6 +1453,13 @@ func resolveGrepRoot(workdir, inputPath string) (string, error) {
 func compileGrepMatcher(pattern string) (*regexp.Regexp, bool) {
 	matcher, err := regexp.Compile(pattern)
 	return matcher, err == nil
+}
+
+func validateGrepPattern(pattern string) error {
+	if pattern == "" {
+		return errors.New("pattern is required")
+	}
+	return nil
 }
 
 func textMatchesPattern(text string, matcher *regexp.Regexp, useRegex bool, pattern string) bool {

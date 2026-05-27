@@ -7512,6 +7512,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-243. That slice covered explicit missing path classification; this slice covers oversized but syntactically valid `grep_files.limit` values after the search root and filters are valid.
 - Confirmed the minimal fix belongs in the built-in tool registry: normalize `grep_files` limits to the existing default of 100 with a hard cap of 200, update the tool schema description, and leave matching, include filters, build/cache/internal skips, and provider/runtime behavior unchanged.
 
+### Review 238
+
+- Confirmed FCA-20260527-245 against `spec/04-tools-and-skills.md`'s built-in search-tool contract: `grep` and `grep_files` require a meaningful search `pattern`; an empty pattern is not evidence gathering and turns the tools into workspace dumps.
+- Confirmed this is distinct from FCA-20260527-243 and FCA-20260527-244. Those slices covered explicit missing search roots and oversized result limits; this slice covers an empty but syntactically valid pattern before search walking begins.
+- Confirmed the minimal fix belongs in the built-in tool registry: reject empty `pattern` for both grep tools before root resolution/walking, without changing regex-vs-literal matching, explicit path behavior, result caps, artifact skips, provider adapters, or WebConsole state.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7573,6 +7579,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-245
+
+Slice: `fix(tools): reject empty grep patterns`
+
+Finding:
+
+- `grep` and `grep_files` both require `pattern` in their tool schemas, but the handlers accepted the empty string.
+- Go's empty regex matches every line, so `grep` with `"pattern":""` returned every line up to its line cap.
+- `grep_files` with `"pattern":""` treated every text file as a match up to its path cap.
+- Before the fix, the focused regression failed because `grep` returned `notes.txt:1:first` and related lines for an empty pattern instead of reporting invalid input.
+
+Impact:
+
+- A malformed tool call could turn the search tools into workspace content/path dumps instead of targeted evidence-gathering tools.
+- This weakens context discipline and can make the absence of a real pattern look like a valid search result.
+
+Changes:
+
+- Added a focused regression proving both `grep` and `grep_files` reject empty patterns before walking the workspace.
+- Added shared `validateGrepPattern()` and invoked it in both grep handlers immediately after JSON decode.
+- Left regex-or-literal matching, explicit path validation, generated-artifact skips, binary skips, `grep` line cap, and `grep_files` result cap unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestGrepToolsRejectEmptyPattern -count=1`: failed before the fix because `grep` dumped matching workspace lines for an empty pattern.
+- `go test -timeout 120s ./internal/tools -run 'TestGrepToolsRejectEmptyPattern|TestGrepToolsReportMissingExplicitPath|TestGrepFilesLimitIsCapped|TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault|TestGrepFilesReturnsPathsOnlyAndSkipsArtifacts' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-244
 
