@@ -667,6 +667,72 @@ test('refreshCurrentSession ignores stale session detail responses after selecti
   });
 });
 
+test('refreshCurrentSession skips stale same-session detail when a newer refresh is queued', async () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(`
+    window.setTimeout = function(callback) {
+      callback();
+      return 0;
+    };
+  `, appContext);
+
+  const firstRefresh = vm.runInContext(`
+    state.sessionId = 'session_same_refresh';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_same_refresh' },
+      state: { status: 'running' },
+      messages: [{ id: 'm_current', role: 'assistant', text: 'current detail' }],
+      timeline: []
+    };
+    refreshCurrentSession();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_same_refresh/);
+
+  await vm.runInContext(`refreshCurrentSession()`, appContext);
+
+  appContext.pendingRequests[0].resolve({
+    metadata: { id: 'session_same_refresh' },
+    state: { status: 'completed' },
+    messages: [{ id: 'm_stale', role: 'assistant', text: 'stale detail' }],
+    timeline: []
+  });
+  await firstRefresh;
+
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.match(appContext.pendingRequests[1].url, /session_same_refresh/);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    status: state.sessionDetail?.state?.status,
+    generating: state.isGenerating,
+    messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
+  })`, appContext)), {
+    status: 'running',
+    generating: true,
+    messageIDs: ['m_current']
+  });
+
+  appContext.pendingRequests[1].resolve({
+    metadata: { id: 'session_same_refresh' },
+    state: { status: 'running' },
+    messages: [{ id: 'm_updated', role: 'assistant', text: 'updated detail' }],
+    timeline: []
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    status: state.sessionDetail?.state?.status,
+    generating: state.isGenerating,
+    messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
+  })`, appContext)), {
+    status: 'running',
+    generating: true,
+    messageIDs: ['m_current', 'm_updated']
+  });
+});
+
 test('loadEarlierMessages ignores stale page responses after session changes', async () => {
   const appContext = createAppHarnessContext();
   const slowLoad = vm.runInContext(`

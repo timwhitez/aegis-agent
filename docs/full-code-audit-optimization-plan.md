@@ -7740,6 +7740,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-281. That slice covered paginated Sessions history via `/api/history`; this slice covers the global `/api/overview` polling/action refresh used by the Session workspace.
 - Confirmed the minimal fix belongs in `refreshOverview`: queue one latest overview refresh while a prior request is in flight, ignore stale success/error side effects when a newer refresh is pending, and immediately launch the queued refresh after the active request settles, without changing backend overview aggregation or making the browser authoritative.
 
+### Review 276
+
+- Confirmed FCA-20260528-283 against `spec/17-web-console.md`'s selected session detail contract: the Session workspace detail is a read-only projection of the selected session's durable files, and a stale in-flight detail response must not be applied when a newer same-session refresh has already been requested.
+- Confirmed this is distinct from FCA-20260528-270 and FCA-20260528-282. Those slices covered stale detail after selection changes and stale global overview refreshes; this slice covers a same-session race where `refreshCurrentSession()` queued a newer refresh but still applied the older response first.
+- Confirmed the minimal fix belongs in `refreshCurrentSession`: preserve the existing queued-refresh behavior, but suppress success/error UI mutations from the older request while `needsSessionRefresh` is set, without changing backend session detail APIs, polling cadence, message-window merging, or runtime session authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7801,6 +7807,46 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-283
+
+Slice: `fix(webconsole): ignore stale queued session detail`
+
+Finding:
+
+- `refreshCurrentSession()` already set `needsSessionRefresh=true` when another detail refresh was requested while one `/api/sessions/{id}` call was in flight.
+- The active request still applied its success path before the queued refresh ran: it merged messages, replaced `state.sessionDetail`, updated `isGenerating`, rendered the Session workspace, and only then scheduled the newer refresh.
+- In the VM harness, a selected running session with current message `m_current` received a stale in-flight detail response with status `completed` and message `m_stale` after a newer refresh had been queued. The stale response changed the selected session to `completed` and merged `m_stale` before the newer request could run.
+
+Impact:
+
+- The selected Session workspace could briefly show older durable detail after an operator action or poll requested a newer same-session refresh.
+- In practice this could make a running or recently continued session appear completed/settled until the queued refresh arrived, weakening the WebConsole polling-first file-fact projection contract.
+
+Changes:
+
+- Added a VM-level WebConsole regression for same-session detail refresh ordering.
+- Updated `refreshCurrentSession()` to skip stale success/error side effects when `needsSessionRefresh` is already set for a newer queued request.
+- Preserved the existing `finally` behavior that launches the queued refresh, so the latest session file facts are still fetched immediately.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because stale same-session detail changed status to `completed` and merged `m_stale` while a newer refresh was queued.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after suppressing stale detail success/error paths when a newer refresh is queued.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-282
 

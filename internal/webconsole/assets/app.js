@@ -2093,7 +2093,7 @@ async function refreshCurrentSession(options = {}) {
   state.needsSessionRefresh = false;
   try {
     const detail = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}?limit=40`);
-    if (state.sessionId !== sessionID) {
+    if (state.sessionId !== sessionID || state.needsSessionRefresh) {
       return;
     }
     mergeLoadedMessagesIntoDetail(detail);
@@ -2125,6 +2125,9 @@ async function refreshCurrentSession(options = {}) {
     updateUI();
     syncPollingForState();
   } catch (err) {
+    if (state.sessionId !== sessionID || state.needsSessionRefresh) {
+      return;
+    }
     console.error('session detail error', err);
     if (options.surfaceError) {
       if (state.sessionId === sessionID) {
