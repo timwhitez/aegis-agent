@@ -573,7 +573,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				toolResult.Name = call.Name
 				if toolErr != nil {
 					if errors.Is(toolErr, context.Canceled) {
-						e.emit(meta.ID, "tool.interrupted", "tool_execute", map[string]any{
+						interruptedErr := e.appendEvent(meta.ID, "tool.interrupted", "tool_execute", map[string]any{
 							"tool_name": call.Name,
 						})
 						toolResult = session.ToolResult{
@@ -586,7 +586,13 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						toolResults = append(toolResults, toolResult)
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool execution was interrupted before this call ran")...)
 						if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
+							if interruptedErr != nil {
+								return RunResult{}, fmt.Errorf("record interrupted tool result after tool.interrupted event failure for %s (%v): %w", call.Name, interruptedErr, err)
+							}
 							return RunResult{}, err
+						}
+						if interruptedErr != nil {
+							return RunResult{}, fmt.Errorf("record tool.interrupted event for %s: %w", call.Name, interruptedErr)
 						}
 						if e.control.consumePause() {
 							return e.pause(ctx, meta, state, e.control.takePauseReason(), hookManager)

@@ -2895,13 +2895,15 @@ func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 	}
 }
 
-func TestEnginePauseReportsPausedEventAppendError(t *testing.T) {
+func TestEngineToolInterruptedReportsEventAppendErrorWithReplayResult(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	started := make(chan struct{})
 	registry.Register(tools.Definition{
 		Name:        "slow",
 		Description: "slow",
 		InputSchema: map[string]any{"type": "object"},
 		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			close(started)
 			<-ctx.Done()
 			return session.ToolResult{}, ctx.Err()
 		},
@@ -2917,7 +2919,7 @@ func TestEnginePauseReportsPausedEventAppendError(t *testing.T) {
 		}, nil
 	})
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		<-started
 		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
 			t.Errorf("remove events: %v", err)
 			return
@@ -2926,6 +2928,57 @@ func TestEnginePauseReportsPausedEventAppendError(t *testing.T) {
 			t.Errorf("block events path: %v", err)
 			return
 		}
+		engine.control.requestPause()
+	}()
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected tool.interrupted event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tool.interrupted") {
+		t.Fatalf("expected tool.interrupted event context, got %v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "tool" || len(last.ToolResults) != 1 || !last.ToolResults[0].IsError || !strings.Contains(last.ToolResults[0].DisplayOutput, "interrupted") {
+		t.Fatalf("expected replayable interrupted tool result despite event failure, got %#v", last)
+	}
+}
+
+func TestEnginePauseReportsPausedEventAppendError(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	registry.Register(tools.Definition{
+		Name:        "slow",
+		Description: "slow",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			<-ctx.Done()
+			return session.ToolResult{}, ctx.Err()
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "slow")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.cfg.Hooks.SessionPause = append(engine.cfg.Hooks.SessionPause, config.HookDefinition{
+		Name:    "block-events-during-pause",
+		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-during-pause", eventsPath},
+	})
+	hookManager = hooks.New(engine.cfg.Hooks, meta.Workdir)
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+	go func() {
+		time.Sleep(50 * time.Millisecond)
 		engine.control.requestPause()
 	}()
 

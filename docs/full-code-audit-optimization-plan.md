@@ -6628,7 +6628,48 @@ Evidence gates:
 - Confirmed this is distinct from `tool.after` handling. `tool.before` is a pre-side-effect boundary where the runtime can still stop cleanly; `tool.after` happens after execution and needs separate rollback/error semantics before it can be made required.
 - Confirmed the minimal fix belongs in `Engine.Run`: require the `tool.before` event append before hooks, state updates, guard evaluation, or tool dispatch so blocked `events.jsonl` cannot allow side effects without pre-execution timeline evidence.
 
+### Review 194
+
+- Confirmed FCA-20260527-201 against the same tool lifecycle event catalog: `tool.interrupted` is the durable event for a cancelled tool call, and Phase 8 also requires a replayable interrupted tool result so recovery does not see a dangling provider tool call.
+- Confirmed this is a different boundary from `tool.before`. The tool has already been interrupted, so the minimal fix must report the missing event without discarding the synthetic interrupted tool result needed for provider replay.
+- Confirmed the existing `session.paused` event regression needed a later failure point after `tool.interrupted`; retargeting it through a successful `session.pause` hook preserves downstream pause-event coverage while adding direct interrupted-event coverage.
+
 ## Update Log
+
+### FCA-20260527-201
+
+Slice: `fix(runtime): require tool interrupted events`
+
+Finding:
+
+- `Engine.Run` emitted `tool.interrupted` through unchecked `e.emit` after a tool returned `context.Canceled`.
+- The same branch persisted a replayable interrupted tool result, then continued to pause/fail/steer handling.
+- A blocked `events.jsonl` path during a running tool could therefore return a later `session.paused` event error while leaving the interrupted tool result in `messages.jsonl` with no catalogued `tool.interrupted` timeline evidence.
+
+Changes:
+
+- Switched interrupted-tool event recording from best-effort `emit` to checked `appendEvent`.
+- Preserved the interrupted tool result and same-turn synthetic results even when the event append fails, avoiding dangling provider tool calls on recovery.
+- Returned a `tool.interrupted` event error before pause/steer/fail handling when the interrupted event cannot be written.
+- Retargeted the existing `session.paused` append-error regression to block `events.jsonl` from a successful `session.pause` hook, keeping the downstream pause-event boundary covered.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineToolInterruptedReportsEventAppendErrorWithReplayResult|TestEnginePauseReportsPausedEventAppendError' -count=1`: failed before the fix because the missing interrupted event was swallowed and the returned error referenced `session.paused`.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineToolInterruptedReportsEventAppendErrorWithReplayResult|TestEnginePauseReportsPausedEventAppendError|TestEngineWritesInterruptedToolResultOnPause|TestEngineStopsAfterReplayCompleteToolResultsWhenRunContextCancelsTool' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-200
 
