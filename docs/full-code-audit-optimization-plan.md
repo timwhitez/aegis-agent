@@ -7710,6 +7710,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-275 and FCA-20260528-276. Those slices covered chat composer steer / continue / Plan revision branches; this slice covers the top-bar `requestInterrupt()` and `requestStopSession()` control paths.
 - Confirmed the minimal fix belongs in those WebConsole action handlers: capture or use the requested session id for the REST operation, then apply activity/toast/refresh/render side effects only while that same session remains selected, without changing runtime interrupt, stop, or steer fallback semantics.
 
+### Review 271
+
+- Confirmed FCA-20260528-278 against `spec/17-web-console.md`'s Plan Mode input contract: answering a pending `request_user_input` question is a mutation of one selected session's `planmode.json`, and its browser-side completion must not refresh or mutate another newly selected session view.
+- Confirmed this is distinct from FCA-20260528-273, FCA-20260528-276, and FCA-20260528-277. Those slices covered Plan approve/cancel, composer continue/revision, and top-bar interrupt/stop; this slice covers the Plan Mode pending-question submit path in `handlePlanInputAction()`.
+- Confirmed the minimal fix belongs in `handlePlanInputAction`: capture the session id before `/planmode/input`, use that id for the answer request, and apply selection cleanup, toast, refresh, and render side effects only while that same session remains selected.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7771,6 +7777,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-278
+
+Slice: `fix(webconsole): ignore stale plan input completions`
+
+Finding:
+
+- `handlePlanInputAction()` submitted answers to `/api/sessions/{id}/planmode/input` for the selected pending Plan Mode session, then unconditionally deleted the local answer selection, showed success/error feedback, queued session/overview refreshes, and rendered whatever session was selected when the answer request settled.
+- In the real browser timer path, if the operator answered a Plan Mode question for session A and switched to session B before the response returned, the stale completion queued `/api/sessions/session_fast_b?limit=40` plus overview refreshes even though the durable Plan input answer targeted session A.
+- The backend mutation still targeted session A, but the WebConsole view could refresh and present state for session B as if the Plan input action belonged to it.
+
+Impact:
+
+- The browser could perform stale refreshes and feedback against an unrelated selected session after answering a Plan Mode input request.
+- This made the Plan Mode inspector path another place where Web-side state could diverge from the selected session's durable file facts.
+
+Changes:
+
+- Captured the Plan input target `sessionID` before issuing `/planmode/input`.
+- Used the captured id for the answer request instead of rereading mutable `state.sessionId`.
+- Suppressed answer-selection cleanup, success/error toasts, refresh queues, and render side effects when the selected session no longer matches the original Plan input target.
+- Added a VM-level WebConsole regression with immediate timer execution proving a slow Plan input answer for session A cannot queue refreshes for newly selected session B.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because stale `session_input_slow_a` completion queued `/api/sessions/session_fast_b?limit=40` and `/api/overview`.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after binding Plan input answer side effects to the captured session id.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-277
 

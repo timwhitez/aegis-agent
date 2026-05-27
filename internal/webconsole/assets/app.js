@@ -1642,6 +1642,7 @@ async function handlePlanInputAction(button) {
     showToast('No durable session is loaded.', 'info');
     return;
   }
+  const sessionID = state.sessionId;
   const action = button.getAttribute('data-plan-input-action') || 'select';
   const requestID = button.getAttribute('data-request-id') || '';
   const planMode = currentPlanMode();
@@ -1684,18 +1685,25 @@ async function handlePlanInputAction(button) {
   }
   button.disabled = true;
   try {
-    await answerPlanModeInput(state.sessionId, { requestID, answers });
+    await answerPlanModeInput(sessionID, { requestID, answers });
+    if (state.sessionId !== sessionID) {
+      return;
+    }
     delete state.planInputSelections[requestID];
     showToast('Plan input answered.', 'success');
     queueSessionRefresh(80);
     queueOverviewRefresh(180);
   } catch (err) {
-    showToast(err.message || 'Failed to answer Plan Mode input.', 'error');
+    if (state.sessionId === sessionID) {
+      showToast(err.message || 'Failed to answer Plan Mode input.', 'error');
+    }
   } finally {
     if (document.body.contains(button)) {
       button.disabled = false;
     }
-    renderCurrentSession();
+    if (state.sessionId === sessionID) {
+      renderCurrentSession();
+    }
   }
 }
 

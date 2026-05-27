@@ -241,6 +241,12 @@ function installPlanModeAPITestWrappers(appContext) {
       const suffix = payload.override_coverage ? '?override=1' : '';
       return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/approve' + suffix, { method: 'POST' });
     };
+    answerPlanModeInput = function(sessionID, payload = {}) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/input', {
+        method: 'POST',
+        payload
+      });
+    };
   `, appContext);
 }
 
@@ -762,6 +768,74 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
     generating: false,
     activityTitle: 'Loaded session B'
   });
+});
+
+test('Plan input answer does not refresh a newly selected session after stale completion', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  appContext.planInputSubmitButton = fakeActionButton({
+    'data-plan-input-action': 'submit',
+    'data-request-id': 'request_slow_a'
+  });
+  appContext.window.setTimeout = function(callback) {
+    callback();
+    return 0;
+  };
+
+  const action = vm.runInContext(`
+    state.sessionId = 'session_input_slow_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_input_slow_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        status: 'awaiting_user_input',
+        pending_request: {
+          request_id: 'request_slow_a',
+          questions: [
+            { id: 'scope', options: [{ label: 'Small' }] }
+          ]
+        }
+      }
+    };
+    state.planInputSelections = {
+      request_slow_a: {
+        scope: { label: 'Small', value: 'Small' }
+      }
+    };
+    handlePlanInputAction(planInputSubmitButton);
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_input_slow_a\/planmode\/input/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      plan_mode: null,
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const requestURLs = appContext.pendingRequests.map((request) => request.url);
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: [],
+      timeline: []
+    });
+  }
+  await action;
+
+  assert.deepEqual(sameRealm(requestURLs), [
+    '/api/sessions/session_input_slow_a/planmode/input'
+  ]);
 });
 
 test('Goal actions do not refresh a newly selected session after stale completion', async () => {
