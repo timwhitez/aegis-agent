@@ -3081,8 +3081,14 @@ func TestEngineBackgroundAcceptanceKeepsNotificationPendingWhenAcceptedEventFail
 		t.Fatalf("append background notification: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	var eventsBeforeAcceptedAppend []byte
 	engine.beforeAppendEvent = func(evt events.Event) {
 		if evt.Type == "session.background.accepted" {
+			var err error
+			eventsBeforeAcceptedAppend, err = os.ReadFile(eventsPath)
+			if err != nil {
+				t.Fatalf("snapshot events before accepted append: %v", err)
+			}
 			blockPathAsDir(t, eventsPath, "events")
 		}
 	}
@@ -3115,6 +3121,83 @@ func TestEngineBackgroundAcceptanceKeepsNotificationPendingWhenAcceptedEventFail
 	for _, msg := range messages {
 		if msg.Role == "user" && msg.Meta["source"] == "background_results" {
 			t.Fatalf("accepted event failure should roll back provider-visible background message, got %#v", messages)
+		}
+	}
+	if eventsBeforeAcceptedAppend != nil {
+		if err := os.RemoveAll(eventsPath); err != nil {
+			t.Fatalf("remove blocked events path: %v", err)
+		}
+		if err := os.WriteFile(eventsPath, eventsBeforeAcceptedAppend, 0o600); err != nil {
+			t.Fatalf("restore readable events file: %v", err)
+		}
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	for _, event := range eventsList {
+		if event.Type == "user.message" && event.Data["source"] == "background_results" {
+			t.Fatalf("accepted event failure should not leave background user.message event without a message, got %#v", eventsList)
+		}
+	}
+}
+
+func TestEngineBackgroundAcceptanceRollsBackMessageWhenNotificationUpdateFails(t *testing.T) {
+	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	notification := session.NewBackgroundNotification(session.QueueJob{
+		ID:            "job_1",
+		Status:        session.QueueStatusCompleted,
+		SessionID:     "child_1",
+		SessionStatus: session.StatusCompleted,
+		FinalText:     "child done",
+	})
+	if err := engine.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
+		t.Fatalf("append background notification: %v", err)
+	}
+	backgroundPath := filepath.Join(engine.store.SessionDir(meta.ID), "control", "background.jsonl")
+	hookManager = hooks.New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{{
+			Name: "block-background-update",
+			Inject: &config.HookInject{
+				Field: "text",
+				Set:   "<background-agent-results>{}</background-agent-results>",
+			},
+		}},
+	}, meta.Workdir)
+	hookManager.SetEmitter(func(eventType string, _ map[string]any) error {
+		if eventType != "hook.finished" {
+			return nil
+		}
+		blockPathAsDir(t, backgroundPath, "background")
+		return nil
+	})
+
+	accepted, err := engine.drainBackground(context.Background(), meta, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "background.jsonl") {
+		t.Fatalf("expected background notification update error, accepted=%d err=%v", accepted, err)
+	}
+	if accepted != 0 {
+		t.Fatalf("notification update failure should not count accepted background notifications, got %d", accepted)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "background_results" {
+			t.Fatalf("notification update failure should roll back provider-visible background message, got %#v", messages)
+		}
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	for _, event := range eventsList {
+		if event.Type == "user.message" && event.Data["source"] == "background_results" {
+			t.Fatalf("notification update failure should not append background acceptance events, got %#v", eventsList)
+		}
+		if event.Type == "session.background.accepted" {
+			t.Fatalf("notification update failure should not append accepted event, got %#v", eventsList)
 		}
 	}
 }

@@ -1028,6 +1028,24 @@ func (e *Engine) appendEvent(sessionID, eventType, phase string, data map[string
 	return nil
 }
 
+func (e *Engine) appendEvents(sessionID string, items []events.Event) error {
+	if len(items) == 0 {
+		return nil
+	}
+	for _, evt := range items {
+		if e.beforeAppendEvent != nil {
+			e.beforeAppendEvent(evt)
+		}
+	}
+	if err := e.store.AppendEvents(sessionID, items); err != nil {
+		return err
+	}
+	for _, evt := range items {
+		e.bus.Publish(evt)
+	}
+	return nil
+}
+
 func (e *Engine) appendToolEvents(sessionID, phase string, items []tools.ToolEvent) error {
 	if len(items) == 0 {
 		return nil
@@ -1036,13 +1054,7 @@ func (e *Engine) appendToolEvents(sessionID, phase string, items []tools.ToolEve
 	for _, item := range items {
 		eventsToAppend = append(eventsToAppend, events.New(sessionID, item.Type, phase, item.Data))
 	}
-	if err := e.store.AppendEvents(sessionID, eventsToAppend); err != nil {
-		return err
-	}
-	for _, evt := range eventsToAppend {
-		e.bus.Publish(evt)
-	}
-	return nil
+	return e.appendEvents(sessionID, eventsToAppend)
 }
 
 func (e *Engine) guardrailsYolo() bool {
@@ -1323,38 +1335,39 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 	if err := e.store.AppendMessage(sessionID, msg); err != nil {
 		return 0, err
 	}
-	if err := e.appendEvent(sessionID, "user.message", "control_drain", map[string]any{
-		"text":   text,
-		"mode":   meta.Mode,
-		"source": "background_results",
-		"count":  len(pending),
-	}); err != nil {
-		if rollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); rollbackErr != nil {
-			return 0, fmt.Errorf("record background-results user.message event after rolling back background message failed with %v: %w", rollbackErr, err)
-		}
-		return 0, fmt.Errorf("record background-results user.message event: %w", err)
-	}
 	for i := range notifications {
 		if notifications[i].DeliveryStatus == session.BackgroundNotificationPending {
 			notifications[i].DeliveryStatus = session.BackgroundNotificationAccepted
 		}
 	}
 	if err := e.store.UpdateBackgroundNotifications(sessionID, notifications); err != nil {
+		if rollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); rollbackErr != nil {
+			return 0, fmt.Errorf("update background notifications after rolling back background message failed with %v: %w", rollbackErr, err)
+		}
 		return 0, err
 	}
-	if err := e.appendEvent(sessionID, "session.background.accepted", "control_drain", map[string]any{
-		"count": len(pending),
-	}); err != nil {
+	acceptanceEvents := []events.Event{
+		events.New(sessionID, "user.message", "control_drain", map[string]any{
+			"text":   text,
+			"mode":   meta.Mode,
+			"source": "background_results",
+			"count":  len(pending),
+		}),
+		events.New(sessionID, "session.background.accepted", "control_drain", map[string]any{
+			"count": len(pending),
+		}),
+	}
+	if err := e.appendEvents(sessionID, acceptanceEvents); err != nil {
 		if rollbackErr := e.store.RestorePendingBackgroundNotifications(sessionID, pending); rollbackErr != nil {
 			if messageRollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); messageRollbackErr != nil {
-				return 0, fmt.Errorf("record session.background.accepted event after restoring background notifications failed with %v and rolling back background message failed with %v: %w", rollbackErr, messageRollbackErr, err)
+				return 0, fmt.Errorf("record background-results acceptance events after restoring background notifications failed with %v and rolling back background message failed with %v: %w", rollbackErr, messageRollbackErr, err)
 			}
-			return 0, fmt.Errorf("record session.background.accepted event after restoring background notifications failed with %v: %w", rollbackErr, err)
+			return 0, fmt.Errorf("record background-results acceptance events after restoring background notifications failed with %v: %w", rollbackErr, err)
 		}
 		if rollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); rollbackErr != nil {
-			return 0, fmt.Errorf("record session.background.accepted event after rolling back background message failed with %v: %w", rollbackErr, err)
+			return 0, fmt.Errorf("record background-results acceptance events after rolling back background message failed with %v: %w", rollbackErr, err)
 		}
-		return 0, fmt.Errorf("record session.background.accepted event: %w", err)
+		return 0, fmt.Errorf("record background-results acceptance events: %w", err)
 	}
 	return len(pending), nil
 }
