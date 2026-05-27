@@ -7524,6 +7524,12 @@ Evidence gates:
 - Confirmed this is distinct from write denylist, symlink-safe atomic writes, generated-artifact reads, and grep input validation. This slice covers a malformed but schema-valid `edit_file` payload where Go string matching treats the empty string as present at byte zero.
 - Confirmed the minimal fix belongs in the built-in `edit_file` handler: reject only empty `old_text` before workspace/path resolution and file writes, while preserving whitespace-only exact replacements, `new_text` deletion semantics, write policy checks, and provider/runtime behavior.
 
+### Review 240
+
+- Confirmed FCA-20260527-247 against `spec/04-tools-and-skills.md`'s `shell` contract: `shell` runs non-interactive terminal commands for build/test/runtime operations, so a whitespace-only command is malformed input rather than successful work.
+- Confirmed this is distinct from shell timeout, sandbox, exec-policy, workdir, interruption, and output-truncation behavior. This slice covers a schema-valid string that becomes an empty shell program after trimming.
+- Confirmed the minimal fix belongs in the built-in `shell` handler: reject `strings.TrimSpace(command) == ""` before workdir/sandbox/process setup, while preserving the original command string and metadata for nonblank commands.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7585,6 +7591,48 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-247
+
+Slice: `fix(tools): reject blank shell commands`
+
+Finding:
+
+- `shell` required a `command` string in its schema, but the handler only rejected `command == ""`.
+- A whitespace-only command was passed to `/bin/bash -lc`, exited with status 0, and returned `(no output)`.
+- Before the fix, the focused regression failed because `"command":" \n\t "` produced a non-error result with `exit_code=0`.
+
+Impact:
+
+- A malformed tool call could be recorded as a successful terminal action even though no command was run.
+- This weakens validation evidence because `(no output)` plus a zero exit status can look like a legitimate no-op check.
+
+Changes:
+
+- Added a focused regression proving whitespace-only shell commands are rejected.
+- Changed the `shell` command guard to reject `strings.TrimSpace(command) == ""` before workdir resolution, sandbox setup, exec policy metadata, and process execution.
+- Left nonblank command execution, original command metadata, timeout capping, workdir override, sandbox handling, exec policy checks, and output truncation unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestShellRejectsBlankCommand -count=1`: failed before the fix because blank whitespace ran successfully with `(no output)`.
+- `go test -timeout 120s ./internal/tools -run 'TestShellRejectsBlankCommand|TestShellAndFileToolsEmitCompactionMetadata|TestShellReturnsExecPolicyMetadataInWarningMode|TestShellBlocksViolationInDenyMode|TestShellToolSupportsRelativeWorkdirOverride|TestShellToolAllowsRegisteredSkillWorkdirOutsideWorkspace' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-246
 

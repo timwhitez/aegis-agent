@@ -588,7 +588,7 @@ func defShell() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("shell", err), nil
 			}
-			if input.Command == "" {
+			if strings.TrimSpace(input.Command) == "" {
 				return errorResult("shell", errors.New("command is required")), nil
 			}
 			workdir := execCtx.Workdir

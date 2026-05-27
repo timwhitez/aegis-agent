@@ -1398,6 +1398,43 @@ func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	}
 }
 
+func TestShellRejectsBlankCommand(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"command":" \n\t "
+	}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "command is required") {
+		t.Fatalf("expected shell to reject blank command, got %#v", result)
+	}
+}
+
 func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
