@@ -7638,6 +7638,12 @@ Evidence gates:
 - Confirmed this is distinct from existing provider-attempt and raw-sidecar coverage. Existing tests covered provider retry/failure/success ledger append errors, raw sidecar disabled-by-default behavior, and successful raw sidecar envelope writes; this slice covers the missing error path when `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json` cannot be written after a successful provider turn and before assistant output persistence.
 - Confirmed the minimal fix belongs in the runtime engine's raw-sidecar persistence boundary: route the sidecar write error through `Engine.fail` before recording provider success or appending the assistant message, preserving provider adapter replay ownership, optional sidecar semantics, and the local session store as the authoritative recovery source.
 
+### Review 259
+
+- Confirmed FCA-20260528-266 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`'s Plan Mode file-fact contract: explicit Plan Mode cancellation is a session lifecycle transition back to `awaiting_input`, so `state.json` and `events.jsonl` must both expose the `plan_cancelled` boundary.
+- Confirmed this is distinct from existing Plan Mode cancellation event coverage. Existing regressions covered `planmode.cancelled` event persistence, cancellation retry idempotency, and the engine-owned `awaitingPlanCancelled` helper; this slice covers `Runner.Continue(... CancelPlan: true)`, which bypasses the engine helper and returned an awaiting-input result without a matching `session.awaiting_input` event.
+- Confirmed the minimal fix belongs in the runtime continue cancellation branch: after saving `state.status=awaiting_input` / `phase=plan_cancelled`, append `session.awaiting_input` with `reason=plan_cancelled`, without changing provider adapters, Web service state authority, or Plan Mode gate semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7699,6 +7705,46 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-266
+
+Slice: `fix(runtime): record plan cancel lifecycle`
+
+Finding:
+
+- `Runner.Continue` handles explicit Plan Mode cancellation by appending any pending `request_user_input` cancellation result, persisting `planmode.cancelled`, setting `state.status=awaiting_input` and `state.phase=plan_cancelled`, then returning `RunResult{Status:"awaiting_input"}`.
+- That direct cancellation branch did not append the corresponding `session.awaiting_input` lifecycle event. The engine helper for the same `plan_cancelled` state does append that event, but the explicit continue cancellation path bypasses it.
+
+Impact:
+
+- CLI/Web/API callers could observe a successful Plan Mode cancellation in `state.json` and `planmode.json`, while the event timeline lacked the session lifecycle boundary that explains why the session returned to awaiting input.
+- This weakened Web timeline, `session.md`/checkpoint-derived diagnostics, and recovery auditability for a user control action that should be traceable from durable session facts.
+
+Changes:
+
+- Appended `session.awaiting_input` with `reason=plan_cancelled` after the explicit cancellation path saves the awaiting-input state.
+- Added a focused runtime regression proving Plan Mode cancellation records both `planmode.cancelled` and the plan-cancelled awaiting-input lifecycle event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCancelPlanModeRecordsAwaitingInputLifecycleEvent -count=1`: failed before the fix because only `planmode.cancelled` was recorded.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeRecordsAwaitingInputLifecycleEvent|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|CancelPlanModeReportsCancelledEventAppendError|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|EnginePlanCancelledReportsAwaitingInputEventAppendError)' -count=1`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/planmode_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-265
 

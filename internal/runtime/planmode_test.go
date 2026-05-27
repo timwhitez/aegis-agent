@@ -480,6 +480,47 @@ func TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult(t *testing.T) {
 	}
 }
 
+func TestCancelPlanModeRecordsAwaitingInputLifecycleEvent(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Cancel plan mode", Source: session.PlanModeSourceCLI}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, CancelPlan: true, Source: session.PlanModeSourceCLI})
+	if err != nil {
+		t.Fatalf("cancel plan mode: result=%#v err=%v", result, err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting input after plan cancellation, got %#v", result)
+	}
+	events, err := runner.store.LoadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if count := countRuntimeEventType(events, "planmode.cancelled"); count != 1 {
+		t.Fatalf("expected one planmode.cancelled event, got %d events=%#v", count, events)
+	}
+	if count := countRuntimeEventWithReason(events, "session.awaiting_input", "plan_cancelled"); count != 1 {
+		t.Fatalf("expected one plan-cancelled awaiting-input lifecycle event, got %d events=%#v", count, events)
+	}
+}
+
 func TestPlanInputCancelReturnsHistoryAppendError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
@@ -1481,6 +1522,16 @@ func countRuntimeEventType(items []events.Event, target string) int {
 	var count int
 	for _, item := range items {
 		if item.Type == target {
+			count++
+		}
+	}
+	return count
+}
+
+func countRuntimeEventWithReason(items []events.Event, target, reason string) int {
+	var count int
+	for _, item := range items {
+		if item.Type == target && item.Data["reason"] == reason {
 			count++
 		}
 	}

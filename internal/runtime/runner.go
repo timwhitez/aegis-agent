@@ -755,6 +755,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err := r.store.SaveState(meta.ID, state); err != nil {
 			return RunResult{}, err
 		}
+		if err := r.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_cancelled"}); err != nil {
+			return RunResult{}, fmt.Errorf("record session.awaiting_input event for plan_cancelled: %w", err)
+		}
 		_ = writeSessionSummary(r.store, meta.ID)
 		return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode cancelled."}, nil
 	}
