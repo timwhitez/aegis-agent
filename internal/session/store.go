@@ -27,6 +27,9 @@ type Store struct {
 	dirMode  fs.FileMode
 	fileMode fs.FileMode
 	mu       sync.Mutex
+
+	// Set only by package tests to force deterministic Plan Mode artifact failures.
+	beforePlanModeMarkdownWrite func(sessionID string, state PlanModeState) error
 }
 
 const QueueRunningStaleAfter = 15 * time.Minute

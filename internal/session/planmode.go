@@ -496,7 +496,18 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 	if !mutated {
 		return PlanModeState{}, errors.New("session has no current plan mode")
 	}
+	if s.beforePlanModeMarkdownWrite != nil {
+		if err := s.beforePlanModeMarkdownWrite(sessionID, state); err != nil {
+			if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+				return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+			}
+			return PlanModeState{}, err
+		}
+	}
 	if err := s.WritePlanModeMarkdown(sessionID, state); err != nil {
+		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
+			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
+		}
 		return PlanModeState{}, err
 	}
 	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{

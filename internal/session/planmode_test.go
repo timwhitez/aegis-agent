@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,6 +143,50 @@ func TestSubmitPlanModeReturnsHistoryAppendError(t *testing.T) {
 	planPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "planmode-plan.md")
 	if _, statErr := os.Stat(planPath); !os.IsNotExist(statErr) {
 		t.Fatalf("failed submit should not leave plan markdown artifact, got stat err=%v", statErr)
+	}
+}
+
+func TestSubmitPlanModeRollsBackWhenMarkdownWriteFails(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Plan a markdown write failure",
+		Source:    PlanModeSourceCLI,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	store.beforePlanModeMarkdownWrite = func(gotSessionID string, state PlanModeState) error {
+		if gotSessionID != sessionID {
+			t.Fatalf("unexpected session id: %s", gotSessionID)
+		}
+		if state.Status != PlanModeStatusAwaitingApproval || state.PlanVersion != 1 {
+			t.Fatalf("expected submitted plan before markdown write, got %#v", state)
+		}
+		return errors.New("blocked plan markdown write")
+	}
+	_, err := store.SubmitPlanMode(sessionID, PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "This transition must roll back if markdown cannot be written.",
+		PlanMarkdown: "# Summary\n\nSubmit with blocked markdown.\n",
+		Verification: []string{"manual"},
+		Source:       PlanModeSourceTool,
+	})
+	if err == nil || !strings.Contains(err.Error(), "blocked plan markdown write") {
+		t.Fatalf("expected plan markdown write error, got %v", err)
+	}
+	loaded, loadErr := store.LoadPlanMode(sessionID)
+	if loadErr != nil {
+		t.Fatalf("load plan mode: %v", loadErr)
+	}
+	if loaded.Status != PlanModeStatusPlanning || loaded.PlanVersion != 0 || loaded.PlanMarkdown != "" {
+		t.Fatalf("failed markdown write should not advance plan mode snapshot, got %#v", loaded)
+	}
+	history, historyErr := store.LoadPlanModeHistory(sessionID)
+	if historyErr != nil {
+		t.Fatalf("load plan mode history: %v", historyErr)
+	}
+	if len(history) != 1 || history[0].Type != "planmode.created" {
+		t.Fatalf("failed markdown write should not append submit history, got %#v", history)
 	}
 }
 

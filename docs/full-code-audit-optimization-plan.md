@@ -7608,6 +7608,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-259. That slice rolled back `control/background.jsonl` when `queue.job.notified` was missing; this slice covers the later terminal repair window where `queue.job.completed` / `queue.job.failed` fails after parent coordination already moved the job from unresolved to terminal.
 - Confirmed the minimal fix belongs in `SessionStore.ensureTerminalQueueJobParentState`: snapshot parent coordination before terminal repair, restore it on failed notified/completed/failed lifecycle event append, and preserve idempotent event repair, terminal job status, background notification repair, queue file reconciliation, and runtime worker semantics.
 
+### Review 254
+
+- Confirmed FCA-20260528-261 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`'s Plan Mode fact-source requirement: `planmode.json`, `artifacts/planmode-history.jsonl`, and `artifacts/planmode-plan.md` must describe the same submitted plan transition.
+- Confirmed this is distinct from existing Plan Mode history rollback coverage. Prior tests covered `planmode-history.jsonl` append failures after submit/approve; this slice covers the earlier derived Markdown artifact write failure after `planmode.json` has already advanced to `awaiting_approval`.
+- Confirmed the minimal fix belongs in `SessionStore.SubmitPlanMode`: restore the captured Plan Mode snapshot if `planmode-plan.md` cannot be written, preserving valid submit, approval, execution, Web Plan Mode controls, provider adapters, and runtime gate semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7669,6 +7675,31 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-261
+
+Slice: `fix(planmode): roll back failed plan markdown writes`
+
+Finding:
+
+- `Store.SubmitPlanMode` mutated `planmode.json` to `awaiting_approval`, incremented `plan_version`, and stored the submitted Markdown in the Plan Mode snapshot before writing the operator-readable `artifacts/planmode-plan.md` artifact.
+- If the Markdown artifact write failed at that boundary, `SubmitPlanMode` returned an error without restoring the previous Plan Mode snapshot.
+
+Impact:
+
+- A failed Plan Mode submit could leave `planmode.json` showing a submitted plan that had no matching `planmode.plan_submitted` history event and no readable `planmode-plan.md` artifact.
+- Web/CLI Plan Mode approval preflight could then see a submitted plan in the snapshot even though the submit transition was not fully durable across the Plan Mode fact set.
+
+Changes:
+
+- Added a package test hook to force a deterministic Plan Mode Markdown write failure after the snapshot mutation point.
+- Updated `SubmitPlanMode` to restore the captured Plan Mode snapshot when the Markdown artifact write boundary fails.
+- Added a focused regression that verifies failed Markdown write does not advance `planmode.json` or append submit history.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestSubmitPlanModeRollsBackWhenMarkdownWriteFails -count=1`: failed before the rollback because `planmode.json` advanced to `awaiting_approval` with `plan_version=1` after the injected Markdown write failure.
+- `go test -timeout 120s ./internal/session -run TestSubmitPlanModeRollsBackWhenMarkdownWriteFails -count=1`: passed after the rollback.
 
 ### FCA-20260528-260
 
