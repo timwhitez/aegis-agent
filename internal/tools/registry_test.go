@@ -2523,6 +2523,38 @@ func TestGlobSkipsSymlinkEscapes(t *testing.T) {
 	}
 }
 
+func TestGlobRejectsEmptyPattern(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "glob", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"pattern":""
+	}`))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "pattern is required") {
+		t.Fatalf("expected glob to reject empty pattern, got %#v", result)
+	}
+}
+
 func TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

@@ -7530,6 +7530,12 @@ Evidence gates:
 - Confirmed this is distinct from shell timeout, sandbox, exec-policy, workdir, interruption, and output-truncation behavior. This slice covers a schema-valid string that becomes an empty shell program after trimming.
 - Confirmed the minimal fix belongs in the built-in `shell` handler: reject `strings.TrimSpace(command) == ""` before workdir/sandbox/process setup, while preserving the original command string and metadata for nonblank commands.
 
+### Review 241
+
+- Confirmed FCA-20260527-248 against `spec/04-tools-and-skills.md`'s `glob` discovery-tool contract: `glob` finds workspace paths by a caller-supplied filename pattern, so an empty pattern is invalid input rather than evidence of no matches.
+- Confirmed this is distinct from grep empty-pattern handling, symlink-escape skipping, generated-artifact skips, and missing explicit grep roots. This slice covers the `glob` tool's own schema-required pattern being present but empty.
+- Confirmed the minimal fix belongs in the built-in `glob` handler: reuse the existing search-pattern validator before `doublestar.GlobWalk`, without changing glob syntax, path resolution, symlink-escape skip behavior, artifact filtering, or grep behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7591,6 +7597,48 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-248
+
+Slice: `fix(tools): reject empty glob patterns`
+
+Finding:
+
+- `glob` required a `pattern` string in its schema, but the handler accepted an empty string.
+- An empty pattern was passed to `doublestar.GlobWalk` and returned `(no matches)` as a non-error result.
+- Before the fix, the focused regression failed because `"pattern":""` returned a successful `(no matches)` result instead of a malformed-input error.
+
+Impact:
+
+- A malformed discovery tool call could look like a real negative search result.
+- This weakens evidence gathering because the absence of a filename pattern is not evidence that no matching files exist.
+
+Changes:
+
+- Added a focused regression proving `glob` rejects empty patterns.
+- Reused the existing search-pattern validator in the `glob` handler before `doublestar.GlobWalk`.
+- Left valid glob matching, symlink-escape skipping, generated-artifact filtering, and grep/grep_files behavior unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestGlobRejectsEmptyPattern -count=1`: failed before the fix because `glob` returned successful `(no matches)` for an empty pattern.
+- `go test -timeout 120s ./internal/tools -run 'TestGlobRejectsEmptyPattern|TestGlobSkipsSymlinkEscapes|TestGrepToolsRejectEmptyPattern|TestGrepToolsReportMissingExplicitPath' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-247
 

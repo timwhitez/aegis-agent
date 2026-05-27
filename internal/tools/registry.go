@@ -934,6 +934,9 @@ func defGlob() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("glob", err), nil
 			}
+			if err := validateGrepPattern(input.Pattern); err != nil {
+				return errorResult("glob", err), nil
+			}
 			var matches []string
 			if err := doublestar.GlobWalk(os.DirFS(execCtx.Workdir), input.Pattern, func(path string, d os.DirEntry) error {
 				if path != "." {
