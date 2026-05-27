@@ -5042,6 +5042,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "sessionDetailHasActiveDescendants") || !strings.Contains(jsBody, "needsSessionRefresh") {
 		t.Fatalf("expected current session polling to track active descendants and coalesced refreshes, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "overviewErrorMessage") || !strings.Contains(jsBody, "state.overviewError = message") || !strings.Contains(jsBody, "showToast(message, 'error')") {
+		t.Fatalf("expected initial overview failures to surface backend API errors, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "async function refreshCurrentSession(options = {})") || !strings.Contains(jsBody, "if (options.surfaceError)") || !strings.Contains(jsBody, "showSessionLoadError(err, { toast: options.toastError !== false })") || !strings.Contains(jsBody, "refreshCurrentSession({ surfaceError: true })") {
 		t.Fatalf("expected direct session opens to surface backend detail load errors while keeping polling quiet, got app.js body: %s", jsBody)
 	}
@@ -5065,6 +5068,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(sessionBody, "Click to open queue job") || !strings.Contains(sessionBody, "data-open-job") {
 		t.Fatalf("expected orphan background jobs to open queue jobs instead of child sessions, got session-view.js body: %s", sessionBody)
+	}
+	if !strings.Contains(sessionBody, "state.overviewError") || !strings.Contains(sessionBody, "No durable sessions yet.") {
+		t.Fatalf("expected session rail to distinguish overview load errors from an empty session list, got session-view.js body: %s", sessionBody)
 	}
 	if !strings.Contains(sessionBody, "collectShellRedirectPaths(parsed?.command)") {
 		t.Fatalf("expected files panel to include shell-created workspace files, got session-view.js body: %s", sessionBody)

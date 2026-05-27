@@ -29,6 +29,7 @@ const state = {
   sessionBacked: false,
   sessionDetail: null,
   overview: null,
+  overviewError: '',
   historyData: null,
   historyPage: 1,
   historyPageSize: 8,
@@ -1930,6 +1931,10 @@ function sessionActivityForState(sessionState = {}) {
   };
 }
 
+function overviewErrorMessage(err, fallback = 'Failed to load session overview.') {
+  return err?.message || fallback;
+}
+
 async function refreshOverview() {
   if (state.refreshingOverview) {
     return;
@@ -1937,11 +1942,20 @@ async function refreshOverview() {
   state.refreshingOverview = true;
   try {
     state.overview = await requestJSON('/api/overview');
+    state.overviewError = '';
     if (state.currentView === 'chat') {
       renderCurrentSession();
     }
   } catch (err) {
     console.error('overview error', err);
+    if (!state.overview) {
+      const message = overviewErrorMessage(err);
+      state.overviewError = message;
+      if (state.currentView === 'chat') {
+        showToast(message, 'error');
+        renderCurrentSession();
+      }
+    }
   } finally {
     state.refreshingOverview = false;
   }

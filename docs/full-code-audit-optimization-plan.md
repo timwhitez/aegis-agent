@@ -7494,6 +7494,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-023. That slice fixed the frontend gap-detection state when old history and a new server tail no longer overlapped; this slice covers the residual catch path when the load-earlier request itself fails.
 - Confirmed the minimal fix belongs in `app.js`: surface the parsed backend `APIError.message` as a toast while preserving existing message-window, gap-anchor, and polling merge state.
 
+### Review 235
+
+- Confirmed FCA-20260527-242 against `spec/17-web-console.md`'s Session rail contract: `GET /api/overview` is the rail data source, so an initial load failure should not render as "No durable sessions yet."
+- Confirmed this is distinct from backend overview/list slices and the quiet polling decision in FCA-20260527-237. This slice covers the no-prior-snapshot frontend state where an overview failure is object-level initial UI feedback, while later refresh failures can keep using the last good overview without repeated toasts.
+- Confirmed the minimal fix belongs in `app.js` plus `session-view.js`: store an `overviewError` only when no previous overview exists, surface the backend `APIError.message`, and render that error in the Session rail instead of changing `/api/overview`, session store listing, or polling authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7555,6 +7561,51 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-242
+
+Slice: `fix(webconsole): surface overview load errors`
+
+Finding:
+
+- `GET /api/overview` is the frontend data source for the Session rail.
+- `refreshOverview()` caught failures and only logged `overview error`.
+- When no previous overview snapshot existed, `renderSessionRail()` interpreted the missing overview as an empty recent-session list and displayed "No durable sessions yet."
+- Before the fix, the focused embedded-asset contract failed because `app.js` had no overview error state/toast path and `session-view.js` did not distinguish overview load errors from a genuinely empty rail.
+
+Impact:
+
+- A local overview load failure, such as a session/queue summary backing-store error, could make the default Session rail look empty instead of failed.
+- Operators could incorrectly conclude that no durable sessions existed, while the actionable backend diagnostic was only in the browser console.
+
+Changes:
+
+- Added `state.overviewError` and `overviewErrorMessage()` to prefer `APIError.message` from `requestJSON`.
+- Updated `refreshOverview()` to clear the error on success and, only when no prior overview exists, show a toast and render the error into the Session rail.
+- Updated `renderSessionRail()` to render the overview error instead of the empty-session message when the initial overview load failed.
+- Kept later polling/refresh failures quiet when a previous overview snapshot is available, preserving the last good rail data and avoiding repeated polling toasts.
+- Left `/api/overview`, session/queue store listing, polling predicates, session detail loading, and runtime state unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because overview load failures did not surface backend API errors.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceServesEmbeddedShellAndAssets|TestServiceOverviewEncodesEmptySlices' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-241
 

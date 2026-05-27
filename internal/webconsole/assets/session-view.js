@@ -1595,11 +1595,15 @@ function renderActivityFloat() {
 
 function renderSessionRail() {
   const currentID = state.sessionBacked ? state.sessionId : '';
+  const overviewError = state.overviewError || '';
   const recent = maybeArray(state.overview?.recent_sessions);
   const pinned = state.sessionDetail?.metadata
     ? [sessionSummaryFromDetail(state.sessionDetail)]
     : [];
   const items = uniqueById(pinned.concat(recent)).slice(0, 12);
+  const emptyHTML = overviewError
+    ? `<div class="empty-panel compact">${escapeHTML(overviewError)}</div>`
+    : '<div class="empty-panel compact">No durable sessions yet.</div>';
   return `
     <div class="rail-header">
       <div>
@@ -1616,7 +1620,7 @@ function renderSessionRail() {
           <span class="session-rail-meta">${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
           <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · ${escapeHTML(item.goal_mode || 'goal')}:${escapeHTML(item.goal_status)}` : ''}</span>
         </button>
-      `).join('') : '<div class="empty-panel compact">No durable sessions yet.</div>'}
+      `).join('') : emptyHTML}
     </div>
   `;
 }
