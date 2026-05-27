@@ -1551,13 +1551,17 @@ async function handlePlanModeAction(button) {
     showToast('No durable session is loaded.', 'info');
     return;
   }
+  const sessionID = state.sessionId;
   const action = button.getAttribute('data-plan-action');
   button.disabled = true;
   try {
     if (action === 'approve') {
       try {
-        await approvePlanMode(state.sessionId);
+        await approvePlanMode(sessionID);
       } catch (err) {
+        if (state.sessionId !== sessionID) {
+          return;
+        }
         if (!isCoverageApprovalBlock(err)) {
           throw err;
         }
@@ -1565,7 +1569,10 @@ async function handlePlanModeAction(button) {
           showToast('Plan approval was not overridden.', 'info');
           return;
         }
-        await approvePlanMode(state.sessionId, { override_coverage: true });
+        await approvePlanMode(sessionID, { override_coverage: true });
+      }
+      if (state.sessionId !== sessionID) {
+        return;
       }
       setGenerating(true, {
         title: 'Executing approved plan',
@@ -1574,22 +1581,31 @@ async function handlePlanModeAction(button) {
       });
       showToast('Plan approved and execution started.', 'success');
     } else if (action === 'cancel') {
-      await cancelPlanMode(state.sessionId);
+      await cancelPlanMode(sessionID);
+      if (state.sessionId !== sessionID) {
+        return;
+      }
       showToast('Plan Mode cancelled.', 'success');
     } else if (action === 'revise') {
       nodes.chatInput?.focus();
       showToast('Type the requested plan change and send it.', 'info');
     }
-    queueSessionRefresh(80);
-    queueOverviewRefresh(180);
+    if (state.sessionId === sessionID) {
+      queueSessionRefresh(80);
+      queueOverviewRefresh(180);
+    }
   } catch (err) {
-    showToast(err.message || 'Plan Mode action failed.', 'error');
+    if (state.sessionId === sessionID) {
+      showToast(err.message || 'Plan Mode action failed.', 'error');
+    }
   } finally {
     if (document.body.contains(button)) {
       button.disabled = false;
     }
-    renderCurrentSession();
-    updateUI();
+    if (state.sessionId === sessionID) {
+      renderCurrentSession();
+      updateUI();
+    }
   }
 }
 

@@ -145,6 +145,15 @@ function fakeAppElement(initial = {}) {
   };
 }
 
+function fakeActionButton(attrs = {}) {
+  return {
+    ...fakeAppElement(),
+    getAttribute(name) {
+      return attrs[name] || null;
+    }
+  };
+}
+
 function createAppHarnessContext() {
   const pendingRequests = [];
   const appContext = {
@@ -178,6 +187,9 @@ function createAppHarnessContext() {
     },
     document: {
       getElementById() {
+        return fakeAppElement();
+      },
+      createElement() {
         return fakeAppElement();
       },
       querySelector() {
@@ -221,6 +233,15 @@ function createAppHarnessContext() {
   vm.runInContext(appSource, appContext, { filename: 'app.js' });
   appContext.pendingRequests = pendingRequests;
   return appContext;
+}
+
+function installPlanModeAPITestWrappers(appContext) {
+  vm.runInContext(`
+    approvePlanMode = function(sessionID, payload = {}) {
+      const suffix = payload.override_coverage ? '?override=1' : '';
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/approve' + suffix, { method: 'POST' });
+    };
+  `, appContext);
 }
 
 function createWorkspaceHarnessContext() {
@@ -633,6 +654,53 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
     hasMore: false,
     oldest: 'b1',
     loadingEarlier: false
+  });
+});
+
+test('Plan Mode approval does not mark a newly selected session as generating', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  appContext.planApproveButton = fakeActionButton({ 'data-plan-action': 'approve' });
+
+  const approval = vm.runInContext(`
+    state.sessionId = 'session_plan_slow_a';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded plan A', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_slow_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: { status: 'awaiting_approval' }
+    };
+    handlePlanModeAction(planApproveButton);
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_plan_slow_a\/planmode\/approve/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      plan_mode: null
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_plan_slow_a', status: 'accepted' });
+  await approval;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: state.isGenerating,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    generating: false,
+    activityTitle: 'Loaded session B'
   });
 });
 

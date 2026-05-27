@@ -7680,6 +7680,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-226, FCA-20260527-232, and FCA-20260527-238. Those slices covered sensitive path filtering, backend path-error classification, and surfacing backend Workspace errors; this slice covers the client-side async race after valid Workspace browser requests are already in flight.
 - Confirmed the minimal fix belongs in `workspace-view.js`: track one Workspace selection request sequence across directory and file selections, apply success/error UI mutations only for the newest matching request, and preserve backend Workspace policy, runtime file tools, and server-side file fact authority unchanged.
 
+### Review 266
+
+- Confirmed FCA-20260528-273 against `spec/17-web-console.md`'s Plan Mode action contract: Approve & Run must act on the selected durable session's `planmode.json`, and a stale browser-side approval completion must not make a different newly selected session appear to be executing that plan.
+- Confirmed this is distinct from FCA-20260528-270, FCA-20260528-271, and FCA-20260528-272. Those slices covered stale full session detail responses, older-message paging responses, and Workspace browser responses; this slice covers a user-triggered Plan Mode mutation whose REST request correctly targets the original session but whose async completion updated the current session UI after selection changed.
+- Confirmed the minimal fix belongs in `handlePlanModeAction`: capture the session id at click time, use that id for approve/cancel calls and coverage override retries, and apply success/error/generating/refresh UI side effects only while that same session remains selected.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7741,6 +7747,48 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-273
+
+Slice: `fix(webconsole): ignore stale plan mode actions`
+
+Finding:
+
+- `handlePlanModeAction()` issued Plan Mode approve/cancel requests for the selected durable session, but it continued to read `state.sessionId` when handling coverage override retries and unconditionally applied success/error UI side effects when the request settled.
+- If the operator approved a Plan Mode plan for session A and then selected session B before the approval response returned, the stale completion could set `state.isGenerating=true`, replace `liveActivity` with "Executing approved plan", and queue refreshes against session B.
+- The backend mutation still targeted the original REST URL for the first request, but the browser view could make the newly selected session appear to be executing a plan it did not approve.
+
+Impact:
+
+- The WebConsole could briefly show an incorrect execution state for the selected session after a slow Plan Mode approval response.
+- A coverage-conflict retry path could also evaluate the override flow after the operator had switched away, which risked applying an old action's UI flow outside the session where it was initiated.
+- This did not change session files or provider replay facts directly, but it weakened the Web-first local console by allowing stale action completions to become a browser-side authority over the current session display.
+
+Changes:
+
+- Captured the Plan Mode action's `sessionID` at click time.
+- Used the captured session id for approve/cancel API calls and coverage override approval retries.
+- Suppressed success/error toasts, generating state, render/update calls, and queued refreshes when the selected session no longer matches the action's captured session id.
+- Added a VM-level WebConsole regression proving that a slow Plan Mode approval completion for session A cannot mark newly selected session B as generating.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because stale `session_plan_slow_a` approval marked selected `session_fast_b` as generating with "Executing approved plan".
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after binding Plan Mode action side effects to the captured session id.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-272
 
