@@ -918,6 +918,33 @@ func (s *Store) UpdateBackgroundNotifications(sessionID string, notifications []
 	})
 }
 
+func (s *Store) RestorePendingBackgroundNotifications(sessionID string, notifications []BackgroundNotification) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
+	if err != nil {
+		return err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "background.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		var current []BackgroundNotification
+		err := readJSONL(path, &current)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		for i := range notifications {
+			notifications[i].DeliveryStatus = BackgroundNotificationPending
+		}
+		if len(current) > 0 {
+			notifications = restorePendingBackgroundNotifications(notifications, current)
+		}
+		return s.writeJSONL(path, notifications)
+	})
+}
+
 func (s *Store) PendingBackgroundNotifications(sessionID string) ([]BackgroundNotification, error) {
 	notifications, err := s.LoadBackgroundNotifications(sessionID)
 	if err != nil {
@@ -2721,6 +2748,47 @@ func mergeBackgroundNotifications(updated, current []BackgroundNotification) []B
 			}
 			seen[key] = struct{}{}
 		}
+		merged = append(merged, notification)
+	}
+	return merged
+}
+
+func restorePendingBackgroundNotifications(rollback, current []BackgroundNotification) []BackgroundNotification {
+	byKey := make(map[string]BackgroundNotification, len(rollback))
+	for _, notification := range rollback {
+		key := backgroundNotificationMergeKey(notification)
+		if key == "" {
+			continue
+		}
+		notification.DeliveryStatus = BackgroundNotificationPending
+		byKey[key] = notification
+	}
+	seen := make(map[string]struct{}, len(current))
+	merged := make([]BackgroundNotification, 0, len(current)+len(rollback))
+	for _, notification := range current {
+		key := backgroundNotificationMergeKey(notification)
+		if replacement, ok := byKey[key]; key != "" && ok && notification.DeliveryStatus == BackgroundNotificationAccepted {
+			if backgroundNotificationFactsEqual(replacement, notification) {
+				notification.DeliveryStatus = BackgroundNotificationPending
+			}
+			merged = append(merged, notification)
+			seen[key] = struct{}{}
+			continue
+		}
+		merged = append(merged, notification)
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, notification := range rollback {
+		key := backgroundNotificationMergeKey(notification)
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		notification.DeliveryStatus = BackgroundNotificationPending
 		merged = append(merged, notification)
 	}
 	return merged

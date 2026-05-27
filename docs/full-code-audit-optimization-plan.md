@@ -4872,6 +4872,36 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-216: Background acceptance can consume retry state without accepted-event evidence
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` defines session messages, events, and control files as durable local facts, and its `control_drain` phase turns pending background notifications into user messages.
+- `spec/17-web-console.md` requires worker-returned `background_results` to remain durable messages for provider replay and Web timeline/background inspector display.
+- `spec/15-background-queue.md` requires child completion/failure to flow back to the parent through `control/background.jsonl` and be accepted at the parent's next safe boundary.
+- `internal/runtime/engine.go` `drainBackground` appended the background-results user message, wrote its `user.message` event, then marked all pending notifications `accepted` before appending `session.background.accepted`.
+- A focused regression blocked only the late `session.background.accepted` event. Before the fix, the function returned an event write error but `control/background.jsonl` already showed the pending notification as `accepted`, so retry would not redeliver the child result.
+
+Impact:
+
+If `session.background.accepted` persistence failed after notification status update, the parent transcript and background control queue no longer agreed on whether the child result was accepted. The provider-visible message could be rolled back, but the notification stayed accepted and the parent would not retry the background result after storage repair. This can hide completed child/queue output from a later parent provider turn while Web/session facts claim the notification is consumed.
+
+Minimal fix:
+
+- On `session.background.accepted` append failure, restore only the notifications consumed by the current drain back to `pending`.
+- Roll back the just-appended background-results user message after notification rollback, keeping retry semantics aligned with the existing early `user.message` failure path.
+- Preserve older already accepted notifications and concurrent newly appended notifications while restoring failed current-drain notifications.
+- Add focused runtime and session-store coverage for the late accepted-event failure and background notification rollback merge behavior.
+
+Validation:
+
+- Focused pre-fix runtime regression proving the pending background notification became `accepted` when the late accepted event failed.
+- Focused post-fix runtime regression proving the failed current-drain notification stays pending, older accepted notifications remain accepted, and the background message is rolled back.
+- Focused session-store regression proving pending-restore keeps older accepted notifications and concurrent pending notifications.
+- Runtime/session/WebConsole/JS/repo test and vet gates before commit.
+
 ### FCA-20260527-215: Batched steer acceptance can leave earlier accepted input pending after later failure
 
 Severity: Medium
@@ -6859,7 +6889,50 @@ Evidence gates:
 - Confirmed `Engine.drainSteer` persisted message/event facts per steer but updated `control/steer.jsonl`, pending steer count, and contract only after finishing the entire loaded queue snapshot. A focused regression with two queued steers and a blocked second `session.steer.accepted` event showed the first accepted steer could remain pending and be replayed on retry.
 - Confirmed the minimal fix belongs in runtime steer acceptance: after each successful steer, immediately persist that request's accepted status, refresh pending count, and refresh contract before moving to the next request; preserve rollback and pending retry semantics for the currently failing steer.
 
+### Review 209
+
+- Confirmed FCA-20260527-216 against `spec/01-runtime-architecture.md`, `spec/15-background-queue.md`, and `spec/17-web-console.md`: background queue results are file-backed parent facts that become durable background-results user messages at `control_drain`.
+- Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
+- Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
+
 ## Update Log
+
+### FCA-20260527-216
+
+Slice: `fix(runtime): retry background acceptance on event failure`
+
+Finding:
+
+- `drainBackground` marked pending background notifications `accepted` before appending the required `session.background.accepted` event.
+- A focused regression blocked only that late accepted event. Before the fix, the drain returned an `events.jsonl` error but `control/background.jsonl` already showed the notification as `accepted`, preventing retry after storage repair.
+
+Changes:
+
+- Added `Store.RestorePendingBackgroundNotifications` to restore only selected current-drain notifications to `pending` while preserving older accepted notifications and concurrent pending appends.
+- Updated `drainBackground` so a failed `session.background.accepted` append restores current pending notifications, rolls back the just-appended background-results user message, and reports the event failure with context.
+- Added runtime coverage for late accepted-event failure and store coverage for rollback merge behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineBackgroundAcceptanceKeepsNotificationPendingWhenAcceptedEventFails -count=1`: failed before the fix because the notification stayed `accepted`.
+- `go test -timeout 120s ./internal/runtime -run TestEngineBackgroundAcceptanceKeepsNotificationPendingWhenAcceptedEventFails -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestRestorePendingBackgroundNotificationsPreservesOtherFacts|TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh|TestUpdateBackgroundNotificationsMergesConcurrentAppend' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBackgroundAcceptance(KeepsNotificationPendingWhenAcceptedEventFails|ReportsAcceptedEventAppendError|AcceptsBackgroundResultsBeforeProviderCall)|TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestRestorePendingBackgroundNotificationsPreservesOtherFacts|TestUpdateBackgroundNotifications(PreservesConcurrentFactRefresh|MergesConcurrentAppend)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-215
 

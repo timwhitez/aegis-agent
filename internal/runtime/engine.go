@@ -1345,7 +1345,16 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 	if err := e.appendEvent(sessionID, "session.background.accepted", "control_drain", map[string]any{
 		"count": len(pending),
 	}); err != nil {
-		return 0, err
+		if rollbackErr := e.store.RestorePendingBackgroundNotifications(sessionID, pending); rollbackErr != nil {
+			if messageRollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); messageRollbackErr != nil {
+				return 0, fmt.Errorf("record session.background.accepted event after restoring background notifications failed with %v and rolling back background message failed with %v: %w", rollbackErr, messageRollbackErr, err)
+			}
+			return 0, fmt.Errorf("record session.background.accepted event after restoring background notifications failed with %v: %w", rollbackErr, err)
+		}
+		if rollbackErr := e.store.RemoveLastMessageIfID(sessionID, msg.ID); rollbackErr != nil {
+			return 0, fmt.Errorf("record session.background.accepted event after rolling back background message failed with %v: %w", rollbackErr, err)
+		}
+		return 0, fmt.Errorf("record session.background.accepted event: %w", err)
 	}
 	return len(pending), nil
 }

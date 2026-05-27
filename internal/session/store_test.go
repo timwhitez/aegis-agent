@@ -2127,6 +2127,92 @@ func TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh(t *testing.
 	}
 }
 
+func TestRestorePendingBackgroundNotificationsPreservesOtherFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := storeA.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	alreadyAccepted := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_already_accepted",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_already_accepted",
+		SessionStatus: StatusCompleted,
+		FinalText:     "previously accepted",
+	})
+	alreadyAccepted.DeliveryStatus = BackgroundNotificationAccepted
+	if err := storeA.AppendBackgroundNotification(meta.ID, alreadyAccepted); err != nil {
+		t.Fatalf("append already accepted: %v", err)
+	}
+	pending := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_retry",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_retry",
+		SessionStatus: StatusCompleted,
+		FinalText:     "needs retry",
+	})
+	if err := storeA.AppendBackgroundNotification(meta.ID, pending); err != nil {
+		t.Fatalf("append pending: %v", err)
+	}
+	rollback, err := storeA.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load rollback snapshot: %v", err)
+	}
+	for i := range rollback {
+		if rollback[i].DeliveryStatus == BackgroundNotificationPending {
+			rollback[i].DeliveryStatus = BackgroundNotificationAccepted
+		}
+	}
+	if err := storeA.UpdateBackgroundNotifications(meta.ID, rollback); err != nil {
+		t.Fatalf("mark accepted: %v", err)
+	}
+
+	concurrent := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_concurrent",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_concurrent",
+		SessionStatus: StatusCompleted,
+		FinalText:     "arrived while rolling back",
+	})
+	if err := storeB.AppendBackgroundNotification(meta.ID, concurrent); err != nil {
+		t.Fatalf("append concurrent: %v", err)
+	}
+	if err := storeA.RestorePendingBackgroundNotifications(meta.ID, []BackgroundNotification{pending}); err != nil {
+		t.Fatalf("restore pending: %v", err)
+	}
+
+	loaded, err := storeA.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored: %v", err)
+	}
+	statusByJob := map[string]string{}
+	for _, notification := range loaded {
+		statusByJob[notification.QueueJobID] = notification.DeliveryStatus
+	}
+	if statusByJob["job_background_retry"] != BackgroundNotificationPending {
+		t.Fatalf("expected failed acceptance notification to return pending, got %#v", loaded)
+	}
+	if statusByJob["job_background_already_accepted"] != BackgroundNotificationAccepted {
+		t.Fatalf("expected older accepted notification to remain accepted, got %#v", loaded)
+	}
+	if statusByJob["job_background_concurrent"] != BackgroundNotificationPending {
+		t.Fatalf("expected concurrent notification to survive as pending, got %#v", loaded)
+	}
+}
+
 func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)

@@ -3057,6 +3057,68 @@ func TestEngineBackgroundAcceptanceReportsAcceptedEventAppendError(t *testing.T)
 	}
 }
 
+func TestEngineBackgroundAcceptanceKeepsNotificationPendingWhenAcceptedEventFails(t *testing.T) {
+	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	alreadyAccepted := session.NewBackgroundNotification(session.QueueJob{
+		ID:            "job_accepted",
+		Status:        session.QueueStatusCompleted,
+		SessionID:     "child_accepted",
+		SessionStatus: session.StatusCompleted,
+		FinalText:     "previous child done",
+	})
+	alreadyAccepted.DeliveryStatus = session.BackgroundNotificationAccepted
+	if err := engine.store.AppendBackgroundNotification(meta.ID, alreadyAccepted); err != nil {
+		t.Fatalf("append accepted background notification: %v", err)
+	}
+	notification := session.NewBackgroundNotification(session.QueueJob{
+		ID:            "job_1",
+		Status:        session.QueueStatusCompleted,
+		SessionID:     "child_1",
+		SessionStatus: session.StatusCompleted,
+		FinalText:     "child done",
+	})
+	if err := engine.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
+		t.Fatalf("append background notification: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "session.background.accepted" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+
+	accepted, err := engine.drainBackground(context.Background(), meta, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected background accepted event append error, accepted=%d err=%v", accepted, err)
+	}
+	if accepted != 0 {
+		t.Fatalf("event failure should not count accepted background notifications, got %d", accepted)
+	}
+	notifications, loadErr := engine.store.LoadBackgroundNotifications(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load background notifications: %v", loadErr)
+	}
+	statusByJob := map[string]string{}
+	for _, notification := range notifications {
+		statusByJob[notification.QueueJobID] = notification.DeliveryStatus
+	}
+	if statusByJob["job_1"] != session.BackgroundNotificationPending {
+		t.Fatalf("accepted event failure should keep notification pending for retry, got %#v", notifications)
+	}
+	if statusByJob["job_accepted"] != session.BackgroundNotificationAccepted {
+		t.Fatalf("accepted event failure should preserve older accepted notifications, got %#v", notifications)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "background_results" {
+			t.Fatalf("accepted event failure should roll back provider-visible background message, got %#v", messages)
+		}
+	}
+}
+
 func TestEngineCompletingQueuedChildReconcilesParentQueueFacts(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	parentMeta := session.SessionMetadata{
