@@ -384,8 +384,14 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/api/skills/upload":
 		s.handleUploadSkill(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/skills/") && strings.HasSuffix(r.URL.Path, "/install"):
+		if rejectEncodedPathSegmentSeparator(w, r, "/api/skills/", "skill") {
+			return
+		}
 		s.handleInstallSkill(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/skills/") && strings.HasSuffix(r.URL.Path, "/uninstall"):
+		if rejectEncodedPathSegmentSeparator(w, r, "/api/skills/", "skill") {
+			return
+		}
 		s.handleUninstallSkill(w, r)
 	default:
 		writeError(w, http.StatusNotFound, errors.New("route not found"))
@@ -579,6 +585,9 @@ func paginationOffset(page, pageSize int) int {
 }
 
 func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
+	if rejectEncodedPathSegmentSeparator(w, r, "/api/sessions/", "session") {
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -757,6 +766,34 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, errors.New("session route not found"))
 	}
+}
+
+func rejectEncodedPathSegmentSeparator(w http.ResponseWriter, r *http.Request, prefix, kind string) bool {
+	if encodedID, ok := firstEscapedPathSegment(r, prefix); ok && encodedPathSegmentHasSeparator(encodedID) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid %s id %q: path separators and traversal are not allowed", kind, encodedID))
+		return true
+	}
+	return false
+}
+
+func firstEscapedPathSegment(r *http.Request, prefix string) (string, bool) {
+	if r == nil || r.URL == nil {
+		return "", false
+	}
+	escapedPath := r.URL.EscapedPath()
+	if !strings.HasPrefix(escapedPath, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(escapedPath, prefix)
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i], true
+	}
+	return rest, true
+}
+
+func encodedPathSegmentHasSeparator(segment string) bool {
+	lower := strings.ToLower(segment)
+	return strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c")
 }
 
 func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {

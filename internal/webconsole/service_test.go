@@ -5489,6 +5489,40 @@ func TestServiceWebSocketRejectsCrossSchemeOrigin(t *testing.T) {
 	}
 }
 
+func TestServiceSessionRouteRejectsEncodedSeparatorInSessionID(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "encoded_separator_session",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "awaiting_input", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/sessions/"+meta.ID+"%2Fmessages", nil)
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected encoded separator in session id to be rejected, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "path separators and traversal") {
+		t.Fatalf("expected malformed session id error, got body=%s", recorder.Body.String())
+	}
+}
+
 func TestServiceSessionDetailReconcilesLinkedQueueJob(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -8364,6 +8398,40 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	postGetJSON(t, ts.URL+"/api/skills", &listed)
 	if len(listed) != 0 {
 		t.Fatalf("expected skill list to be empty after uninstall, got %#v", listed)
+	}
+}
+
+func TestServiceSkillUninstallRejectsEncodedSeparatorInSkillID(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	skillDir := filepath.Join(skillsDir, "demo-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: demo-skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill manifest: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/skills/demo-skill%2Funinstall", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected encoded separator in skill id to be rejected, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "path separators and traversal") {
+		t.Fatalf("expected malformed skill id error, got body=%s", recorder.Body.String())
+	}
+	if _, err := os.Stat(skillDir); err != nil {
+		t.Fatalf("encoded separator route must not remove skill dir: %v", err)
 	}
 }
 

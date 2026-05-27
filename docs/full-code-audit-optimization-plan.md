@@ -7806,6 +7806,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-287, FCA-20260528-288, and FCA-20260528-292. Those slices covered non-managed roots, disabled-reason rendering, and blank managed-root selection; this slice covers pre-existing managed-root skill directories whose ids are not accepted by the WebConsole mutation route.
 - Confirmed the minimal fix belongs in `handleListSkills`: keep listing the installed local skill for discovery, but mark it read-only with an explicit disabled reason when its directory name is outside the WebConsole-managed id grammar used by uninstall/upload targets.
 
+### Review 287
+
+- Confirmed FCA-20260528-294 against `spec/17-web-console.md`'s local WebConsole route-boundary contract: URL-encoded path separators inside dynamic ids must not be decoded into route separators before the id grammar check runs.
+- Confirmed this is distinct from FCA-20260527-226 and FCA-20260528-293. Those slices covered workspace filesystem aliases and skill id mutability metadata; this slice covers Web API path dispatch for session ids and skill ids, including an encoded skill uninstall path that could execute the uninstall route.
+- Confirmed the minimal fix belongs in the WebConsole route adapter: reject `%2F` / `%5C` in the first escaped dynamic path segment before dispatching session subroutes or skill install/uninstall handlers, preserving normal runtime/store id validation and existing queue job detail behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7867,6 +7873,32 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-294
+
+Slice: `fix(webconsole): reject encoded route separators`
+
+Finding:
+
+- `handleSessionRoute` and the skills install/uninstall dispatch used `r.URL.Path`, where Go had already decoded `%2F` into `/`.
+- A request such as `/api/sessions/<id>%2Fmessages` was treated as `/api/sessions/<id>/messages` and returned the existing session's message page instead of rejecting the malformed session id.
+- A request such as `/api/skills/demo-skill%2Funinstall` was treated as `/api/skills/demo-skill/uninstall` and could remove the installed local skill.
+
+Impact:
+
+- Encoded separators inside the dynamic id segment could change route scope before the store or skill-id grammar checks saw the original id.
+- For skills, this turned a malformed id path into a real local mutation route, weakening the WebConsole guarantee that risky file mutations are bounded by explicit route and id validation.
+
+Changes:
+
+- Added an escaped-path segment guard that inspects `URL.EscapedPath()` before dispatch.
+- Applied the guard to `/api/sessions/{id}/...` and `/api/skills/{id}/install|uninstall`.
+- Kept existing store-level id validation and queue job detail behavior unchanged.
+- Added route regressions for encoded separators in session ids and skill ids, including proof that the skill directory is not removed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(SessionRouteRejectsEncodedSeparatorInSessionID|SkillUninstallRejectsEncodedSeparatorInSkillID|QueueJobDetailRejectsMalformedJobID)' -count=1`
 
 ### FCA-20260528-293
 
