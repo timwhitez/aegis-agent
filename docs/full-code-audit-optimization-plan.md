@@ -7554,6 +7554,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-099 and FCA-20260527-250. Those slices covered unreadable todo snapshot no-op behavior and blank durable task subjects; this slice covers malformed but schema-valid todo items that could enter the session todo snapshot.
 - Confirmed the minimal fix belongs in both the tool validator and session store validator: reject blank content, missing status, and non-empty priority values outside `high|medium|low`, preserving empty todo lists, optional empty priority, timestamps, no-op detection, and required `todo.updated` event rollback behavior.
 
+### Review 245
+
+- Confirmed FCA-20260527-252 against `spec/12-task-system.md`'s durable task graph contract: `task_update.task_id` selects an existing durable node, and `task_update.subject` can replace that node's human-readable title.
+- Confirmed this is distinct from FCA-20260527-250. That slice covered blank subjects at task creation; this slice covers update-time malformed IDs and blank replacement subjects that can degrade an already valid durable task graph.
+- Confirmed the minimal fix belongs in `session.UpdateTask`, not only the tool wrapper: reject blank `task_id` and whitespace-only non-empty `subject` before mutating the task graph, preserving valid optional omitted subject updates, status transitions, dependency sync, and required `task.updated` event rollback behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7615,6 +7621,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-252
+
+Slice: `fix(tasks): validate task update inputs`
+
+Finding:
+
+- `task_update` requires `task_id`, and `spec/12-task-system.md` defines task `subject` as the durable task title.
+- `session.UpdateTask` searched the in-memory graph before validating `task_id`, so whitespace-only IDs returned `task not found` instead of a malformed-input error.
+- `session.UpdateTask` also accepted whitespace-only non-empty `subject` and persisted it over a previously valid task title.
+- Before the fix, focused regressions showed `task_update {"task_id":" \n\t ","status":"completed"}` returned `task not found`, and `task_update {"task_id":"task_0001","subject":" \n\t "}` wrote a blank-looking subject to `task_0001.json`.
+
+Impact:
+
+- Model/tool callers could turn an existing durable task into an unreadable task-board node during normal progress updates.
+- Blank IDs also produced misleading lookup failures, which makes task repair and recovery harder because malformed input is indistinguishable from a genuinely missing durable task.
+
+Changes:
+
+- Added focused session-layer regressions for blank `task_id` and blank replacement `subject`.
+- Added focused tool-level regression proving `task_update` reports those validation errors and does not mutate the existing task.
+- Updated `session.UpdateTask` to reject `strings.TrimSpace(input.TaskID) == ""` and whitespace-only non-empty replacement subjects before entering `MutateTasks`.
+- Preserved valid omitted `subject` updates, valid subject replacements, status transitions, dependency edge maintenance, auto-unlock behavior, and required `task.updated` event rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestTaskUpdateRejectsBlank(TaskID|Subject)' -count=1`: failed before the fix because blank task IDs returned `task not found`, and blank replacement subjects were persisted.
+- `go test -timeout 120s ./internal/tools -run TestTaskUpdateRejectsBlankInputs -count=1`: failed before the fix for the same two tool-visible behaviors.
+- `go test -timeout 120s ./internal/session -run 'TestTaskUpdateRejectsBlank(TaskID|Subject)' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run TestTaskUpdateRejectsBlankInputs -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestTaskUpdateRejectsBlankInputs|TestTaskCreateRejectsBlankSubject|TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph|TestTodoAndTaskToolsEmitStructuredEvents' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools -run 'TestTaskUpdateRejectsBlank(TaskID|Subject)|TestTaskCreateRejectsBlankSubject|TestTaskLifecycleAutoUnlocksDependents|TestTaskCycleRejected|TestTaskUpdateRemovesReverseEdges|TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph' -count=1`: passed.
+- `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-251
 

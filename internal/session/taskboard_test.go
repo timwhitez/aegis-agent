@@ -120,6 +120,70 @@ func TestTaskCreateRejectsBlankSubject(t *testing.T) {
 	}
 }
 
+func TestTaskUpdateRejectsBlankTaskID(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	task, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "existing"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := UpdateTask(store, meta.ID, TaskUpdateInput{TaskID: " \n\t ", Status: "completed"}); err == nil || !strings.Contains(err.Error(), "task_id is required") {
+		t.Fatalf("expected blank task_id error, got %v", err)
+	}
+	unchanged, err := store.GetTask(meta.ID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if unchanged.Status != "pending" {
+		t.Fatalf("blank task_id update mutated task: %#v", unchanged)
+	}
+}
+
+func TestTaskUpdateRejectsBlankSubject(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	task, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "existing"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := UpdateTask(store, meta.ID, TaskUpdateInput{TaskID: task.ID, Subject: " \n\t "}); err == nil || !strings.Contains(err.Error(), "subject is required") {
+		t.Fatalf("expected blank subject error, got %v", err)
+	}
+	unchanged, err := store.GetTask(meta.ID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if unchanged.Subject != "existing" {
+		t.Fatalf("blank subject update mutated task: %#v", unchanged)
+	}
+}
+
 func TestSaveTodoRejectsInvalidItems(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

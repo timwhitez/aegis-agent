@@ -62,6 +62,12 @@ func CreateTask(store *Store, sessionID string, input TaskCreateInput) (Task, er
 }
 
 func UpdateTask(store *Store, sessionID string, input TaskUpdateInput) (Task, error) {
+	if strings.TrimSpace(input.TaskID) == "" {
+		return Task{}, errors.New("task_id is required")
+	}
+	if input.Subject != "" && strings.TrimSpace(input.Subject) == "" {
+		return Task{}, errors.New("subject is required")
+	}
 	var updated Task
 	if err := store.MutateTasks(sessionID, func(tasks []Task) ([]Task, error) {
 		index := -1

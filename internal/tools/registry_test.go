@@ -1642,6 +1642,68 @@ func TestTaskCreateRejectsBlankSubject(t *testing.T) {
 	}
 }
 
+func TestTaskUpdateRejectsBlankInputs(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	task, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "existing"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "blank task id",
+			payload: `{"task_id":" \n\t ","status":"completed"}`,
+			want:    "task_id is required",
+		},
+		{
+			name:    "blank subject",
+			payload: `{"task_id":"task_0001","subject":" \n\t "}`,
+			want:    "subject is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), "task_update", execCtx, json.RawMessage(tc.payload))
+			if err != nil {
+				t.Fatalf("task_update: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tc.want) {
+				t.Fatalf("expected %q error, got %#v", tc.want, result)
+			}
+			unchanged, err := store.GetTask(meta.ID, task.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if unchanged.Subject != "existing" || unchanged.Status != "pending" {
+				t.Fatalf("invalid task_update mutated task: %#v", unchanged)
+			}
+		})
+	}
+}
+
 func TestWriteFileRejectsSymlinkedTempAlias(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
