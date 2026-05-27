@@ -250,7 +250,12 @@ func TestStoreFeatureListRejectsSymlink(t *testing.T) {
 	if _, err := store.LoadFeatureList(meta.ID); err == nil {
 		t.Fatal("expected symlinked feature_list.json load to fail")
 	}
-	err := store.SaveFeatureList(meta.ID, FeatureList{Features: []Feature{{ID: "feature_0001", Status: "completed"}}})
+	err := store.SaveFeatureList(meta.ID, FeatureList{Features: []Feature{{
+		ID:          "feature_0001",
+		Description: "Valid feature",
+		Steps:       []string{"validate"},
+		Status:      "completed",
+	}}})
 	if err == nil {
 		t.Fatal("expected symlinked feature_list.json save to fail")
 	}
@@ -260,6 +265,92 @@ func TestStoreFeatureListRejectsSymlink(t *testing.T) {
 	}
 	if string(data) != string(original) {
 		t.Fatalf("outside symlink target was modified: %q", string(data))
+	}
+}
+
+func TestSaveFeatureListRejectsInvalidItems(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	cases := []struct {
+		name        string
+		featureList FeatureList
+		want        string
+	}{
+		{
+			name:        "empty list",
+			featureList: FeatureList{},
+			want:        "at least one feature is required",
+		},
+		{
+			name: "blank id",
+			featureList: FeatureList{Features: []Feature{{
+				ID:          " ",
+				Description: "Valid feature",
+				Status:      "pending",
+			}}},
+			want: "feature 1 id is required",
+		},
+		{
+			name: "blank description",
+			featureList: FeatureList{Features: []Feature{{
+				ID:          "feature_0001",
+				Description: " ",
+				Status:      "pending",
+			}}},
+			want: "feature 1 description is required",
+		},
+		{
+			name: "blank step",
+			featureList: FeatureList{Features: []Feature{{
+				ID:          "feature_0001",
+				Description: "Valid feature",
+				Steps:       []string{" "},
+				Status:      "pending",
+			}}},
+			want: "feature 1 step 1 is required",
+		},
+		{
+			name: "invalid status",
+			featureList: FeatureList{Features: []Feature{{
+				ID:          "feature_0001",
+				Description: "Valid feature",
+				Status:      "blocked",
+			}}},
+			want: "invalid feature status",
+		},
+		{
+			name: "negative passes",
+			featureList: FeatureList{Features: []Feature{{
+				ID:          "feature_0001",
+				Description: "Valid feature",
+				Status:      "pending",
+				Passes:      -1,
+			}}},
+			want: "passes must be non-negative",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.SaveFeatureList(meta.ID, tc.featureList); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+			if _, err := store.LoadFeatureList(meta.ID); err == nil {
+				t.Fatal("invalid feature list was persisted")
+			}
+		})
 	}
 }
 

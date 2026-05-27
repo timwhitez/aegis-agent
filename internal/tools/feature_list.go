@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go-cli-agent/internal/session"
@@ -50,10 +51,21 @@ func defFeatureListCreate() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("feature_list_create", err), nil
 			}
+			if len(input.Features) == 0 {
+				return errorResult("feature_list_create", fmt.Errorf("at least one feature is required")), nil
+			}
 
 			now := time.Now().UTC().Format(time.RFC3339)
 			var features []session.Feature
 			for i, f := range input.Features {
+				if strings.TrimSpace(f.Description) == "" {
+					return errorResult("feature_list_create", fmt.Errorf("feature %d description is required", i+1)), nil
+				}
+				for stepIndex, step := range f.Steps {
+					if strings.TrimSpace(step) == "" {
+						return errorResult("feature_list_create", fmt.Errorf("feature %d step %d is required", i+1, stepIndex+1)), nil
+					}
+				}
 				features = append(features, session.Feature{
 					ID:          fmt.Sprintf("feature_%04d", i+1),
 					Description: f.Description,
@@ -101,6 +113,22 @@ func defFeatureListUpdate() Definition {
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("feature_list_update", err), nil
+			}
+			if strings.TrimSpace(input.ID) == "" {
+				return errorResult("feature_list_update", fmt.Errorf("id is required")), nil
+			}
+			if strings.TrimSpace(input.ID) != input.ID {
+				return errorResult("feature_list_update", fmt.Errorf("invalid feature id %q: leading or trailing whitespace is not allowed", input.ID)), nil
+			}
+			if input.Status != "" {
+				switch input.Status {
+				case "pending", "in_progress", "completed":
+				default:
+					return errorResult("feature_list_update", fmt.Errorf("invalid feature status: %s", input.Status)), nil
+				}
+			}
+			if input.Passes != nil && *input.Passes < 0 {
+				return errorResult("feature_list_update", fmt.Errorf("passes must be non-negative")), nil
 			}
 
 			featureList, err := execCtx.Store.LoadFeatureList(execCtx.SessionID)

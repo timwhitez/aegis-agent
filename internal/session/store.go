@@ -758,6 +758,9 @@ func (s *Store) LoadFeatureList(sessionID string) (FeatureList, error) {
 }
 
 func (s *Store) SaveFeatureList(sessionID string, featureList FeatureList) error {
+	if err := validateFeatureList(featureList); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "feature_list.json")
@@ -2679,6 +2682,47 @@ func validateTodo(todo []TodoItem) error {
 	}
 	if inProgress > 1 {
 		return errors.New("only one todo may be in_progress")
+	}
+	return nil
+}
+
+func validateFeatureList(featureList FeatureList) error {
+	if len(featureList.Features) == 0 {
+		return errors.New("at least one feature is required")
+	}
+	seenIDs := map[string]struct{}{}
+	for i, feature := range featureList.Features {
+		position := i + 1
+		id := strings.TrimSpace(feature.ID)
+		if id == "" {
+			return fmt.Errorf("feature %d id is required", position)
+		}
+		if id != feature.ID {
+			return fmt.Errorf("invalid feature id %q: leading or trailing whitespace is not allowed", feature.ID)
+		}
+		if _, exists := seenIDs[feature.ID]; exists {
+			return fmt.Errorf("duplicate feature id: %s", feature.ID)
+		}
+		seenIDs[feature.ID] = struct{}{}
+		if strings.TrimSpace(feature.Description) == "" {
+			return fmt.Errorf("feature %d description is required", position)
+		}
+		for stepIndex, step := range feature.Steps {
+			if strings.TrimSpace(step) == "" {
+				return fmt.Errorf("feature %d step %d is required", position, stepIndex+1)
+			}
+		}
+		switch feature.Status {
+		case "pending", "in_progress", "completed":
+		default:
+			if strings.TrimSpace(feature.Status) == "" {
+				return fmt.Errorf("feature %d status is required", position)
+			}
+			return fmt.Errorf("invalid feature status %q", feature.Status)
+		}
+		if feature.Passes < 0 {
+			return fmt.Errorf("feature %d passes must be non-negative", position)
+		}
 	}
 	return nil
 }

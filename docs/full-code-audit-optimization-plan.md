@@ -7566,6 +7566,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-251. That slice fixed todo priority validation; this slice covers persistent task graph create/update priorities that were silently coerced to `medium`.
 - Confirmed the minimal fix belongs in the session task layer with a schema mirror in `task_create`: reject non-empty priority values outside `high|medium|low`, preserving the omitted-priority default, valid create/update priorities, task dependency behavior, and event rollback.
 
+### Review 247
+
+- Confirmed FCA-20260527-254 against `spec/04-tools-and-skills.md`'s feature-list tool contract: `feature_list_create` creates a durable feature roadmap where every feature has a meaningful `description`, optional concrete `steps`, default `pending` status, and `passes=0`; `feature_list_update` mutates an existing feature by `id` and only updates documented `status` / `passes` fields.
+- Confirmed this is distinct from FCA-20260526-143 and FCA-20260526-151. Those slices covered corrupt existing `feature_list.json` handling during completion and compaction; this slice covers malformed but schema-valid create/update inputs and direct durable writes before invalid feature-list state exists.
+- Confirmed the minimal fix belongs in the feature-list tool plus `SessionStore.SaveFeatureList`: reject empty feature lists, blank IDs/descriptions/steps, invalid statuses, duplicate IDs, and negative pass counts without changing optional absent `feature_list.json`, completion/compaction read behavior, provider adapters, WebConsole state authority, or runtime workflow autonomy.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7627,6 +7633,40 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-254
+
+Slice: `fix(tools): validate feature list inputs`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines `feature_list_create` as creating durable feature roadmap items where each feature at least has `description`, and defines `feature_list_update` as updating an existing feature's `status` / `passes` by `id`.
+- `feature_list_create` accepted `{"features":[]}`, whitespace-only descriptions, and whitespace-only step entries, then persisted those malformed records to `feature_list.json`.
+- `feature_list_update` accepted whitespace-only IDs as a misleading `feature not found`, accepted invalid statuses such as `blocked`, and accepted negative `passes`.
+- `SessionStore.SaveFeatureList` did not validate the durable snapshot shape, so direct store callers could bypass the tool contract.
+- Before the fix, focused regressions showed `feature_list_create` returning successful "Created feature list" results for empty/blank inputs, `feature_list_update` returning successful "Updated feature" results for invalid status and negative passes, and `SaveFeatureList` returning nil for malformed snapshots.
+
+Impact:
+
+- Durable feature roadmap state could contain empty or semantically invalid work items, making init-mode pre-completion checks, compaction summaries, Web display, and resume/handoff context unreliable.
+- Invalid update inputs looked successful or like missing data, so malformed agent/tool requests could silently corrupt feature progress instead of giving actionable feedback.
+
+Changes:
+
+- Added focused tool regressions proving invalid create payloads do not write `feature_list.json`, and invalid update payloads leave the existing feature unchanged.
+- Added focused session-store regressions proving direct `SaveFeatureList` callers cannot persist empty feature lists, blank IDs/descriptions/steps, invalid statuses, or negative pass counts.
+- Added `SaveFeatureList` durable validation for at least one feature, nonblank IDs/descriptions/steps, duplicate IDs, valid `pending|in_progress|completed` status, and non-negative `passes`.
+- Added tool-level validation for create descriptions/steps and update `id` / `status` / `passes` before lookup or mutation.
+- Preserved generated `feature_000N` IDs, default create status/pass initialization, valid update behavior, symlink path-safety rejection, absent optional `feature_list.json`, and completion/compaction read semantics.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'TestFeatureList(CreateRejectsInvalidItems|UpdateRejectsInvalidInputs)' -count=1`: failed before the fix because invalid create payloads persisted feature lists and invalid updates either mutated state or returned misleading lookup errors.
+- `go test -timeout 120s ./internal/session -run TestSaveFeatureListRejectsInvalidItems -count=1`: failed before the fix because malformed feature snapshots were accepted.
+- `go test -timeout 120s ./internal/tools -run 'TestFeatureList(CreateRejectsInvalidItems|UpdateRejectsInvalidInputs|ToolsPersistUpdateAndReadSnapshot|ToolsRejectSymlinkedSnapshot)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestSaveFeatureListRejectsInvalidItems|TestStoreFeatureListRejectsSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactorReportsCorruptFeatureList|TestPreCompletionFeatureGate(IgnoresSymlinkedFeatureList|BlocksCorruptFeatureList)|TestEngine(DoesNotHardBlockNormalFinishOnStaleFeatureList|StillBlocksInitFinishOnIncompleteFeatureList)' -count=1`: passed.
 
 ### FCA-20260527-253
 

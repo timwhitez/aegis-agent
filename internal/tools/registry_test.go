@@ -2322,6 +2322,132 @@ func TestFeatureListToolsPersistUpdateAndReadSnapshot(t *testing.T) {
 	}
 }
 
+func TestFeatureListCreateRejectsInvalidItems(t *testing.T) {
+	cfg := config.Default()
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "empty list",
+			payload: `{"features":[]}`,
+			want:    "at least one feature is required",
+		},
+		{
+			name:    "blank description",
+			payload: `{"features":[{"description":" \n\t "}]}`,
+			want:    "feature 1 description is required",
+		},
+		{
+			name:    "blank step",
+			payload: `{"features":[{"description":"Valid feature","steps":["plan","  "]}]}`,
+			want:    "feature 1 step 2 is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := session.NewStore(t.TempDir())
+			workdir := t.TempDir()
+			meta := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               session.NewSessionID(),
+				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+				Workdir:          workdir,
+				Mode:             session.ModeRun,
+				Provider:         "fake",
+				Model:            "fake",
+				CompletionPolicy: session.CompletionPolicyInteractive,
+			}
+			if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			registry, err := NewRegistry(cfg, nil, store, nil)
+			if err != nil {
+				t.Fatalf("new registry: %v", err)
+			}
+			execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+			result, err := registry.Execute(context.Background(), "feature_list_create", execCtx, json.RawMessage(tc.payload))
+			if err != nil {
+				t.Fatalf("feature_list_create: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tc.want) {
+				t.Fatalf("expected feature_list_create error containing %q, got %#v", tc.want, result)
+			}
+			if _, err := store.LoadFeatureList(meta.ID); err == nil {
+				t.Fatal("invalid feature_list_create wrote feature_list.json")
+			}
+		})
+	}
+}
+
+func TestFeatureListUpdateRejectsInvalidInputs(t *testing.T) {
+	cfg := config.Default()
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "blank id",
+			payload: `{"id":" \n\t ","status":"completed"}`,
+			want:    "id is required",
+		},
+		{
+			name:    "invalid status",
+			payload: `{"id":"feature_0001","status":"blocked"}`,
+			want:    "invalid feature status",
+		},
+		{
+			name:    "negative passes",
+			payload: `{"id":"feature_0001","passes":-1}`,
+			want:    "passes must be non-negative",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := session.NewStore(t.TempDir())
+			workdir := t.TempDir()
+			meta := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               session.NewSessionID(),
+				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+				Workdir:          workdir,
+				Mode:             session.ModeRun,
+				Provider:         "fake",
+				Model:            "fake",
+				CompletionPolicy: session.CompletionPolicyInteractive,
+			}
+			if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			registry, err := NewRegistry(cfg, nil, store, nil)
+			if err != nil {
+				t.Fatalf("new registry: %v", err)
+			}
+			execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+			createResult, err := registry.Execute(context.Background(), "feature_list_create", execCtx, json.RawMessage(`{"features":[{"description":"Keep original","steps":["validate"]}]}`))
+			if err != nil || createResult.IsError {
+				t.Fatalf("feature_list_create err=%v result=%#v", err, createResult)
+			}
+			result, err := registry.Execute(context.Background(), "feature_list_update", execCtx, json.RawMessage(tc.payload))
+			if err != nil {
+				t.Fatalf("feature_list_update: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tc.want) {
+				t.Fatalf("expected feature_list_update error containing %q, got %#v", tc.want, result)
+			}
+			snapshot, err := store.LoadFeatureList(meta.ID)
+			if err != nil {
+				t.Fatalf("load feature list: %v", err)
+			}
+			if len(snapshot.Features) != 1 || snapshot.Features[0].Status != "pending" || snapshot.Features[0].Passes != 0 {
+				t.Fatalf("invalid feature_list_update mutated feature list: %#v", snapshot.Features)
+			}
+		})
+	}
+}
+
 func TestFeatureListToolsRejectSymlinkedSnapshot(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
