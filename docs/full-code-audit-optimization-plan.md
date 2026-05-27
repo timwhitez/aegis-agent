@@ -6586,7 +6586,52 @@ Evidence gates:
 - Confirmed the model-tool `create_goal(require_plan_approval=true)` path differs from plain Goal creation because it can create a linked Plan Mode gate after `goal.created` has already been persisted.
 - Confirmed the minimal fix should mirror the WebConsole linked-gate rollback policy: if the linked Plan Mode's required event cannot be persisted, restore Plan Mode state/history plus the just-created Goal, Goal history, and task snapshot rather than leaving an invisible approval gate.
 
+### Review 187
+
+- Confirmed FCA-20260527-194 against `spec/01-runtime-architecture.md`: both `planmode.input_cancelled` and `planmode.cancelled` are catalogued Plan Mode session events.
+- Confirmed the live `request_user_input` cancellation path is distinct from recovered cancellation in `internal/runtime/runner.go`: the recovered path already coordinates replay tool result repair and idempotent event recovery, while the live tool path has not yet appended its provider replay tool result.
+- Confirmed the minimal fix should treat the two cancellation events as one required batch at the tool boundary. If the batch cannot be persisted, restore Plan Mode state/history and return a model-visible error instead of leaving a cancelled Plan Mode without matching session events.
+
 ## Update Log
+
+### FCA-20260527-194
+
+Slice: `fix(tools): require plan input cancellation events`
+
+Finding:
+
+- Live `request_user_input` cancellation persisted `planmode.json` as cancelled and appended `planmode.cancelled` history, then emitted the required `planmode.input_cancelled` and `planmode.cancelled` session events through unchecked `ExecContext.Emit`.
+- A blocked or unwritable `events.jsonl` path could therefore return a normal cancellation tool result while durable Plan Mode state claimed cancellation without the matching event timeline facts.
+
+Changes:
+
+- Added a small batch event callback for tool execution so matched tool events can be persisted atomically when the engine owns the session event stream.
+- Added `Store.AppendEvents` to append a batch by reading the existing event stream and atomically rewriting it with the new events.
+- Switched live Plan Mode input cancellation to snapshot Plan Mode state/history, cancel the Plan Mode, require the `planmode.input_cancelled` + `planmode.cancelled` event batch, and restore the pending request/history on failure.
+- Added focused coverage for blocked cancellation event persistence and for atomic event batch appends.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputReportsCancellationEventErrorAndRestoresPendingRequest -count=1`: failed before the fix because `request_user_input` returned normal cancellation.
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputReportsCancellationEventErrorAndRestoresPendingRequest -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run TestStoreAppendEventsAppendsBatchAtomically -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test(RequestUserInputReportsCancellationEventErrorAndRestoresPendingRequest|RequestUserInputReportsAnsweredEventErrorAndRestoresPendingRequest|RequestUserInputReportsRequiredEventErrorBeforeResponder|RequestUserInputResponderErrorKeepsRecoverablePendingRequest|RequestUserInputReportsStateLoadErrorBeforeResponder|RequestUserInputReportsStateSaveErrorBeforeResponder)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(StoreAppendEventsAppendsBatchAtomically|PlanModeInputValidationAndAnswer|PlanModeSubmitApproveAndHistory|CancelPlanModeReturnsHistoryAppendError|ApprovePlanModeReturnsHistoryAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(PlanInputCancelRetryAfterHistoryFailureRestoresFacts|CancelPlanModeReportsCancelledEventAppendError|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|PlanInputAnswerRetryAfterEventFailureRestoresEvent|RunnerStartReportsStartedEventAppendError)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/engine.go internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-193
 

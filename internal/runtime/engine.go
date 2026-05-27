@@ -540,6 +540,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						EmitRequired: func(eventType string, data map[string]any) error {
 							return e.appendEvent(meta.ID, eventType, "tool_execute", data)
 						},
+						EmitBatchRequired: func(items []tools.ToolEvent) error {
+							return e.appendToolEvents(meta.ID, "tool_execute", items)
+						},
 					}, toolArgs)
 					e.control.clearCancel(cancel)
 					annotateExactArtifactTemplateResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
@@ -962,6 +965,23 @@ func (e *Engine) appendEvent(sessionID, eventType, phase string, data map[string
 		return err
 	}
 	e.bus.Publish(evt)
+	return nil
+}
+
+func (e *Engine) appendToolEvents(sessionID, phase string, items []tools.ToolEvent) error {
+	if len(items) == 0 {
+		return nil
+	}
+	eventsToAppend := make([]events.Event, 0, len(items))
+	for _, item := range items {
+		eventsToAppend = append(eventsToAppend, events.New(sessionID, item.Type, phase, item.Data))
+	}
+	if err := e.store.AppendEvents(sessionID, eventsToAppend); err != nil {
+		return err
+	}
+	for _, evt := range eventsToAppend {
+		e.bus.Publish(evt)
+	}
 	return nil
 }
 

@@ -670,6 +670,29 @@ func (s *Store) AppendEvent(sessionID string, event events.Event) error {
 	return nil
 }
 
+func (s *Store) AppendEvents(sessionID string, items []events.Event) error {
+	if len(items) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "events.jsonl")
+	if err != nil {
+		return err
+	}
+	var existing []events.Event
+	if err := readJSONL(path, &existing); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	existing = append(existing, items...)
+	if err := s.writeEventsJSONL(path, existing); err != nil {
+		return fmt.Errorf("append events %s: %w", path, err)
+	}
+	return nil
+}
+
 func (s *Store) LoadTodo(sessionID string) ([]TodoItem, error) {
 	var todo []TodoItem
 	path, err := s.sessionPath(sessionID, "todo.json")
@@ -1961,6 +1984,20 @@ func (s *Store) writeJSONL(path string, payload any) error {
 		}
 	default:
 		return fmt.Errorf("unsupported jsonl payload %T", payload)
+	}
+	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
+}
+
+func (s *Store) writeEventsJSONL(path string, payload []events.Event) error {
+	if err := s.ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	var data bytes.Buffer
+	enc := json.NewEncoder(&data)
+	for _, item := range payload {
+		if err := enc.Encode(item); err != nil {
+			return err
+		}
 	}
 	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
 }

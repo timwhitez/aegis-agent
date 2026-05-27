@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/fileutil"
 )
 
@@ -78,6 +79,54 @@ func TestStoreAppendMessageReappliesParentAndFileModes(t *testing.T) {
 	}
 	if perm := messageInfo.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("expected messages mode 0600, got %s", perm.String())
+	}
+}
+
+func TestStoreAppendEventsAppendsBatchAtomically(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	first := events.New(meta.ID, "first.event", "test", nil)
+	if err := store.AppendEvent(meta.ID, first); err != nil {
+		t.Fatalf("append first event: %v", err)
+	}
+	batch := []events.Event{
+		events.New(meta.ID, "batch.one", "test", map[string]any{"index": 1}),
+		events.New(meta.ID, "batch.two", "test", map[string]any{"index": 2}),
+	}
+	if err := store.AppendEvents(meta.ID, batch); err != nil {
+		t.Fatalf("append event batch: %v", err)
+	}
+	loaded, err := store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(loaded) != 3 || loaded[0].Type != "first.event" || loaded[1].Type != "batch.one" || loaded[2].Type != "batch.two" {
+		t.Fatalf("unexpected event order after batch append: %#v", loaded)
+	}
+	eventsPath := filepath.Join(store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("replace events with directory: %v", err)
+	}
+	err = store.AppendEvents(meta.ID, []events.Event{events.New(meta.ID, "blocked.event", "test", nil)})
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected blocked event batch error, got %v", err)
 	}
 }
 

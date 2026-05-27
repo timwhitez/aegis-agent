@@ -606,6 +606,87 @@ func TestRequestUserInputReportsAnsweredEventErrorAndRestoresPendingRequest(t *t
 	}
 }
 
+func TestRequestUserInputReportsCancellationEventErrorAndRestoresPendingRequest(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Resolve one planning decision"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	eventErr := errors.New("events.jsonl blocked")
+	result, err := registry.Execute(context.Background(), "request_user_input", ExecContext{
+		SessionID:          meta.ID,
+		ToolCallID:         "call_plan_input",
+		Workdir:            meta.Workdir,
+		Store:              store,
+		Config:             cfg,
+		PlanInputResponder: failingPlanInputResponder{err: ErrPlanInputCancelled},
+		EmitRequired: func(eventType string, _ map[string]any) error {
+			if eventType != "planmode.input_requested" {
+				t.Fatalf("unexpected single required event %q", eventType)
+			}
+			return nil
+		},
+		EmitBatchRequired: func(items []ToolEvent) error {
+			if len(items) != 2 || items[0].Type != "planmode.input_cancelled" || items[1].Type != "planmode.cancelled" {
+				t.Fatalf("unexpected required event batch %#v", items)
+			}
+			return eventErr
+		},
+	}, json.RawMessage(`{
+		"questions":[{
+			"id":"scope_choice",
+			"header":"Scope",
+			"question":"Which scope should the plan use?",
+			"options":[
+				{"label":"Narrow (Recommended)","description":"Keep the implementation focused."},
+				{"label":"Broad","description":"Include adjacent cleanup."}
+			]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("request_user_input execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "planmode.input_cancelled") || !strings.Contains(result.DisplayOutput, eventErr.Error()) {
+		t.Fatalf("expected cancellation event error result, got %#v", result)
+	}
+	planMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil {
+		t.Fatalf("expected pending request restored after cancellation event failure, got %#v", planMode)
+	}
+	if planMode.PendingRequest.Status != "pending" || planMode.PendingRequest.CancelledAt != "" {
+		t.Fatalf("expected uncancelled pending request restored, got %#v", planMode.PendingRequest)
+	}
+	history, err := store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	for _, entry := range history {
+		if entry.Type == "planmode.cancelled" || entry.Type == "planmode.input_cancelled" {
+			t.Fatalf("failed cancellation event append must not leave cancellation history, got %#v", history)
+		}
+	}
+}
+
 func TestRequestUserInputWithoutResponderFailsBeforePendingRequest(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

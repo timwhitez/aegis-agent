@@ -46,7 +46,13 @@ type ExecContext struct {
 	Catalog            *skills.Catalog
 	Emit               func(string, map[string]any)
 	EmitRequired       func(string, map[string]any) error
+	EmitBatchRequired  func([]ToolEvent) error
 	PlanInputResponder PlanInputResponder
+}
+
+type ToolEvent struct {
+	Type string
+	Data map[string]any
 }
 
 type PlanInputResponder interface {
@@ -2137,19 +2143,41 @@ func defRequestUserInput() Definition {
 			answers, err := execCtx.PlanInputResponder.RequestPlanInput(ctx, execCtx.SessionID, request)
 			if err != nil {
 				if errors.Is(err, ErrPlanInputCancelled) {
+					previousPlanMode, snapshotErr := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
+					if snapshotErr != nil {
+						return errorResult("request_user_input", snapshotErr), nil
+					}
+					previousHistory, historyErr := execCtx.Store.LoadPlanModeHistory(execCtx.SessionID)
+					if historyErr != nil {
+						return errorResult("request_user_input", historyErr), nil
+					}
 					planMode, cancelErr := execCtx.Store.CancelPlanMode(execCtx.SessionID, session.PlanModeSourceTool)
 					if cancelErr != nil {
 						return errorResult("request_user_input", cancelErr), nil
 					}
-					if execCtx.Emit != nil {
-						execCtx.Emit("planmode.input_cancelled", map[string]any{
-							"plan_mode_id": planMode.PlanModeID,
-							"request_id":   request.RequestID,
-						})
-						execCtx.Emit("planmode.cancelled", map[string]any{
-							"plan_mode_id": planMode.PlanModeID,
-							"request_id":   request.RequestID,
-						})
+					if eventErr := emitToolEvents(execCtx, []ToolEvent{
+						{
+							Type: "planmode.input_cancelled",
+							Data: map[string]any{
+								"plan_mode_id": planMode.PlanModeID,
+								"request_id":   request.RequestID,
+							},
+						},
+						{
+							Type: "planmode.cancelled",
+							Data: map[string]any{
+								"plan_mode_id": planMode.PlanModeID,
+								"request_id":   request.RequestID,
+							},
+						},
+					}); eventErr != nil {
+						if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPlanMode); rollbackErr != nil {
+							return errorResult("request_user_input", fmt.Errorf("restore plan mode after planmode cancellation event failure %v: %w", eventErr, rollbackErr)), nil
+						}
+						if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
+							return errorResult("request_user_input", fmt.Errorf("restore plan mode history after planmode cancellation event failure %v: %w", eventErr, rollbackErr)), nil
+						}
+						return errorResult("request_user_input", fmt.Errorf("record planmode.input_cancelled and planmode.cancelled events: %w", eventErr)), nil
 					}
 					return session.ToolResult{
 						Name:          "request_user_input",
@@ -2638,6 +2666,21 @@ func emitToolEvent(execCtx ExecContext, eventType string, data map[string]any) e
 	}
 	if execCtx.Emit != nil {
 		execCtx.Emit(eventType, data)
+	}
+	return nil
+}
+
+func emitToolEvents(execCtx ExecContext, items []ToolEvent) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if execCtx.EmitBatchRequired != nil {
+		return execCtx.EmitBatchRequired(items)
+	}
+	for _, item := range items {
+		if err := emitToolEvent(execCtx, item.Type, item.Data); err != nil {
+			return err
+		}
 	}
 	return nil
 }
