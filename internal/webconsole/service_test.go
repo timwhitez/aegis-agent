@@ -4970,6 +4970,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "fetchWorkspace") || !strings.Contains(workspaceBody, "renderFileTree") || !strings.Contains(workspaceBody, "selectedWorkspaceWorkdir") {
 		t.Fatalf("unexpected workspace-view.js body: %s", workspaceBody)
 	}
+	if !strings.Contains(workspaceBody, "function workspaceErrorMessage") || !strings.Contains(workspaceBody, "const message = workspaceErrorMessage(err") || !strings.Contains(workspaceBody, "nodes.editorContent.innerText = message") || !strings.Contains(workspaceBody, "showToast(message, 'error')") {
+		t.Fatalf("expected workspace frontend failures to surface backend API errors, got workspace-view.js body: %s", workspaceBody)
+	}
 	sessionBody := checkBody(server.URL + "/session-view.js")
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
 		t.Fatalf("unexpected session-view.js body: %s", sessionBody)

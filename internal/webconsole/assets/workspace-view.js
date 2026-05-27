@@ -10,11 +10,16 @@ async function fetchWorkspace() {
     await loadWorkspaceDirectory(state.workspacePath || '');
   } catch (err) {
     console.error('workspace error', err);
+    const message = workspaceErrorMessage(err);
     nodes.fileTree.innerHTML = '<div class="empty-panel">Failed to load workspace.</div>';
     nodes.editorFilename.innerText = 'Workspace';
-    nodes.editorContent.innerText = 'Failed to load workspace.';
-    showToast('Failed to load workspace.', 'error');
+    nodes.editorContent.innerText = message;
+    showToast(message, 'error');
   }
+}
+
+function workspaceErrorMessage(err, fallback = 'Failed to load workspace.') {
+  return err?.message || fallback;
 }
 
 function updateWorkspaceMeta() {
@@ -137,7 +142,8 @@ async function handleFileTreeClick(event) {
     try {
       await loadWorkspaceDirectory(path || '');
     } catch (err) {
-      showToast('Failed to load parent directory.', 'error');
+      const message = workspaceErrorMessage(err, 'Failed to load parent directory.');
+      showToast(message, 'error');
     } finally {
       button.disabled = false;
       button.classList.remove('is-loading');
@@ -157,9 +163,10 @@ async function handleFileTreeClick(event) {
     try {
       await loadWorkspaceDirectory(path);
     } catch (err) {
+      const message = workspaceErrorMessage(err, `Failed to load directory: ${path}`);
       nodes.editorFilename.innerText = path;
-      nodes.editorContent.innerText = 'Error loading directory.';
-      showToast(`Failed to load directory: ${path}`, 'error');
+      nodes.editorContent.innerText = message;
+      showToast(message, 'error');
     } finally {
       button.disabled = false;
       button.classList.remove('is-loading');
@@ -193,7 +200,8 @@ async function loadFile(path) {
     const data = await requestJSON(`/api/file/read?path=${encodeURIComponent(path)}`);
     nodes.editorContent.innerText = data.content;
   } catch (err) {
-    nodes.editorContent.innerText = 'Error loading file.';
-    showToast(`Failed to load file: ${path}`, 'error');
+    const message = workspaceErrorMessage(err, `Failed to load file: ${path}`);
+    nodes.editorContent.innerText = message;
+    showToast(message, 'error');
   }
 }

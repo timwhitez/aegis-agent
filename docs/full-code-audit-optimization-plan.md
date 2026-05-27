@@ -7470,6 +7470,12 @@ Evidence gates:
 - Confirmed this is distinct from backend session-detail corruption/status classification slices. Those make `/api/sessions/{id}` return useful HTTP errors; this slice covers the frontend path that swallowed the `requestJSON` error before direct session-open and restore callers could show it.
 - Confirmed the minimal fix belongs in `app.js`: add an explicit surfaced-error mode for user-triggered session detail loads and preserve the silent behavior for polling/WebSocket refreshes, without changing runtime/session store facts or Web API status mapping.
 
+### Review 231
+
+- Confirmed FCA-20260527-238 against `spec/17-web-console.md`'s Workspace browser and frontend error-display contracts: backend Workspace path errors are object-level operator feedback and should remain visible in the Workspace panel/toast.
+- Confirmed this is distinct from FCA-20260527-232. That slice fixed backend HTTP classification for missing and non-regular Workspace paths; this slice covers the frontend path that still replaced those useful backend messages with generic "Failed to load" text.
+- Confirmed the minimal fix belongs in `workspace-view.js`: derive displayed Workspace failures from `requestJSON`'s `APIError.message` while keeping fallback text for non-API failures, without changing backend path resolution, sensitive-file filtering, or runtime file tools.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7531,6 +7537,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-238
+
+Slice: `fix(webconsole): surface workspace load errors`
+
+Finding:
+
+- The Workspace backend now classifies missing paths, directory-as-file reads, sensitive aliases, and other browser path errors with useful response messages.
+- `workspace-view.js` still caught those `requestJSON` errors and replaced them with generic "Failed to load workspace", "Error loading directory", or "Error loading file" messages.
+- Before the fix, the focused embedded-asset contract failed because `workspace-view.js` had no helper or call sites proving Workspace frontend failures displayed the backend API error.
+
+Impact:
+
+- Operators using the read-only Workspace browser could receive a correct backend `404`, `400`, or `403` response but see only a generic browser failure in the panel/toast.
+- That weakened the Web-first error taxonomy because correctable path mistakes and denied sensitive paths looked similar to local UI/service failures.
+
+Changes:
+
+- Added `workspaceErrorMessage()` to prefer `APIError.message` from `requestJSON` and keep object-specific fallback text for non-API failures.
+- Updated workspace load, parent navigation, directory open, and file read catch paths to display/toast the derived message.
+- Added an embedded frontend asset contract assertion that Workspace failures surface backend API messages.
+- Left Workspace backend path classification, sensitive-name filtering, parent browsing, and runtime file-tool semantics unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because Workspace frontend failures did not surface backend API errors.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 
 ### FCA-20260527-237
 
