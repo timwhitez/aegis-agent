@@ -7800,6 +7800,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-287 and FCA-20260528-288. Those slices corrected non-managed skill mutability metadata and rendered disabled reasons; this slice covers blank configured skill-dir entries making the backend disagree on which root is managed.
 - Confirmed the minimal fix belongs in the WebConsole skill root resolver: choose the first non-empty configured skill directory for list/upload/uninstall, and reject blank skill-dir resolution instead of letting it collapse to the server cwd.
 
+### Review 286
+
+- Confirmed FCA-20260528-293 against `spec/17-web-console.md`'s local Skills control contract: `/api/skills` should not present a local skill as mutable when the WebConsole uninstall route will reject that same skill id.
+- Confirmed this is distinct from FCA-20260528-287, FCA-20260528-288, and FCA-20260528-292. Those slices covered non-managed roots, disabled-reason rendering, and blank managed-root selection; this slice covers pre-existing managed-root skill directories whose ids are not accepted by the WebConsole mutation route.
+- Confirmed the minimal fix belongs in `handleListSkills`: keep listing the installed local skill for discovery, but mark it read-only with an explicit disabled reason when its directory name is outside the WebConsole-managed id grammar used by uninstall/upload targets.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7861,6 +7867,32 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-293
+
+Slice: `fix(webconsole): mark unmanageable skill ids read-only`
+
+Finding:
+
+- `/api/skills` listed every installed local skill directory under the managed root as mutable.
+- `POST /api/skills/{id}/uninstall` only accepts ids that round-trip through `sanitizeDirName`.
+- A pre-existing local skill directory such as `demo.skill` was therefore shown as an installed mutable skill, while the matching uninstall route rejected it with `400 invalid skill id`.
+
+Impact:
+
+- The WebConsole catalog exposed an action contract the backend would not honor.
+- Operators could see enabled uninstall controls for managed-root skills that the local WebConsole intentionally cannot mutate, weakening the Skills page's safety and clarity around local file mutations.
+
+Changes:
+
+- Added a shared `manageableSkillID` helper for the WebConsole skill id grammar used by uninstall targets.
+- Updated `/api/skills` catalog metadata to mark managed-root skills with unmanageable ids as `read_only` and include a disabled reason while still listing them as installed local skills.
+- Kept uninstall rejection for unmanageable ids unchanged, so mutation remains bounded to direct child directories created or addressed through the managed id grammar.
+- Added a route-level regression for `demo.skill` proving the catalog now advertises the skill as read-only while direct uninstall remains rejected.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillListMarksUnmanageableManagedSkillIDsReadOnly -count=1`
 
 ### FCA-20260528-292
 

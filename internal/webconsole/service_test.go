@@ -8402,6 +8402,59 @@ func TestServiceSkillListMarksNonManagedSkillDirsReadOnly(t *testing.T) {
 	}
 }
 
+func TestServiceSkillListMarksUnmanageableManagedSkillIDsReadOnly(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	skillDir := filepath.Join(skillsDir, "demo.skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: demo.skill\ndescription: dot id skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill manifest: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 1 {
+		t.Fatalf("expected one installed skill, got %#v", listed)
+	}
+	if listed[0]["id"] != "demo.skill" {
+		t.Fatalf("unexpected listed skill: %#v", listed[0])
+	}
+	if listed[0]["read_only"] != true {
+		t.Fatalf("unmanageable managed-root skill id should be read-only, got %#v", listed[0])
+	}
+	if listed[0]["disabled_reason"] == "" {
+		t.Fatalf("unmanageable managed-root skill should explain why uninstall is disabled, got %#v", listed[0])
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/demo.skill/uninstall", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("new uninstall request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("uninstall request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected direct uninstall to reject unmanageable id, got %d body=%s", resp.StatusCode, string(body))
+	}
+}
+
 func TestServiceSkillRoutesUseFirstNonBlankManagedSkillDir(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {

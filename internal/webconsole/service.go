@@ -3834,6 +3834,10 @@ func readOnlySkillDirReason(managed bool) string {
 	return "Only the first configured skill directory is managed by this WebConsole."
 }
 
+func manageableSkillID(id string) bool {
+	return strings.TrimSpace(id) != "" && sanitizeDirName(id) == id
+}
+
 func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	type skillMeta struct {
 		ID             string   `json:"id"`
@@ -3918,6 +3922,12 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 					name = strings.TrimSpace(strings.TrimPrefix(l, "name:"))
 				}
 			}
+			readOnly := !managed
+			disabledReason := readOnlySkillDirReason(managed)
+			if managed && !manageableSkillID(entry.Name()) {
+				readOnly = true
+				disabledReason = "Skill id is not manageable by this WebConsole."
+			}
 			skills = append(skills, skillMeta{
 				ID:             entry.Name(),
 				Name:           name,
@@ -3927,9 +3937,9 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 				Tags:           []string{"local", entry.Name()},
 				Downloads:      1,
 				Installed:      true,
-				ReadOnly:       !managed,
+				ReadOnly:       readOnly,
 				DiscoveryPath:  dir,
-				DisabledReason: readOnlySkillDirReason(managed),
+				DisabledReason: disabledReason,
 			})
 		}
 	}
@@ -4604,7 +4614,7 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	skillID := parts[3]
-	if strings.TrimSpace(skillID) == "" || sanitizeDirName(skillID) != skillID {
+	if !manageableSkillID(skillID) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid skill id"))
 		return
 	}
