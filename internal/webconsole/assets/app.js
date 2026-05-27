@@ -30,6 +30,7 @@ const state = {
   sessionDetail: null,
   overview: null,
   overviewError: '',
+  settingsRequestSeq: 0,
   historyData: null,
   historyPage: 1,
   historyPageSize: 8,

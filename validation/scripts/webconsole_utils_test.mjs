@@ -1627,6 +1627,78 @@ test('settings save keeps existing API key mask when cleared field means unchang
   assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'true');
 });
 
+test('renderSettings ignores stale config responses', async () => {
+  const previousNodes = context.nodes;
+  const previousDocument = context.document;
+  const previousRequestJSON = context.requestJSON;
+  const previousShowToast = context.showToast;
+  const previousState = context.state;
+  const pendingRequests = [];
+  const container = fakeRendererElement();
+  const elements = {
+    'settings-provider': fakeRendererElement({ value: 'openai' }),
+    'settings-api-provider': fakeRendererElement(),
+    'settings-api-provider-help': fakeRendererElement(),
+    'settings-guardrails': fakeRendererElement({ value: 'standard' }),
+    'settings-max-turns-hard': fakeRendererElement(),
+    'settings-disable-hard-turn-limit': fakeRendererElement(),
+    'settings-baseurl': fakeRendererElement(),
+    'settings-model': fakeRendererElement(),
+    'settings-reasoning-mode': fakeRendererElement(),
+    'settings-reasoning-help': fakeRendererElement(),
+    'settings-reasoning-summary': fakeRendererElement(),
+    'settings-reasoning-summary-help': fakeRendererElement(),
+    'settings-apikey': fakeRendererElement(),
+    'settings-test-btn': fakeRendererElement({ innerText: 'Test Settings' }),
+    'settings-save-btn': fakeRendererElement({ innerText: 'Save Changes' })
+  };
+  context.nodes = { views: { settings: container } };
+  context.document = {
+    getElementById(id) {
+      return elements[id] || null;
+    },
+    createElement() {
+      return fakeRendererElement();
+    },
+    body: {
+      contains() {
+        return true;
+      }
+    }
+  };
+  context.state = { ...previousState, settingsRequestSeq: 0 };
+  context.requestJSON = (url) => new Promise((resolve, reject) => {
+    pendingRequests.push({ url, resolve, reject });
+  });
+  context.showToast = () => {};
+
+  try {
+    const firstRender = context.renderSettings();
+    assert.equal(pendingRequests.length, 1);
+    assert.equal(pendingRequests[0].url, '/api/config');
+
+    const secondRender = context.renderSettings();
+    assert.equal(pendingRequests.length, 2);
+    assert.equal(pendingRequests[1].url, '/api/config');
+
+    pendingRequests[1].resolve(settingsConfig({ model: 'gpt-current', hasKey: true }));
+    await secondRender;
+    assert.equal(elements['settings-model'].value, 'gpt-current');
+    assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'true');
+
+    pendingRequests[0].resolve(settingsConfig({ model: 'gpt-stale', hasKey: false }));
+    await firstRender;
+    assert.equal(elements['settings-model'].value, 'gpt-current');
+    assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'true');
+  } finally {
+    context.nodes = previousNodes;
+    context.document = previousDocument;
+    context.requestJSON = previousRequestJSON;
+    context.showToast = previousShowToast;
+    context.state = previousState;
+  }
+});
+
 function fakeRendererElement(initial = {}) {
   return {
     value: initial.value || '',
@@ -1645,6 +1717,27 @@ function fakeRendererElement(initial = {}) {
     },
     querySelectorAll() {
       return [];
+    }
+  };
+}
+
+function settingsConfig({ model, hasKey }) {
+  return {
+    default_provider: 'openai',
+    guardrails_mode: 'standard',
+    max_turns_hard: 40,
+    disable_hard_turn_limit: false,
+    role_providers: {},
+    providers: {
+      openai: {
+        has_key: hasKey,
+        api_provider: '',
+        effective_api_provider: 'openai-compatible',
+        base_url: 'https://example.invalid/v1',
+        model,
+        reasoning_mode: 'default',
+        reasoning_summary: 'default'
+      }
     }
   };
 }
@@ -1685,24 +1778,7 @@ async function renderSettingsHarness({ hasKey }) {
       return elements[id] || null;
     }
   };
-  context.requestJSON = async () => ({
-    default_provider: 'openai',
-    guardrails_mode: 'standard',
-    max_turns_hard: 40,
-    disable_hard_turn_limit: false,
-    role_providers: {},
-    providers: {
-      openai: {
-        has_key: hasKey,
-        api_provider: '',
-        effective_api_provider: 'openai-compatible',
-        base_url: 'https://example.invalid/v1',
-        model: 'gpt-test',
-        reasoning_mode: 'default',
-        reasoning_summary: 'default'
-      }
-    }
-  });
+  context.requestJSON = async () => settingsConfig({ model: 'gpt-test', hasKey });
   context.saveConfig = async (payload) => {
     savedPayloads.push(payload);
     return { success: true };

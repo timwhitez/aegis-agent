@@ -1,8 +1,13 @@
 async function renderSettings() {
+  const requestSeq = (state.settingsRequestSeq || 0) + 1;
+  state.settingsRequestSeq = requestSeq;
   const container = nodes.views.settings;
   container.innerHTML = '<div class="view-loading">Loading backend settings…</div>';
   try {
     const configData = await requestJSON('/api/config');
+    if (state.settingsRequestSeq !== requestSeq) {
+      return;
+    }
     const providers = configData.providers || {};
     const defaultProvider = configData.default_provider || '';
     const guardrailsMode = configData.guardrails_mode || 'yolo';
@@ -393,6 +398,9 @@ async function renderSettings() {
       }
     });
   } catch (err) {
+    if (state.settingsRequestSeq !== requestSeq) {
+      return;
+    }
     const message = settingsErrorMessage(err);
     const panel = document.createElement('div');
     panel.className = 'empty-panel';

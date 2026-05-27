@@ -7752,6 +7752,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-281, FCA-20260528-282, and FCA-20260528-283. Those slices covered Sessions history, global overview, and selected session detail refresh ordering; this slice covers the separate Skills catalog loader.
 - Confirmed the minimal fix belongs in `fetchSkills`: preserve the latest `/api/skills` request sequence and suppress stale success/error side effects from older responses, without changing backend skill upload/uninstall safety, SkillCatalog discovery, or runtime skill loading.
 
+### Review 278
+
+- Confirmed FCA-20260528-285 against `spec/17-web-console.md`'s Settings contract: Settings is a local WebConsole projection of `/api/config` and persisted config/env facts, and an older in-flight config load must not overwrite a newer rendered provider/model/API-key form.
+- Confirmed this is distinct from FCA-20260528-282 and FCA-20260528-284. Those slices covered `/api/overview` and `/api/skills`; this slice covers the separate Settings renderer and its `/api/config` load path in `settings-view.js`.
+- Confirmed the minimal fix belongs in `renderSettings`: preserve the latest config request sequence and suppress stale success/error UI mutations from older responses, without changing Settings save/test APIs, backend config persistence, provider adapters, or API key audit semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7813,6 +7819,46 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-285
+
+Slice: `fix(webconsole): ignore stale settings config responses`
+
+Finding:
+
+- `renderSettings()` set the Settings loading state and then applied every `/api/config` completion to the provider/model/API-key form.
+- Entering Settings repeatedly, refreshing the view, or otherwise triggering overlapping config loads could let an older request resolve after a newer one and replace the current form with stale provider metadata.
+- In the VM harness, the second `/api/config` request resolved first with model `gpt-current` and a persisted API key marker. The older first request then resolved with model `gpt-stale` and no key marker, overwriting the newer form state.
+
+Impact:
+
+- The Settings page could show stale provider/model/API-key state after a newer config load had already rendered.
+- Operators could then save or test a stale-looking form, weakening the WebConsole contract that Settings reflects current backend config facts even though the backend remained authoritative.
+
+Changes:
+
+- Added a VM-level WebConsole regression for out-of-order `/api/config` completions.
+- Added `settingsRequestSeq` to WebConsole state.
+- Updated `renderSettings()` to record the active request sequence and skip stale success/error UI mutations from older config responses.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the stale first `/api/config` response replaced `gpt-current` with `gpt-stale`.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after adding the request sequence guard.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-284
 
