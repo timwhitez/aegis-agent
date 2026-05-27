@@ -619,6 +619,17 @@ func TestRunnerQueueSubmitReportsChildQueuedEventAppendError(t *testing.T) {
 	runner := NewRunner(cfg)
 	parentWorkdir := t.TempDir()
 	parentID := createParentSession(t, runner.store, parentWorkdir)
+	previousCoordination := session.ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentID,
+		WaitMode:            parentWaitAll,
+		UnresolvedQueueJobs: []string{"existing_job"},
+		Parked:              true,
+		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.SaveParentCoordination(parentID, previousCoordination); err != nil {
+		t.Fatalf("save previous parent coordination: %v", err)
+	}
 	blockRuntimeEventsPath(t, runner.store, parentID)
 
 	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
@@ -638,9 +649,59 @@ func TestRunnerQueueSubmitReportsChildQueuedEventAppendError(t *testing.T) {
 	if len(jobs) != 0 {
 		t.Fatalf("failed queue submit should roll back queued job, got %#v", jobs)
 	}
-	_, coordErr := runner.store.LoadParentCoordination(parentID)
-	if !os.IsNotExist(coordErr) {
-		t.Fatalf("load parent coordination after failed queue submit: %v", coordErr)
+	coordination, coordErr := runner.store.LoadParentCoordination(parentID)
+	if coordErr != nil {
+		t.Fatalf("load restored parent coordination after failed queue submit: %v", coordErr)
+	}
+	if !slices.Equal(coordination.UnresolvedQueueJobs, previousCoordination.UnresolvedQueueJobs) {
+		t.Fatalf("failed queue submit should restore previous parent coordination, got %#v", coordination)
+	}
+}
+
+func TestParentCoordinationTransitionEventFailureRollsBack(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+
+	blockRuntimeEventsPath(t, runner.store, parentID)
+	if err := addParentQueueJob(runner.store, parentID, "job_event_failure", parentWaitAll); err == nil ||
+		!strings.Contains(err.Error(), "parent.coordination.parked") ||
+		!strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected parked transition event append error, got %v", err)
+	}
+	if _, err := runner.store.LoadParentCoordination(parentID); !os.IsNotExist(err) {
+		t.Fatalf("failed parked transition should roll back new parent coordination, got err=%v", err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(runner.store.SessionDir(parentID), "events.jsonl")); err != nil {
+		t.Fatalf("restore blocked events path: %v", err)
+	}
+	previous := session.ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentID,
+		WaitMode:            parentWaitAll,
+		UnresolvedQueueJobs: []string{"job_done"},
+		Parked:              true,
+		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.SaveParentCoordination(parentID, previous); err != nil {
+		t.Fatalf("save previous parent coordination: %v", err)
+	}
+	blockRuntimeEventsPath(t, runner.store, parentID)
+	if err := resolveParentQueueJob(runner.store, parentID, "job_done", session.QueueStatusCompleted); err == nil ||
+		!strings.Contains(err.Error(), "parent.coordination.resumed") ||
+		!strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected resumed transition event append error, got %v", err)
+	}
+	coordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil {
+		t.Fatalf("load restored parent coordination: %v", err)
+	}
+	if !slices.Equal(coordination.UnresolvedQueueJobs, previous.UnresolvedQueueJobs) ||
+		len(coordination.CompletedQueueJobs) != 0 ||
+		!coordination.Parked {
+		t.Fatalf("failed resumed transition should restore previous parent coordination, got %#v", coordination)
 	}
 }
 

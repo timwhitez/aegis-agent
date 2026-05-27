@@ -7716,6 +7716,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-273, FCA-20260528-276, and FCA-20260528-277. Those slices covered Plan approve/cancel, composer continue/revision, and top-bar interrupt/stop; this slice covers the Plan Mode pending-question submit path in `handlePlanInputAction()`.
 - Confirmed the minimal fix belongs in `handlePlanInputAction`: capture the session id before `/planmode/input`, use that id for the answer request, and apply selection cleanup, toast, refresh, and render side effects only while that same session remains selected.
 
+### Review 272
+
+- Confirmed FCA-20260528-279 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`'s parent / queue fact-source contract: `parent-coordination.json` is a durable parent wait-state fact, and `parent.coordination.parked` / `parent.coordination.resumed` are the matching durable transition evidence in `events.jsonl`.
+- Confirmed this is distinct from FCA-20260528-261 and the later queue lifecycle slices. Those slices hardened explicit queue claim / queued / notified / terminal events; this slice covers the shared parent coordination helper used by child-session and queue-job add / resolve paths, where the helper previously ignored failed transition event appends.
+- Confirmed the minimal fix belongs in `internal/runtime/parent_coordination.go`: snapshot the previous parent coordination before each mutation, propagate `parent.coordination.*` append errors, and restore the snapshot when the transition event cannot be recorded, without changing provider adapters, WebConsole state authority, queue worker behavior, or model-led delegation semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7777,6 +7783,50 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-279
+
+Slice: `fix(runtime): preserve parent coordination event evidence`
+
+Finding:
+
+- `emitParentCoordinationTransition()` appended `parent.coordination.parked` / `parent.coordination.resumed` after `parent-coordination.json` mutations but ignored the return value from `Store.AppendEvent`.
+- If the parent session's `events.jsonl` was not writable, add / resolve paths could still advance the parent wait-state file while the transition evidence was absent from the durable event log.
+- The gap affected the shared helper behind `addParentChildSession`, `addParentQueueJob`, `resolveParentChildSession`, and `resolveParentQueueJob`; queue submit / worker code had already been hardened around explicit queue lifecycle events, but this transition helper remained unchecked.
+
+Impact:
+
+- A parent session could appear parked or resumed through `parent-coordination.json` while its timeline / WebConsole event facts lacked the matching `parent.coordination.*` evidence.
+- Recovery and audit paths that rely on session events could not prove why a parent entered or left a parked wait state.
+
+Changes:
+
+- Added a parent coordination regression that blocks `events.jsonl` and proves both `parent.coordination.parked` and `parent.coordination.resumed` append failures are returned and roll back the coordination mutation.
+- Changed the parent coordination helpers to snapshot prior coordination state before mutation and restore it if the transition event append fails.
+- Changed `emitParentCoordinationTransition()` to return checked errors instead of ignoring `Store.AppendEvent`.
+- Adjusted the existing queue-submit event failure regression so it starts from an already parked coordination state; that keeps the later `session.child.queued` event failure coverage distinct from the new `parent.coordination.parked` failure coverage.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestParentCoordinationTransitionEventFailureRollsBack -count=1`: failed before the fix because the blocked `events.jsonl` path returned no error and left `parent-coordination.json` advanced.
+- `go test -timeout 120s ./internal/runtime -run TestParentCoordinationTransitionEventFailureRollsBack -count=1`: passed after checking the transition event append and rolling back coordination.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(QueueSubmit|ProcessNextJob|Delegate)|TestParentCoordination' -count=1`: passed.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `gofmt -l internal/runtime/parent_coordination.go internal/runtime/delegation_test.go`: passed with no output.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-278
 

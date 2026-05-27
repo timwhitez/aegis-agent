@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -26,6 +27,10 @@ func addParentChildSession(store *session.Store, parentSessionID, childSessionID
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(childSessionID) == "" {
 		return nil
 	}
+	previousCoordination, err := store.SnapshotParentCoordination(parentSessionID)
+	if err != nil {
+		return err
+	}
 	var wasParked bool
 	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
 		if coordination.ParentSessionID == "" {
@@ -40,13 +45,19 @@ func addParentChildSession(store *session.Store, parentSessionID, childSessionID
 	if err != nil {
 		return err
 	}
-	emitParentCoordinationTransition(store, coordination, wasParked, "child_session", childSessionID)
+	if err := emitParentCoordinationTransition(store, coordination, wasParked, "child_session", childSessionID); err != nil {
+		return restoreParentCoordinationAfterTransitionError(store, parentSessionID, previousCoordination, err)
+	}
 	return nil
 }
 
 func addParentQueueJob(store *session.Store, parentSessionID, jobID, waitMode string) error {
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(jobID) == "" {
 		return nil
+	}
+	previousCoordination, err := store.SnapshotParentCoordination(parentSessionID)
+	if err != nil {
+		return err
 	}
 	var wasParked bool
 	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
@@ -62,7 +73,9 @@ func addParentQueueJob(store *session.Store, parentSessionID, jobID, waitMode st
 	if err != nil {
 		return err
 	}
-	emitParentCoordinationTransition(store, coordination, wasParked, "queue_job", jobID)
+	if err := emitParentCoordinationTransition(store, coordination, wasParked, "queue_job", jobID); err != nil {
+		return restoreParentCoordinationAfterTransitionError(store, parentSessionID, previousCoordination, err)
+	}
 	return nil
 }
 
@@ -72,6 +85,10 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 	}
 	if !isTerminalSessionStatus(status) {
 		return nil
+	}
+	previousCoordination, err := store.SnapshotParentCoordination(parentSessionID)
+	if err != nil {
+		return err
 	}
 	var wasParked bool
 	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
@@ -91,7 +108,9 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 	if err != nil {
 		return err
 	}
-	emitParentCoordinationTransition(store, coordination, wasParked, "child_session", childSessionID)
+	if err := emitParentCoordinationTransition(store, coordination, wasParked, "child_session", childSessionID); err != nil {
+		return restoreParentCoordinationAfterTransitionError(store, parentSessionID, previousCoordination, err)
+	}
 	return nil
 }
 
@@ -102,6 +121,10 @@ func isTerminalSessionStatus(status string) bool {
 func resolveParentQueueJob(store *session.Store, parentSessionID, jobID, status string) error {
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(jobID) == "" {
 		return nil
+	}
+	previousCoordination, err := store.SnapshotParentCoordination(parentSessionID)
+	if err != nil {
+		return err
 	}
 	var wasParked bool
 	coordination, _, err := store.MutateParentCoordination(parentSessionID, func(coordination *session.ParentCoordination) error {
@@ -121,7 +144,9 @@ func resolveParentQueueJob(store *session.Store, parentSessionID, jobID, status 
 	if err != nil {
 		return err
 	}
-	emitParentCoordinationTransition(store, coordination, wasParked, "queue_job", jobID)
+	if err := emitParentCoordinationTransition(store, coordination, wasParked, "queue_job", jobID); err != nil {
+		return restoreParentCoordinationAfterTransitionError(store, parentSessionID, previousCoordination, err)
+	}
 	return nil
 }
 
@@ -154,7 +179,7 @@ func shouldParkParent(coordination session.ParentCoordination) bool {
 	return true
 }
 
-func emitParentCoordinationTransition(store *session.Store, coordination session.ParentCoordination, wasParked bool, itemKind, itemID string) {
+func emitParentCoordinationTransition(store *session.Store, coordination session.ParentCoordination, wasParked bool, itemKind, itemID string) error {
 	eventType := ""
 	switch {
 	case !wasParked && coordination.Parked:
@@ -162,15 +187,25 @@ func emitParentCoordinationTransition(store *session.Store, coordination session
 	case wasParked && !coordination.Parked:
 		eventType = "parent.coordination.resumed"
 	default:
-		return
+		return nil
 	}
-	_ = store.AppendEvent(coordination.ParentSessionID, events.New(coordination.ParentSessionID, eventType, "parent_coordination", map[string]any{
+	if err := store.AppendEvent(coordination.ParentSessionID, events.New(coordination.ParentSessionID, eventType, "parent_coordination", map[string]any{
 		"wait_mode":                 coordination.WaitMode,
 		"item_kind":                 itemKind,
 		"item_id":                   itemID,
 		"unresolved_child_sessions": append([]string(nil), coordination.UnresolvedChildSessions...),
 		"unresolved_queue_jobs":     append([]string(nil), coordination.UnresolvedQueueJobs...),
-	}))
+	})); err != nil {
+		return fmt.Errorf("append %s event: %w", eventType, err)
+	}
+	return nil
+}
+
+func restoreParentCoordinationAfterTransitionError(store *session.Store, parentSessionID string, snapshot session.ParentCoordinationSnapshot, err error) error {
+	if restoreErr := store.RestoreParentCoordination(parentSessionID, snapshot); restoreErr != nil {
+		return fmt.Errorf("%v; restore parent coordination after transition event failure: %w", err, restoreErr)
+	}
+	return err
 }
 
 func appendUnique(items []string, item string) []string {
