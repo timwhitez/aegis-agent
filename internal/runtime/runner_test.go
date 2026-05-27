@@ -563,6 +563,198 @@ func TestRunnerStartReportsStartedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestRunnerStartGoalCreatedEventAppendErrorRestoresGoal(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	previousHistory, err := runner.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous goal history: %v", err)
+	}
+	previousTasks, err := runner.store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous tasks: %v", err)
+	}
+	blockRunnerEventsPath(t, runner.store, meta.ID)
+
+	err = runner.initializeStartGoalAndPlanMode(meta.ID, StartRequest{
+		Goal: &session.GoalDraft{
+			Enabled:   true,
+			Objective: "Start with a durable goal",
+			Source:    session.GoalSourceCLI,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal.created") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected goal.created events.jsonl error, got %v", err)
+	}
+	if _, err := runner.store.LoadGoal(meta.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected failed start goal event to remove goal snapshot, got %v", err)
+	}
+	history, err := runner.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored goal history: %v", err)
+	}
+	if len(history) != len(previousHistory) {
+		t.Fatalf("expected goal history restored to %d entries, got %d: %#v", len(previousHistory), len(history), history)
+	}
+	tasks, err := runner.store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored tasks: %v", err)
+	}
+	if len(tasks) != len(previousTasks) {
+		t.Fatalf("expected tasks restored to %d entries, got %d: %#v", len(previousTasks), len(tasks), tasks)
+	}
+}
+
+func TestRunnerStartLinkedPlanModeCreatedEventAppendErrorRestoresGoalAndPlanMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	previousGoalHistory, err := runner.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous goal history: %v", err)
+	}
+	previousTasks, err := runner.store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous tasks: %v", err)
+	}
+	previousPlanMode, err := runner.store.SnapshotPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("snapshot previous plan mode: %v", err)
+	}
+	previousPlanHistory, err := runner.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous plan mode history: %v", err)
+	}
+	blockRunnerEventsPath(t, runner.store, meta.ID)
+
+	err = runner.initializeStartGoalAndPlanMode(meta.ID, StartRequest{
+		Goal: &session.GoalDraft{
+			Enabled:             true,
+			Mode:                session.GoalModeMission,
+			Objective:           "Plan-gated start goal",
+			RequirePlanApproval: true,
+			Source:              session.GoalSourceCLI,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal.created") || !strings.Contains(err.Error(), "planmode.created") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected goal/planmode created events.jsonl error, got %v", err)
+	}
+	if _, err := runner.store.LoadGoal(meta.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected failed linked Plan Mode event to remove goal snapshot, got %v", err)
+	}
+	restoredPlanMode, err := runner.store.SnapshotPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("snapshot restored plan mode: %v", err)
+	}
+	if restoredPlanMode.HasState != previousPlanMode.HasState || restoredPlanMode.State.PlanModeID != previousPlanMode.State.PlanModeID {
+		t.Fatalf("expected previous Plan Mode snapshot restored, before=%#v after=%#v", previousPlanMode, restoredPlanMode)
+	}
+	goalHistory, err := runner.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored goal history: %v", err)
+	}
+	if len(goalHistory) != len(previousGoalHistory) {
+		t.Fatalf("expected goal history restored to %d entries, got %d: %#v", len(previousGoalHistory), len(goalHistory), goalHistory)
+	}
+	tasks, err := runner.store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored tasks: %v", err)
+	}
+	if len(tasks) != len(previousTasks) {
+		t.Fatalf("expected tasks restored to %d entries, got %d: %#v", len(previousTasks), len(tasks), tasks)
+	}
+	planHistory, err := runner.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode history: %v", err)
+	}
+	if len(planHistory) != len(previousPlanHistory) {
+		t.Fatalf("expected plan mode history restored to %d entries, got %d: %#v", len(previousPlanHistory), len(planHistory), planHistory)
+	}
+}
+
+func TestRunnerStartExplicitPlanModeCreatedEventAppendErrorRestoresPlanMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	previousPlanMode, err := runner.store.SnapshotPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("snapshot previous plan mode: %v", err)
+	}
+	previousPlanHistory, err := runner.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous plan mode history: %v", err)
+	}
+	blockRunnerEventsPath(t, runner.store, meta.ID)
+
+	err = runner.initializeStartGoalAndPlanMode(meta.ID, StartRequest{
+		Prompt: "Plan this session before changes.",
+		PlanMode: &session.PlanModeDraft{
+			Enabled: true,
+			Source:  session.PlanModeSourceCLI,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "planmode.created") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected planmode.created events.jsonl error, got %v", err)
+	}
+	restoredPlanMode, err := runner.store.SnapshotPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("snapshot restored plan mode: %v", err)
+	}
+	if restoredPlanMode.HasState != previousPlanMode.HasState || restoredPlanMode.State.PlanModeID != previousPlanMode.State.PlanModeID {
+		t.Fatalf("expected previous Plan Mode snapshot restored, before=%#v after=%#v", previousPlanMode, restoredPlanMode)
+	}
+	planHistory, err := runner.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode history: %v", err)
+	}
+	if len(planHistory) != len(previousPlanHistory) {
+		t.Fatalf("expected plan mode history restored to %d entries, got %d: %#v", len(previousPlanHistory), len(planHistory), planHistory)
+	}
+}
+
 func TestRunnerStartGoalPlanApprovalCreatesLinkedPlanModeGate(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -644,6 +836,13 @@ func TestRunnerStartGoalPlanApprovalCreatesLinkedPlanModeGate(t *testing.T) {
 	}
 	if planMode.LinkedGoalID != goal.GoalID || planMode.Status != session.PlanModeStatusAwaitingApproval {
 		t.Fatalf("expected linked awaiting approval plan mode, goal=%#v plan=%#v", goal, planMode)
+	}
+	events, err := runner.store.LoadEvents(result.SessionID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if countRuntimeEventType(events, "goal.created") != 1 || countRuntimeEventType(events, "planmode.created") != 1 {
+		t.Fatalf("expected one goal.created and one planmode.created event, got %#v", events)
 	}
 }
 
@@ -1888,6 +2087,17 @@ func waitForSteerInterrupt(t *testing.T, control *runControl) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+func blockRunnerEventsPath(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	eventsPath := filepath.Join(store.SessionDir(sessionID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
 }
 
 func waitForPath(t *testing.T, path string, timeout time.Duration) {

@@ -6592,7 +6592,50 @@ Evidence gates:
 - Confirmed the live `request_user_input` cancellation path is distinct from recovered cancellation in `internal/runtime/runner.go`: the recovered path already coordinates replay tool result repair and idempotent event recovery, while the live tool path has not yet appended its provider replay tool result.
 - Confirmed the minimal fix should treat the two cancellation events as one required batch at the tool boundary. If the batch cannot be persisted, restore Plan Mode state/history and return a model-visible error instead of leaving a cancelled Plan Mode without matching session events.
 
+### Review 188
+
+- Confirmed FCA-20260527-195 against `spec/01-runtime-architecture.md`: `goal.created` and `planmode.created` are catalogued durable session events for start-time Goal and Plan Mode creation.
+- Confirmed the issue is distinct from the model-tool and WebConsole creation paths. `Runner.Start` owns the initial session setup path and previously used unchecked `r.emit` after writing `goal.json`, Goal history, `planmode.json`, and Plan Mode history.
+- Confirmed the minimal fix should stay in start initialization: require the start-time Goal/Plan Mode events before provider execution, append paired creation events atomically when both are created, and restore only the facts this path just created if the event append fails.
+
 ## Update Log
+
+### FCA-20260527-195
+
+Slice: `fix(runtime): require start goal plan events`
+
+Finding:
+
+- `Runner.Start` persisted start-time Goal and Plan Mode facts, then emitted the required `goal.created` and `planmode.created` session events through unchecked `r.emit`.
+- A blocked or unwritable `events.jsonl` path could therefore continue toward provider execution with `goal.json`, Goal history, `planmode.json`, or Plan Mode history present but without the matching durable event timeline facts.
+
+Changes:
+
+- Extracted start-time Goal / Plan Mode initialization into a small runtime helper.
+- Snapshotted Goal history/tasks and Plan Mode state/history before start-time mutations that may need rollback.
+- Required `goal.created` and `planmode.created` events through a checked runner event batch before provider execution.
+- Restored just-created Goal and Plan Mode facts when the required event batch cannot be persisted.
+- Added focused runtime regressions for blocked event persistence during plain start Goal creation, linked Plan Mode gate creation, and explicit start Plan Mode creation.
+- Extended the linked start Plan Mode success test to assert the `goal.created` and `planmode.created` events are actually persisted.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerStart(GoalCreatedEventAppendErrorRestoresGoal|LinkedPlanModeCreatedEventAppendErrorRestoresGoalAndPlanMode|ExplicitPlanModeCreatedEventAppendErrorRestoresPlanMode|GoalPlanApprovalCreatesLinkedPlanModeGate|ReportsStartedEventAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/runner_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-194
 

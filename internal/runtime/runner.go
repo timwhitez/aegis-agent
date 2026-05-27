@@ -368,39 +368,8 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err := r.store.Create(meta, state); err != nil {
 		return RunResult{}, err
 	}
-	if req.Goal != nil && req.Goal.Enabled {
-		draft := *req.Goal
-		if strings.TrimSpace(draft.Source) == "" {
-			draft.Source = session.GoalSourceCLI
-		}
-		goal, err := r.store.CreateGoal(meta.ID, draft)
-		if err != nil {
-			return r.failBeforeRun(meta.ID, state, "prepare", err)
-		}
-		r.emit(meta.ID, "goal.created", "prepare", goalEventData(goal))
-		if (req.PlanMode == nil || !req.PlanMode.Enabled) && session.GoalRequiresPlanApproval(goal) {
-			planMode, created, err := r.store.EnsurePlanModeForGoal(meta.ID, goal, goal.Source)
-			if err != nil {
-				return r.failBeforeRun(meta.ID, state, "prepare", err)
-			}
-			if created {
-				r.emit(meta.ID, "planmode.created", "prepare", planModeEventData(planMode))
-			}
-		}
-	}
-	if req.PlanMode != nil && req.PlanMode.Enabled {
-		draft := *req.PlanMode
-		if strings.TrimSpace(draft.Source) == "" {
-			draft.Source = session.PlanModeSourceCLI
-		}
-		if strings.TrimSpace(draft.Objective) == "" {
-			draft.Objective = req.Prompt
-		}
-		planMode, err := r.store.CreatePlanMode(meta.ID, draft)
-		if err != nil {
-			return r.failBeforeRun(meta.ID, state, "prepare", err)
-		}
-		r.emit(meta.ID, "planmode.created", "prepare", planModeEventData(planMode))
+	if err := r.initializeStartGoalAndPlanMode(meta.ID, req); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	r.emit(meta.ID, "session.created", "prepare", map[string]any{
 		"provider": meta.Provider,
@@ -418,6 +387,136 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		}
 	}
 	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+}
+
+type startGoalPlanRollback struct {
+	goalCreated         bool
+	goalHistory         []session.GoalHistoryEntry
+	tasks               []session.Task
+	planModeTouched     bool
+	planModeSnapshotted bool
+	planModeSnapshot    session.PlanModeSnapshot
+	planModeHistory     []session.PlanModeHistoryEntry
+	requiredEventTypes  []string
+}
+
+func (r *Runner) initializeStartGoalAndPlanMode(sessionID string, req StartRequest) error {
+	goalEnabled := req.Goal != nil && req.Goal.Enabled
+	planModeEnabled := req.PlanMode != nil && req.PlanMode.Enabled
+	if !goalEnabled && !planModeEnabled {
+		return nil
+	}
+	rollback := startGoalPlanRollback{}
+	if goalEnabled {
+		history, err := r.store.LoadGoalHistory(sessionID)
+		if err != nil {
+			return err
+		}
+		tasks, err := r.store.ListTasks(sessionID)
+		if err != nil {
+			return err
+		}
+		rollback.goalHistory = history
+		rollback.tasks = tasks
+	}
+	if planModeEnabled {
+		if err := r.snapshotStartPlanModeRollback(sessionID, &rollback); err != nil {
+			return err
+		}
+	}
+	var requiredEvents []events.Event
+	if goalEnabled {
+		draft := *req.Goal
+		if strings.TrimSpace(draft.Source) == "" {
+			draft.Source = session.GoalSourceCLI
+		}
+		goal, err := r.store.CreateGoal(sessionID, draft)
+		if err != nil {
+			return err
+		}
+		rollback.goalCreated = true
+		requiredEvents = append(requiredEvents, events.New(sessionID, "goal.created", "prepare", goalEventData(goal)))
+		rollback.requiredEventTypes = append(rollback.requiredEventTypes, "goal.created")
+		if !planModeEnabled && session.GoalRequiresPlanApproval(goal) {
+			if err := r.snapshotStartPlanModeRollback(sessionID, &rollback); err != nil {
+				return r.restoreStartGoalAndPlanMode(sessionID, rollback, err)
+			}
+			rollback.planModeTouched = true
+			planMode, created, err := r.store.EnsurePlanModeForGoal(sessionID, goal, goal.Source)
+			if err != nil {
+				return r.restoreStartGoalAndPlanMode(sessionID, rollback, err)
+			}
+			if created {
+				requiredEvents = append(requiredEvents, events.New(sessionID, "planmode.created", "prepare", planModeEventData(planMode)))
+				rollback.requiredEventTypes = append(rollback.requiredEventTypes, "planmode.created")
+			}
+		}
+	}
+	if planModeEnabled {
+		draft := *req.PlanMode
+		if strings.TrimSpace(draft.Source) == "" {
+			draft.Source = session.PlanModeSourceCLI
+		}
+		if strings.TrimSpace(draft.Objective) == "" {
+			draft.Objective = req.Prompt
+		}
+		rollback.planModeTouched = true
+		planMode, err := r.store.CreatePlanMode(sessionID, draft)
+		if err != nil {
+			return r.restoreStartGoalAndPlanMode(sessionID, rollback, err)
+		}
+		requiredEvents = append(requiredEvents, events.New(sessionID, "planmode.created", "prepare", planModeEventData(planMode)))
+		rollback.requiredEventTypes = append(rollback.requiredEventTypes, "planmode.created")
+	}
+	if len(requiredEvents) == 0 {
+		return nil
+	}
+	if err := r.appendEvents(sessionID, requiredEvents); err != nil {
+		cause := fmt.Errorf("record start events [%s]: %w", strings.Join(rollback.requiredEventTypes, ", "), err)
+		return r.restoreStartGoalAndPlanMode(sessionID, rollback, cause)
+	}
+	return nil
+}
+
+func (r *Runner) snapshotStartPlanModeRollback(sessionID string, rollback *startGoalPlanRollback) error {
+	if rollback == nil || rollback.planModeSnapshotted {
+		return nil
+	}
+	snapshot, err := r.store.SnapshotPlanMode(sessionID)
+	if err != nil {
+		return err
+	}
+	history, err := r.store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		return err
+	}
+	rollback.planModeSnapshot = snapshot
+	rollback.planModeHistory = history
+	rollback.planModeSnapshotted = true
+	return nil
+}
+
+func (r *Runner) restoreStartGoalAndPlanMode(sessionID string, rollback startGoalPlanRollback, cause error) error {
+	if rollback.planModeTouched {
+		if err := r.store.RestorePlanModeSnapshot(sessionID, rollback.planModeSnapshot); err != nil {
+			return fmt.Errorf("restore plan mode after start initialization failure %v: %w", cause, err)
+		}
+		if err := r.store.RestorePlanModeHistory(sessionID, rollback.planModeHistory); err != nil {
+			return fmt.Errorf("restore plan mode history after start initialization failure %v: %w", cause, err)
+		}
+	}
+	if rollback.goalCreated {
+		if _, err := r.store.ClearGoal(sessionID); err != nil {
+			return fmt.Errorf("restore goal after start initialization failure %v: %w", cause, err)
+		}
+		if err := r.store.RestoreGoalHistory(sessionID, rollback.goalHistory); err != nil {
+			return fmt.Errorf("restore goal history after start initialization failure %v: %w", cause, err)
+		}
+		if err := r.store.SaveTasks(sessionID, rollback.tasks); err != nil {
+			return fmt.Errorf("restore tasks after start initialization failure %v: %w", cause, err)
+		}
+	}
+	return cause
 }
 
 func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) (string, error) {
@@ -1909,6 +2008,19 @@ func (r *Runner) appendEvent(sessionID, eventType, phase string, data map[string
 		return err
 	}
 	r.bus.Publish(evt)
+	return nil
+}
+
+func (r *Runner) appendEvents(sessionID string, items []events.Event) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if err := r.store.AppendEvents(sessionID, items); err != nil {
+		return err
+	}
+	for _, evt := range items {
+		r.bus.Publish(evt)
+	}
 	return nil
 }
 
