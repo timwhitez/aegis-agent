@@ -934,29 +934,37 @@ async function sendMessage() {
   renderCurrentSession();
 
   if (state.isGenerating && hasDurableSession()) {
+    const sessionID = state.sessionId;
+    const requestedInterrupt = state.nextSendInterrupt;
     try {
-      await steerSession(state.sessionId, {
+      await steerSession(sessionID, {
         message: text,
-        interrupt: state.nextSendInterrupt
+        interrupt: requestedInterrupt
       });
-      const usedInterrupt = state.nextSendInterrupt;
+      if (state.sessionId !== sessionID) {
+        return;
+      }
       state.nextSendInterrupt = false;
       state.liveActivity = {
-        title: usedInterrupt ? 'Interrupt steer requested' : 'Steer queued',
-        copy: usedInterrupt
+        title: requestedInterrupt ? 'Interrupt steer requested' : 'Steer queued',
+        copy: requestedInterrupt
           ? 'The runtime will interrupt at the nearest safe boundary and merge your new instruction.'
           : 'Your follow-up was queued for the current run without starting a new session.',
-        tone: usedInterrupt ? 'queued' : 'live'
+        tone: requestedInterrupt ? 'queued' : 'live'
       };
-      showToast(usedInterrupt ? 'Interrupt steer sent.' : 'Steer queued for the running session.', 'success');
+      showToast(requestedInterrupt ? 'Interrupt steer sent.' : 'Steer queued for the running session.', 'success');
       queueSessionRefresh(120);
       queueOverviewRefresh(220);
     } catch (err) {
-      removeOptimisticMessage(optimisticID);
-      showToast(err.message || 'Failed to queue steer input.', 'error');
+      if (state.sessionId === sessionID) {
+        removeOptimisticMessage(optimisticID);
+        showToast(err.message || 'Failed to queue steer input.', 'error');
+      }
     }
-    updateUI();
-    renderCurrentSession();
+    if (state.sessionId === sessionID) {
+      updateUI();
+      renderCurrentSession();
+    }
     return;
   }
 

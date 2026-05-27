@@ -7692,6 +7692,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-273. That slice covered Plan Mode approve/cancel actions; this slice covers the separate Goal inspector handler, including simple status actions and mission plan approval with coverage override.
 - Confirmed the minimal fix belongs in `handleGoalAction`: capture the session id at click time, use it for all Goal REST calls and coverage override retries, and apply toast/refresh/render/generating side effects only while that captured session remains selected.
 
+### Review 268
+
+- Confirmed FCA-20260528-275 against `spec/13-live-input-and-steering.md` and `spec/17-web-console.md`'s running-session steer contract: Web steer is a control-queue mutation for one running session, and the browser must not let a stale steer completion update another newly selected session's live activity.
+- Confirmed this is distinct from FCA-20260528-273 and FCA-20260528-274. Those slices covered Plan Mode and Goal inspector action handlers; this slice covers the main chat composer `sendMessage()` running-session steer branch.
+- Confirmed the minimal fix belongs in the running-session branch of `sendMessage`: capture the target session id and interrupt flag before issuing `/api/sessions/{id}/steer`, and apply success/error/render/refresh side effects only while that session remains selected.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7753,6 +7759,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-275
+
+Slice: `fix(webconsole): ignore stale steer completions`
+
+Finding:
+
+- The running-session branch of `sendMessage()` issued `/api/sessions/{id}/steer` for the selected running session, then unconditionally cleared `state.nextSendInterrupt`, set `state.liveActivity` to "Steer queued" / "Interrupt steer requested", showed success/error toasts, queued refreshes, and rendered whatever session was selected when the request settled.
+- If the operator sent steer input to session A and switched to session B before the response returned, the stale completion could overwrite session B's live activity even though the durable steer request targeted session A.
+- The branch also read `state.nextSendInterrupt` after the await, so the UI feedback could drift from the interrupt value actually sent with the original request.
+
+Impact:
+
+- The WebConsole could display stale queued/interrupt-steer feedback on the wrong selected session.
+- This did not write the steer request to the wrong session on the backend, but it made the browser-side activity state disagree with the selected session's actual file facts.
+
+Changes:
+
+- Captured the running steer target `sessionID` and `requestedInterrupt` before issuing the REST call.
+- Used the captured interrupt value for the REST payload and success message.
+- Suppressed success/error toasts, live-activity updates, refreshes, and render/update calls when the selected session no longer matches the steer target.
+- Added a VM-level WebConsole regression proving that a slow running-session steer completion for session A cannot mark newly selected session B as queued.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because stale `session_steer_slow_a` completion changed selected `session_fast_b` live activity to "Steer queued".
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after binding steer completion side effects to the captured session id.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-274
 

@@ -265,6 +265,35 @@ function installGoalAPITestWrappers(appContext) {
   `, appContext);
 }
 
+function installChatActionAPITestWrappers(appContext) {
+  vm.runInContext(`
+    steerSession = function(sessionID, payload = {}) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/steer', {
+        method: 'POST',
+        payload
+      });
+    };
+    continueSession = function(sessionID, payload = {}) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/continue', {
+        method: 'POST',
+        payload
+      });
+    };
+    startSession = function(payload = {}) {
+      return requestJSON('/api/sessions/start', {
+        method: 'POST',
+        payload
+      });
+    };
+    revisePlanMode = function(sessionID, message) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/revise', {
+        method: 'POST',
+        message
+      });
+    };
+  `, appContext);
+}
+
 function createWorkspaceHarnessContext() {
   const pendingRequests = [];
   const workspaceContext = {
@@ -770,6 +799,57 @@ test('Goal actions do not refresh a newly selected session after stale completio
   assert.deepEqual(sameRealm(requestURLs), [
     '/api/sessions/session_goal_slow_a/goal/pause'
   ]);
+});
+
+test('running-session steer completion does not mark a newly selected session as queued', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    state.sessionId = 'session_steer_slow_a';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.nextSendInterrupt = true;
+    state.liveActivity = { title: 'Running A', copy: '', tone: 'live' };
+    state.sessionDetail = {
+      metadata: { id: 'session_steer_slow_a' },
+      state: { status: 'running' },
+      messages: []
+    };
+    nodes.chatInput.value = 'adjust the running task';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_steer_slow_a\/steer/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.nextSendInterrupt = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'queued' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: state.isGenerating,
+    interruptArmed: state.nextSendInterrupt,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    generating: false,
+    interruptArmed: false,
+    activityTitle: 'Loaded session B'
+  });
 });
 
 test('loadWorkspaceDirectory ignores stale directory responses after navigation changes', async () => {
