@@ -820,6 +820,28 @@ func (s *Store) UpdateSteerRequests(sessionID string, requests []SteerRequest) e
 	})
 }
 
+func (s *Store) RestoreOpenSteerRequests(sessionID string, requests []SteerRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
+	if err != nil {
+		return err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "steer.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		var current []SteerRequest
+		err := readJSONL(path, &current)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		requests = restoreOpenSteerRequests(requests, current)
+		return s.writeJSONL(path, requests)
+	})
+}
+
 func (s *Store) RefreshPendingSteerCount(sessionID string) (State, error) {
 	requests, err := s.LoadSteerRequests(sessionID)
 	if err != nil {
@@ -2715,6 +2737,59 @@ func CountOpenSteerRequests(requests []SteerRequest) int {
 		}
 	}
 	return pending
+}
+
+func restoreOpenSteerRequests(rollback, current []SteerRequest) []SteerRequest {
+	byID := make(map[string]SteerRequest, len(rollback))
+	for _, request := range rollback {
+		if request.ID == "" {
+			continue
+		}
+		request.Status = normalizeOpenSteerStatus(request.Status)
+		byID[request.ID] = request
+	}
+	seen := make(map[string]struct{}, len(current))
+	merged := make([]SteerRequest, 0, len(current)+len(rollback))
+	for _, request := range current {
+		if replacement, ok := byID[request.ID]; ok {
+			if request.Status == SteerStatusAccepted && steerRequestFactsEqual(replacement, request) {
+				request.Status = replacement.Status
+			}
+			merged = append(merged, request)
+			seen[request.ID] = struct{}{}
+			continue
+		}
+		merged = append(merged, request)
+		if request.ID != "" {
+			seen[request.ID] = struct{}{}
+		}
+	}
+	for _, request := range rollback {
+		if request.ID == "" {
+			continue
+		}
+		if _, ok := seen[request.ID]; ok {
+			continue
+		}
+		request.Status = normalizeOpenSteerStatus(request.Status)
+		merged = append(merged, request)
+	}
+	return merged
+}
+
+func normalizeOpenSteerStatus(status string) string {
+	if status == SteerStatusDeferred {
+		return SteerStatusDeferred
+	}
+	return SteerStatusPending
+}
+
+func steerRequestFactsEqual(a, b SteerRequest) bool {
+	return a.ID == b.ID &&
+		a.CreatedAt == b.CreatedAt &&
+		a.Source == b.Source &&
+		a.Text == b.Text &&
+		a.Interrupt == b.Interrupt
 }
 
 func mergeBackgroundNotifications(updated, current []BackgroundNotification) []BackgroundNotification {

@@ -4872,6 +4872,35 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-219: Steer status update failures can leave accepted facts retryable
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` requires accepted steer input to become a real user message, update `control/steer.jsonl`, refresh contract/artifact facts, and leave durable `user.message` / `session.steer.accepted` evidence.
+- After FCA-20260527-218, `internal/runtime/engine.go` `drainSteer` batched the acceptance events, but still appended the provider-visible steer message, optional Goal history, and acceptance event batch before marking the matching steer request accepted in `control/steer.jsonl`.
+- A focused regression blocked `control/steer.lock` after the `user.message` hook completed. Before the fix, `drainSteer` returned an error from the status update but left the steer `user` message in `messages.jsonl` while the control request remained pending.
+- The same ordering meant the acceptance event batch could also be durable before `UpdateSteerRequests` failed.
+
+Impact:
+
+The next retry could consume the same pending steer again, duplicating provider-visible instructions and acceptance facts. Web timeline, provider replay, and `control/steer.jsonl` could disagree about whether the external instruction had already been accepted.
+
+Minimal fix:
+
+- Mark the current steer request accepted in `control/steer.jsonl` before appending the acceptance event batch.
+- If the status update fails, restore just-appended Goal history when needed, remove the just-appended steer message, and append no acceptance events.
+- Add a session-store helper to restore failed accepted steer requests back to their original open status after a later event-batch failure, preserving older accepted requests, concurrent appends, and original `pending` versus `deferred` state.
+- Keep pending-count and contract refresh after successful status + event persistence.
+
+Validation:
+
+- Focused pre-fix runtime regression proving status update failure left a provider-visible steer message while the request stayed retryable.
+- Focused post-fix runtime regression proving status update failure leaves no steer message or acceptance events and keeps the request pending.
+- Focused session-store regression proving rollback preserves unrelated accepted requests, concurrent pending appends, and original deferred status.
+- Adjacent steer acceptance, runtime/session, WebConsole, JS, repo test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-218: Goal-linked steer failures can leave orphan acceptance events
 
 Severity: Medium
@@ -6952,6 +6981,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 212
+
+- Confirmed FCA-20260527-219 against the live steer acceptance boundary in `spec/13-live-input-and-steering.md`: accepted steer message, acceptance events, optional Goal history, control queue status, pending count, and contract refresh must describe one consumed instruction.
+- Confirmed this is a residual status-update ordering gap after FCA-20260527-215 and FCA-20260527-218. Those slices persisted accepted status per request and batched Goal-linked events, but `UpdateSteerRequests` could still fail after accepted message/event facts were already durable.
+- Confirmed the minimal fix belongs in `Engine.drainSteer` plus a narrow `SessionStore` rollback helper: no generic transaction layer, provider adapter change, Web control flow change, or runtime-driven workflow behavior is needed.
+
 ### Review 211
 
 - Confirmed FCA-20260527-218 against the live steer acceptance boundary in `spec/13-live-input-and-steering.md`: accepted steer input, accepted events, optional Goal update facts, control status, and contract refresh must describe the same consumed instruction.
@@ -6965,6 +7000,42 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-219
+
+Slice: `fix(runtime): retry steer acceptance on status failure`
+
+Finding:
+
+- `drainSteer` appended the steer message, optional Goal history, and acceptance event batch before marking the request accepted in `control/steer.jsonl`.
+- If `UpdateSteerRequests` failed at that point, the steer request stayed retryable while accepted message/event facts could already exist.
+
+Changes:
+
+- Moved per-request accepted status persistence before the acceptance event batch.
+- Added status-update failure rollback that restores accepted-steer Goal history when needed and removes the just-appended steer message before returning the error.
+- Added `Store.RestoreOpenSteerRequests` to return a failed accepted steer to its original open status after a later event-batch failure while preserving unrelated accepted requests, concurrent appends, and original deferred status.
+- Updated `drainSteer` event-failure rollback to restore steer status, Goal history, and the just-appended message together.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails -count=1`: failed before the fix because status update failure left a provider-visible steer message.
+- `go test -timeout 120s ./internal/session -run 'TestRestoreOpenSteerRequestsPreservesOtherFacts|TestUpdateSteerRequestsMergesConcurrentAppend|TestRefreshPendingSteerCountUsesMergedDurableRequests' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails|TestEngineSteerAcceptanceReportsGoal(HistoryError|UpdatedEventAppendError)|TestEngineSteerAcceptanceReportsAcceptedEventAppendError|TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails|TestEngineRefreshesPendingSteerCountAfterConcurrentAppend|TestEngineAcceptsPendingSteerBeforeProviderCall' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go internal/session/store.go internal/session/store_test.go`: passed with no output.
 
 ### FCA-20260527-218
 

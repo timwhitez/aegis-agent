@@ -1930,6 +1930,82 @@ func TestRefreshPendingSteerCountUsesMergedDurableRequests(t *testing.T) {
 	}
 }
 
+func TestRestoreOpenSteerRequestsPreservesOtherFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	storeA := NewStore(root)
+	storeB := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := storeA.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	alreadyAccepted := NewSteerRequest("already accepted", false)
+	alreadyAccepted.Status = SteerStatusAccepted
+	if err := storeA.AppendSteerRequest(meta.ID, alreadyAccepted); err != nil {
+		t.Fatalf("append already accepted: %v", err)
+	}
+	pending := NewSteerRequest("retry pending", false)
+	if err := storeA.AppendSteerRequest(meta.ID, pending); err != nil {
+		t.Fatalf("append pending: %v", err)
+	}
+	deferred := NewSteerRequest("retry deferred", true)
+	deferred.Status = SteerStatusDeferred
+	if err := storeA.AppendSteerRequest(meta.ID, deferred); err != nil {
+		t.Fatalf("append deferred: %v", err)
+	}
+	acceptedSnapshot, err := storeA.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	for i := range acceptedSnapshot {
+		if acceptedSnapshot[i].ID == pending.ID || acceptedSnapshot[i].ID == deferred.ID {
+			acceptedSnapshot[i].Status = SteerStatusAccepted
+		}
+	}
+	if err := storeA.UpdateSteerRequests(meta.ID, acceptedSnapshot); err != nil {
+		t.Fatalf("mark accepted: %v", err)
+	}
+
+	concurrent := NewSteerRequest("concurrent", false)
+	if err := storeB.AppendSteerRequest(meta.ID, concurrent); err != nil {
+		t.Fatalf("append concurrent: %v", err)
+	}
+	if err := storeA.RestoreOpenSteerRequests(meta.ID, []SteerRequest{pending, deferred}); err != nil {
+		t.Fatalf("restore open steer: %v", err)
+	}
+
+	loaded, err := storeA.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored: %v", err)
+	}
+	statusByText := map[string]string{}
+	for _, request := range loaded {
+		statusByText[request.Text] = request.Status
+	}
+	if statusByText["already accepted"] != SteerStatusAccepted {
+		t.Fatalf("expected older accepted steer to remain accepted, got %#v", loaded)
+	}
+	if statusByText["retry pending"] != SteerStatusPending {
+		t.Fatalf("expected failed pending steer to return pending, got %#v", loaded)
+	}
+	if statusByText["retry deferred"] != SteerStatusDeferred {
+		t.Fatalf("expected failed deferred steer to return deferred, got %#v", loaded)
+	}
+	if statusByText["concurrent"] != SteerStatusPending {
+		t.Fatalf("expected concurrent steer to survive as pending, got %#v", loaded)
+	}
+}
+
 func TestUpdateBackgroundNotificationsMergesConcurrentAppend(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)
