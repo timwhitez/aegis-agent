@@ -208,6 +208,7 @@ function createAppHarnessContext() {
       return 0;
     },
     clearInterval() {},
+    renderCurrentSession() {},
     requestJSON(url) {
       return new Promise((resolve, reject) => {
         pendingRequests.push({ url, resolve, reject });
@@ -528,6 +529,62 @@ test('refreshCurrentSession ignores stale session detail responses after selecti
     detailID: 'session_fast_b',
     status: 'completed',
     messageIDs: []
+  });
+});
+
+test('loadEarlierMessages ignores stale page responses after session changes', async () => {
+  const appContext = createAppHarnessContext();
+  const slowLoad = vm.runInContext(`
+    state.sessionId = 'session_slow_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_slow_a' },
+      messages: [{ id: 'm8', role: 'assistant', text: 'tail' }],
+      timeline: []
+    };
+    state.hasMoreMessages = true;
+    state.oldestMessageId = 'm8';
+    loadEarlierMessages();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_slow_a/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      messages: [{ id: 'b1', role: 'assistant', text: 'current' }],
+      timeline: []
+    };
+    state.hasMoreMessages = false;
+    state.oldestMessageId = 'b1';
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({
+    messages: [
+      { id: 'm6', role: 'assistant', text: 'stale older' },
+      { id: 'm7', role: 'assistant', text: 'stale newer' }
+    ],
+    has_more: false
+  });
+  await slowLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    detailID: state.sessionDetail?.metadata?.id,
+    messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id),
+    hasMore: state.hasMoreMessages,
+    oldest: state.oldestMessageId,
+    loadingEarlier: state.loadingEarlier
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    detailID: 'session_fast_b',
+    messageIDs: ['b1'],
+    hasMore: false,
+    oldest: 'b1',
+    loadingEarlier: false
   });
 });
 

@@ -82,6 +82,7 @@ const state = {
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
+  messagePageRequestSeq: 0,
   loadedAllEarlierMessages: false,
   messageGapAnchorId: '',
   preserveScrollAfterRender: null,
@@ -2051,13 +2052,19 @@ async function loadEarlierMessages() {
   if (state.loadingEarlier || !state.hasMoreMessages || !(state.messageGapAnchorId || state.oldestMessageId)) {
     return;
   }
+  const sessionID = state.sessionId;
+  const fillingGap = Boolean(state.messageGapAnchorId);
+  const beforeID = state.messageGapAnchorId || state.oldestMessageId;
+  const requestSeq = state.messagePageRequestSeq + 1;
+  state.messagePageRequestSeq = requestSeq;
   state.loadingEarlier = true;
   renderCurrentSession();
   try {
     const beforeScrollHeight = nodes.chatContainer.scrollHeight;
-    const fillingGap = Boolean(state.messageGapAnchorId);
-    const beforeID = state.messageGapAnchorId || state.oldestMessageId;
-    const resp = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}/messages?before_id=${encodeURIComponent(beforeID)}&limit=40`);
+    const resp = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/messages?before_id=${encodeURIComponent(beforeID)}&limit=40`);
+    if (state.sessionId !== sessionID || state.messagePageRequestSeq !== requestSeq) {
+      return;
+    }
     const olderMessages = maybeArray(resp?.messages);
     if (olderMessages.length > 0) {
       const currentMessages = maybeArray(state.sessionDetail?.messages);
@@ -2083,13 +2090,19 @@ async function loadEarlierMessages() {
     state.loadingEarlier = false;
     renderCurrentSession();
   } catch (err) {
+    if (state.sessionId !== sessionID || state.messagePageRequestSeq !== requestSeq) {
+      return;
+    }
     console.error('load earlier messages error', err);
     const message = earlierMessagesErrorMessage(err);
     state.loadingEarlier = false;
     showToast(message, 'error');
     renderCurrentSession();
   } finally {
-    state.preserveScrollAfterRender = null;
+    if (state.messagePageRequestSeq === requestSeq) {
+      state.loadingEarlier = false;
+      state.preserveScrollAfterRender = null;
+    }
   }
 }
 
