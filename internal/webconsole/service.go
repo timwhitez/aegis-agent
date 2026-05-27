@@ -3632,6 +3632,9 @@ func processSkillZip(src string, globalDest string) (int, error) {
 			return 0, fmt.Errorf("duplicate skill target directory %s from zip roots %s and %s", targetDirName, previousRoot, root)
 		}
 		seenTargets[targetDirName] = root
+		if err := validateSkillZipRootEntries(cleanNames, r.File, root); err != nil {
+			return 0, err
+		}
 		if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 			return 0, fmt.Errorf("refusing to replace symlinked skill directory: %s", targetPath)
 		} else if err != nil && !os.IsNotExist(err) {
@@ -3714,6 +3717,46 @@ func processSkillZip(src string, globalDest string) (int, error) {
 		extractedCount++
 	}
 	return extractedCount, nil
+}
+
+func validateSkillZipRootEntries(cleanNames map[*zip.File]string, files []*zip.File, root string) error {
+	cleanRoot := path.Clean(root)
+	filesSeen := make(map[string]string)
+	dirsSeen := make(map[string]string)
+	for _, f := range files {
+		cleanedName := cleanNames[f]
+		rel, ok := skillZipRootRelativeName(cleanRoot, cleanedName)
+		if !ok || rel == "." || rel == "" {
+			continue
+		}
+		if f.FileInfo().IsDir() {
+			dirsSeen[rel] = f.Name
+		} else {
+			filesSeen[rel] = f.Name
+		}
+		for dir := path.Dir(rel); dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
+			dirsSeen[dir] = f.Name
+		}
+	}
+	for fileRel, fileName := range filesSeen {
+		if dirName, ok := dirsSeen[fileRel]; ok {
+			return fmt.Errorf("skill zip path conflict: %s is both file and directory entry via %s", fileName, dirName)
+		}
+	}
+	return nil
+}
+
+func skillZipRootRelativeName(cleanRoot, cleanedName string) (string, bool) {
+	if cleanRoot == "." {
+		return cleanedName, true
+	}
+	if cleanedName == cleanRoot {
+		return "", true
+	}
+	if strings.HasPrefix(cleanedName, cleanRoot+"/") {
+		return strings.TrimPrefix(cleanedName, cleanRoot+"/"), true
+	}
+	return "", false
 }
 
 func readZipFileLimited(f *zip.File, limit int) ([]byte, error) {

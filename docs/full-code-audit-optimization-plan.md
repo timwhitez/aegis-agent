@@ -4872,6 +4872,35 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-211: Skill upload path conflicts can replace installed skills before failing
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` treats skill install/upload as a risky local WebConsole mutation that must be auditable and bounded, and existing audit slices require upload failures to avoid malformed-package side effects.
+- `internal/webconsole/service.go` `processSkillZip` validates entry traversal, size limits, duplicate target directories, and symlinked targets before extraction, but did not validate file/directory path conflicts inside a skill root before deleting the target directory.
+- A crafted zip containing both `demo-skill/conflict` and `demo-skill/conflict/child.txt` reached the extraction loop. Before the fix, `processSkillZip` removed the existing `demo-skill` directory, wrote the first file, then failed creating the child path with `not a directory`.
+- Because `handleUploadSkill` appends `web.skill.install` only after `processSkillZip` returns success, that failure shape could return HTTP 500 after replacing an existing local skill and without an install audit event.
+
+Impact:
+
+A malformed skill upload could partially replace an installed local skill even though the browser received a failed response and no install audit event was recorded. That violates the Web-first local-console safety contract for risky skill mutations and weakens recovery because the original skill contents are already gone.
+
+Minimal fix:
+
+- Pre-validate every planned skill root for file/directory path conflicts after entry names are normalized and before any target directory is removed or created.
+- Treat both explicit directory entries and implicit parent directories from nested files as directory facts.
+- Preserve valid nested skill files and the existing traversal, size, duplicate-target, symlink, and direct-child target checks.
+- Add focused regression coverage proving a conflict zip fails before modifying an existing installed skill.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving the conflict zip failed after deleting/replacing the existing skill.
+- Focused post-fix WebConsole regression proving the conflict zip returns a path-conflict error and leaves the installed skill unchanged.
+- Adjacent skill zip upload regressions remain green.
+- Full WebConsole package test before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6688,7 +6717,37 @@ Evidence gates:
 - Confirmed existing runtime coverage already asserted cache usage counters in `turn.stopped`, while `Engine.Run` wrote the event through best-effort `emit` after provider success / provider-attempt ledger / goal accounting. A blocked `events.jsonl` could therefore let runtime persist assistant output or execute tool calls while the provider-turn stop/usage event was missing.
 - Confirmed the minimal fix belongs immediately before assistant persistence: require `turn.stopped` event append after provider success/accounting and before assistant output, keeping provider-attempt ledger facts as the durable retry/success source and preserving provider replay boundaries.
 
+### Review 204
+
+- Confirmed FCA-20260527-211 against the WebConsole skill-upload safety and auditability requirements in `spec/17-web-console.md`: skill install/upload is a risky local mutation and malformed packages should not produce partial local side effects.
+- Confirmed `processSkillZip` already validates traversal, size limits, duplicate targets, symlinked targets, and direct-child target paths, but the file/directory conflict check was missing before target removal. A focused regression showed a zip with `demo-skill/conflict` plus `demo-skill/conflict/child.txt` failed only after replacing the existing `demo-skill` directory.
+- Confirmed the minimal fix belongs in the zip extraction plan stage: validate file-vs-directory conflicts for each planned skill root before removing or creating target directories, without changing the browser upload flow, audit event schema, or valid nested skill extraction.
+
 ## Update Log
+
+### FCA-20260527-211
+
+Slice: `fix(webconsole): reject skill zip path conflicts`
+
+Finding:
+
+- WebConsole skill upload is a risky local mutation that must avoid malformed-package side effects and emit audit events only for successful installs.
+- `processSkillZip` did not pre-validate file/directory path conflicts inside a skill root.
+- A focused regression used a zip with `demo-skill/conflict` and `demo-skill/conflict/child.txt`; before the fix, extraction removed the existing `demo-skill` directory, wrote `conflict` as a file, then failed creating `conflict/child.txt` with `not a directory`.
+
+Changes:
+
+- Added `validateSkillZipRootEntries` to detect file/directory conflicts for each planned skill root before any target directory is removed or created.
+- Treated explicit zip directory entries and implicit parent directories from nested files as directory facts.
+- Added ordered zip-test helpers and a regression proving a conflict zip leaves an existing installed skill unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsFileDirectoryConflictBeforeMutation -count=1`: failed before the fix because the upload reached extraction and returned `not a directory` after replacing the existing skill.
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsFileDirectoryConflictBeforeMutation -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZip(RejectsFileDirectoryConflictBeforeMutation|RejectsDuplicateTargetNamesBeforeMutation|RejectsTraversalEntries|RejectsSymlinkDestination|RejectsOversizedEntry|AllowsNestedSkillFiles)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-210
 

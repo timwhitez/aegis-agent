@@ -7152,6 +7152,38 @@ func TestProcessSkillZipRejectsDuplicateTargetNamesBeforeMutation(t *testing.T) 
 	}
 }
 
+func TestProcessSkillZipRejectsFileDirectoryConflictBeforeMutation(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	existing := filepath.Join(dest, "demo-skill")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "SKILL.md"), []byte("---\nname: existing-demo\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+	zipPath := filepath.Join(base, "file-directory-conflict.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "demo-skill/SKILL.md", content: "---\nname: demo-skill\n---\nbody\n"},
+		{name: "demo-skill/conflict", content: "file first\n"},
+		{name: "demo-skill/conflict/child.txt", content: "child\n"},
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "path conflict") {
+		t.Fatalf("expected file/directory path conflict to be rejected, got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(existing, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected existing skill to remain after rejected upload: %v", err)
+	}
+	if !strings.Contains(string(data), "existing-demo") {
+		t.Fatalf("existing skill was unexpectedly modified: %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(existing, "conflict")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("conflicting entry should not be extracted, got %v", err)
+	}
+}
+
 func TestProcessSkillZipAllowsNestedSkillFiles(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")
@@ -7480,6 +7512,20 @@ func createSkillZip(t *testing.T, zipPath, skillDir, skillMD string) {
 
 func createZipEntries(t *testing.T, zipPath string, entries map[string]string) {
 	t.Helper()
+	ordered := make([]zipTestEntry, 0, len(entries))
+	for name, content := range entries {
+		ordered = append(ordered, zipTestEntry{name: name, content: content})
+	}
+	createZipEntriesInOrder(t, zipPath, ordered)
+}
+
+type zipTestEntry struct {
+	name    string
+	content string
+}
+
+func createZipEntriesInOrder(t *testing.T, zipPath string, entries []zipTestEntry) {
+	t.Helper()
 	file, err := os.Create(zipPath)
 	if err != nil {
 		t.Fatalf("create zip: %v", err)
@@ -7487,13 +7533,13 @@ func createZipEntries(t *testing.T, zipPath string, entries map[string]string) {
 	defer file.Close()
 
 	zipWriter := zip.NewWriter(file)
-	for name, content := range entries {
-		entry, err := zipWriter.Create(name)
+	for _, item := range entries {
+		entry, err := zipWriter.Create(item.name)
 		if err != nil {
-			t.Fatalf("create zip entry %s: %v", name, err)
+			t.Fatalf("create zip entry %s: %v", item.name, err)
 		}
-		if _, err := entry.Write([]byte(content)); err != nil {
-			t.Fatalf("write zip entry %s: %v", name, err)
+		if _, err := entry.Write([]byte(item.content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", item.name, err)
 		}
 	}
 	if err := zipWriter.Close(); err != nil {
