@@ -302,15 +302,10 @@ func TestEngineSubmitPlanReportsPlanSubmittedEventAppendError(t *testing.T) {
 		t.Fatalf("load initial plan mode history: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	hookManager = blockRuntimeEventsAfterToolBefore(t, engine, meta, eventsPath, "submit_plan")
 	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
 		if !hasProviderTool(req.Tools, "submit_plan") {
 			t.Fatalf("submit_plan missing from planning tools: %#v", req.Tools)
-		}
-		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove events: %v", err)
-		}
-		if err := os.Mkdir(eventsPath, 0o700); err != nil {
-			t.Fatalf("block events path: %v", err)
 		}
 		return provider.TurnResult{
 			ToolCalls: []provider.ToolCall{{

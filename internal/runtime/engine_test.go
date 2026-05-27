@@ -651,6 +651,66 @@ func TestEngineWritesReplayCompleteToolResultsWhenBeforeHookFails(t *testing.T) 
 	}
 }
 
+func TestEngineToolBeforeReportsEventAppendErrorBeforeExecution(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	executed := false
+	registry.Register(tools.Definition{
+		Name:        "side_effect",
+		Description: "side effect",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			executed = true
+			return session.ToolResult{
+				LLMOutput:     "ran",
+				DisplayOutput: "ran",
+			}, nil
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run side effect")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove events: %v", err)
+		}
+		if err := os.Mkdir(eventsPath, 0o700); err != nil {
+			t.Fatalf("block events path: %v", err)
+		}
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call_side_effect",
+				Name:      "side_effect",
+				Arguments: json.RawMessage(`{}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected tool.before event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tool.before") {
+		t.Fatalf("expected tool.before event context, got %v", err)
+	}
+	if executed {
+		t.Fatal("tool should not execute after missing tool.before event")
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			t.Fatalf("tool result should not persist when tool.before is missing: %#v", messages)
+		}
+	}
+}
+
 func TestEngineWritesSyntheticToolResultsAfterFinishInSameTurn(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish then ignore later tools")); err != nil {
@@ -3216,13 +3276,8 @@ func TestEngineCompleteReportsCompletedEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	hookManager = blockRuntimeEventsAfterToolBefore(t, engine, meta, eventsPath, "finish")
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove events: %v", err)
-		}
-		if err := os.Mkdir(eventsPath, 0o700); err != nil {
-			t.Fatalf("block events path: %v", err)
-		}
 		return provider.TurnResult{
 			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
 			StopReason: "tool_use",
@@ -3402,16 +3457,11 @@ func TestEngineTodoWriteReportsRequiredEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	hookManager = blockRuntimeEventsAfterToolBefore(t, engine, meta, eventsPath, "todo_write")
 	turns := 0
 	fake := provider.NewFake(
 		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 			turns++
-			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-				t.Fatalf("remove events: %v", err)
-			}
-			if err := os.Mkdir(eventsPath, 0o700); err != nil {
-				t.Fatalf("block events path: %v", err)
-			}
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_todo", Name: "todo_write", Arguments: json.RawMessage(`{"todos":[{"content":"New work","status":"in_progress","priority":"high"}]}`)}},
 				StopReason: "tool_use",
@@ -3578,6 +3628,16 @@ func blockRuntimeProviderAttemptsPath(t *testing.T, store *session.Store, sessio
 	if err := os.Mkdir(attemptsPath, 0o700); err != nil {
 		t.Fatalf("block provider attempts path: %v", err)
 	}
+}
+
+func blockRuntimeEventsAfterToolBefore(t *testing.T, engine *Engine, meta session.SessionMetadata, eventsPath, toolName string) *hooks.Manager {
+	t.Helper()
+	engine.cfg.Hooks.ToolBefore = append(engine.cfg.Hooks.ToolBefore, config.HookDefinition{
+		Name:    "block-events-after-tool-before",
+		Match:   config.HookMatch{Tool: toolName},
+		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-after-tool-before", eventsPath},
+	})
+	return hooks.New(engine.cfg.Hooks, meta.Workdir)
 }
 
 type emittingAdapter struct {

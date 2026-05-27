@@ -449,10 +449,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			planModeTerminal := ""
 			for callIndex, call := range result.ToolCalls {
 				argumentsText := prettyJSON(call.Arguments)
-				e.emit(meta.ID, "tool.before", "tool_execute", map[string]any{
+				if err := e.appendEvent(meta.ID, "tool.before", "tool_execute", map[string]any{
 					"tool_name": call.Name,
 					"arguments": argumentsText,
-				})
+				}); err != nil {
+					return RunResult{}, fmt.Errorf("record tool.before event for %s: %w", call.Name, err)
+				}
 				beforePayload := map[string]any{
 					"session_id": meta.ID,
 					"tool_name":  call.Name,

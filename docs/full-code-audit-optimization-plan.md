@@ -6622,7 +6622,49 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-198. The previous slice covered background queue submission and `session.child.queued`; this slice covers the direct synchronous `Delegate` / `agent_spawn(background=false)` path after the child session has already run.
 - Confirmed the minimal fix belongs in runtime delegation: after a child session ID exists, the parent timeline must durably record `session.child.spawned` before parent coordination advances. If the parent event cannot be written, return the event error while preserving the child result for inspection and without adding parent coordination.
 
+### Review 193
+
+- Confirmed FCA-20260527-200 against the tool lifecycle event catalog in `spec/01-runtime-architecture.md`: `tool.before` is a catalogued durable session event, and the runtime tool sequence records it before guard evaluation and tool execution.
+- Confirmed this is distinct from `tool.after` handling. `tool.before` is a pre-side-effect boundary where the runtime can still stop cleanly; `tool.after` happens after execution and needs separate rollback/error semantics before it can be made required.
+- Confirmed the minimal fix belongs in `Engine.Run`: require the `tool.before` event append before hooks, state updates, guard evaluation, or tool dispatch so blocked `events.jsonl` cannot allow side effects without pre-execution timeline evidence.
+
 ## Update Log
+
+### FCA-20260527-200
+
+Slice: `fix(runtime): require tool before events`
+
+Finding:
+
+- `Engine.Run` emitted `tool.before` through unchecked `e.emit` immediately before hook execution and tool dispatch.
+- Because `tool.before` is the durable pre-execution lifecycle event, a blocked `events.jsonl` path after the provider returned a tool call could let the runtime execute a tool without any catalogued pre-side-effect timeline evidence.
+- A focused regression blocked `events.jsonl` after the provider response; before the fix, the side-effect tool executed and the run only failed on the next required `session.context.loaded` append.
+
+Changes:
+
+- Switched `tool.before` from best-effort `emit` to checked `appendEvent`.
+- Required the event before `tool.before` hooks, tool argument mutation, `tool_execute` state persistence, guard evaluation, and tool dispatch.
+- Added a focused regression proving blocked `events.jsonl` now returns a `tool.before` event error, does not execute the tool, and does not persist a tool result message.
+- Retargeted existing finish, `todo_write`, and `submit_plan` event-failure regressions to block `events.jsonl` from a successful `tool.before` hook, preserving their downstream-event coverage now that the pre-execution boundary is required.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineToolBeforeReportsEventAppendErrorBeforeExecution -count=1`: failed before the fix because the side-effect tool executed and the eventual error referenced the next `session.context.loaded` append instead of `tool.before`.
+- `go test -timeout 120s ./internal/runtime -run TestEngineToolBeforeReportsEventAppendErrorBeforeExecution -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(CompleteReportsCompletedEventAppendError|TodoWriteReportsRequiredEventAppendError|SubmitPlanReportsPlanSubmittedEventAppendError|ToolBeforeReportsEventAppendErrorBeforeExecution|WritesInterruptedToolResultOnPause|WritesReplayCompleteToolResultsWhenBeforeHookFails|WritesSyntheticToolResultsAfterFinishInSameTurn)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go internal/runtime/planmode_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-199
 
