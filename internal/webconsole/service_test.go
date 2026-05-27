@@ -4966,6 +4966,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(settingsBody, "confirmSettingsSave") || !strings.Contains(settingsBody, "write the entered API key to the local env file") {
 		t.Fatalf("expected settings save to require explicit local config/API key confirmation, got settings-view.js body: %s", settingsBody)
 	}
+	if !strings.Contains(settingsBody, "function settingsErrorMessage") || !strings.Contains(settingsBody, "panel.textContent = message") || !strings.Contains(settingsBody, "showToast(message, 'error')") {
+		t.Fatalf("expected settings load failures to surface backend API errors, got settings-view.js body: %s", settingsBody)
+	}
 	workspaceBody := checkBody(server.URL + "/workspace-view.js")
 	if !strings.Contains(workspaceBody, "fetchWorkspace") || !strings.Contains(workspaceBody, "renderFileTree") || !strings.Contains(workspaceBody, "selectedWorkspaceWorkdir") {
 		t.Fatalf("unexpected workspace-view.js body: %s", workspaceBody)

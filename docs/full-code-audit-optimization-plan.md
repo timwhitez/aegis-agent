@@ -7476,6 +7476,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-232. That slice fixed backend HTTP classification for missing and non-regular Workspace paths; this slice covers the frontend path that still replaced those useful backend messages with generic "Failed to load" text.
 - Confirmed the minimal fix belongs in `workspace-view.js`: derive displayed Workspace failures from `requestJSON`'s `APIError.message` while keeping fallback text for non-API failures, without changing backend path resolution, sensitive-file filtering, or runtime file tools.
 
+### Review 232
+
+- Confirmed FCA-20260527-239 against `spec/17-web-console.md`'s Settings and frontend error-display contracts: Settings load failures are local-console operator feedback and should surface the backend `/api/config` error instead of a generic browser message.
+- Confirmed this is distinct from prior Settings save/test/API-key slices. Those hardened mutation/probe semantics and already show backend errors on save/test failures; this slice covers the initial Settings render path when `GET /api/config` fails.
+- Confirmed the minimal fix belongs in `settings-view.js`: render the backend API error into the Settings empty panel and toast using text-only DOM insertion, without changing Settings backend validation, config persistence, API-key handling, provider probes, or audit events.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7537,6 +7543,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-239
+
+Slice: `fix(webconsole): surface settings load errors`
+
+Finding:
+
+- Settings save and Settings test already show backend `requestJSON` errors in their toasts.
+- The initial Settings render path still caught `GET /api/config` failures and replaced the backend message with generic "Failed to load backend settings" panel/toast text.
+- Before the fix, the focused embedded-asset contract failed because `settings-view.js` had no helper or text-only panel path proving Settings load failures displayed backend API errors.
+
+Impact:
+
+- If the local config snapshot failed to load, the browser could hide the actionable backend error that identifies the bad config/settings condition.
+- Operators would see a generic Settings UI failure even though `/api/config` already returned the more useful diagnostic.
+
+Changes:
+
+- Added `settingsErrorMessage()` to prefer `APIError.message` from `requestJSON` and keep a generic fallback for non-API failures.
+- Updated the Settings render catch path to show that message in a text-only empty panel and toast.
+- Added an embedded frontend asset contract assertion that Settings load failures surface backend API messages.
+- Left Settings backend validation, config persistence, API-key writes, probes, role-provider handling, and audit events unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because Settings load failures did not surface backend API errors.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 
 ### FCA-20260527-238
 

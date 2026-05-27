@@ -393,9 +393,17 @@ async function renderSettings() {
       }
     });
   } catch (err) {
-    container.innerHTML = '<div class="empty-panel">Failed to load backend settings.</div>';
-    showToast('Failed to load backend settings.', 'error');
+    const message = settingsErrorMessage(err);
+    const panel = document.createElement('div');
+    panel.className = 'empty-panel';
+    panel.textContent = message;
+    container.replaceChildren(panel);
+    showToast(message, 'error');
   }
+}
+
+function settingsErrorMessage(err, fallback = 'Failed to load backend settings.') {
+  return err?.message || fallback;
 }
 
 function confirmSettingsSave(apiKeyInput, maskedKey) {
