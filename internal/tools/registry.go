@@ -1966,17 +1966,31 @@ func defSubmitPlan() Definition {
 				return errorResult("submit_plan", err), nil
 			}
 			input.Source = session.PlanModeSourceTool
+			previousPlanMode, err := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
+			if err != nil {
+				return errorResult("submit_plan", err), nil
+			}
+			previousHistory, err := execCtx.Store.LoadPlanModeHistory(execCtx.SessionID)
+			if err != nil {
+				return errorResult("submit_plan", err), nil
+			}
 			planMode, err := execCtx.Store.SubmitPlanMode(execCtx.SessionID, input)
 			if err != nil {
 				return errorResult("submit_plan", err), nil
 			}
-			if execCtx.Emit != nil {
-				execCtx.Emit("planmode.plan_submitted", map[string]any{
-					"plan_mode_id": planMode.PlanModeID,
-					"plan_id":      planMode.PlanID,
-					"version":      planMode.PlanVersion,
-					"summary":      planMode.Summary,
-				})
+			if err := emitToolEvent(execCtx, "planmode.plan_submitted", map[string]any{
+				"plan_mode_id": planMode.PlanModeID,
+				"plan_id":      planMode.PlanID,
+				"version":      planMode.PlanVersion,
+				"summary":      planMode.Summary,
+			}); err != nil {
+				if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPlanMode); rollbackErr != nil {
+					return errorResult("submit_plan", fmt.Errorf("restore plan mode after planmode.plan_submitted event failure %v: %w", err, rollbackErr)), nil
+				}
+				if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
+					return errorResult("submit_plan", fmt.Errorf("restore plan mode history after planmode.plan_submitted event failure %v: %w", err, rollbackErr)), nil
+				}
+				return errorResult("submit_plan", fmt.Errorf("record planmode.plan_submitted event: %w", err)), nil
 			}
 			data, _ := json.MarshalIndent(planMode, "", "  ")
 			return session.ToolResult{

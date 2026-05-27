@@ -493,6 +493,89 @@ func TestRequestUserInputWithoutResponderFailsBeforePendingRequest(t *testing.T)
 	}
 }
 
+func TestSubmitPlanReportsRequiredEventErrorAndRestoresPlanMode(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan safely"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	previousPlanMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous plan mode: %v", err)
+	}
+	previousHistory, err := store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous plan mode history: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	eventErr := errors.New("events.jsonl blocked")
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   root,
+		Store:     store,
+		Config:    cfg,
+		EmitRequired: func(eventType string, _ map[string]any) error {
+			if eventType != "planmode.plan_submitted" {
+				t.Fatalf("unexpected required event %q", eventType)
+			}
+			return eventErr
+		},
+	}
+
+	result, err := registry.Execute(context.Background(), "submit_plan", execCtx, json.RawMessage(`{
+		"title":"Safe plan",
+		"summary":"Plan safely.",
+		"plan_markdown":"# Summary\n\nPlan safely.\n\n# Verification\n\nRun focused tests.",
+		"verification":["go test ./internal/tools"]
+	}`))
+	if err != nil {
+		t.Fatalf("submit_plan execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "planmode.plan_submitted") || !strings.Contains(result.DisplayOutput, eventErr.Error()) {
+		t.Fatalf("expected planmode.plan_submitted event error result, got %#v", result)
+	}
+	planMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode: %v", err)
+	}
+	if planMode.Status != previousPlanMode.Status || planMode.PlanVersion != previousPlanMode.PlanVersion || planMode.PlanMarkdown != previousPlanMode.PlanMarkdown {
+		t.Fatalf("expected previous plan mode restored, got %#v", planMode)
+	}
+	history, err := store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored plan mode history: %v", err)
+	}
+	if len(history) != len(previousHistory) {
+		t.Fatalf("expected history restored to %d entries, got %d: %#v", len(previousHistory), len(history), history)
+	}
+	for _, entry := range history {
+		if entry.Type == "planmode.plan_submitted" {
+			t.Fatalf("failed event append must not leave planmode.plan_submitted history, got %#v", history)
+		}
+	}
+	planPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "planmode-plan.md")
+	if _, err := os.Stat(planPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected failed submit to remove generated plan markdown, err=%v", err)
+	}
+}
+
 func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

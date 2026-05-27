@@ -4790,6 +4790,33 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.completed` returns an error result and restores the previous goal snapshot/history.
 - Standard grouped validation before commit.
 
+### FCA-20260527-189: Plan submission tool can lose the required submission event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `planmode.plan_submitted` in the session event catalog, and the Plan Mode spec requires `submit_plan` to durably pause execution at the approval gate.
+- `internal/tools/registry.go` `defSubmitPlan` called `Store.SubmitPlanMode`, which writes `planmode.json`, `artifacts/planmode-plan.md`, and `artifacts/planmode-history.jsonl`, then emitted `planmode.plan_submitted` through unchecked `ExecContext.Emit`.
+- `internal/runtime/engine.go` wires that unchecked callback to best-effort `e.emit`, which ignores event append failures.
+- A focused registry regression blocked the checked event callback; before the fix, `submit_plan` returned success, advanced Plan Mode to `awaiting_approval`, and left the generated plan artifact without requiring the matching session event.
+
+Impact:
+
+Recovery and Web timelines could show Plan Mode waiting for approval without the session event that explains which tool submission created that gate. Because the store transition had already succeeded, a retry would see Plan Mode no longer in `planning` and could not naturally replay the missing `planmode.plan_submitted` event through the same model tool.
+
+Minimal fix:
+
+- Snapshot Plan Mode state, plan markdown artifact, and Plan Mode history before `SubmitPlanMode`.
+- Route model-tool `planmode.plan_submitted` through the checked tool event callback.
+- If the required event cannot be written, restore the previous Plan Mode snapshot and history and return an error tool result.
+
+Validation:
+
+- Focused pre-fix registry regression proving `submit_plan` succeeded and left Plan Mode awaiting approval when required event persistence was unavailable.
+- Focused post-fix registry regression proving blocked `planmode.plan_submitted` returns an error result and restores previous Plan Mode state, history, and generated plan artifact.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6474,7 +6501,50 @@ Evidence gates:
 - Confirmed the issue is distinct from store-level `CompleteGoal` history rollback. `CompleteGoal` already rolls back when `goal-history.jsonl` append fails; this gap happens after that store transition succeeds and the matching session event append fails.
 - Confirmed the minimal fix should stay inside the model tool path by snapshotting `goal.json` plus `goal-history.jsonl`, using `EmitRequired` for `goal.completed`, and restoring those facts on event failure. `goal.progress.recorded` remains best-effort because it is not in the current event catalog.
 
+### Review 182
+
+- Confirmed FCA-20260527-189 against `spec/01-runtime-architecture.md`: `planmode.plan_submitted` is a catalogued Plan Mode session event and marks the model-submitted approval gate.
+- Confirmed the store helper already rolls back if `planmode-history.jsonl` append fails; the remaining gap is the composed model-tool path after `SubmitPlanMode` has succeeded but the matching session event append fails.
+- Confirmed the minimal fix should use existing `SnapshotPlanMode`, `RestorePlanModeSnapshot`, and `RestorePlanModeHistory` helpers around the checked event call, without changing Plan Mode gate semantics or adding a workflow engine.
+
 ## Update Log
+
+### FCA-20260527-189
+
+Slice: `fix(tools): require plan submission events`
+
+Finding:
+
+- `submit_plan` persisted `planmode.json`, `artifacts/planmode-plan.md`, and `planmode.plan_submitted` history, then emitted the required `planmode.plan_submitted` session event through unchecked `ExecContext.Emit`.
+- A blocked or unwritable `events.jsonl` path could therefore leave Plan Mode awaiting approval without the matching event timeline fact.
+
+Changes:
+
+- Snapshotted Plan Mode state, plan markdown artifact, and Plan Mode history before model-driven plan submission.
+- Switched model-tool `planmode.plan_submitted` emission to the checked tool event callback.
+- Restored the previous Plan Mode snapshot and previous Plan Mode history when required event persistence fails, then returned an error tool result.
+- Added focused registry coverage for blocked `planmode.plan_submitted` event persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestSubmitPlanReportsRequiredEventErrorAndRestoresPlanMode -count=1`: failed before the fix because `submit_plan` returned success and left Plan Mode awaiting approval.
+- `go test -timeout 120s ./internal/tools -run TestSubmitPlanReportsRequiredEventErrorAndRestoresPlanMode -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test(SubmitPlanReportsRequiredEventErrorAndRestoresPlanMode|RequestUserInputResponderErrorKeepsRecoverablePendingRequest|GoalToolsCreateReadRejectInvalidStatusAndComplete|UpdateGoalReportsRequiredEventErrorAndRestoresGoal|TodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot|TaskToolsReportRequiredEventErrorAndRestoreTaskGraph)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(SubmitPlanReportsPlanSubmittedEventAppendError|SubmitPlanStopsTurnAndCompletesLaterToolResults)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/planmode_test.go internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-188
 

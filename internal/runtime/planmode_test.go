@@ -288,13 +288,18 @@ func TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults(t *testing.T) {
 	}
 }
 
-func TestEngineSubmitPlanReportsAwaitingApprovalEventAppendError(t *testing.T) {
+func TestEngineSubmitPlanReportsPlanSubmittedEventAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Plan this change before editing.")); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
-	if _, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan this change"}); err != nil {
+	initialPlanMode, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan this change"})
+	if err != nil {
 		t.Fatalf("create plan mode: %v", err)
+	}
+	initialHistory, err := engine.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load initial plan mode history: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
 	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
@@ -324,13 +329,42 @@ func TestEngineSubmitPlanReportsAwaitingApprovalEventAppendError(t *testing.T) {
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err == nil {
-		t.Fatalf("expected session.awaiting_input event append error, got result=%#v", result)
+		t.Fatalf("expected context-loaded append error after failed submit_plan event, got result=%#v", result)
 	}
 	if !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected events append error with path context, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "plan_approval") || !strings.Contains(err.Error(), "session.awaiting_input") {
-		t.Fatalf("expected plan approval awaiting-input event context, got %v", err)
+	if !strings.Contains(err.Error(), "session.context.loaded") {
+		t.Fatalf("expected next-turn context-loaded event context, got %v", err)
+	}
+	planMode, err := engine.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != initialPlanMode.Status || planMode.PlanVersion != initialPlanMode.PlanVersion || planMode.PlanMarkdown != "" {
+		t.Fatalf("expected submit_plan event failure to restore initial plan mode, got %#v", planMode)
+	}
+	history, err := engine.store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	if len(history) != len(initialHistory) {
+		t.Fatalf("expected plan mode history restored to %d entries, got %d: %#v", len(initialHistory), len(history), history)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var toolResult *session.ToolResult
+	for _, msg := range messages {
+		for i := range msg.ToolResults {
+			if msg.ToolResults[i].Name == "submit_plan" {
+				toolResult = &msg.ToolResults[i]
+			}
+		}
+	}
+	if toolResult == nil || !toolResult.IsError || !strings.Contains(toolResult.DisplayOutput, "planmode.plan_submitted") || !strings.Contains(toolResult.DisplayOutput, "events.jsonl") {
+		t.Fatalf("expected persisted submit_plan error result with event context, got %#v in messages %#v", toolResult, messages)
 	}
 }
 
