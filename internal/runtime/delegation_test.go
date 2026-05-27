@@ -566,6 +566,13 @@ func TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError(t *testing.T)
 	if processed.Status != session.QueueStatusCompleted || processed.LastError != "" {
 		t.Fatalf("expected event append error not to turn completed child into failed job, got %#v", processed)
 	}
+	notifications, loadErr := runner.store.LoadBackgroundNotifications(parentID)
+	if loadErr != nil {
+		t.Fatalf("load background notifications after failed queue notified event: %v", loadErr)
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("failed queue notified event should roll back background notification, got %#v", notifications)
+	}
 }
 
 func TestRunnerQueueSubmitReportsChildQueuedEventAppendError(t *testing.T) {

@@ -906,6 +906,72 @@ func (s *Store) EnsureBackgroundNotification(sessionID string, notification Back
 	})
 }
 
+func (s *Store) SnapshotBackgroundNotification(sessionID, queueJobID string) (BackgroundNotificationSnapshot, error) {
+	snapshot := BackgroundNotificationSnapshot{QueueJobID: strings.TrimSpace(queueJobID)}
+	if snapshot.QueueJobID == "" {
+		return snapshot, nil
+	}
+	notifications, err := s.LoadBackgroundNotifications(sessionID)
+	if err != nil {
+		return snapshot, err
+	}
+	for _, notification := range notifications {
+		if notification.QueueJobID != snapshot.QueueJobID {
+			continue
+		}
+		snapshot.Notification = notification
+		snapshot.HasNotification = true
+		return snapshot, nil
+	}
+	return snapshot, nil
+}
+
+func (s *Store) RestoreBackgroundNotification(sessionID string, snapshot BackgroundNotificationSnapshot) error {
+	queueJobID := strings.TrimSpace(snapshot.QueueJobID)
+	if queueJobID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
+	if err != nil {
+		return err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "background.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		var current []BackgroundNotification
+		err := readJSONL(path, &current)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		restored := false
+		out := make([]BackgroundNotification, 0, len(current)+1)
+		for _, notification := range current {
+			if notification.QueueJobID != queueJobID {
+				out = append(out, notification)
+				continue
+			}
+			if snapshot.HasNotification && !restored {
+				out = append(out, snapshot.Notification)
+				restored = true
+			}
+		}
+		if snapshot.HasNotification && !restored {
+			out = append(out, snapshot.Notification)
+		}
+		if len(out) == 0 {
+			if err := fileutil.RemoveFileNoSymlink(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			return nil
+		}
+		return s.writeJSONL(path, out)
+	})
+}
+
 func (s *Store) LoadBackgroundNotifications(sessionID string) ([]BackgroundNotification, error) {
 	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
 	if err != nil {
@@ -2441,10 +2507,17 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 	if err := s.reconcileParentQueueJobStatus(job); err != nil {
 		return err
 	}
+	notificationSnapshot, err := s.SnapshotBackgroundNotification(job.ParentSessionID, job.ID)
+	if err != nil {
+		return err
+	}
 	if err := s.ensureBackgroundNotification(job); err != nil {
 		return err
 	}
 	if err := s.ensureQueueLifecycleEvent(job, "queue.job.notified"); err != nil {
+		if restoreErr := s.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure queue notified event failed with %v; restore background notification: %w", err, restoreErr)
+		}
 		return err
 	}
 	if job.Status == QueueStatusFailed {

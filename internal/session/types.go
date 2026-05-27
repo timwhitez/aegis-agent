@@ -349,6 +349,12 @@ type BackgroundNotification struct {
 	DeliveryStatus   string   `json:"delivery_status"`
 }
 
+type BackgroundNotificationSnapshot struct {
+	QueueJobID      string
+	Notification    BackgroundNotification
+	HasNotification bool
+}
+
 type SessionSummary struct {
 	ID              string `json:"id"`
 	Status          string `json:"status"`

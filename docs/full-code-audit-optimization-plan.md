@@ -7596,6 +7596,12 @@ Evidence gates:
 - Confirmed this is distinct from provider-selection validation and provider-default inheritance. Existing code rejected unknown providers and already used a new provider's default model when only `provider` changed; this slice covers explicit `model:"default"` on `continue`, which bypassed `normalizeModelOverride`.
 - Confirmed the minimal fix belongs in `Runner.Continue`: normalize provider and model overrides before mutating session metadata, preserving explicit model overrides, provider default inheritance, persisted provider options, Web adapter thinness, and provider-adapter replay boundaries.
 
+### Review 252
+
+- Confirmed FCA-20260528-259 against `spec/01-runtime-architecture.md`'s queue worker fact-source requirement and `spec/17-web-console.md`'s Background inspector contract: background queue results must be represented by durable queue/job/session facts, not by a control notification that can be drained without the matching lifecycle event.
+- Confirmed this is distinct from FCA-20260527-216 and FCA-20260527-217. Those slices covered accepting already-durable background notifications into the parent transcript; this slice covers the earlier worker/repair boundary that creates a notification before `queue.job.notified` is successfully recorded.
+- Confirmed the minimal fix belongs in the session store plus runtime queue worker: snapshot the queue-job notification before `EnsureBackgroundNotification`, restore that one job's previous notification state if `queue.job.notified` cannot be appended, and preserve terminal job status, child session output, provider adapter behavior, Web adapter thinness, and model-led queue/delegation semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7657,6 +7663,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-259
+
+Slice: `fix(queue): roll back unnotified background results`
+
+Finding:
+
+- `Runner.ProcessNextJob` and terminal `Store.LoadJob` repair wrote/ensured a parent `control/background.jsonl` notification before appending the required `queue.job.notified` event.
+- If `events.jsonl` became unwritable at that point, both paths returned an error but left a pending background notification durable.
+- A later parent run could drain that pending notification into `messages.jsonl` as background-agent results even though the parent event stream never recorded `queue.job.notified` for the queue job.
+
+Impact:
+
+- Parent transcript replay and Web Background inspector state could advance from a notification fact that lacked the required event audit trail.
+- This violated the session/event/queue file fact-source boundary: the queue job status remained inspectable, but the parent notification could be consumed without the lifecycle event proving it was delivered.
+
+Changes:
+
+- Added queue-job-scoped background notification snapshot/restore helpers to `SessionStore`.
+- Updated `Runner.ProcessNextJob` to snapshot before `EnsureBackgroundNotification` and restore that job's previous notification state if `queue.job.notified` append fails.
+- Updated terminal queue job repair in `Store.LoadJob` to use the same rollback when repairing missing terminal parent notifications.
+- Added focused runtime and session regressions proving failed `queue.job.notified` append no longer leaves a pending notification behind.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError -count=1`: failed before the fix because the failed event append left a pending background notification for the queue job.
+- `go test -timeout 120s ./internal/session -run TestLoadJobRollsBackBackgroundNotificationWhenNotifiedEventFails -count=1`: failed before the fix because terminal job repair left a pending background notification when `events.jsonl` was blocked.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/session -run TestLoadJobRollsBackBackgroundNotificationWhenNotifiedEventFails -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(ProcessNextJobReportsQueueLifecycleEventAppendError|QueueSubmitAndWorkerCompletesJob|ProcessNextJobReportsParentCoordinationError)|TestQueueWorkerRefreshesHeartbeat' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJob(RollsBackBackgroundNotificationWhenNotifiedEventFails|ReportsTerminalParentEventAppendError|ReportsTerminalParentNotificationAppendError|RepairsMissingTerminalBackgroundNotification)' -count=1`: passed.
+- `gofmt -l internal/runtime/delegation.go internal/runtime/delegation_test.go internal/session/store.go internal/session/store_test.go internal/session/types.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-258
 

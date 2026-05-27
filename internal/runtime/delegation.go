@@ -467,6 +467,10 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	}
 	if job.ParentSessionID != "" {
 		notification := session.NewBackgroundNotification(job)
+		notificationSnapshot, snapshotErr := r.store.SnapshotBackgroundNotification(job.ParentSessionID, job.ID)
+		if snapshotErr != nil {
+			return job, true, snapshotErr
+		}
 		if err := retryQueuePersistence("append background notification for job "+job.ID, func() error {
 			return r.store.EnsureBackgroundNotification(job.ParentSessionID, notification)
 		}); err != nil {
@@ -480,6 +484,9 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 				"agent_role": job.AgentRole,
 			})
 		}); err != nil {
+			if restoreErr := r.store.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
+				return job, true, fmt.Errorf("append queue notified event for job %s failed with %v; restore background notification after failed queue notified event: %w", job.ID, err, restoreErr)
+			}
 			return job, true, err
 		}
 		if isTerminalQueueStatus(job.Status) {
