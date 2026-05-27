@@ -2504,6 +2504,10 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 	if strings.TrimSpace(job.ParentSessionID) == "" || !isTerminalQueueStatus(job.Status) {
 		return nil
 	}
+	coordinationSnapshot, err := s.SnapshotParentCoordination(job.ParentSessionID)
+	if err != nil {
+		return err
+	}
 	if err := s.reconcileParentQueueJobStatus(job); err != nil {
 		return err
 	}
@@ -2515,15 +2519,30 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 		return err
 	}
 	if err := s.ensureQueueLifecycleEvent(job, "queue.job.notified"); err != nil {
+		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure queue notified event failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
 		if restoreErr := s.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
 			return fmt.Errorf("ensure queue notified event failed with %v; restore background notification: %w", err, restoreErr)
 		}
 		return err
 	}
 	if job.Status == QueueStatusFailed {
-		return s.ensureQueueLifecycleEvent(job, "queue.job.failed")
+		if err := s.ensureQueueLifecycleEvent(job, "queue.job.failed"); err != nil {
+			if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+				return fmt.Errorf("ensure queue failed event failed with %v; restore parent coordination: %w", err, restoreErr)
+			}
+			return err
+		}
+		return nil
 	}
-	return s.ensureQueueLifecycleEvent(job, "queue.job.completed")
+	if err := s.ensureQueueLifecycleEvent(job, "queue.job.completed"); err != nil {
+		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure queue completed event failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) error {

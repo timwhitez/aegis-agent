@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -3595,6 +3596,82 @@ func TestLoadJobRollsBackBackgroundNotificationWhenNotifiedEventFails(t *testing
 	}
 	if len(notifications) != 0 {
 		t.Fatalf("failed queue notified event should roll back background notification, got %#v", notifications)
+	}
+}
+
+func TestLoadJobRollsBackParentCoordinationWhenLifecycleEventFails(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_lifecycle_event_error",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_lifecycle_event_error",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_lifecycle_event_error",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusCompleted,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       "child_lifecycle_event_error",
+		SessionStatus:   StatusCompleted,
+		Prompt:          "done",
+		Mode:            ModeExec,
+		Background:      true,
+		FinalText:       "done",
+	}
+	previousCoordination := ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentMeta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{job.ID},
+		Parked:              true,
+		UpdatedAt:           now,
+	}
+	if err := store.SaveParentCoordination(parentMeta.ID, previousCoordination); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save completed job: %v", err)
+	}
+	if err := store.EnsureBackgroundNotification(parentMeta.ID, NewBackgroundNotification(job)); err != nil {
+		t.Fatalf("prewrite background notification: %v", err)
+	}
+	if err := store.ensureQueueLifecycleEvent(job, "queue.job.notified"); err != nil {
+		t.Fatalf("prewrite queue notified event: %v", err)
+	}
+	eventsPath := filepath.Join(store.SessionDir(parentMeta.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("replace events with directory: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(job.ID)
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected queue lifecycle event append error, got job=%#v err=%v", reconciled, err)
+	}
+	coordination, loadErr := store.LoadParentCoordination(parentMeta.ID)
+	if loadErr != nil {
+		t.Fatalf("load parent coordination after failed lifecycle event: %v", loadErr)
+	}
+	if !slices.Equal(coordination.UnresolvedQueueJobs, previousCoordination.UnresolvedQueueJobs) ||
+		len(coordination.CompletedQueueJobs) != 0 ||
+		len(coordination.FailedQueueJobs) != 0 ||
+		!coordination.Parked {
+		t.Fatalf("failed queue lifecycle event should roll back parent coordination, got %#v", coordination)
 	}
 }
 

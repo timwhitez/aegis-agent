@@ -7602,6 +7602,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-216 and FCA-20260527-217. Those slices covered accepting already-durable background notifications into the parent transcript; this slice covers the earlier worker/repair boundary that creates a notification before `queue.job.notified` is successfully recorded.
 - Confirmed the minimal fix belongs in the session store plus runtime queue worker: snapshot the queue-job notification before `EnsureBackgroundNotification`, restore that one job's previous notification state if `queue.job.notified` cannot be appended, and preserve terminal job status, child session output, provider adapter behavior, Web adapter thinness, and model-led queue/delegation semantics.
 
+### Review 253
+
+- Confirmed FCA-20260528-260 against `spec/01-runtime-architecture.md`'s parent coordination and queue worker fact-source requirements: `parent-coordination.json` is a completion-gate input, so terminal queue repair must not advance it unless the matching terminal queue lifecycle event is also durable.
+- Confirmed this is distinct from FCA-20260528-259. That slice rolled back `control/background.jsonl` when `queue.job.notified` was missing; this slice covers the later terminal repair window where `queue.job.completed` / `queue.job.failed` fails after parent coordination already moved the job from unresolved to terminal.
+- Confirmed the minimal fix belongs in `SessionStore.ensureTerminalQueueJobParentState`: snapshot parent coordination before terminal repair, restore it on failed notified/completed/failed lifecycle event append, and preserve idempotent event repair, terminal job status, background notification repair, queue file reconciliation, and runtime worker semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7663,6 +7669,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-260
+
+Slice: `fix(queue): roll back unreconciled parent coordination`
+
+Finding:
+
+- Terminal queue job repair in `Store.LoadJob` called `reconcileParentQueueJobStatus` before appending the terminal `queue.job.completed` / `queue.job.failed` lifecycle event.
+- If the parent `events.jsonl` became unwritable after `queue.job.notified` already existed, `LoadJob` returned an event append error but left `parent-coordination.json` advanced from unresolved to completed/failed.
+
+Impact:
+
+- The parent completion gate could observe a resolved queue job even though the parent event stream lacked the matching terminal queue lifecycle event.
+- Operators could see `parent-coordination.json` and `events.jsonl` disagree about whether a terminal queue result had been durably reconciled.
+
+Changes:
+
+- Snapshotted parent coordination before terminal queue parent-state repair.
+- Restored the previous parent coordination snapshot if appending `queue.job.notified`, `queue.job.completed`, or `queue.job.failed` fails.
+- Added a focused store regression that prewrites `queue.job.notified`, blocks `events.jsonl`, then verifies a failed `queue.job.completed` repair does not advance parent coordination.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadJobRollsBackParentCoordinationWhenLifecycleEventFails -count=1`: failed before the fix because `parent-coordination.json` moved the job from unresolved to completed after `queue.job.completed` append failed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJob(RollsBackParentCoordinationWhenLifecycleEventFails|RollsBackBackgroundNotificationWhenNotifiedEventFails|ReportsTerminalParentEventAppendError|RepairsMissingTerminalBackgroundNotification)' -count=1`: passed after the fix.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-259
 
