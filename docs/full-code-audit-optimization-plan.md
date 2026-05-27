@@ -6682,7 +6682,45 @@ Evidence gates:
 - Confirmed `Engine.Run` appended the assistant message, then emitted `assistant.message` through best-effort `emit`; blocked `events.jsonl` could leave provider assistant output and tool calls in `messages.jsonl` while runtime continued to execute those tools without the matching assistant timeline event.
 - Confirmed the minimal fix belongs in the runtime assistant-output boundary: keep the already persisted assistant message for provider replay, but require the matching `assistant.message` event before executing any provider tool calls from that assistant turn.
 
+### Review 203
+
+- Confirmed FCA-20260527-210 against `spec/03-provider-contracts.md`: provider adapters may emit `turn.stopped`, and runtime uses that event to record stop reason, provider response id, and usage/cache token counters for the completed provider turn.
+- Confirmed existing runtime coverage already asserted cache usage counters in `turn.stopped`, while `Engine.Run` wrote the event through best-effort `emit` after provider success / provider-attempt ledger / goal accounting. A blocked `events.jsonl` could therefore let runtime persist assistant output or execute tool calls while the provider-turn stop/usage event was missing.
+- Confirmed the minimal fix belongs immediately before assistant persistence: require `turn.stopped` event append after provider success/accounting and before assistant output, keeping provider-attempt ledger facts as the durable retry/success source and preserving provider replay boundaries.
+
 ## Update Log
+
+### FCA-20260527-210
+
+Slice: `fix(runtime): require turn stopped events`
+
+Finding:
+
+- `spec/03-provider-contracts.md` lists `turn.stopped` in the provider EventSink, and existing runtime tests rely on it to carry usage/cache counters.
+- `Engine.Run` emitted `turn.stopped` through best-effort `emit` after provider success and accounting.
+- A focused regression blocked `events.jsonl` exactly at `turn.stopped`; before the fix, runtime still persisted assistant output and reached `awaiting_input` with no provider-turn stop/usage event.
+
+Changes:
+
+- Switched `turn.stopped` recording from best-effort `emit` to required `appendEvent`.
+- Required the event before assistant message persistence and before any provider tool calls from that turn can execute.
+- Added focused runtime coverage proving blocked `turn.stopped` prevents assistant persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineTurnStoppedReportsEventAppendErrorBeforeAssistantPersist -count=1`: failed before the fix because the run entered `awaiting_input` without reporting the missing `turn.stopped` event.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineTurnStoppedReportsEventAppendErrorBeforeAssistantPersist|TestEnginePersistsProviderTurnMetadata|TestEngineAssistantMessageReportsEventAppendErrorBeforeToolExecution' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-209
 

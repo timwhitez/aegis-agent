@@ -370,7 +370,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 		}
 
-		e.emit(meta.ID, "turn.stopped", "provider_call", providerTurnEventData(result))
+		if err := e.appendEvent(meta.ID, "turn.stopped", "provider_call", providerTurnEventData(result)); err != nil {
+			return RunResult{}, fmt.Errorf("record turn.stopped event: %w", err)
+		}
 
 		result.ProviderContentBlocks = stampProviderContentBlocks(meta, result.ProviderContentBlocks)
 		if shouldPersistAssistantResult(result) {

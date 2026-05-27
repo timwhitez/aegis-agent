@@ -255,6 +255,43 @@ func TestEngineAssistantMessageReportsEventAppendErrorBeforeToolExecution(t *tes
 	}
 }
 
+func TestEngineTurnStoppedReportsEventAppendErrorBeforeAssistantPersist(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "turn.stopped" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			Text:       "assistant text",
+			StopReason: "done_candidate",
+			Usage: provider.Usage{
+				InputTokens:  3,
+				OutputTokens: 4,
+			},
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "turn.stopped") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected turn.stopped events.jsonl error, result=%#v err=%v", result, err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			t.Fatalf("assistant should not persist after missing turn.stopped event, got %#v", messages)
+		}
+	}
+}
+
 func TestEngineProviderRetryReportsProviderAttemptAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
