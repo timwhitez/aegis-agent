@@ -4895,6 +4895,37 @@ func TestServiceWebSocketRejectsForeignOrigin(t *testing.T) {
 	}
 }
 
+func TestServiceWebSocketRejectsCrossSchemeOrigin(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	host := strings.TrimPrefix(ts.URL, "http://")
+	wsURL := "ws://" + host + "/ws"
+	headers := http.Header{}
+	headers.Set("Origin", "https://"+host)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected websocket cross-scheme origin to be rejected")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("expected forbidden websocket upgrade, got status=%d err=%v", status, err)
+	}
+}
+
 func TestServiceSessionDetailReconcilesLinkedQueueJob(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -5369,6 +5400,24 @@ func TestServiceRejectsForeignOriginMutation(t *testing.T) {
 	svc.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected forbidden cross-origin mutation, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServiceRejectsCrossSchemeOriginMutation(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "http://go-cli.local:8080/api/config", bytes.NewBufferString(`{"provider":"openai"}`))
+	request.Header.Set("Origin", "https://go-cli.local:8080")
+	request.Header.Set("Content-Type", "application/json")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden cross-scheme mutation, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

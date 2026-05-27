@@ -4872,6 +4872,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-212: Web Origin guard accepts cross-scheme same-host requests
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires unsafe `/api/` mutations to reject foreign `Origin` and requires WebSocket upgrades to reject foreign browser origins.
+- `internal/webconsole/service.go` shared the Origin check between unsafe REST mutations and the WebSocket upgrader, but the helper compared only `Origin.Host` to `r.Host`.
+- A browser-origin value such as `https://go-cli.local:8080` sent to a local `http://go-cli.local:8080` API request, or `https://127.0.0.1:<port>` sent to the local `ws://127.0.0.1:<port>/ws` endpoint, has the same host but is not the same origin because the scheme differs.
+- The previous host-only comparison would accept those cross-scheme origins and skip the missing-Origin custom-header fallback path.
+
+Impact:
+
+The local WebConsole guard could treat a cross-scheme browser origin as trusted for unsafe API mutations and WebSocket upgrades. That weakens the Web-first local-console boundary because the guard no longer implements true same-origin semantics for the Origin header, even though the custom header fallback remains required only when Origin is absent.
+
+Minimal fix:
+
+- Replace the host-only helper with a request-aware same-origin helper that compares both host and the effective request scheme.
+- Infer `http` for ordinary local HTTP requests and `https` for TLS requests; WebSocket Origin values use the corresponding HTTP/HTTPS origin scheme.
+- Use the same helper for unsafe REST mutations and WebSocket upgrade checks.
+- Add focused REST and WebSocket regressions for same-host but cross-scheme origins.
+
+Validation:
+
+- Focused WebConsole regressions for cross-scheme REST mutation and WebSocket Origin rejection.
+- Adjacent foreign-origin guard regressions remain green.
+- Full WebConsole package and repository validation before commit.
+
 ### FCA-20260527-211: Skill upload path conflicts can replace installed skills before failing
 
 Severity: Medium
@@ -6723,7 +6751,44 @@ Evidence gates:
 - Confirmed `processSkillZip` already validates traversal, size limits, duplicate targets, symlinked targets, and direct-child target paths, but the file/directory conflict check was missing before target removal. A focused regression showed a zip with `demo-skill/conflict` plus `demo-skill/conflict/child.txt` failed only after replacing the existing `demo-skill` directory.
 - Confirmed the minimal fix belongs in the zip extraction plan stage: validate file-vs-directory conflicts for each planned skill root before removing or creating target directories, without changing the browser upload flow, audit event schema, or valid nested skill extraction.
 
+### Review 205
+
+- Confirmed FCA-20260527-212 against the WebConsole local-console guard requirements in `spec/17-web-console.md`: unsafe REST mutations and WebSocket upgrades must reject foreign browser origins.
+- Confirmed the shared Origin helper only compared `Origin.Host` with `r.Host`; same-host cross-scheme values such as `https://host:port` for an `http://host:port` request were therefore accepted even though scheme is part of same-origin semantics.
+- Confirmed the minimal fix belongs in the shared Origin helper used by both REST mutation guard and WebSocket `CheckOrigin`: compare scheme plus host, preserve the no-Origin custom-header path for REST mutations, and keep no-Origin WebSocket diagnostic connections allowed.
+
 ## Update Log
+
+### FCA-20260527-212
+
+Slice: `fix(webconsole): reject cross-scheme origins`
+
+Finding:
+
+- WebConsole unsafe mutation and WebSocket guards must reject foreign browser origins.
+- The shared Origin helper compared only host, so same-host but cross-scheme origins were accepted.
+- Focused regressions cover `https://go-cli.local:8080` sent to a local `http://go-cli.local:8080/api/config` request and `https://127.0.0.1:<port>` sent to `ws://127.0.0.1:<port>/ws`.
+
+Changes:
+
+- Replaced the host-only Origin helper with `sameOriginRequest`, which compares both host and the effective request scheme.
+- Applied the same helper to unsafe REST mutation guard and WebSocket `CheckOrigin`.
+- Added REST and WebSocket cross-scheme Origin regressions beside the existing foreign-origin coverage.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(WebSocketRejectsCrossSchemeOrigin|RejectsCrossSchemeOriginMutation|WebSocketRejectsForeignOrigin|RejectsForeignOriginMutation)' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-211
 

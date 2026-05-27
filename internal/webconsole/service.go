@@ -42,7 +42,7 @@ var upgrader = websocket.Upgrader{
 			return true
 		}
 		originURL, err := url.Parse(origin)
-		return err == nil && sameOriginHost(originURL, r.Host)
+		return err == nil && sameOriginRequest(originURL, r)
 	},
 }
 
@@ -5480,7 +5480,7 @@ func guardUnsafeAPIRequest(r *http.Request) error {
 	}
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
 		originURL, err := url.Parse(origin)
-		if err != nil || !sameOriginHost(originURL, r.Host) {
+		if err != nil || !sameOriginRequest(originURL, r) {
 			return errors.New("cross-origin API mutation rejected")
 		}
 	} else if strings.TrimSpace(r.Header.Get(webMutationHeader)) != "1" {
@@ -5498,11 +5498,21 @@ func isUnsafeMethod(method string) bool {
 	}
 }
 
-func sameOriginHost(origin *url.URL, host string) bool {
-	if origin == nil || strings.TrimSpace(origin.Host) == "" {
+func sameOriginRequest(origin *url.URL, r *http.Request) bool {
+	if origin == nil || r == nil || strings.TrimSpace(origin.Host) == "" || strings.TrimSpace(r.Host) == "" {
 		return false
 	}
-	return strings.EqualFold(origin.Host, host)
+	if !strings.EqualFold(origin.Host, r.Host) {
+		return false
+	}
+	return strings.EqualFold(origin.Scheme, requestOriginScheme(r))
+}
+
+func requestOriginScheme(r *http.Request) string {
+	if r != nil && r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func expectsJSONBody(path string) bool {
