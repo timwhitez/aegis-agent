@@ -4358,6 +4358,146 @@ func TestAPIKeyWriteRejectsConfigPathAsEnvFile(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRollsBackWhenConfigAuditAppendFails(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	configPath := filepath.Join(cwd, "config.yaml")
+
+	cfg := testConfig(t, "")
+	originalProvider := cfg.Providers["openai"]
+	originalProvider.Model = "original-model"
+	originalProvider.BaseURL = "http://127.0.0.1:1/v1"
+	cfg.Providers["openai"] = originalProvider
+	if err := config.WriteFile(configPath, cfg); err != nil {
+		t.Fatalf("write original config: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	svc.beforeAppendAuditEvent = func(eventType string, data map[string]any) error {
+		if eventType == "web.config.write" {
+			return errors.New("blocked config audit append")
+		}
+		return nil
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"model":    "mutated-model",
+		"base_url": "http://127.0.0.1:2/v1",
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "blocked config audit append") {
+		t.Fatalf("expected audit append error, got %#v", errResp)
+	}
+
+	loaded, err := config.Load(configPath, cwd)
+	if err != nil {
+		t.Fatalf("load config after failed audit append: %v", err)
+	}
+	if loaded.Providers["openai"].Model != "original-model" || loaded.Providers["openai"].BaseURL != "http://127.0.0.1:1/v1" {
+		t.Fatalf("failed audit append should roll back persisted config, got %#v", loaded.Providers["openai"])
+	}
+	snapshot, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot after failed audit append: %v", err)
+	}
+	if snapshot.Providers["openai"].Model != "original-model" || snapshot.Providers["openai"].BaseURL != "http://127.0.0.1:1/v1" {
+		t.Fatalf("failed audit append should not update in-memory config, got %#v", snapshot.Providers["openai"])
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.config.write") {
+		t.Fatalf("failed audit append should not append config audit event, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
+func TestAPIKeyWriteRollsBackWhenAPIKeyAuditAppendFails(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	t.Setenv("OPENAI_API_KEY", "sk-original-process")
+	envPath := filepath.Join(cwd, ".env")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-original-file\n"), 0o600); err != nil {
+		t.Fatalf("write original env file: %v", err)
+	}
+	configPath := filepath.Join(cwd, "config.yaml")
+
+	cfg := testConfig(t, "")
+	provider := cfg.Providers["openai"]
+	provider.APIKeyEnv = "OPENAI_API_KEY"
+	provider.Model = "original-model"
+	cfg.Providers["openai"] = provider
+	if err := config.WriteFile(configPath, cfg); err != nil {
+		t.Fatalf("write original config: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	svc.beforeAppendAuditEvent = func(eventType string, data map[string]any) error {
+		if eventType == "web.config.api_key_write" {
+			return errors.New("blocked api key audit append")
+		}
+		return nil
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"model":    "mutated-model",
+		"api_key":  "sk-mutated-secret",
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "blocked api key audit append") {
+		t.Fatalf("expected api key audit append error, got %#v", errResp)
+	}
+
+	loaded, err := config.Load(configPath, cwd)
+	if err != nil {
+		t.Fatalf("load config after failed api key audit append: %v", err)
+	}
+	if loaded.Providers["openai"].Model != "original-model" {
+		t.Fatalf("failed API key audit append should roll back config, got %#v", loaded.Providers["openai"])
+	}
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env after failed api key audit append: %v", err)
+	}
+	if string(envData) != "OPENAI_API_KEY=sk-original-file\n" || strings.Contains(string(envData), "sk-mutated-secret") {
+		t.Fatalf("failed API key audit append should roll back env file, got %q", string(envData))
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "sk-original-process" {
+		t.Fatalf("failed API key audit append should restore process env, got %q", got)
+	}
+	snapshot, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot after failed API key audit append: %v", err)
+	}
+	if snapshot.Providers["openai"].Model != "original-model" || snapshot.APIKey("openai") != "sk-original-process" {
+		t.Fatalf("failed API key audit append should not update in-memory settings, got provider=%#v key=%q", snapshot.Providers["openai"], snapshot.APIKey("openai"))
+	}
+	auditData, err := os.ReadFile(webAuditLogPath(cfg.Session.Dir))
+	if err != nil {
+		t.Fatalf("read audit log after failed API key audit append: %v", err)
+	}
+	if !strings.Contains(string(auditData), "web.config.write") {
+		t.Fatalf("expected config write audit event to remain, got %q", string(auditData))
+	}
+	if strings.Contains(string(auditData), "web.config.api_key_write") || strings.Contains(string(auditData), "sk-mutated-secret") {
+		t.Fatalf("failed API key audit append should not record API key audit event or secret, got %q", string(auditData))
+	}
+}
+
 func TestUpdateConfigRejectsConfigPathAsAuditLog(t *testing.T) {
 	cfg := testConfig(t, "")
 	configPath := webAuditLogPath(cfg.Session.Dir)

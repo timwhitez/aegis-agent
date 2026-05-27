@@ -25,6 +25,11 @@ func (s *Service) appendAuditEvent(eventType string, data map[string]any) error 
 	if s == nil || s.store == nil {
 		return nil
 	}
+	if s.beforeAppendAuditEvent != nil {
+		if err := s.beforeAppendAuditEvent(eventType, data); err != nil {
+			return err
+		}
+	}
 	path := webAuditLogPath(s.store.Root())
 	file, err := openAuditLogNoSymlink(path)
 	if err != nil {

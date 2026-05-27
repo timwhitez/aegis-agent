@@ -4872,6 +4872,33 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-223: Settings audit append failures can leave saved config/API key state
+
+Severity: Medium
+
+Evidence:
+
+- `spec/17-web-console.md` requires configuration writes and API key writes to emit searchable audit events, and treats those writes as risky local WebConsole mutations.
+- `internal/webconsole/service.go` `handleUpdateConfig` preflighted audit-log writability, then wrote `config.yaml`, optional `.env` API key state, and process environment before appending `web.config.write` and optional `web.config.api_key_write` audit records.
+- If the real audit append failed after the preflight, `POST /api/config` returned HTTP 500 while the persisted config, `.env` file, process env, or in-memory worker config could already be advanced.
+- Focused hook-based regressions forced failures specifically at `web.config.write` and `web.config.api_key_write`, proving the mutation boundary was after sensitive state had already been changed.
+
+Impact:
+
+The browser could report a failed Settings save while the local config or API key material remained changed without the required audit trail. That breaks the Web-first local-console safety model and makes recovery ambiguous because operator-visible failure no longer matched durable settings state.
+
+Minimal fix:
+
+- Snapshot the config file before writing and snapshot `.env` plus the previous process environment value when an API key update is present.
+- Restore config, `.env`, and process environment on either config audit append failure or API key audit append failure.
+- Delay `s.cfg` and worker-pool config updates until all required audit events for the request succeed.
+- Add a package-private test hook to force deterministic audit append failures between preflight and append without changing production control flow.
+
+Validation:
+
+- Focused WebConsole regressions for config audit append failure and API key audit append failure.
+- Adjacent Settings/API-key/audit tests, full WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-222: Skill upload extraction failures can replace installed skills
 
 Severity: Medium
@@ -7064,6 +7091,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 216
+
+- Confirmed FCA-20260527-223 against `spec/17-web-console.md`: `POST /api/config` must persist Settings changes and API key changes with searchable audit events, and API key audit data must not include the secret value.
+- Confirmed this is distinct from prior Settings preflight and target-aliasing slices. Those reject unsafe config/env/audit paths before mutation; this slice covers the later window where audit-log preflight succeeds but the actual required audit append fails after config or `.env` state was already written.
+- Confirmed the minimal fix belongs in `handleUpdateConfig` plus a narrow restore helper and deterministic test hook, not in provider adapters, worker orchestration, or a broad WebConsole transaction layer.
+
 ### Review 215
 
 - Confirmed FCA-20260527-222 against the WebConsole skill-upload safety and auditability requirements in `spec/17-web-console.md`: skill install/upload is a risky local mutation, and malformed packages must not replace installed local skills on failed responses.
@@ -7101,6 +7134,41 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-223
+
+Slice: `fix(webconsole): roll back settings audit failures`
+
+Finding:
+
+- `handleUpdateConfig` wrote `config.yaml`, optional `.env` API key state, and process environment before appending the required `web.config.write` and `web.config.api_key_write` audit events.
+- A failed audit append after successful preflight could leave Settings or API key state mutated even though `POST /api/config` returned HTTP 500.
+
+Changes:
+
+- Added config, `.env`, and process-environment snapshots before Settings mutation.
+- Restored those snapshots when either required audit append fails.
+- Moved `s.cfg` and worker-pool config updates after all required audit events have succeeded.
+- Added a package-private audit append hook for deterministic tests.
+- Added regressions for config audit append failure and API key audit append failure, including secret non-disclosure in the failed API key path.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigRollsBackWhenConfigAuditAppendFails -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(UpdateConfigRollsBackWhenConfigAuditAppendFails|APIKeyWriteRollsBackWhenAPIKeyAuditAppendFails)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(UpdateConfig|APIKeyWrite|AppendAuditEvent|SensitiveActionsPreflightAuditBeforeMutating|SensitiveWebActionsEmitAuditEvents)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/audit.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-222
 

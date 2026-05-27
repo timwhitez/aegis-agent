@@ -96,6 +96,10 @@ type Service struct {
 	staticFS   fs.FS
 	workers    *workerPool
 
+	// beforeAppendAuditEvent is set only by package tests to force deterministic
+	// audit persistence failures between preflight and append.
+	beforeAppendAuditEvent func(eventType string, data map[string]any) error
+
 	mu      sync.RWMutex
 	handles map[string]*launchHandle
 	closed  bool
@@ -2904,6 +2908,17 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	var envSnapshot webConfigFileSnapshot
+	var previousEnvValue string
+	var previousEnvExists bool
+	if apiKeyUpdate != nil {
+		envSnapshot, err = snapshotWebConfigFile(apiKeyUpdate.envFile)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		previousEnvValue, previousEnvExists = os.LookupEnv(apiKeyUpdate.envKey)
+	}
 	if err := config.WriteFile(configPath, updatedCfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2922,8 +2937,6 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.cfg = updatedCfg
-	s.workers.UpdateConfig(updatedCfg)
 	if err := s.appendAuditEvent("web.config.write", map[string]any{
 		"provider":               updatedCfg.DefaultProvider,
 		"config_path":            configPath,
@@ -2935,15 +2948,25 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"reasoning_summary":      providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),
 		"role_provider_count":    roleProviderOverrideCount(updatedCfg.RoleProviders),
 	}); err != nil {
+		if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists); restoreErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore settings after config audit error %v: %w", err, restoreErr))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if apiKeyAudit != nil {
 		if err := s.appendAuditEvent("web.config.api_key_write", apiKeyAudit); err != nil {
+			if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore settings after API key audit error %v: %w", err, restoreErr))
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
+	s.cfg = updatedCfg
+	s.workers.UpdateConfig(updatedCfg)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
@@ -2975,6 +2998,26 @@ func restoreWebConfigFile(path string, snapshot webConfigFileSnapshot) error {
 		return fileutil.AtomicWriteFileNoSymlink(path, snapshot.data, 0o600)
 	}
 	return fileutil.RemoveFileNoSymlink(path)
+}
+
+func restoreWebSettingsMutation(configPath string, configSnapshot webConfigFileSnapshot, apiKeyUpdate *webAPIKeyUpdate, envSnapshot webConfigFileSnapshot, previousEnvValue string, previousEnvExists bool) error {
+	var errs []error
+	if err := restoreWebConfigFile(configPath, configSnapshot); err != nil {
+		errs = append(errs, fmt.Errorf("restore config file: %w", err))
+	}
+	if apiKeyUpdate != nil {
+		if err := restoreWebConfigFile(apiKeyUpdate.envFile, envSnapshot); err != nil {
+			errs = append(errs, fmt.Errorf("restore API key env file: %w", err))
+		}
+		if previousEnvExists {
+			if err := os.Setenv(apiKeyUpdate.envKey, previousEnvValue); err != nil {
+				errs = append(errs, fmt.Errorf("restore process API key env: %w", err))
+			}
+		} else if err := os.Unsetenv(apiKeyUpdate.envKey); err != nil {
+			errs = append(errs, fmt.Errorf("clear process API key env: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
