@@ -291,6 +291,16 @@ function installChatActionAPITestWrappers(appContext) {
         message
       });
     };
+    interruptSession = function(sessionID) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/interrupt', {
+        method: 'POST'
+      });
+    };
+    stopSession = function(sessionID) {
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/stop', {
+        method: 'POST'
+      });
+    };
   `, appContext);
 }
 
@@ -947,6 +957,100 @@ test('plan revision completion does not mark a newly selected session as generat
     selected: 'session_fast_b',
     generating: false,
     activityTitle: 'Loaded session B'
+  });
+});
+
+test('interrupt completion does not update a newly selected session', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const interrupt = vm.runInContext(`
+    state.sessionId = 'session_interrupt_slow_a';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.liveActivity = { title: 'Running A', copy: '', tone: 'live' };
+    state.sessionDetail = {
+      metadata: { id: 'session_interrupt_slow_a' },
+      state: { status: 'running' },
+      messages: []
+    };
+    requestInterrupt();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_interrupt_slow_a\/interrupt/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await interrupt;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: state.isGenerating,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    generating: false,
+    activityTitle: 'Loaded session B'
+  });
+});
+
+test('stop completion does not update a newly selected session', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const stop = vm.runInContext(`
+    state.sessionId = 'session_stop_slow_a';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.liveActivity = { title: 'Running A', copy: '', tone: 'live' };
+    state.sessionDetail = {
+      metadata: { id: 'session_stop_slow_a' },
+      state: { status: 'running' },
+      messages: []
+    };
+    requestStop();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_stop_slow_a\/stop/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await stop;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: state.isGenerating,
+    activityTitle: state.liveActivity.title,
+    stoppingA: state.stoppingSessionIds.has('session_stop_slow_a')
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    generating: false,
+    activityTitle: 'Loaded session B',
+    stoppingA: false
   });
 });
 

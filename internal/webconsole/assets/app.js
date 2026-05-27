@@ -1096,8 +1096,12 @@ async function requestInterrupt() {
     showToast('No running session is available for interrupt.', 'info');
     return;
   }
+  const sessionID = state.sessionId;
   try {
-    await interruptSession(state.sessionId);
+    await interruptSession(sessionID);
+    if (state.sessionId !== sessionID) {
+      return;
+    }
     state.liveActivity = {
       title: 'Interrupt requested',
       copy: 'The runner will stop at the nearest safe boundary and surface the session state.',
@@ -1106,9 +1110,13 @@ async function requestInterrupt() {
     showToast('Interrupt requested.', 'success');
     queueSessionRefresh(120);
   } catch (err) {
-    showToast(err.message || 'Failed to request interrupt.', 'error');
+    if (state.sessionId === sessionID) {
+      showToast(err.message || 'Failed to request interrupt.', 'error');
+    }
   }
-  renderCurrentSession();
+  if (state.sessionId === sessionID) {
+    renderCurrentSession();
+  }
 }
 
 async function requestStop() {
@@ -1132,10 +1140,9 @@ async function requestStopSession(sessionID, options = {}) {
   if (button) {
     button.disabled = true;
   }
-  const isCurrentSession = sessionID === state.sessionId;
   try {
     const result = await requestStopViaBestAvailablePath(sessionID);
-    if (isCurrentSession) {
+    if (state.sessionId === sessionID) {
       state.liveActivity = {
         title: 'Stopping run',
         copy: result.via === 'steer'
@@ -1143,15 +1150,17 @@ async function requestStopSession(sessionID, options = {}) {
           : 'The current run is being stopped. Partial output and tool results will remain visible.',
         tone: 'danger'
       };
+      showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
+      queueSessionRefresh(120);
+      queueOverviewRefresh(180);
     }
-    showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
-    queueSessionRefresh(120);
-    queueOverviewRefresh(180);
     if (state.currentView === 'history') {
       await fetchHistory(state.historyPage, { showLoading: false, silentError: true });
     }
   } catch (err) {
-    showToast(err.message || 'Failed to stop the session.', 'error');
+    if (state.sessionId === sessionID) {
+      showToast(err.message || 'Failed to stop the session.', 'error');
+    }
   } finally {
     state.stoppingSessionIds.delete(sessionID);
     if (button && document.body.contains(button)) {
@@ -1160,7 +1169,9 @@ async function requestStopSession(sessionID, options = {}) {
     if (state.currentView === 'history') {
       renderHistory();
     }
-    renderCurrentSession();
+    if (state.sessionId === sessionID) {
+      renderCurrentSession();
+    }
   }
 }
 

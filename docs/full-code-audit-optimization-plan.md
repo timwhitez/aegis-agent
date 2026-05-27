@@ -7704,6 +7704,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-275. That slice covered the running-session steer branch of the main chat composer; this slice covers the non-running `sendMessage()` branch for `/continue` and `/planmode/revise`.
 - Confirmed the minimal fix belongs in `sendMessage`: capture the target session id before issuing the REST call, use that captured id for continue / revision, and suppress success/error/generating/refresh side effects when the selected session changes before the request settles.
 
+### Review 270
+
+- Confirmed FCA-20260528-277 against `spec/13-live-input-and-steering.md` and `spec/17-web-console.md`'s running-session control contract: Web Interrupt and Stop are controls for the selected running session, and their browser-side completion must not update another newly selected session's live activity.
+- Confirmed this is distinct from FCA-20260528-275 and FCA-20260528-276. Those slices covered chat composer steer / continue / Plan revision branches; this slice covers the top-bar `requestInterrupt()` and `requestStopSession()` control paths.
+- Confirmed the minimal fix belongs in those WebConsole action handlers: capture or use the requested session id for the REST operation, then apply activity/toast/refresh/render side effects only while that same session remains selected, without changing runtime interrupt, stop, or steer fallback semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7765,6 +7771,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-277
+
+Slice: `fix(webconsole): ignore stale interrupt completions`
+
+Finding:
+
+- `requestInterrupt()` issued `/api/sessions/{id}/interrupt` for the selected running session, then unconditionally updated `state.liveActivity` to "Interrupt requested", showed a success/error toast, queued refresh, and rendered whatever session was selected when the request settled.
+- `requestStopSession()` could issue `/api/sessions/{id}/stop` or its stop-via-steer fallback for session A, then use the click-time `isCurrentSession` boolean to update live activity even if the operator switched to session B before the response returned.
+- The backend requests still targeted session A, but stale browser-side completions could make session B appear interrupted or stopping.
+
+Impact:
+
+- The WebConsole could falsely show interrupt / stop activity on an unrelated selected session.
+- This made the local control surface disagree with the selected session's durable file facts and could confuse recovery decisions after switching sessions during a slow stop/interrupt request.
+
+Changes:
+
+- Captured the interrupt target `sessionID` before issuing `/interrupt` and gated interrupt success/error/render side effects on the selected session still matching that id.
+- Replaced the stale click-time `isCurrentSession` check in `requestStopSession()` with post-await `state.sessionId === sessionID` checks for activity, toast, refresh, and render side effects.
+- Preserved per-session `stoppingSessionIds` cleanup and button re-enable behavior even when the selected session changes.
+- Added VM-level WebConsole regressions proving slow interrupt and stop completions for session A cannot update newly selected session B's live activity.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because stale `session_interrupt_slow_a` and `session_stop_slow_a` completions changed selected `session_fast_b` live activity to "Interrupt requested" and "Stopping run".
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after binding interrupt / stop completion side effects to the requested session id.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-276
 
