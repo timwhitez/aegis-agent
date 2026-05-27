@@ -5741,6 +5741,67 @@ func TestServiceRejectsOversizedJSONMutationBody(t *testing.T) {
 	}
 }
 
+func TestServiceBodylessMutationsDoNotRequireJSONContentType(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	clearMeta := testSessionMetadata(t, "session_bodyless_goal_clear")
+	if err := svc.store.Create(clearMeta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create clear session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(clearMeta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Clear without body",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create clear goal: %v", err)
+	}
+	respBody := requestWithoutJSONContentType(t, http.MethodDelete, ts.URL+"/api/sessions/"+clearMeta.ID+"/goal", http.StatusOK)
+	if _, err := svc.store.LoadGoal(clearMeta.ID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected goal to be cleared body=%s err=%v", respBody, err)
+	}
+
+	planMeta := testSessionMetadata(t, "session_bodyless_planmode_approve")
+	planMeta.Mode = session.ModeExec
+	planMeta.CompletionPolicy = session.CompletionPolicyAutonomous
+	if err := svc.store.Create(planMeta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create plan mode session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(planMeta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Approve without body",
+		Source:    session.PlanModeSourceWeb,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	planBody := requestWithoutJSONContentType(t, http.MethodPost, ts.URL+"/api/sessions/"+planMeta.ID+"/planmode/approve", http.StatusConflict)
+	if !strings.Contains(planBody, "not awaiting approval") {
+		t.Fatalf("expected handler-level plan mode conflict, got body=%s", planBody)
+	}
+
+	missionMeta := testSessionMetadata(t, "session_bodyless_mission_approve")
+	if err := svc.store.Create(missionMeta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create mission session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(missionMeta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Plain goal cannot approve mission",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create plain goal: %v", err)
+	}
+	missionBody := requestWithoutJSONContentType(t, http.MethodPost, ts.URL+"/api/sessions/"+missionMeta.ID+"/mission/plan/approve", http.StatusBadRequest)
+	if !strings.Contains(missionBody, "mission plan is required before approval") {
+		t.Fatalf("expected handler-level mission approval error, got body=%s", missionBody)
+	}
+}
+
 func TestServiceInterruptUsesManualPauseReason(t *testing.T) {
 	server := newSleepToolServer()
 	defer server.Close()
@@ -8373,6 +8434,25 @@ func requestJSONWithMethod(t *testing.T, method string, url string, payload any,
 			t.Fatalf("decode response: %v", err)
 		}
 	}
+}
+
+func requestWithoutJSONContentType(t *testing.T, method string, url string, wantStatus int) string {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatalf("new %s %s: %v", method, url, err)
+	}
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("unexpected status %d want %d body=%s", resp.StatusCode, wantStatus, string(body))
+	}
+	return string(body)
 }
 
 func postJSONWithMethod(t *testing.T, method string, url string, payload any, wantStatus int, target any) {

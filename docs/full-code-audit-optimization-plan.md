@@ -4900,6 +4900,36 @@ Validation:
 - Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
 - Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
 
+### FCA-20260527-230: Bodyless Web mutations are blocked by the JSON Content-Type guard
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` defines bodyless or optional-body control routes such as `DELETE /api/sessions/{id}/goal`, `POST /api/sessions/{id}/planmode/cancel`, `POST /api/sessions/{id}/planmode/approve`, and `POST /api/sessions/{id}/mission/plan/approve`; only endpoints with JSON request objects should require JSON `Content-Type`.
+- `internal/webconsole/service.go` ran every unsafe `/api/` request through `guardUnsafeAPIRequest` before route dispatch.
+- The old `expectsJSONBody` helper was path-only and matched `strings.HasSuffix(path, "/goal")`, `strings.Contains(path, "/planmode/")`, and `strings.Contains(path, "/mission/")`.
+- Because the guard ran before handlers, no-body and optional-body routes could be rejected with HTTP 403 before reaching their handler-level status or durable mutation logic.
+- A focused route regression sent `DELETE /api/sessions/{id}/goal` with no request body and the local-console mutation header. Before the fix it returned HTTP 403 with `JSON API mutation requires Content-Type: application/json` instead of clearing the goal.
+
+Impact:
+
+Direct WebConsole API clients and recovery scripts can be forced to send dummy `{}` JSON bodies to use control routes whose contract does not require a JSON body. That weakens diagnostics for local Web-first control operations and breaks optional-body approval semantics by reporting a guard error instead of the actual handler outcome.
+
+Minimal fix:
+
+- Replace the path-only JSON guard classifier with a method-aware route body policy.
+- Keep `application/json` and the shared JSON body size cap for required JSON routes.
+- Treat plan approval and mission plan approval as optional-body routes: require JSON `Content-Type` only when a body is present.
+- Leave bodyless routes such as goal clear and Plan Mode cancel under the same local-console origin/header guard, but do not classify them as mandatory JSON request-body endpoints.
+- Add route-level coverage proving bodyless/optional-body routes reach handler-level behavior without `Content-Type: application/json`.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving bodyless goal clear returned HTTP 403 before the handler.
+- Focused post-fix regression proving bodyless goal clear returns HTTP 200, bodyless Plan Mode approve reaches a handler-level HTTP 409, and bodyless mission plan approve reaches a handler-level HTTP 400.
+- Adjacent mutation guard, goal/Plan Mode/mission WebConsole tests, full WebConsole, runtime/session, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-229: Malformed skill upload packages are reported as server failures
 
 Severity: Low
@@ -7277,6 +7307,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-211, FCA-20260527-222, and FCA-20260527-224. Those slices prevented malformed upload side effects and late audit side effects; this slice covers the residual route-level status classification after `processSkillZipTransaction` has already rejected the package safely.
 - Confirmed the minimal fix belongs at the skill zip processing/upload handler boundary: mark only malformed package errors with a package-local type and map that type to HTTP 400, without changing SkillCatalog discovery, frontend upload state, audit event schema, or filesystem/audit failure handling.
 
+### Review 223
+
+- Confirmed FCA-20260527-230 against `spec/17-web-console.md`'s REST control contracts: bodyless goal clear and Plan Mode cancel have no JSON request DTO, while Plan Mode approve and mission plan approve accept optional approval payloads.
+- Confirmed this is distinct from FCA-20260525-024. That slice tightened exact JSON media-type parsing for required JSON mutations; this slice fixes the route classifier that decided which unsafe mutations are required JSON endpoints before dispatch.
+- Confirmed the minimal fix belongs in the shared WebConsole mutation guard: use method-aware route policy and keep local-console Origin/header enforcement for every unsafe API mutation, without moving handler-specific logic into frontend code or weakening required JSON routes.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7338,6 +7374,45 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-230
+
+Slice: `fix(webconsole): allow bodyless control mutations`
+
+Finding:
+
+- The shared WebConsole mutation guard used a path-only `expectsJSONBody` helper before route dispatch.
+- Broad `/goal`, `/planmode/`, and `/mission/` matches forced no-body and optional-body routes to carry `Content-Type: application/json`.
+- Before the fix, a focused regression showed bodyless `DELETE /api/sessions/{id}/goal` returning HTTP 403 instead of reaching the goal-clear handler.
+
+Changes:
+
+- Replaced the path-only JSON classifier with a method-aware `jsonBodyPolicyForRequest`.
+- Kept required JSON routes strict, including exact `application/json` media type and the shared JSON body size cap.
+- Classified Plan Mode approve and mission plan approve as optional-body routes, requiring JSON `Content-Type` only when a body is present.
+- Left bodyless controls under the same unsafe mutation Origin/header guard without forcing a dummy JSON body.
+- Added route-level regression coverage for bodyless goal clear, bodyless Plan Mode approve, and bodyless mission plan approve.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceBodylessMutationsDoNotRequireJSONContentType -count=1`: failed before the fix because bodyless goal clear returned HTTP 403.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceBodylessMutationsDoNotRequireJSONContentType -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(BodylessMutationsDoNotRequireJSONContentType|RejectsJSONMutationSubtypeContentType|RejectsOversizedJSONMutationBody|RejectsForeignOriginMutation|RejectsCrossSchemeOriginMutation)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalEndpointsMutateDurableGoal|PlanModeApproveRejectsPlanningBeforeLaunch|PlanModeReviseInputAndCancelControls|MissionPlanApproveRejectsGoalWithoutMissionPlan|GoalFactsAndMissionCoverageApproval)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-229
 

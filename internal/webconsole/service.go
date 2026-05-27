@@ -329,7 +329,7 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	if isUnsafeMethod(r.Method) && expectsJSONBody(r.URL.Path) {
+	if isUnsafeMethod(r.Method) && jsonBodyPolicyForRequest(r.Method, r.URL.Path) != webJSONBodyNone {
 		r.Body = http.MaxBytesReader(w, r.Body, maxWebJSONBodyBytes)
 	}
 	switch {
@@ -6073,7 +6073,8 @@ func guardUnsafeAPIRequest(r *http.Request) error {
 	if !isUnsafeMethod(r.Method) {
 		return nil
 	}
-	if expectsJSONBody(r.URL.Path) {
+	policy := jsonBodyPolicyForRequest(r.Method, r.URL.Path)
+	if policy == webJSONBodyRequired || (policy == webJSONBodyOptional && requestHasBody(r)) {
 		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(r.Header.Get("Content-Type")))
 		if err != nil || !strings.EqualFold(mediaType, "application/json") {
 			return errors.New("JSON API mutation requires Content-Type: application/json")
@@ -6116,20 +6117,75 @@ func requestOriginScheme(r *http.Request) string {
 	return "http"
 }
 
-func expectsJSONBody(path string) bool {
-	if path == "/api/skills/upload" {
-		return false
+type webJSONBodyPolicy int
+
+const (
+	webJSONBodyNone webJSONBodyPolicy = iota
+	webJSONBodyOptional
+	webJSONBodyRequired
+)
+
+func requestHasBody(r *http.Request) bool {
+	return r != nil && r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0
+}
+
+func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
+	if method == http.MethodPost {
+		switch path {
+		case "/api/config",
+			"/api/config/test",
+			"/api/sessions/start",
+			"/api/queue/jobs",
+			"/api/workers":
+			return webJSONBodyRequired
+		}
 	}
-	return path == "/api/config" ||
-		path == "/api/config/test" ||
-		path == "/api/sessions/start" ||
-		path == "/api/queue/jobs" ||
-		path == "/api/workers" ||
-		strings.HasSuffix(path, "/goal") ||
-		strings.Contains(path, "/planmode/") ||
-		strings.Contains(path, "/mission/") ||
-		strings.Contains(path, "/continue") ||
-		strings.Contains(path, "/steer")
+
+	if !strings.HasPrefix(path, "/api/sessions/") {
+		return webJSONBodyNone
+	}
+	rest := strings.Trim(strings.TrimPrefix(path, "/api/sessions/"), "/")
+	if rest == "" {
+		return webJSONBodyNone
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) < 2 || strings.TrimSpace(parts[0]) == "" {
+		return webJSONBodyNone
+	}
+
+	switch {
+	case len(parts) == 2 && parts[1] == "goal":
+		switch method {
+		case http.MethodPost, http.MethodPatch:
+			return webJSONBodyRequired
+		default:
+			return webJSONBodyNone
+		}
+	case len(parts) == 2 && parts[1] == "continue" && method == http.MethodPost:
+		return webJSONBodyRequired
+	case len(parts) == 2 && parts[1] == "steer" && method == http.MethodPost:
+		return webJSONBodyRequired
+	case len(parts) == 3 && parts[1] == "planmode" && method == http.MethodPost:
+		switch parts[2] {
+		case "approve":
+			return webJSONBodyOptional
+		case "revise", "input":
+			return webJSONBodyRequired
+		default:
+			return webJSONBodyNone
+		}
+	case len(parts) == 3 && parts[1] == "mission" && method == http.MethodPatch:
+		switch parts[2] {
+		case "plan", "validation":
+			return webJSONBodyRequired
+		default:
+			return webJSONBodyNone
+		}
+	case len(parts) == 4 && parts[1] == "mission" && parts[2] == "plan" && parts[3] == "approve" && method == http.MethodPost:
+		return webJSONBodyOptional
+	default:
+		return webJSONBodyNone
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
