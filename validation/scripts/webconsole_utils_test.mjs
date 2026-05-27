@@ -1237,6 +1237,28 @@ test('fetchSkills ignores stale skill catalog responses', async () => {
   assert.doesNotMatch(finalState.grid, /Stale Skill/);
 });
 
+test('renderSkills shows disabled reasons for read-only local skills', () => {
+  const appContext = createAppHarnessContext();
+
+  vm.runInContext(`
+    renderSkills([{
+      id: 'external-skill',
+      name: 'External Skill',
+      author: 'Local',
+      description: 'External discovery directory skill.',
+      icon: 'Box',
+      installed: true,
+      read_only: true,
+      disabled_reason: 'Only the first configured skill directory is managed by this WebConsole.'
+    }]);
+  `, appContext);
+
+  const html = vm.runInContext('nodes.skillsGrid.innerHTML', appContext);
+
+  assert.match(html, /Only the first configured skill directory is managed by this WebConsole\./);
+  assert.match(html, /Disabled/);
+});
+
 test('plan revision completion does not mark a newly selected session as generating', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);

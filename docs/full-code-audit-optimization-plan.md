@@ -7770,6 +7770,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-284 and FCA-20260528-286. Those slices covered stale Skills catalog refresh ordering and queue provider errors; this slice covers backend skill catalog mutability metadata across multiple configured skill directories.
 - Confirmed the minimal fix belongs in `handleListSkills`: keep discovery across all configured skill dirs, but mark non-first dirs read-only with a disabled reason so the WebConsole no longer presents unsupported or wrong-target uninstall actions.
 
+### Review 281
+
+- Confirmed FCA-20260528-288 against `spec/17-web-console.md`'s Skills operator clarity contract: risky skill install/uninstall controls must be clear and bounded in the WebConsole UI, not just in backend JSON.
+- Confirmed this is distinct from FCA-20260528-287. That slice corrected backend `/api/skills` mutability metadata for non-managed skill dirs; this slice covers the frontend renderer dropping the backend `disabled_reason` for read-only local skills that do not have workspace-extension `trust` metadata.
+- Confirmed the minimal fix belongs in `renderSkills`: keep the existing workspace trust line behavior, but render a separate disabled-reason line for non-trust read-only skills so the disabled action is explainable without changing backend catalog, skill upload, or uninstall semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7831,6 +7837,32 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-288
+
+Slice: `fix(webconsole): show read-only skill reasons`
+
+Finding:
+
+- `/api/skills` can return `read_only: true` plus `disabled_reason` for local skills discovered outside the first managed skill directory.
+- `renderSkills()` only displayed `disabled_reason` inside the workspace-extension trust line.
+- Read-only local skills have no `trust` field, so the Skills page rendered only a disabled button and omitted the backend explanation.
+
+Impact:
+
+- Operators could see a disabled skill action without the reason, even though the backend had already provided a precise boundary explanation.
+- This weakened the WebConsole's local skill management clarity after non-managed skill dirs were correctly marked read-only.
+
+Changes:
+
+- Added a frontend VM regression for a read-only local skill with a disabled reason and no trust metadata.
+- Updated `renderSkills()` to render a disabled-reason line when a skill has `disabled_reason` but no `trust` metadata.
+- Preserved the existing workspace-extension trust-line rendering and did not change backend skill catalog, upload, or uninstall behavior.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'renderSkills shows disabled reasons'`: failed before the frontend fix because the disabled reason was absent from `nodes.skillsGrid.innerHTML`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'renderSkills shows disabled reasons'`: passed after `renderSkills()` rendered the local read-only skill reason.
 
 ### FCA-20260528-287
 
