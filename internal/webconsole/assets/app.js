@@ -1048,8 +1048,8 @@ async function sendMessage() {
       renderCurrentSession();
       return;
     }
+    const launchClientSessionID = state.sessionId;
     try {
-      const launchClientSessionID = state.sessionId;
       state.launchInFlight = true;
       setGenerating(true, {
         title: 'Launching session',
@@ -1064,7 +1064,6 @@ async function sendMessage() {
         planMode: planDraft || undefined
       });
       if (state.sessionId !== launchClientSessionID || state.sessionBacked) {
-        state.launchInFlight = false;
         return;
       }
       state.goalEnabled = false;
@@ -1079,6 +1078,9 @@ async function sendMessage() {
       queueSessionRefresh(60);
       queueOverviewRefresh(220);
     } catch (err) {
+      if (state.sessionId !== launchClientSessionID || state.sessionBacked) {
+        return;
+      }
       removeOptimisticMessage(optimisticID);
       state.isGenerating = false;
       state.launchInFlight = false;
@@ -1270,6 +1272,9 @@ function adoptSession(sessionID, backed) {
   }
   state.sessionId = sessionID;
   state.sessionBacked = backed;
+  if (backed) {
+    state.launchInFlight = false;
+  }
   updateSessionId();
   persistUIState();
 }

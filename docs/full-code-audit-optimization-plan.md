@@ -7782,6 +7782,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-270, FCA-20260528-283, and the action completion stale-response cluster. Those slices covered detail refresh, steer/continue/plan/goal/stop completions, history, overview, skills, and settings loaders; this slice covers the new-session launch completion path that calls `adoptSession()` after `/api/sessions/start` returns.
 - Confirmed the minimal fix belongs in the `sendMessage()` start branch: remember the launch-time client session id and only adopt the returned durable session if the user is still on that same pending launch, preserving backend start/session creation semantics and avoiding Web UI state authority changes.
 
+### Review 283
+
+- Confirmed FCA-20260528-290 against `spec/17-web-console.md`'s Session workspace contract: `launchInFlight` and `isGenerating` are per-current-selection UI state, so stale async launch success/error paths must not clear or overwrite the operator's newer selected session or newer pending launch.
+- Confirmed this is distinct from FCA-20260528-289. That slice stopped stale `/api/sessions/start` success from adopting an old durable session; this slice covers the remaining ownership side effects: stale success clearing a newer pending launch, stale error clearing a newly selected running session, and durable session selection leaving the old ephemeral launch flag active.
+- Confirmed the minimal fix belongs in `sendMessage()` start ownership guards plus durable `adoptSession()`: only the owning pending launch may apply success/error side effects, and explicit durable adoption should cancel the old ephemeral launch UI state without changing backend session creation, WebSocket event handling, or runtime facts.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7843,6 +7849,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-290
+
+Slice: `fix(webconsole): keep launch state scoped to current session`
+
+Finding:
+
+- After FCA-20260528-289, stale start success no longer adopted the old durable session, but the stale success path still cleared `launchInFlight` even if the operator had reset into a newer pending launch.
+- A stale start error always removed the optimistic message and set `isGenerating=false` / `launchInFlight=false`, even after the operator selected another durable session that was currently running.
+- Selecting a durable session via `openSession()` set `isGenerating=false` but did not clear the old ephemeral `launchInFlight` flag until the old request settled.
+
+Impact:
+
+- The Session workspace could temporarily show a durable selected session as blocked by a stale new-session launch.
+- A stale failed launch could make a newly selected running durable session appear idle.
+- An older launch completion could cancel the visual pending state for a newer launch, weakening the selected-object ownership contract.
+
+Changes:
+
+- Added VM regressions for durable session selection while a launch is pending, stale launch failure after selecting a running session, and stale launch success after a newer pending launch has begun.
+- Updated the `sendMessage()` start branch so stale success and error completions return without mutating launch or generating state unless the launch-time client session is still selected and unbacked.
+- Updated durable `adoptSession()` to clear `launchInFlight`, making explicit durable selection cancel the old ephemeral launch UI state.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'start completion does not clear a newer pending launch'`: failed before the fix because `launchInFlight` became `false` for the newer pending launch.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'openSession clears|start failure does not clear'`: failed before the fix because durable selection kept `launchInFlight=true` and stale start failure set the running selected session's `isGenerating=false`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'start completion does not clear a newer pending launch|openSession clears|start failure does not clear'`: passed after launch ownership checks and durable adoption cleanup.
 
 ### FCA-20260528-289
 

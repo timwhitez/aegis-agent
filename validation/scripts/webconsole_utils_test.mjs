@@ -1101,6 +1101,138 @@ test('start completion does not replace a session selected while launch is pendi
   });
 });
 
+test('start completion does not clear a newer pending launch', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const firstSend = vm.runInContext(`
+    selectedWorkspaceWorkdir = function() { return ''; };
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = false;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    state.sessionDetail = null;
+    nodes.chatInput.value = 'start first slow session';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/start');
+
+  vm.runInContext(`
+    state.sessionId = '0xB22CE0';
+    state.sessionBacked = false;
+    state.isGenerating = true;
+    state.launchInFlight = true;
+    state.liveActivity = { title: 'Launching second session', copy: '', tone: 'live' };
+    state.sessionDetail = null;
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_created_slow_a', status: 'accepted' });
+  await firstSend;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    backed: state.sessionBacked,
+    generating: state.isGenerating,
+    launchInFlight: state.launchInFlight,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: '0xB22CE0',
+    backed: false,
+    generating: true,
+    launchInFlight: true,
+    activityTitle: 'Launching second session'
+  });
+});
+
+test('openSession clears pending launch state for the newly selected durable session', async () => {
+  const appContext = createAppHarnessContext();
+
+  const open = vm.runInContext(`
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = true;
+    state.launchInFlight = true;
+    state.liveActivity = { title: 'Launching session', copy: '', tone: 'live' };
+    openSession('session_fast_b', { switchToChat: false });
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_fast_b/);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    backed: state.sessionBacked,
+    generating: state.isGenerating,
+    launchInFlight: state.launchInFlight,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    backed: true,
+    generating: false,
+    launchInFlight: false,
+    activityTitle: 'Loading session'
+  });
+
+  appContext.pendingRequests[0].resolve({
+    metadata: { id: 'session_fast_b' },
+    state: { status: 'completed' },
+    messages: []
+  });
+  await open;
+});
+
+test('start failure does not clear generating state after another session is selected', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    selectedWorkspaceWorkdir = function() { return ''; };
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = false;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    state.sessionDetail = null;
+    nodes.chatInput.value = 'start a slow session';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/start');
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Session B running', copy: '', tone: 'live' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'running' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].reject(new Error('slow launch failed'));
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    backed: state.sessionBacked,
+    generating: state.isGenerating,
+    launchInFlight: state.launchInFlight,
+    activityTitle: state.liveActivity.title
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    backed: true,
+    generating: true,
+    launchInFlight: false,
+    activityTitle: 'Session B running'
+  });
+});
+
 test('inline continue action does not refresh a newly selected session after stale completion', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
