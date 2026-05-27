@@ -7722,6 +7722,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-261 and the later queue lifecycle slices. Those slices hardened explicit queue claim / queued / notified / terminal events; this slice covers the shared parent coordination helper used by child-session and queue-job add / resolve paths, where the helper previously ignored failed transition event appends.
 - Confirmed the minimal fix belongs in `internal/runtime/parent_coordination.go`: snapshot the previous parent coordination before each mutation, propagate `parent.coordination.*` append errors, and restore the snapshot when the transition event cannot be recorded, without changing provider adapters, WebConsole state authority, queue worker behavior, or model-led delegation semantics.
 
+### Review 273
+
+- Confirmed FCA-20260528-280 against `spec/17-web-console.md`'s Session action contract: the inline `Continue session` control is scoped to one durable session and must not refresh or report success against a different session selected before the REST completion settles.
+- Confirmed this is distinct from FCA-20260528-276. That slice guarded the chat composer `sendMessage()` continue / Plan revision branch; this slice covers the separate inline `requestContinueSession()` helper used by session action buttons.
+- Confirmed the minimal fix belongs in `requestContinueSession`: preserve the target session id and apply success/error toast plus refresh side effects only while that same session remains selected, without changing runtime continue semantics, Plan Mode revision behavior, or backend session authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7783,6 +7789,46 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-280
+
+Slice: `fix(webconsole): ignore stale inline continue completions`
+
+Finding:
+
+- `requestContinueSession(sessionID)` correctly submitted `/api/sessions/{id}/continue` for the inline action target, but after the request settled it unconditionally showed success feedback and queued session / overview refreshes.
+- With immediate timer execution in the VM harness, continuing session A and switching to session B before completion caused the stale completion to queue `/api/sessions/session_fast_b?limit=40` and `/api/overview`.
+- The backend mutation still targeted session A, but the browser-side completion made the currently selected session B perform refresh / feedback work for an action it did not own.
+
+Impact:
+
+- The inline Continue button could make WebConsole refresh and report success on an unrelated newly selected session.
+- This was another client-side place where the selected session view could drift from the durable session fact that was actually mutated.
+
+Changes:
+
+- Added a VM-level WebConsole regression for the inline `requestContinueSession()` helper.
+- Scoped `requestContinueSession()` success/error toast and refresh side effects to the original target session id.
+- Preserved `silentToast` error propagation for callers that need to catch failed continue requests.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because stale `session_inline_continue_slow_a` completion queued `/api/sessions/session_fast_b?limit=40` and `/api/overview`.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after binding inline continue side effects to the captured session id.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-279
 

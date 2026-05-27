@@ -1192,18 +1192,22 @@ async function requestStopViaBestAvailablePath(sessionID) {
 }
 
 async function requestContinueSession(sessionID, message = '', options = {}) {
+  const isStillSelected = () => state.sessionId === sessionID;
   try {
     await continueSession(sessionID, {
       message,
       planMode: options.planMode
     });
+    if (!isStillSelected()) {
+      return;
+    }
     if (!options.silentToast) {
       showToast('Session continued.', 'success');
     }
     queueSessionRefresh(120);
     queueOverviewRefresh(180);
   } catch (err) {
-    if (!options.silentToast) {
+    if (!options.silentToast && isStillSelected()) {
       showToast(err.message || 'Failed to continue session.', 'error');
     }
     if (options.silentToast) {

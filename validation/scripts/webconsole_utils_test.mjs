@@ -985,6 +985,61 @@ test('continue completion does not mark a newly selected session as generating',
   });
 });
 
+test('inline continue action does not refresh a newly selected session after stale completion', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  vm.runInContext(`
+    window.setTimeout = function(callback) {
+      callback();
+      return 0;
+    };
+  `, appContext);
+
+  const action = vm.runInContext(`
+    state.sessionId = 'session_inline_continue_slow_a';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded A', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_inline_continue_slow_a' },
+      state: { status: 'awaiting_input' },
+      messages: []
+    };
+    requestContinueSession('session_inline_continue_slow_a');
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_inline_continue_slow_a\/continue/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_inline_continue_slow_a', status: 'accepted' });
+  await action;
+
+  const requestURLs = appContext.pendingRequests.map((request) => request.url);
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: []
+    });
+  }
+
+  assert.deepEqual(sameRealm(requestURLs), [
+    '/api/sessions/session_inline_continue_slow_a/continue'
+  ]);
+});
+
 test('plan revision completion does not mark a newly selected session as generating', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
