@@ -7069,6 +7069,37 @@ func TestServiceConfigTestRejectsUnsupportedAPIProvider(t *testing.T) {
 	}
 }
 
+func TestServiceConfigTestRejectsInvalidAPIKeyBeforeProbe(t *testing.T) {
+	var probeCalled bool
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probeCalled = true
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+		"provider": "openai",
+		"base_url": providerServer.URL,
+		"api_key":  "sk-invalid\x00value",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "invalid env value") {
+		t.Fatalf("expected invalid env value error, got %#v", errResp)
+	}
+	if probeCalled {
+		t.Fatalf("provider probe should not run with invalid transient API key")
+	}
+}
+
 func TestServiceConfigRejectsUnsupportedRoleAPIProviderOverride(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

@@ -4900,6 +4900,34 @@ Validation:
 - Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
 - Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
 
+### FCA-20260527-231: Settings provider test reports malformed API keys as server failures
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` defines `POST /api/config/test` as accepting the same provider form subset as Settings save, including API key input, while using it only for a transient probe and not persisting config or `.env`.
+- The persistent `POST /api/config` path already preflights API-key values and rejects blank or NUL-containing secrets before config, env-file, process environment, or audit mutation.
+- `internal/webconsole/service.go` `handleTestConfig` accepted a transient `api_key`, created a temporary env var name, and called `os.Setenv` directly before running the provider probe.
+- A focused route regression posted `api_key: "sk-invalid\x00value"` to `/api/config/test`. Before the fix, the route returned HTTP 500 with `setenv: invalid argument` instead of a client-side Settings validation error, and the provider probe was not the source of failure.
+
+Impact:
+
+The Settings test button could report malformed operator input as a local WebConsole/server failure. That points recovery toward infrastructure or provider availability even though retrying with the same API key value cannot work, and it makes test/save semantics inconsistent for the same API-key form field.
+
+Minimal fix:
+
+- Add a small transient API-key probe-value preflight for `/api/config/test`.
+- Reject blank or NUL-containing probe keys as HTTP 400 before calling `os.Setenv` or the provider probe.
+- Keep persistent Settings save preflight, config/env/audit behavior, and actual temporary env setup failures unchanged.
+- Add route-level coverage proving malformed transient API keys are rejected before the provider probe runs.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving malformed config-test API keys returned HTTP 500 from `os.Setenv`.
+- Focused post-fix regression proving the same payload returns HTTP 400 and does not call the provider probe server.
+- Adjacent Settings config-test and API-key save preflight tests, full WebConsole, runtime/session, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-230: Bodyless Web mutations are blocked by the JSON Content-Type guard
 
 Severity: Low
@@ -7313,6 +7341,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-024. That slice tightened exact JSON media-type parsing for required JSON mutations; this slice fixes the route classifier that decided which unsafe mutations are required JSON endpoints before dispatch.
 - Confirmed the minimal fix belongs in the shared WebConsole mutation guard: use method-aware route policy and keep local-console Origin/header enforcement for every unsafe API mutation, without moving handler-specific logic into frontend code or weakening required JSON routes.
 
+### Review 224
+
+- Confirmed FCA-20260527-231 against `spec/17-web-console.md`'s Settings API contract: `/api/config/test` accepts the same provider form subset as Settings save, but must not persist config or `.env`.
+- Confirmed this is distinct from FCA-20260526-122 and FCA-20260526-124. Those slices cover persistent API-key saves writing invalid or unusable credentials; this slice covers the transient config-test probe path that still converted malformed form input into a raw `os.Setenv` server failure.
+- Confirmed the minimal fix belongs in `handleTestConfig`: validate only the transient probe API-key value before temporary env setup, without changing persistent Settings save ordering, provider adapters, or audit-event semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7374,6 +7408,42 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-231
+
+Slice: `fix(webconsole): validate config test API keys`
+
+Finding:
+
+- `handleTestConfig` created a temporary env var for submitted probe-only API keys and called `os.Setenv` directly.
+- Persistent Settings save already rejected NUL-containing and blank API keys before config/env/audit mutation, but the test route still surfaced malformed transient keys as raw server failures.
+- Before the fix, a focused route regression showed `/api/config/test` returning HTTP 500 with `setenv: invalid argument` for `api_key: "sk-invalid\x00value"`.
+
+Changes:
+
+- Added `preflightWebAPIKeyProbeValue` for transient provider-test API-key values.
+- Rejected blank or NUL-containing transient probe keys with HTTP 400 before `os.Setenv` or provider probe execution.
+- Preserved persistent Settings save preflight/persistence/audit behavior and kept unexpected temporary env setup failures as HTTP 500.
+- Added route-level regression coverage proving invalid config-test API keys do not call the provider probe server.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceConfigTestRejectsInvalidAPIKeyBeforeProbe -count=1`: failed before the fix because the route returned HTTP 500 from `os.Setenv`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfigTestRejectsInvalidAPIKeyBeforeProbe|TestServiceConfigTestRejectsUnsupportedAPIProvider|TestServiceConfigTestAppliesReasoningModeWithoutPersisting|TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence|TestAPIKeyWriteRejectsBlankEnvValueBeforePersistence' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-230
 

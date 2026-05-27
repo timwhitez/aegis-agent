@@ -3326,6 +3326,16 @@ func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
 	return nil
 }
 
+func preflightWebAPIKeyProbeValue(envKey, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("blank env value for %s", envKey)
+	}
+	if strings.ContainsRune(value, 0) {
+		return fmt.Errorf("invalid env value for %s", envKey)
+	}
+	return nil
+}
+
 func preflightWebConfigAuditTarget(configPath, auditPath string) error {
 	same, err := sameWebPath(configPath, auditPath)
 	if err != nil {
@@ -3559,6 +3569,10 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	probeReq := runtime.ProbeRequest{Provider: providerName, APIProvider: p.APIProvider, ThinkingProbe: true, ReasoningSummary: p.ReasoningSummary}
 	if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
 		apiKeyEnv := fmt.Sprintf("GO_CLI_AGENT_SETTINGS_TEST_API_KEY_%d", time.Now().UnixNano())
+		if err := preflightWebAPIKeyProbeValue(apiKeyEnv, *req.APIKey); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		if err := os.Setenv(apiKeyEnv, *req.APIKey); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
