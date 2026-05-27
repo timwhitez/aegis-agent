@@ -42,6 +42,7 @@ const state = {
   historyRequestSeq: 0,
   toastCounter: 0,
   skills: [],
+  skillsRequestSeq: 0,
   skillUploadInFlight: false,
   fileTree: [],
   workspacePath: '',
@@ -2770,12 +2771,20 @@ async function clearHistory() {
 
 
 async function fetchSkills() {
+  const requestSeq = state.skillsRequestSeq + 1;
+  state.skillsRequestSeq = requestSeq;
   try {
     nodes.skillsGrid.innerHTML = '<div class="view-loading">Loading local skills…</div>';
     const skills = await requestJSON('/api/skills');
+    if (state.skillsRequestSeq !== requestSeq) {
+      return;
+    }
     state.skills = skills;
     renderSkills(skills);
   } catch (err) {
+    if (state.skillsRequestSeq !== requestSeq) {
+      return;
+    }
     console.error('skills error', err);
     const message = err?.message || 'Failed to load local skills.';
     const panel = document.createElement('div');

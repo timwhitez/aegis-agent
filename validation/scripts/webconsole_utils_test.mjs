@@ -1198,6 +1198,45 @@ test('refreshOverview queues the latest refresh and ignores stale in-flight over
   });
 });
 
+test('fetchSkills ignores stale skill catalog responses', async () => {
+  const appContext = createAppHarnessContext();
+
+  const firstLoad = vm.runInContext(`fetchSkills()`, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/skills');
+
+  const secondLoad = vm.runInContext(`fetchSkills()`, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.equal(appContext.pendingRequests[1].url, '/api/skills');
+
+  appContext.pendingRequests[1].resolve([
+    { id: 'skill_current', name: 'Current Skill', author: 'agent', description: 'current catalog', installed: true }
+  ]);
+  await secondLoad;
+
+  const currentState = sameRealm(vm.runInContext(`({
+    skillIDs: maybeArray(state.skills).map((skill) => skill.id),
+    grid: nodes.skillsGrid.innerHTML
+  })`, appContext));
+  assert.deepEqual(currentState.skillIDs, ['skill_current']);
+  assert.match(currentState.grid, /Current Skill/);
+
+  appContext.pendingRequests[0].resolve([
+    { id: 'skill_stale', name: 'Stale Skill', author: 'agent', description: 'stale catalog', installed: true }
+  ]);
+  await firstLoad;
+
+  const finalState = sameRealm(vm.runInContext(`({
+    skillIDs: maybeArray(state.skills).map((skill) => skill.id),
+    grid: nodes.skillsGrid.innerHTML
+  })`, appContext));
+  assert.deepEqual(finalState.skillIDs, ['skill_current']);
+  assert.match(finalState.grid, /Current Skill/);
+  assert.doesNotMatch(finalState.grid, /Stale Skill/);
+});
+
 test('plan revision completion does not mark a newly selected session as generating', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
