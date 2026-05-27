@@ -6685,6 +6685,36 @@ func TestServiceConfigSaveClearsExplicitProviderFields(t *testing.T) {
 	}
 }
 
+func TestServiceConfigRejectsUnsupportedAPIProvider(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider":     "openai",
+		"api_provider": "not-real",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %#v", errResp)
+	}
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if got := updated.Providers["openai"].APIProvider; got != cfg.Providers["openai"].APIProvider {
+		t.Fatalf("unsupported api_provider should not mutate active config, got %q", got)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsupported api_provider should not persist config; stat err=%v", err)
+	}
+}
+
 func TestServiceConfigRoutesPersistRoleProviderOverrides(t *testing.T) {
 	cfg := testConfig(t, "")
 	cfg.Providers["validator"] = cfg.Providers["openai"]
@@ -6886,6 +6916,57 @@ func TestServiceConfigRejectsCustomProviderWithoutAPIProvider(t *testing.T) {
 	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "requires api_provider") {
 		t.Fatalf("expected api_provider error, got %#v", errResp)
+	}
+}
+
+func TestServiceConfigTestRejectsUnsupportedAPIProvider(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+		"provider":     "openai",
+		"api_provider": "not-real",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %#v", errResp)
+	}
+}
+
+func TestServiceConfigRejectsUnsupportedRoleAPIProviderOverride(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"role_providers": map[string]any{
+			"evaluator": map[string]any{
+				"api_provider": "not-real",
+			},
+		},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %#v", errResp)
+	}
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.RoleProviders.Evaluator.APIProvider != "" {
+		t.Fatalf("unsupported role api_provider should not mutate active config, got %#v", updated.RoleProviders.Evaluator)
 	}
 }
 

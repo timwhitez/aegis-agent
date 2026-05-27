@@ -4872,6 +4872,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-227: Settings can persist unsupported adapter families
+
+Severity: Medium
+
+Evidence:
+
+- `spec/02-cli-and-config.md` and `spec/17-web-console.md` require the Web Settings page to expose supported API Provider / adapter family values through a dropdown, and the runtime currently constructs adapters only for `openai-compatible`, `anthropic-compatible`, and `google`.
+- `internal/webconsole/service.go` `handleUpdateConfig` accepted `req.APIProvider`, then called `config.EffectiveAPIProvider`. That helper normalizes known aliases but returns unknown non-empty adapter-family strings as-is.
+- `internal/webconsole/service.go` `roleProviderOverrideFromRequest` used the same helper for role provider overrides, so `planner` / `generator` / `evaluator` overrides could also save unsupported adapter families.
+- `internal/runtime/runner.go` `adapterFromConfig` rejects unsupported effective adapter families later with `unsupported api_provider`, meaning Web Settings could report a successful save while leaving future starts, continues, probes, or role-selected child runs unable to construct a provider adapter.
+- Focused regressions posted `api_provider:"not-real"` to `/api/config` and to the `evaluator` role override. Before the fix, both requests returned HTTP 200.
+
+Impact:
+
+The local Web Settings API could persist a configuration that the runtime cannot use, despite the UI contract exposing only supported adapter families. Operators would see a successful Settings save, but later execution or provider probes could fail at runtime adapter construction. Role overrides made the failure easier to hide because the default provider could remain valid until a specific agent role was selected.
+
+Minimal fix:
+
+- Add a Web Settings validator that reuses `config.EffectiveAPIProvider` for default/provider-name semantics, then rejects effective adapter families outside the runtime-supported set.
+- Apply the validator to `/api/config`, `/api/config/test`, and role provider overrides.
+- Keep the change in the WebConsole Settings boundary instead of moving provider-specific replay or adapter construction logic into Web routes.
+
+Validation:
+
+- Focused pre-fix WebConsole regressions proving unsupported default and role `api_provider` values returned HTTP 200.
+- Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
+- Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-226: Workspace browser sensitive symlink aliases can bypass name filtering
 
 Severity: Medium
@@ -7174,6 +7202,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 220
+
+- Confirmed FCA-20260527-227 against the Settings API contract in `spec/02-cli-and-config.md` and `spec/17-web-console.md`: Web Settings must expose supported adapter families as dropdown values and save a provider configuration the runtime can actually use.
+- Confirmed the bug is not in frontend payload mapping. `settings-view.js` renders the supported dropdown values and `api.js` serializes them correctly; the bypass is direct API submission to `handleUpdateConfig`, `handleTestConfig`, or nested role provider overrides.
+- Confirmed the minimal fix belongs in the WebConsole Settings validation path: reuse config default/alias resolution, then reject adapter families outside the runtime-supported set before persistence or probe, without changing provider adapters or introducing a broader config validation framework.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7235,6 +7269,43 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-227
+
+Slice: `fix(webconsole): reject unsupported api providers`
+
+Finding:
+
+- `handleUpdateConfig` and role provider overrides accepted arbitrary non-empty `api_provider` strings because `config.EffectiveAPIProvider` returns unknown normalized adapter names as-is.
+- `handleTestConfig` used the same effective provider resolution before constructing a probe, so invalid adapter-family form values were not classified as client-side Settings errors.
+- Before the fix, focused regressions showed `/api/config` saving `api_provider:"not-real"` for both the default provider and an evaluator role override with HTTP 200.
+
+Changes:
+
+- Added `effectiveWebSettingsAPIProvider` to resolve default/custom provider semantics, then reject effective adapter families outside `openai-compatible`, `anthropic-compatible`, and `google`.
+- Applied the validator to Settings save, Settings test/probe, and role provider override parsing.
+- Added focused regressions proving unsupported adapter-family values are rejected before active config mutation or config persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfigRejectsUnsupported(APIProvider|RoleAPIProviderOverride)' -count=1`: failed before the fix because both requests returned HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfigRejectsUnsupported(APIProvider|RoleAPIProviderOverride)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfig(TestRejectsUnsupportedAPIProvider|RejectsUnsupported(APIProvider|RoleAPIProviderOverride))' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfig(RoutesUpdateActiveConfig|SaveClearsExplicitProviderFields|RoutesPersistRoleProviderOverrides|RejectsUnknownRoleProviderOverride|RejectsUnsupportedAPIProvider|RejectsUnsupportedRoleAPIProviderOverride|RejectsCustomProviderWithoutAPIProvider|TestRejectsUnsupportedAPIProvider|TestAppliesReasoningModeWithoutPersisting|TestUsesAnthropicPromptCacheDefault|CustomAnthropicProviderGetsThinkingModes)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
 
 ### FCA-20260527-226
 

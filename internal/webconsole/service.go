@@ -3106,7 +3106,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if _, err := config.EffectiveAPIProvider(req.Provider, p); err != nil {
+		if _, err := effectiveWebSettingsAPIProvider(req.Provider, p); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -3409,7 +3409,7 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 			providerCfg = cfg.Providers[providerName]
 			providerCfg.APIProvider = apiProvider
 		}
-		if _, err := config.EffectiveAPIProvider(firstNonEmpty(providerName, "role-"+strings.TrimSpace(role)), providerCfg); err != nil {
+		if _, err := effectiveWebSettingsAPIProvider(firstNonEmpty(providerName, "role-"+strings.TrimSpace(role)), providerCfg); err != nil {
 			return config.RoleProviderOverride{}, err
 		}
 	}
@@ -3528,7 +3528,7 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	effectiveAPIProvider, err := config.EffectiveAPIProvider(providerName, p)
+	effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(providerName, p)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3582,6 +3582,19 @@ func configMode(value string) string {
 		return "yolo"
 	default:
 		return "standard"
+	}
+}
+
+func effectiveWebSettingsAPIProvider(providerName string, provider config.Provider) (string, error) {
+	apiProvider, err := config.EffectiveAPIProvider(providerName, provider)
+	if err != nil {
+		return "", err
+	}
+	switch apiProvider {
+	case "openai-compatible", "anthropic-compatible", "google":
+		return apiProvider, nil
+	default:
+		return "", fmt.Errorf("unsupported api_provider for %s: %s", providerName, apiProvider)
 	}
 }
 
