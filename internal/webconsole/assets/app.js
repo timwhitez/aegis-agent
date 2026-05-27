@@ -76,6 +76,8 @@ const state = {
   lastInputWasEmpty: true,
   layoutObserver: null,
   showHelp: false,
+  needsOverviewRefresh: false,
+  overviewRequestSeq: 0,
   todoFloatExpanded: true,
   fileChangesExpanded: true,
   subAgentExpanded: true,
@@ -2037,16 +2039,27 @@ function overviewErrorMessage(err, fallback = 'Failed to load session overview.'
 
 async function refreshOverview() {
   if (state.refreshingOverview) {
+    state.needsOverviewRefresh = true;
     return;
   }
+  const requestSeq = state.overviewRequestSeq + 1;
+  state.overviewRequestSeq = requestSeq;
   state.refreshingOverview = true;
+  state.needsOverviewRefresh = false;
   try {
-    state.overview = await requestJSON('/api/overview');
+    const overview = await requestJSON('/api/overview');
+    if (state.overviewRequestSeq !== requestSeq || state.needsOverviewRefresh) {
+      return;
+    }
+    state.overview = overview;
     state.overviewError = '';
     if (state.currentView === 'chat') {
       renderCurrentSession();
     }
   } catch (err) {
+    if (state.overviewRequestSeq !== requestSeq || state.needsOverviewRefresh) {
+      return;
+    }
     console.error('overview error', err);
     if (!state.overview) {
       const message = overviewErrorMessage(err);
@@ -2058,6 +2071,12 @@ async function refreshOverview() {
     }
   } finally {
     state.refreshingOverview = false;
+    if (state.needsOverviewRefresh) {
+      state.needsOverviewRefresh = false;
+      refreshOverview().catch((err) => {
+        console.error('queued overview refresh error', err);
+      });
+    }
   }
 }
 

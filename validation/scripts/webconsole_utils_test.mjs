@@ -1089,6 +1089,49 @@ test('fetchHistory queues the latest requested page and ignores stale in-flight 
   });
 });
 
+test('refreshOverview queues the latest refresh and ignores stale in-flight overview', async () => {
+  const appContext = createAppHarnessContext();
+
+  const firstRefresh = vm.runInContext(`refreshOverview()`, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/overview');
+
+  await vm.runInContext(`refreshOverview()`, appContext);
+
+  appContext.pendingRequests[0].resolve({
+    recent_sessions: [{ id: 'session_stale_overview' }],
+    queue_counters: { queued: 1 }
+  });
+  await firstRefresh;
+
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.equal(appContext.pendingRequests[1].url, '/api/overview');
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    overviewIDs: maybeArray(state.overview?.recent_sessions).map((item) => item.id),
+    queued: state.overview?.queue_counters?.queued ?? null
+  })`, appContext)), {
+    overviewIDs: [],
+    queued: null
+  });
+
+  appContext.pendingRequests[1].resolve({
+    recent_sessions: [{ id: 'session_current_overview' }],
+    queue_counters: { queued: 0 }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    overviewIDs: maybeArray(state.overview?.recent_sessions).map((item) => item.id),
+    queued: state.overview?.queue_counters?.queued ?? null,
+    refreshing: state.refreshingOverview
+  })`, appContext)), {
+    overviewIDs: ['session_current_overview'],
+    queued: 0,
+    refreshing: false
+  });
+});
+
 test('plan revision completion does not mark a newly selected session as generating', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
