@@ -4900,6 +4900,34 @@ Validation:
 - Focused post-fix regressions proving `/api/config`, `/api/config/test`, and role provider override submissions return HTTP 400 and do not mutate or persist config.
 - Adjacent Settings, full WebConsole, JS, repository test, vet, diff, and gofmt gates before commit.
 
+### FCA-20260527-233: History pagination accepts overflowing query bounds
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` defines the Web console as a default local operator surface and requires API errors/metadata to remain understandable for browser workflows.
+- `internal/webconsole/service.go` `handleHistory` parsed `page_size` and `page` with raw `queryInt`, unlike session detail and message pagination paths that already use bounded query parsing.
+- `handleHistory` computed `offset := (page - 1) * pageSize` and `totalPages := (total + pageSize - 1) / pageSize` with no overflow guard.
+- A focused regression requested `/api/history?page=2&page_size=<MaxInt>`. Before the fix, the response echoed the huge `page_size` and could produce overflowed pagination metadata instead of falling back to the normal page size.
+- The same regression requested `/api/history?page=<MaxInt>&page_size=2`. Before the fix, offset overflow wrapped negative, `ListPage` clamped it to zero, and the API returned the first page instead of an empty out-of-range page.
+
+Impact:
+
+A malformed or stale browser/API history link could make the local console display nonsensical pagination state or silently jump back to the first page. This is not a durable fact corruption issue, but it weakens the Web-first history browser and makes operator diagnosis harder because an out-of-range page can look like valid newest history.
+
+Minimal fix:
+
+- Bound `page_size` through the existing WebConsole bounded query helper, using the documented default history window when the submitted value is invalid or oversized.
+- Add overflow-safe history offset calculation so extreme page numbers map to an out-of-range offset instead of wrapping to the first page.
+- Keep the change limited to the Web history adapter; session store pagination, session detail pagination, frontend routing, and runtime state remain unchanged.
+
+Validation:
+
+- Focused pre-fix WebConsole regression proving oversized `page_size` was echoed and extreme `page` overflow returned first-page items.
+- Focused post-fix regression proving oversized `page_size` falls back to 10 and extreme `page` returns an empty page.
+- Adjacent history/WebConsole, runtime/session, JS, repository test, vet, diff, and gofmt gates before commit.
+
 ### FCA-20260527-232: Workspace browser missing paths are reported as server failures
 
 Severity: Low
@@ -7383,6 +7411,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-042 and FCA-20260527-226. Those slices covered sensitive credential-like Workspace names and symlink aliases; this slice covers ordinary missing/non-regular path status classification after path resolution and sensitive filtering have already succeeded.
 - Confirmed the minimal fix belongs in the WebConsole Workspace handlers: classify stat/read errors and regular-file shape at the local browser adapter boundary, without changing runtime file tools, workspace escape policy, frontend state, or provider behavior.
 
+### Review 226
+
+- Confirmed FCA-20260527-233 against `spec/17-web-console.md`'s Web-first history browser contract: pagination metadata should be stable and comprehensible, and malformed query bounds must not wrap into a valid first-page response.
+- Confirmed this is distinct from FCA-20260525-023. That earlier slice fixed frontend message-window gap detection; this slice covers backend `/api/history` query bounds and integer overflow in server pagination metadata.
+- Confirmed the minimal fix belongs in `handleHistory`: reuse bounded query parsing for `page_size` and add overflow-safe offset math, without changing session store listing semantics, frontend history state, or runtime/session authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7444,6 +7478,44 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-233
+
+Slice: `fix(webconsole): bound history pagination`
+
+Finding:
+
+- `handleHistory` parsed `page_size` and `page` with raw `queryInt`.
+- Oversized `page_size` could overflow `total_pages` metadata.
+- Extreme `page` values could overflow the offset calculation, then `ListPage` clamped the negative offset to zero and returned first-page history items.
+- Before the fix, a focused route regression showed `/api/history?page=2&page_size=<MaxInt>` echoing the oversized page size, and `/api/history?page=<MaxInt>&page_size=2` returning first-page items.
+
+Changes:
+
+- Changed `/api/history` to parse `page_size` with `queryBoundedInt`, falling back to the normal default when values are invalid or oversized.
+- Added `paginationOffset` to avoid integer overflow for extreme page values.
+- Preserved normal positive pagination behavior and left session store pagination unchanged.
+- Extended `TestServiceHistoryPagination` to cover oversized page size and overflow-prone page values.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceHistoryPagination -count=1`: failed before the fix because the oversized `page_size` was echoed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceHistoryPagination -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceHistoryPagination|TestServiceSessionMessagePaginationAndLimits|TestServiceSessionListReportsSummarySnapshotLoadErrors' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
 
 ### FCA-20260527-232
 

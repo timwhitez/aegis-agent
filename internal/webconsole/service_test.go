@@ -6038,6 +6038,39 @@ func TestServiceHistoryPagination(t *testing.T) {
 	if payload["page"].(float64) != 2 {
 		t.Fatalf("expected page 2, got %#v", payload["page"])
 	}
+
+	maxIntQuery := strconv.Itoa(int(^uint(0) >> 1))
+	recorder = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/history?page=2&page_size="+maxIntQuery, nil)
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected oversized page_size status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	payload = map[string]any{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode oversized page_size response: %v", err)
+	}
+	if payload["page_size"].(float64) != 10 {
+		t.Fatalf("expected oversized page_size to fall back to 10, got %#v", payload["page_size"])
+	}
+	if payload["total_pages"].(float64) != 1 {
+		t.Fatalf("expected total_pages to stay positive after oversized page_size fallback, got %#v", payload["total_pages"])
+	}
+
+	recorder = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/history?page="+maxIntQuery+"&page_size=2", nil)
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected oversized page status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	payload = map[string]any{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode oversized page response: %v", err)
+	}
+	items, ok = payload["items"].([]any)
+	if !ok || len(items) != 0 {
+		t.Fatalf("expected oversized page offset to return an empty page, got %#v", payload["items"])
+	}
 }
 
 func TestServiceSessionListReportsSummarySnapshotLoadErrors(t *testing.T) {

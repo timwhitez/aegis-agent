@@ -542,15 +542,12 @@ func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
-	pageSize := queryInt(r, "page_size", 10)
-	if pageSize <= 0 {
-		pageSize = 10
-	}
+	pageSize := queryBoundedInt(r, "page_size", 10, 1, 200)
 	page := queryInt(r, "page", 1)
 	if page <= 0 {
 		page = 1
 	}
-	offset := (page - 1) * pageSize
+	offset := paginationOffset(page, pageSize)
 	items, total, err := s.store.ListPage(pageSize, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -567,6 +564,18 @@ func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
 		PageSize:   pageSize,
 		TotalPages: totalPages,
 	})
+}
+
+func paginationOffset(page, pageSize int) int {
+	if page <= 1 || pageSize <= 0 {
+		return 0
+	}
+	maxInt := int(^uint(0) >> 1)
+	maxPage := maxInt/pageSize + 1
+	if page > maxPage {
+		return maxInt
+	}
+	return (page - 1) * pageSize
 }
 
 func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
