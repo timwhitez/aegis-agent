@@ -2545,6 +2545,18 @@ func TestEngineSteerAcceptanceReportsGoalHistoryError(t *testing.T) {
 	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err == nil || !strings.Contains(err.Error(), "goal-history.jsonl") {
 		t.Fatalf("expected goal history append error, got %v", err)
 	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	for _, event := range eventsList {
+		if event.Type == "user.message" && event.Data["source"] == "steer" {
+			t.Fatalf("goal history failure should not leave steer user.message event without accepted facts, got %#v", eventsList)
+		}
+		if event.Type == "session.steer.accepted" {
+			t.Fatalf("goal history failure should not leave accepted steer event while request is retryable, got %#v", eventsList)
+		}
+	}
 }
 
 func TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError(t *testing.T) {
@@ -2563,8 +2575,14 @@ func TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError(t *testing.T) {
 	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
 		return engine.appendEvent(meta.ID, eventType, "control_drain", data)
 	})
+	var eventsBeforeGoalEvent []byte
 	engine.beforeAppendEvent = func(evt events.Event) {
 		if evt.Type == "goal.updated" {
+			var err error
+			eventsBeforeGoalEvent, err = os.ReadFile(eventsPath)
+			if err != nil {
+				t.Fatalf("snapshot events before goal.updated append: %v", err)
+			}
 			blockPathAsDir(t, eventsPath, "events")
 		}
 	}
@@ -2588,6 +2606,26 @@ func TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError(t *testing.T) {
 	}
 	if len(requests) != 1 || requests[0].Status != session.SteerStatusPending {
 		t.Fatalf("goal.updated event failure should keep steer pending for retry, got %#v", requests)
+	}
+	if eventsBeforeGoalEvent != nil {
+		if err := os.RemoveAll(eventsPath); err != nil {
+			t.Fatalf("remove blocked events path: %v", err)
+		}
+		if err := os.WriteFile(eventsPath, eventsBeforeGoalEvent, 0o600); err != nil {
+			t.Fatalf("restore readable events file: %v", err)
+		}
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	for _, event := range eventsList {
+		if event.Type == "user.message" && event.Data["source"] == "steer" {
+			t.Fatalf("goal.updated event failure should not leave steer user.message event without message, got %#v", eventsList)
+		}
+		if event.Type == "session.steer.accepted" {
+			t.Fatalf("goal.updated event failure should not leave accepted steer event while request is retryable, got %#v", eventsList)
+		}
 	}
 }
 

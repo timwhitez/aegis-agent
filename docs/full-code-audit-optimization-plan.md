@@ -4872,6 +4872,34 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-218: Goal-linked steer failures can leave orphan acceptance events
+
+Severity: Medium
+
+Evidence:
+
+- `spec/13-live-input-and-steering.md` requires accepted steer input to become a real user message, update `control/steer.jsonl`, refresh contract/artifact facts, and leave durable `user.message` / `session.steer.accepted` evidence.
+- The same spec requires accepted steer for a session with a current Goal to write `goal.updated` history and emit Goal-related events so the direction change is traceable.
+- `internal/runtime/engine.go` `drainSteer` appended `user.message` and `session.steer.accepted` events before appending accepted-steer Goal history and before writing the `goal.updated` event.
+- Focused regressions blocked `artifacts/goal-history.jsonl` and then `events.jsonl` at `goal.updated`. Before the fix, the provider-visible steer message was rolled back and the steer request remained pending, but earlier acceptance events stayed in `events.jsonl`.
+
+Impact:
+
+Recovery and Web timeline views could claim a steer input was accepted even though the matching user message was removed and `control/steer.jsonl` still held the request for retry. After storage repair, retry could add a second acceptance event sequence for the same steer, making message, event, Goal, and control facts disagree about whether the instruction had been consumed.
+
+Minimal fix:
+
+- Build steer acceptance events as one batch: `user.message`, `session.steer.accepted`, and optional `goal.updated`.
+- Append the batch only after accepted-steer Goal history succeeds.
+- If the batch fails, restore Goal history when it was appended, roll back the just-appended steer message, and keep the steer request retryable.
+- Preserve the existing per-request accepted status, pending-count refresh, and contract refresh behavior after the acceptance batch succeeds.
+
+Validation:
+
+- Focused pre-fix runtime regressions proving Goal history and `goal.updated` failures left orphan steer acceptance events.
+- Focused post-fix runtime regressions proving those failures leave no steer `user.message` or `session.steer.accepted` events.
+- Adjacent accepted-steer, pending-count, runtime, WebConsole, JS, repo test, and vet gates before commit.
+
 ### FCA-20260527-217: Background acceptance can leave an orphan `user.message` event
 
 Severity: Medium
@@ -6924,6 +6952,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-172 and FCA-20260527-186. Those slices made background accepted events checked and rolled back early message-event failures; this slice covers the later window where `control/background.jsonl` is updated to `accepted` before `session.background.accepted` is durable.
 - Confirmed the minimal fix belongs in `Engine.drainBackground` plus a session-store rollback helper, not a broad transaction layer: only the current drain's consumed notifications need to return to pending, while unrelated accepted or concurrently appended notifications must be preserved.
 
+### Review 211
+
+- Confirmed FCA-20260527-218 against the live steer acceptance boundary in `spec/13-live-input-and-steering.md`: accepted steer input, accepted events, optional Goal update facts, control status, and contract refresh must describe the same consumed instruction.
+- Confirmed this is a residual event-ordering gap after FCA-20260527-205 and FCA-20260527-215. Those slices made Goal history/event failures checked and persisted accepted status per request, but the first two steer acceptance events could still survive a later Goal failure.
+- Confirmed the minimal fix is local to `Engine.drainSteer`: batch the acceptance events and append them only after Goal history succeeds, rather than introducing a generic transaction layer or moving provider/contract logic across adapters.
+
 ### Review 210
 
 - Confirmed FCA-20260527-217 against the same background control-drain contract as FCA-20260527-216: the message, `user.message` event, `session.background.accepted` event, and background notification status are one acceptance boundary.
@@ -6931,6 +6965,37 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-218
+
+Slice: `fix(runtime): batch goal-linked steer events`
+
+Finding:
+
+- `drainSteer` wrote steer `user.message` and `session.steer.accepted` events before accepted-steer Goal history and `goal.updated` event facts were durable.
+- When Goal history or `goal.updated` persistence failed, the runtime rolled back the steer message and kept the steer request pending, but the earlier acceptance events could remain orphaned.
+
+Changes:
+
+- Changed `drainSteer` to collect `user.message`, `session.steer.accepted`, and optional `goal.updated` into one required event batch.
+- Moved the acceptance event append after accepted-steer Goal history succeeds.
+- Preserved rollback behavior for the failing steer: event-batch failure restores Goal history when needed, removes the just-appended steer message, and leaves the steer request retryable.
+- Extended runtime regressions to assert failed Goal history and `goal.updated` paths leave no orphan steer acceptance events.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptanceReportsGoal(HistoryError|UpdatedEventAppendError)' -count=1`: failed before the fix because orphan steer acceptance events remained after message rollback.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptanceReportsGoal(HistoryError|UpdatedEventAppendError|AcceptedEventAppendError)|TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails|TestEngineAcceptsPendingSteerBeforeProviderCall|TestEngineRefreshesPendingSteerCountAfterConcurrentAppend' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
 
 ### FCA-20260527-217
 
