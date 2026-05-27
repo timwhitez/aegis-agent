@@ -6676,7 +6676,46 @@ Evidence gates:
 - Confirmed the runtime path already passed an error-returning emitter after FCA-20260527-207, but the controller still ignored those errors for finish gate evaluation and allowed `finish` execution to proceed. A focused regression blocked `events.jsonl` at `artifact.gate.passed`; before the fix, the failure surfaced later as `tool.after` after `finish` had already run.
 - Confirmed the minimal fix belongs in `CompletionController` plus the engine tool loop: propagate completion gate event errors as a non-tool-execution gate failure, persist a replayable error tool result for the affected provider call, and stop before `finish` mutates session completion state.
 
+### Review 202
+
+- Confirmed FCA-20260527-209 against the core event catalog in `spec/01-runtime-architecture.md` and the hook point list in `spec/06-hooks.md`: `assistant.message` is a durable session event paired with persisted assistant output.
+- Confirmed `Engine.Run` appended the assistant message, then emitted `assistant.message` through best-effort `emit`; blocked `events.jsonl` could leave provider assistant output and tool calls in `messages.jsonl` while runtime continued to execute those tools without the matching assistant timeline event.
+- Confirmed the minimal fix belongs in the runtime assistant-output boundary: keep the already persisted assistant message for provider replay, but require the matching `assistant.message` event before executing any provider tool calls from that assistant turn.
+
 ## Update Log
+
+### FCA-20260527-209
+
+Slice: `fix(runtime): require assistant message events`
+
+Finding:
+
+- `assistant.message` is listed in `spec/01-runtime-architecture.md` as a core event and in `spec/06-hooks.md` as a hook point payload.
+- Runtime persisted assistant output with provider tool calls to `messages.jsonl`, then emitted `assistant.message` through best-effort `emit`.
+- A focused regression blocked `events.jsonl` exactly at `assistant.message`; before the fix, runtime continued past the missing event, executed the provider tool call, and only later failed as an incomplete run.
+
+Changes:
+
+- Switched assistant-output event recording from best-effort `emit` to required `appendEvent`.
+- Kept the already appended assistant message intact so provider replay retains the assistant output/tool-call fact.
+- Stopped before tool execution when the matching `assistant.message` event cannot be written.
+- Retargeted downstream event append-error regressions to block their specific events after the new earlier assistant-message boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineAssistantMessageReportsEventAppendErrorBeforeToolExecution -count=1`: failed before the fix because the run did not report `assistant.message` and the tool path continued.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineAssistantMessageReportsEventAppendErrorBeforeToolExecution|TestEngineAwaitingInputReportsEventAppendError|TestEngineToolBeforeReportsEventAppendErrorBeforeExecution|TestEngineProviderStopReasonReportsFailedEventAppendError|TestEngineIncompleteNoFinishReportsFailedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-208
 

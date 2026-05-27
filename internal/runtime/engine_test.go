@@ -43,13 +43,12 @@ func TestEngineAwaitingInputReportsEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "session.awaiting_input" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove events: %v", err)
-		}
-		if err := os.Mkdir(eventsPath, 0o700); err != nil {
-			t.Fatalf("block events path: %v", err)
-		}
 		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
 	})
 
@@ -204,6 +203,55 @@ func TestEngineProviderParseErrorFailsBeforeAssistantPersist(t *testing.T) {
 	}
 	if len(attempts) != 1 || attempts[0].Outcome != "failure" || attempts[0].ErrorClass != "response_parse_error" {
 		t.Fatalf("expected parse error provider attempt, got %#v", attempts)
+	}
+}
+
+func TestEngineAssistantMessageReportsEventAppendErrorBeforeToolExecution(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "write a report")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "assistant.message" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	artifactPath := filepath.Join(meta.Workdir, "reports", "assistant-event.md")
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			Text: "I will write it.",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call_write",
+				Name:      "write_file",
+				Arguments: json.RawMessage(`{"path":"reports/assistant-event.md","content":"should not run"}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "assistant.message") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected assistant.message events.jsonl error, result=%#v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(artifactPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("tool should not execute after missing assistant.message event, stat err=%v", statErr)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	foundAssistant := false
+	for _, msg := range messages {
+		if msg.Role == "assistant" && strings.Contains(msg.Text, "I will write it.") {
+			foundAssistant = true
+		}
+		if msg.Role == "tool" {
+			t.Fatalf("tool result should not be persisted after assistant.message event failure, got %#v", messages)
+		}
+	}
+	if !foundAssistant {
+		t.Fatalf("assistant provider output should remain replayable, got %#v", messages)
 	}
 }
 
@@ -673,13 +721,12 @@ func TestEngineToolBeforeReportsEventAppendErrorBeforeExecution(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "tool.before" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove events: %v", err)
-		}
-		if err := os.Mkdir(eventsPath, 0o700); err != nil {
-			t.Fatalf("block events path: %v", err)
-		}
 		return provider.TurnResult{
 			ToolCalls: []provider.ToolCall{{
 				ID:        "call_side_effect",
@@ -877,13 +924,12 @@ func TestEngineProviderStopReasonReportsFailedEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "session.failed" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove events: %v", err)
-		}
-		if err := os.Mkdir(eventsPath, 0o700); err != nil {
-			t.Fatalf("block events path: %v", err)
-		}
 		return provider.TurnResult{Text: "partial", StopReason: "max_tokens"}, nil
 	})
 
@@ -1950,6 +1996,11 @@ func TestEngineIncompleteNoFinishReportsFailedEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "session.failed" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
 	fake := provider.NewFake(
 		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 			return provider.TurnResult{Text: "first", StopReason: "done_candidate"}, nil
@@ -1958,12 +2009,6 @@ func TestEngineIncompleteNoFinishReportsFailedEventAppendError(t *testing.T) {
 			return provider.TurnResult{Text: "second", StopReason: "done_candidate"}, nil
 		},
 		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-				t.Fatalf("remove events: %v", err)
-			}
-			if err := os.Mkdir(eventsPath, 0o700); err != nil {
-				t.Fatalf("block events path: %v", err)
-			}
 			return provider.TurnResult{Text: "third", StopReason: "done_candidate"}, nil
 		},
 	)

@@ -396,10 +396,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			messages = append(messages, msg)
 			state.LastAssistantExcerpt = truncateText(assistantText, 500)
-			e.emit(meta.ID, "assistant.message", "assistant_output", map[string]any{
+			if err := e.appendEvent(meta.ID, "assistant.message", "assistant_output", map[string]any{
 				"text":   assistantText,
 				"status": state.Status,
-			})
+			}); err != nil {
+				return RunResult{}, fmt.Errorf("record assistant.message event: %w", err)
+			}
 			result.Text = assistantText
 		}
 
