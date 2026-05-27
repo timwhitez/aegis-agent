@@ -67,7 +67,9 @@ func (c *CompletionController) EvaluateToolCall(messages []session.Message, tool
 	} else if text != "" {
 		return c.block(kind, text, map[string]any{"source": "artifact_tracker", "tool_name": toolName})
 	}
-	if kind, text := c.parentCoordinationGate(toolName); text != "" {
+	if kind, text, err := c.parentCoordinationGate(toolName); err != nil {
+		return c.eventErrorDecision("completion.gate.parent_background_pending", err)
+	} else if text != "" {
 		return c.block(kind, text, map[string]any{"source": "parent_coordination", "tool_name": toolName})
 	}
 	if kind, text := c.goalCompletionGate(toolName); text != "" {
@@ -263,13 +265,13 @@ func (c *CompletionController) requiredArtifactGate(toolName string) (string, st
 	return "required_artifact", "Required-artifact gate: before finishing, write or update the explicit required artifact(s): " + strings.Join(parts, "; ") + ".", nil
 }
 
-func (c *CompletionController) parentCoordinationGate(toolName string) (string, string) {
+func (c *CompletionController) parentCoordinationGate(toolName string) (string, string, error) {
 	if toolName != "finish" {
-		return "", ""
+		return "", "", nil
 	}
 	notifications, err := c.store.LoadBackgroundNotifications(c.sessionID)
 	if err != nil {
-		return "parent_background_state", "Parent-background gate could not load control/background.jsonl: " + err.Error()
+		return "parent_background_state", "Parent-background gate could not load control/background.jsonl: " + err.Error(), nil
 	}
 	var pending []string
 	for _, notification := range notifications {
@@ -286,32 +288,34 @@ func (c *CompletionController) parentCoordinationGate(toolName string) (string, 
 		pending = append(pending, id)
 	}
 	if len(pending) > 0 {
-		_ = c.emitCompletion("completion.gate.parent_background_pending", map[string]any{
+		if err := c.emitCompletion("completion.gate.parent_background_pending", map[string]any{
 			"pending_background_notifications": pending,
-		})
-		return "parent_background_pending", fmt.Sprintf("Parent-background gate: completed child or background results are pending transcript acceptance before finish (%s). Continue one more turn so the harness can accept those durable facts, then reconcile them before the final conclusion.", joinPromptItems(pending))
+		}); err != nil {
+			return "", "", &completionEventAppendError{eventType: "completion.gate.parent_background_pending", err: err}
+		}
+		return "parent_background_pending", fmt.Sprintf("Parent-background gate: completed child or background results are pending transcript acceptance before finish (%s). Continue one more turn so the harness can accept those durable facts, then reconcile them before the final conclusion.", joinPromptItems(pending)), nil
 	}
 	coordination, err := c.store.LoadParentCoordination(c.sessionID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", ""
+			return "", "", nil
 		}
-		return "parent_coordination_state", "Parent-coordination gate could not load parent-coordination.json: " + err.Error()
+		return "parent_coordination_state", "Parent-coordination gate could not load parent-coordination.json: " + err.Error(), nil
 	}
 	if coordination.ParentSessionID == "" {
-		return "", ""
+		return "", "", nil
 	}
 	if len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 	if coordination.WaitMode == "wait-any" && (len(coordination.CompletedChildSessions) > 0 || len(coordination.CompletedQueueJobs) > 0) {
 		_ = c.emitCompletion("parent_coordination.gate.warned", map[string]any{
 			"unresolved_child_sessions": coordination.UnresolvedChildSessions,
 			"unresolved_queue_jobs":     coordination.UnresolvedQueueJobs,
 		})
-		return "", ""
+		return "", "", nil
 	}
-	return "parent_coordination", fmt.Sprintf("Parent-coordination gate: unresolved child or queue work remains before finish (children: %s; jobs: %s). Wait for completion, mark wait_mode=wait-any with one completed result, or explicitly resolve the outstanding work.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs))
+	return "parent_coordination", fmt.Sprintf("Parent-coordination gate: unresolved child or queue work remains before finish (children: %s; jobs: %s). Wait for completion, mark wait_mode=wait-any with one completed result, or explicitly resolve the outstanding work.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
 }
 
 func (c *CompletionController) goalCompletionGate(toolName string) (string, string) {

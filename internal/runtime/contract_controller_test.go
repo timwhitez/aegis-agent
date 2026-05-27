@@ -1452,6 +1452,35 @@ func TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish(t *
 	}
 }
 
+func TestCompletionControllerReportsPendingBackgroundEventError(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := store.AppendBackgroundNotification(meta.ID, session.NewBackgroundNotification(session.QueueJob{
+		ID:            "job-event-failure",
+		Status:        session.QueueStatusCompleted,
+		SessionID:     "child-event-failure",
+		SessionStatus: session.StatusCompleted,
+		FinalText:     "child result",
+	})); err != nil {
+		t.Fatalf("append background notification: %v", err)
+	}
+	var events []string
+	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, func(eventType string, _ map[string]any) error {
+		events = append(events, eventType)
+		if eventType == "completion.gate.parent_background_pending" {
+			return errors.New("blocked pending-background event")
+		}
+		return nil
+	})
+
+	decision := controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))
+	if decision.Status != GateBlock || decision.GateID != "completion_event" || decision.Err == nil {
+		t.Fatalf("expected pending-background event append error, got %#v events=%#v", decision, events)
+	}
+	if !strings.Contains(decision.ModelMessage, "completion.gate.parent_background_pending") {
+		t.Fatalf("expected pending-background event name in model message, got %q", decision.ModelMessage)
+	}
+}
+
 func TestParentCoordinationGateReportsCorruptBackgroundNotifications(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	backgroundPath := filepath.Join(store.SessionDir(meta.ID), "control", "background.jsonl")

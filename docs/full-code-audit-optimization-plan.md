@@ -4872,6 +4872,35 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-213: Parent background pending gate hides event append failures
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` requires `CompletionController` to write `completion.gate.*` events back to the session.
+- `spec/18-durable-contract-and-completion.md` defines parent coordination / background notifications as durable completion facts that keep parent `finish` blocked while completed background results still need transcript acceptance.
+- `internal/runtime/completion_controller.go` emitted the specific `completion.gate.parent_background_pending` event when pending background notifications blocked `finish`, but ignored the event callback error with `_ =`.
+- A focused regression made only `completion.gate.parent_background_pending` fail. Before the fix, `EvaluateToolCall(..., "finish", ...)` returned an ordinary `parent_background_pending` block with no error, and only later generic completion block events were emitted.
+
+Impact:
+
+The finish gate still blocked completion, but the most specific durable event explaining which background result notifications were pending could be missing without surfacing as a persistence failure. That weakens Web timeline evidence, recovery diagnostics, and the post-audit guarantee that `completion.gate.*` events are required gate facts rather than optional telemetry.
+
+Minimal fix:
+
+- Propagate `completion.gate.parent_background_pending` append failures from `parentCoordinationGate`.
+- Return a `completion_event` gate decision when that specific event cannot be persisted.
+- Preserve the existing behavior for successful pending-background blocks, corrupt background/coordination snapshots, and wait-any parent coordination warnings.
+- Add focused regression coverage for the swallowed event error.
+
+Validation:
+
+- Focused pre-fix regression proving the pending-background event error was swallowed.
+- Focused post-fix regression proving the controller returns a completion event error for the same failure.
+- Adjacent parent coordination and completion event regressions remain green.
+- Full runtime, WebConsole, JS, repository test, and vet gates before commit.
+
 ### FCA-20260527-212: Web Origin guard accepts cross-scheme same-host requests
 
 Severity: Medium
@@ -6757,7 +6786,47 @@ Evidence gates:
 - Confirmed the shared Origin helper only compared `Origin.Host` with `r.Host`; same-host cross-scheme values such as `https://host:port` for an `http://host:port` request were therefore accepted even though scheme is part of same-origin semantics.
 - Confirmed the minimal fix belongs in the shared Origin helper used by both REST mutation guard and WebSocket `CheckOrigin`: compare scheme plus host, preserve the no-Origin custom-header path for REST mutations, and keep no-Origin WebSocket diagnostic connections allowed.
 
+### Review 206
+
+- Confirmed FCA-20260527-213 against the `CompletionController` event contract in `spec/01-runtime-architecture.md`: `completion.gate.*` events are durable session facts.
+- Confirmed `parentCoordinationGate` was the remaining completion-gate path that emitted a `completion.gate.*` event through `_ = c.emitCompletion(...)`; a focused regression showed `completion.gate.parent_background_pending` append failure was swallowed while the controller returned an ordinary parent-background block.
+- Confirmed the minimal fix belongs in `CompletionController.parentCoordinationGate`: propagate the specific pending-background event error before returning the semantic block, without changing wait-any warning behavior or the generic `completion.gate.blocked` path.
+
 ## Update Log
+
+### FCA-20260527-213
+
+Slice: `fix(runtime): require pending background gate event`
+
+Finding:
+
+- Parent background notifications block `finish` until completed child/background results are accepted into the transcript.
+- The gate emitted `completion.gate.parent_background_pending` with the pending notification IDs, but ignored append failures.
+- A focused regression made only that event append fail; before the fix, the controller returned a normal `parent_background_pending` block with no `Err`, leaving the specific pending-background gate evidence missing.
+
+Changes:
+
+- Changed `parentCoordinationGate` to return event append errors.
+- Required `completion.gate.parent_background_pending` before returning the semantic pending-background block.
+- Added `TestCompletionControllerReportsPendingBackgroundEventError`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCompletionControllerReportsPendingBackgroundEventError -count=1`: failed before the fix because the event error was swallowed.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompletionControllerReportsPendingBackgroundEventError|TestParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish|TestParentCoordinationGateReportsCorruptBackgroundNotifications|TestParentCoordinationGateReportsCorruptCoordinationSnapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineArtifactGatePassedReportsEventAppendErrorBeforeFinish|TestCompletionControllerReportsArtifactGatePassedEventError|TestEngineArtifactTrackedReportsEventAppendErrorWithReplayResult|TestCompletionControllerTrackToolResultReportsArtifactTrackedEventErrorAndRollsBack' -count=1`: passed.
+- `gofmt -l internal/runtime/completion_controller.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-212
 
