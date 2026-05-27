@@ -608,6 +608,34 @@ func (s *Store) SaveParentCoordination(sessionID string, coordination ParentCoor
 	return s.writeJSONFile(path, coordination)
 }
 
+func (s *Store) SnapshotParentCoordination(sessionID string) (ParentCoordinationSnapshot, error) {
+	var snapshot ParentCoordinationSnapshot
+	coordination, err := s.LoadParentCoordination(sessionID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return snapshot, nil
+		}
+		return snapshot, err
+	}
+	snapshot.Coordination = coordination
+	snapshot.HasCoordination = true
+	return snapshot, nil
+}
+
+func (s *Store) RestoreParentCoordination(sessionID string, snapshot ParentCoordinationSnapshot) error {
+	if snapshot.HasCoordination {
+		return s.SaveParentCoordination(sessionID, snapshot.Coordination)
+	}
+	path, err := s.sessionPath(sessionID, "parent-coordination.json")
+	if err != nil {
+		return err
+	}
+	if err := fileutil.RemoveFileNoSymlink(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) MutateParentCoordination(sessionID string, mutate func(*ParentCoordination) error) (ParentCoordination, bool, error) {
 	path, err := s.sessionPath(sessionID, "parent-coordination.json")
 	if err != nil {

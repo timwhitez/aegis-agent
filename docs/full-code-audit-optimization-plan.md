@@ -6610,7 +6610,49 @@ Evidence gates:
 - Confirmed the issue is distinct from FCA-20260526-086 and FCA-20260526-071. Those slices made CLI history/event failures visible and restored `goal.json`; this slice covers the remaining event-stage mismatch where the CLI restored the current Goal snapshot but left the just-appended Goal history fact behind.
 - Confirmed the minimal fix belongs in the CLI adapter: snapshot Goal history before CLI-owned status, clear, and direct mission approval mutations, then restore it together with `goal.json` if the paired event append fails.
 
+### Review 191
+
+- Confirmed FCA-20260527-198 against the child and queue event catalog in `spec/01-runtime-architecture.md`: `session.child.queued` is the durable parent-session event for background child work, alongside worker lifecycle events such as `queue.job.claimed`, `queue.job.completed`, and `queue.job.failed`.
+- Confirmed the issue is distinct from the prior queue lifecycle event hardening. `ProcessNextJob` already requires worker claim/notification/terminal lifecycle events, while `QueueSubmit` owns the submit-time parent-linked job creation boundary.
+- Confirmed the minimal fix belongs in runtime delegation, not Web or CLI adapters: parent-linked `QueueSubmit` must persist the queued job, parent coordination, and `session.child.queued` as one success boundary; failed event append must roll back the just-created job and parent coordination instead of leaving a durable queue item with no parent timeline evidence.
+
 ## Update Log
+
+### FCA-20260527-198
+
+Slice: `fix(runtime): require child queued events`
+
+Finding:
+
+- `Runner.QueueSubmit` persisted a parent-linked queued job and added it to `parent-coordination.json`, but did not require the matching `session.child.queued` parent timeline event.
+- `SpawnAgent(background=true)` emitted `session.child.queued` through unchecked `r.emit` after `QueueSubmit`, then redundantly called `addParentQueueJob` again.
+- A blocked `events.jsonl` path could therefore return a successful queued job and leave parent coordination parked while the durable parent timeline lacked the submit-time child queued evidence required by the event catalog.
+
+Changes:
+
+- Moved the required `session.child.queued` append into `QueueSubmit` for parent-linked jobs.
+- Added rollback for submit-time event failure: restore the previous parent coordination snapshot and delete the queued job before returning the event append error.
+- Removed the duplicate unchecked child queued emit and duplicate parent coordination mutation from `SpawnAgent(background=true)`.
+- Extended queue submit regressions to assert both event-failure rollback and successful `session.child.queued` event persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerQueueSubmitReportsChildQueuedEventAppendError -count=1`: failed before the fix because `QueueSubmit` returned a queued job with no `session.child.queued` event error.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerQueueSubmitReportsChildQueuedEventAppendError|TestRunnerQueueSubmitAndWorkerCompletesJob|TestRunnerQueueSubmitReportsParentCoordinationError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerQueueSubmitReportsChildQueuedEventAppendError|TestRunnerQueueSubmitAndWorkerCompletesJob|TestRunnerQueueSubmitReportsParentCoordinationError|TestProcessNextJobMarksFailedJobWithoutReturningError|TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/delegation.go internal/runtime/delegation_test.go internal/runtime/parent_coordination.go internal/session/store.go internal/session/types.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-197
 

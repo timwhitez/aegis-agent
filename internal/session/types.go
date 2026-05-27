@@ -229,6 +229,11 @@ type ParentCoordination struct {
 	UpdatedAt               string   `json:"updated_at"`
 }
 
+type ParentCoordinationSnapshot struct {
+	Coordination    ParentCoordination
+	HasCoordination bool
+}
+
 type State struct {
 	Status                   string   `json:"status"`
 	Phase                    string   `json:"phase"`

@@ -426,6 +426,23 @@ func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	if job.Status != session.QueueStatusQueued {
 		t.Fatalf("expected queued job, got %#v", job)
 	}
+	parentEvents, err := runner.store.LoadEvents(parentID)
+	if err != nil {
+		t.Fatalf("load parent events after queue submit: %v", err)
+	}
+	foundQueuedEvent := false
+	for _, event := range parentEvents {
+		if event.Type != "session.child.queued" {
+			continue
+		}
+		if event.Data["job_id"] == job.ID && event.Data["agent_role"] == "planner" {
+			foundQueuedEvent = true
+			break
+		}
+	}
+	if !foundQueuedEvent {
+		t.Fatalf("expected session.child.queued event for job %s, got %#v", job.ID, parentEvents)
+	}
 
 	processed, ok, err := runner.ProcessNextJob(context.Background())
 	if err != nil {
@@ -522,6 +539,36 @@ func TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError(t *testing.T)
 	}
 	if processed.Status != session.QueueStatusCompleted || processed.LastError != "" {
 		t.Fatalf("expected event append error not to turn completed child into failed job, got %#v", processed)
+	}
+}
+
+func TestRunnerQueueSubmitReportsChildQueuedEventAppendError(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	blockRuntimeEventsPath(t, runner.store, parentID)
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		AgentRole:       "planner",
+		IsolationMode:   "off",
+	})
+	if err == nil || !strings.Contains(err.Error(), "session.child.queued") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected child queued event append error, got job=%#v err=%v", job, err)
+	}
+	jobs, listErr := runner.store.ListJobs(10)
+	if listErr != nil {
+		t.Fatalf("list jobs after failed queue submit: %v", listErr)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("failed queue submit should roll back queued job, got %#v", jobs)
+	}
+	_, coordErr := runner.store.LoadParentCoordination(parentID)
+	if !os.IsNotExist(coordErr) {
+		t.Fatalf("load parent coordination after failed queue submit: %v", coordErr)
 	}
 }
 

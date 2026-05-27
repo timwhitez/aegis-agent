@@ -124,17 +124,6 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		if err != nil {
 			return tools.AgentSpawnResult{}, err
 		}
-		r.emit(req.ParentSessionID, "session.child.queued", "delegate", map[string]any{
-			"job_id":     job.ID,
-			"agent_name": job.AgentName,
-			"agent_role": job.AgentRole,
-			"wait_mode":  job.WaitMode,
-		})
-		if err := addParentQueueJob(r.store, req.ParentSessionID, job.ID, req.WaitMode); err != nil {
-			return tools.AgentSpawnResult{}, err
-		}
-		_ = writeSessionSummary(r.store, req.ParentSessionID)
-		_ = writeLongRunCheckpoint(r.store, req.ParentSessionID)
 		return tools.AgentSpawnResult{
 			QueueJobID: job.ID,
 			Status:     job.Status,
@@ -348,9 +337,32 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		return session.QueueJob{}, err
 	}
 	if job.ParentSessionID != "" {
+		previousCoordination, err := r.store.SnapshotParentCoordination(job.ParentSessionID)
+		if err != nil {
+			if deleteErr := r.store.DeleteJob(job.ID); deleteErr != nil {
+				return session.QueueJob{}, fmt.Errorf("snapshot parent coordination for queue job %s failed with %v; delete queued job after failed parent coordination snapshot: %w", job.ID, err, deleteErr)
+			}
+			return session.QueueJob{}, err
+		}
 		if err := addParentQueueJob(r.store, job.ParentSessionID, job.ID, job.WaitMode); err != nil {
 			if deleteErr := r.store.DeleteJob(job.ID); deleteErr != nil {
 				return session.QueueJob{}, fmt.Errorf("persist parent coordination for queue job %s failed with %v; delete queued job after failed parent coordination: %w", job.ID, err, deleteErr)
+			}
+			return session.QueueJob{}, err
+		}
+		if err := retryQueuePersistence("append session.child.queued event for job "+job.ID, func() error {
+			return r.appendEvent(job.ParentSessionID, "session.child.queued", "delegate", map[string]any{
+				"job_id":     job.ID,
+				"agent_name": job.AgentName,
+				"agent_role": job.AgentRole,
+				"wait_mode":  job.WaitMode,
+			})
+		}); err != nil {
+			if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, previousCoordination); restoreErr != nil {
+				return session.QueueJob{}, fmt.Errorf("append session.child.queued event for queue job %s failed with %v; restore parent coordination after failed child queued event: %w", job.ID, err, restoreErr)
+			}
+			if deleteErr := r.store.DeleteJob(job.ID); deleteErr != nil {
+				return session.QueueJob{}, fmt.Errorf("append session.child.queued event for queue job %s failed with %v; delete queued job after failed child queued event: %w", job.ID, err, deleteErr)
 			}
 			return session.QueueJob{}, err
 		}
