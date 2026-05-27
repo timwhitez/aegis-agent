@@ -2514,6 +2514,26 @@ func TestServiceQueueSubmitReportsStoreAppendFailureAsServerError(t *testing.T) 
 	}
 }
 
+func TestServiceQueueSubmitRejectsUnknownProviderWithStructuredError(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/queue/jobs", map[string]any{
+		"prompt":   "queued child work",
+		"provider": "missing-provider",
+	}, http.StatusBadRequest)
+	if errResp.Code != errorCodeUnknownProvider || errResp.Action == "" {
+		t.Fatalf("expected structured unknown provider error, got %#v", errResp)
+	}
+}
+
 func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 	server := newSubmitPlanServer()
 	defer server.Close()

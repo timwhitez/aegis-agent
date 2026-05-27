@@ -2634,6 +2634,10 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := validateProviderOverrideInConfig(cfg, req.Provider); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	runner := runtime.NewRunner(cfg)
 	job, err := runner.QueueSubmit(r.Context(), runtime.QueueSubmitRequest{
 		ParentSessionID: req.ParentSessionID,

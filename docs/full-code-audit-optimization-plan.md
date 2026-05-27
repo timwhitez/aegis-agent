@@ -7758,6 +7758,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-282 and FCA-20260528-284. Those slices covered `/api/overview` and `/api/skills`; this slice covers the separate Settings renderer and its `/api/config` load path in `settings-view.js`.
 - Confirmed the minimal fix belongs in `renderSettings`: preserve the latest config request sequence and suppress stale success/error UI mutations from older responses, without changing Settings save/test APIs, backend config persistence, provider adapters, or API key audit semantics.
 
+### Review 279
+
+- Confirmed FCA-20260528-286 against `spec/17-web-console.md`'s WebConsole control contract: queue submission is an advanced Web/API control path, but provider overrides still need the same structured Web error semantics as start, continue, and config update.
+- Confirmed this is distinct from FCA-20260528-285 and the stale-response cluster. This slice covers backend queue submit validation, not frontend polling or settings rendering.
+- Confirmed the minimal fix belongs in `handleCreateJob`: reuse the existing provider override preflight before constructing the queue runner, preserving runtime `QueueSubmit` provider/model resolution and queue persistence behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7819,6 +7825,32 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-286
+
+Slice: `fix(webconsole): structure queue provider errors`
+
+Finding:
+
+- `handleCreateJob()` passed queue provider overrides directly to runtime `QueueSubmit`.
+- Runtime correctly rejected an unknown provider and `queueJobActionStatus()` mapped it to HTTP 400, but `writeError()` received a plain `runtime.ConfigError`, so `/api/queue/jobs` returned no `UNKNOWN_PROVIDER` code, detail, or action.
+- The initial regression showed `POST /api/queue/jobs` with provider `missing-provider` returned `{"error":"unknown provider: missing-provider"}` instead of the structured WebConsole provider error used by start, continue, and config routes.
+
+Impact:
+
+- Queue submission had weaker Web/API error semantics than the rest of the provider override surface.
+- Operators and frontend code could not distinguish an unknown provider from a generic bad request without parsing message text, despite the backend status code being correct.
+
+Changes:
+
+- Added a WebConsole regression for queue submission with an unknown provider override.
+- Updated `handleCreateJob()` to reuse `validateProviderOverrideInConfig()` after the config snapshot and before creating the runtime runner.
+- Kept runtime `QueueSubmit` provider inheritance, role override handling, and queue persistence behavior unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceQueueSubmitRejectsUnknownProviderWithStructuredError -count=1`: failed before the fix because the response had no `Code` or `Action`.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceQueueSubmitRejectsUnknownProviderWithStructuredError -count=1`: passed after the provider override preflight.
 
 ### FCA-20260528-285
 
