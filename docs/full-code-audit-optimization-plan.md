@@ -7458,6 +7458,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-229 and the upload rollback slices. Those hardened malformed upload packages and install/uninstall side effects; this slice covers the residual read/list path after files already exist under a configured skill directory.
 - Confirmed the minimal fix belongs in the Web service Skills adapter: skip directories without `SKILL.md`, propagate non-missing manifest/root read errors with actionable paths, and leave runtime SkillCatalog loading, upload transactions, audit events, and frontend state unchanged.
 
+### Review 229
+
+- Confirmed FCA-20260527-236 against `spec/17-web-console.md`'s WebConsole error-handling contract: backend/API errors must remain visible in the local UI, and Skills failures are part of the same Web-first operator surface as upload/uninstall.
+- Confirmed this is distinct from FCA-20260527-235. That slice made `/api/skills` return path-specific manifest/root read errors; this slice covers the frontend catch path that still discarded those actionable backend messages.
+- Confirmed the minimal fix belongs in the Skills view renderer: show the `requestJSON` error message in the empty panel and toast using text-only DOM insertion, without changing SkillCatalog discovery, upload/uninstall mutations, backend status mapping, or runtime skill loading.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7519,6 +7525,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-236
+
+Slice: `fix(webconsole): surface skill list errors`
+
+Finding:
+
+- `/api/skills` now returns actionable backend errors for unreadable configured skill roots or unreadable `SKILL.md` manifests.
+- The frontend `fetchSkills()` catch path still replaced every failed list response with a generic `Failed to load local skills.` panel and toast.
+- Before the fix, the focused embedded-asset contract failed because `app.js` did not use `err.message` when rendering Skills list failures.
+
+Impact:
+
+- Operators could still lose the path-specific error added by the backend Skills list hardening.
+- A malformed or symlink-rejected local skill manifest would produce the same browser feedback as a generic transient list failure, weakening local recovery and diagnosis.
+
+Changes:
+
+- Changed `fetchSkills()` to preserve `err.message` when available.
+- Rendered the failed Skills panel through a created DOM node and `textContent`, so backend error text is visible without allowing HTML injection.
+- Kept the existing generic fallback for non-API or message-less failures.
+- Added an embedded asset contract assertion that the Skills list catch path surfaces backend errors.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because `fetchSkills()` still rendered and toasted only the generic fallback.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceServesEmbeddedShellAndAssets|TestServiceSkillListRequiresReadableSkillManifest' -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
 
 ### FCA-20260527-235
 

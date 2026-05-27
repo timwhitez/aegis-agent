@@ -2577,8 +2577,12 @@ async function fetchSkills() {
     renderSkills(skills);
   } catch (err) {
     console.error('skills error', err);
-    nodes.skillsGrid.innerHTML = '<div class="empty-panel">Failed to load local skills.</div>';
-    showToast('Failed to load local skills.', 'error');
+    const message = err?.message || 'Failed to load local skills.';
+    const panel = document.createElement('div');
+    panel.className = 'empty-panel';
+    panel.textContent = message;
+    nodes.skillsGrid.replaceChildren(panel);
+    showToast(message, 'error');
   }
 }
 
