@@ -733,6 +733,9 @@ func defReadFile() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("read_file", err), nil
 			}
+			if err := validateToolPath(input.Path); err != nil {
+				return errorResult("read_file", err), nil
+			}
 			path, displayBase, source, skillName, err := resolveReadFilePath(execCtx, input.Path)
 			if err != nil {
 				return errorResult("read_file", err), nil
@@ -816,6 +819,9 @@ func defWriteFile() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("write_file", err), nil
 			}
+			if err := validateToolPath(input.Path); err != nil {
+				return errorResult("write_file", err), nil
+			}
 			if err := CheckWorkspaceWriteInputAllowed(execCtx.Workdir, input.Path); err != nil {
 				return errorResult("write_file", err), nil
 			}
@@ -871,6 +877,9 @@ func defEditFile() Definition {
 				NewText string `json:"new_text"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("edit_file", err), nil
+			}
+			if err := validateToolPath(input.Path); err != nil {
 				return errorResult("edit_file", err), nil
 			}
 			if input.OldText == "" {
@@ -1464,6 +1473,13 @@ func compileGrepMatcher(pattern string) (*regexp.Regexp, bool) {
 func validateGrepPattern(pattern string) error {
 	if pattern == "" {
 		return errors.New("pattern is required")
+	}
+	return nil
+}
+
+func validateToolPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("path is required")
 	}
 	return nil
 }

@@ -1554,6 +1554,57 @@ func TestEditFileRejectsEmptyOldText(t *testing.T) {
 	}
 }
 
+func TestFileToolsRejectBlankPath(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, "notes.txt"), []byte("alpha\n"), 0o600); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+	cases := []struct {
+		name string
+		args json.RawMessage
+	}{
+		{name: "read_file", args: json.RawMessage(`{"path":"  "}`)},
+		{name: "write_file", args: json.RawMessage(`{"path":"  ","content":"bad"}`)},
+		{name: "edit_file", args: json.RawMessage(`{"path":"  ","old_text":"alpha","new_text":"bad"}`)},
+	}
+	for _, tc := range cases {
+		result, err := registry.Execute(context.Background(), tc.name, execCtx, tc.args)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !result.IsError || !strings.Contains(result.DisplayOutput, "path is required") {
+			t.Fatalf("expected %s to reject blank path, got %#v", tc.name, result)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, "notes.txt"))
+	if err != nil {
+		t.Fatalf("read notes: %v", err)
+	}
+	if string(data) != "alpha\n" {
+		t.Fatalf("blank-path tools mutated notes.txt: %q", string(data))
+	}
+}
+
 func TestWriteFileRejectsSymlinkedTempAlias(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

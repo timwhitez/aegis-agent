@@ -7536,6 +7536,12 @@ Evidence gates:
 - Confirmed this is distinct from grep empty-pattern handling, symlink-escape skipping, generated-artifact skips, and missing explicit grep roots. This slice covers the `glob` tool's own schema-required pattern being present but empty.
 - Confirmed the minimal fix belongs in the built-in `glob` handler: reuse the existing search-pattern validator before `doublestar.GlobWalk`, without changing glob syntax, path resolution, symlink-escape skip behavior, artifact filtering, or grep behavior.
 
+### Review 242
+
+- Confirmed FCA-20260527-249 against `spec/04-tools-and-skills.md`'s file-tool contracts: `read_file`, `write_file`, and `edit_file` require a concrete workspace-relative path, so a blank `path` is malformed input rather than a request for the workspace root.
+- Confirmed this is distinct from path escape, symlink escape, generated-artifact filtering, write denylist, and empty `old_text` handling. This slice covers schema-valid but blank path strings before any workspace resolution.
+- Confirmed the minimal fix belongs in the built-in file-tool handlers: reject blank paths before read/write resolution and write-policy checks, without changing valid relative paths, skill-reference reads, atomic writes, or edit replacement semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7597,6 +7603,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-249
+
+Slice: `fix(tools): reject blank file paths`
+
+Finding:
+
+- `read_file`, `write_file`, and `edit_file` all require `path` in their tool schemas, but their handlers accepted blank or whitespace-only paths.
+- `read_file` resolved a blank path to the workspace directory and returned a misleading `not a regular file` error instead of an input-validation error.
+- `write_file` and `edit_file` proceeded into write policy/path resolution with a blank path before failing later for less specific reasons.
+- Before the fix, the focused regression failed because `read_file` returned `not a regular file: <workdir>` for `"path":"  "`.
+
+Impact:
+
+- Malformed file-tool calls could produce misleading path errors that obscure the real invalid input.
+- For write-capable tools, path validation should fail before any workspace resolution or write-policy work so the tool result clearly states the missing required input.
+
+Changes:
+
+- Added a focused regression proving `read_file`, `write_file`, and `edit_file` reject blank paths and leave existing workspace files unchanged.
+- Added shared `validateToolPath()` and invoked it in all three file-tool handlers immediately after JSON decode.
+- Left valid workspace-relative paths, skill-reference reads, path escape checks, write denylist checks, generated-artifact filtering, atomic writes, and edit replacement behavior unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestFileToolsRejectBlankPath -count=1`: failed before the fix because `read_file` resolved the blank path to the workspace directory and returned `not a regular file`.
+- `go test -timeout 120s ./internal/tools -run 'TestFileToolsRejectBlankPath|TestEditFileRejectsEmptyOldText|TestShellAndFileToolsEmitCompactionMetadata|TestWriteAndEditToolsApplyWorkspaceWriteDenylist|TestReadFileRejectsOversizedRegularFile|TestReadFileAllowsRegisteredSkillReferencesOutsideWorkspace' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-248
 
