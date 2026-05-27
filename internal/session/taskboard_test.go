@@ -120,6 +120,34 @@ func TestTaskCreateRejectsBlankSubject(t *testing.T) {
 	}
 }
 
+func TestTaskCreateRejectsInvalidPriority(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "existing", Priority: "urgent"}); err == nil || !strings.Contains(err.Error(), "invalid priority") {
+		t.Fatalf("expected invalid priority error, got %v", err)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("invalid priority created task: %#v", tasks)
+	}
+}
+
 func TestTaskUpdateRejectsBlankTaskID(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -181,6 +209,38 @@ func TestTaskUpdateRejectsBlankSubject(t *testing.T) {
 	}
 	if unchanged.Subject != "existing" {
 		t.Fatalf("blank subject update mutated task: %#v", unchanged)
+	}
+}
+
+func TestTaskUpdateRejectsInvalidPriority(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	task, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "existing", Priority: "high"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := UpdateTask(store, meta.ID, TaskUpdateInput{TaskID: task.ID, Priority: "urgent"}); err == nil || !strings.Contains(err.Error(), "invalid priority") {
+		t.Fatalf("expected invalid priority error, got %v", err)
+	}
+	unchanged, err := store.GetTask(meta.ID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if unchanged.Priority != "high" {
+		t.Fatalf("invalid priority update mutated task: %#v", unchanged)
 	}
 }
 

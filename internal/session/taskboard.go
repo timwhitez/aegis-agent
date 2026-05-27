@@ -34,6 +34,10 @@ func CreateTask(store *Store, sessionID string, input TaskCreateInput) (Task, er
 	if strings.TrimSpace(input.Subject) == "" {
 		return Task{}, errors.New("subject is required")
 	}
+	priority, err := normalizeTaskPriority(input.Priority)
+	if err != nil {
+		return Task{}, err
+	}
 	var created Task
 	if err := store.MutateTasks(sessionID, func(tasks []Task) ([]Task, error) {
 		taskID := nextTaskID(tasks)
@@ -43,7 +47,7 @@ func CreateTask(store *Store, sessionID string, input TaskCreateInput) (Task, er
 			Subject:     input.Subject,
 			Description: input.Description,
 			Status:      "pending",
-			Priority:    defaultPriority(input.Priority),
+			Priority:    priority,
 			BlockedBy:   uniqueStrings(input.BlockedBy),
 			Blocks:      []string{},
 			Labels:      uniqueStrings(input.Labels),
@@ -67,6 +71,14 @@ func UpdateTask(store *Store, sessionID string, input TaskUpdateInput) (Task, er
 	}
 	if input.Subject != "" && strings.TrimSpace(input.Subject) == "" {
 		return Task{}, errors.New("subject is required")
+	}
+	priority := ""
+	if input.Priority != "" {
+		normalized, err := normalizeTaskPriority(input.Priority)
+		if err != nil {
+			return Task{}, err
+		}
+		priority = normalized
 	}
 	var updated Task
 	if err := store.MutateTasks(sessionID, func(tasks []Task) ([]Task, error) {
@@ -98,8 +110,8 @@ func UpdateTask(store *Store, sessionID string, input TaskUpdateInput) (Task, er
 		if input.Description != "" {
 			task.Description = input.Description
 		}
-		if input.Priority != "" {
-			task.Priority = defaultPriority(input.Priority)
+		if priority != "" {
+			task.Priority = priority
 		}
 		if input.Owner != "" {
 			task.Owner = input.Owner
@@ -343,13 +355,13 @@ func uniqueStrings(input []string) []string {
 	return out
 }
 
-func defaultPriority(priority string) string {
+func normalizeTaskPriority(priority string) (string, error) {
 	switch priority {
 	case "high", "medium", "low":
-		return priority
+		return priority, nil
 	case "":
-		return "medium"
+		return "medium", nil
 	default:
-		return "medium"
+		return "", fmt.Errorf("invalid priority: %s", priority)
 	}
 }

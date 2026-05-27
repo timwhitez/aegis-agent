@@ -7560,6 +7560,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-250. That slice covered blank subjects at task creation; this slice covers update-time malformed IDs and blank replacement subjects that can degrade an already valid durable task graph.
 - Confirmed the minimal fix belongs in `session.UpdateTask`, not only the tool wrapper: reject blank `task_id` and whitespace-only non-empty `subject` before mutating the task graph, preserving valid optional omitted subject updates, status transitions, dependency sync, and required `task.updated` event rollback behavior.
 
+### Review 246
+
+- Confirmed FCA-20260527-253 against `spec/12-task-system.md`'s task data contract: task `priority` is documented as `high | medium | low`, with omitted priority defaulting to `medium`.
+- Confirmed this is distinct from FCA-20260527-251. That slice fixed todo priority validation; this slice covers persistent task graph create/update priorities that were silently coerced to `medium`.
+- Confirmed the minimal fix belongs in the session task layer with a schema mirror in `task_create`: reject non-empty priority values outside `high|medium|low`, preserving the omitted-priority default, valid create/update priorities, task dependency behavior, and event rollback.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7621,6 +7627,52 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-253
+
+Slice: `fix(tasks): reject invalid task priorities`
+
+Finding:
+
+- `spec/12-task-system.md` defines task `priority` as `high | medium | low`, and `task_create` / `task_update` both expose optional priority fields.
+- `defaultPriority` returned `medium` for every unknown non-empty value, so invalid priorities were silently accepted rather than reported.
+- Before the fix, focused regressions showed `task_create {"priority":"urgent"}` created `task_0001.json` with `priority:"medium"`, and `task_update {"priority":"urgent"}` rewrote an existing `high` priority task to `medium`.
+
+Impact:
+
+- Durable task graph state could silently differ from the model's requested update, making task-board priority data unreliable for resume, Web display, and handoff.
+- Because invalid input looked successful, operators and future agent turns would not know the intended priority was rejected or malformed.
+
+Changes:
+
+- Added focused session-layer regressions for invalid task priority on create and update.
+- Added focused tool-level regression proving `task_create` and `task_update` reject invalid priority and do not mutate the task graph.
+- Replaced silent `defaultPriority` coercion with `normalizeTaskPriority`, which defaults only omitted priority to `medium` and rejects non-empty unknown values.
+- Added a `task_create.priority` schema enum to match `task_update.priority` and the session task contract.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestTask(Create|Update)RejectsInvalidPriority' -count=1`: failed before the fix because invalid priorities were accepted and coerced to `medium`.
+- `go test -timeout 120s ./internal/tools -run TestTaskToolsRejectInvalidPriority -count=1`: failed before the fix because `task_create` returned a successful task with `priority:"medium"`.
+- `go test -timeout 120s ./internal/session -run 'TestTask(Create|Update)RejectsInvalidPriority' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run TestTaskToolsRejectInvalidPriority -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestTaskToolsRejectInvalidPriority|TestTaskUpdateRejectsBlankInputs|TestTaskCreateRejectsBlankSubject|TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph|TestTodoAndTaskToolsEmitStructuredEvents' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools -run 'TestTask(Create|Update)RejectsInvalidPriority|TestTaskUpdateRejectsBlank(TaskID|Subject)|TestTaskCreateRejectsBlankSubject|TestTaskLifecycleAutoUnlocksDependents|TestTaskCycleRejected|TestTaskUpdateRemovesReverseEdges|TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph' -count=1`: passed.
+- `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-252
 

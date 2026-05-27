@@ -2568,7 +2568,7 @@ func defTaskCreate() Definition {
 			"properties": map[string]any{
 				"subject":     map[string]any{"type": "string", "description": "Short task title."},
 				"description": map[string]any{"type": "string", "description": "Optional task detail, expected output, or acceptance notes."},
-				"priority":    map[string]any{"type": "string", "description": "Optional priority: high, medium, or low."},
+				"priority":    map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}, "description": "Optional priority: high, medium, or low."},
 				"blocked_by":  withDescription(stringArraySchema(), "Optional task IDs that must complete before this task is ready."),
 				"labels":      withDescription(stringArraySchema(), "Optional grouping labels such as provider, docs, or validation."),
 			},

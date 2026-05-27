@@ -1642,6 +1642,62 @@ func TestTaskCreateRejectsBlankSubject(t *testing.T) {
 	}
 }
 
+func TestTaskToolsRejectInvalidPriority(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+	createResult, err := registry.Execute(context.Background(), "task_create", execCtx, json.RawMessage(`{"subject":"existing","priority":"urgent"}`))
+	if err != nil {
+		t.Fatalf("task_create: %v", err)
+	}
+	if !createResult.IsError || !strings.Contains(createResult.DisplayOutput, "invalid priority") {
+		t.Fatalf("expected task_create invalid priority error, got %#v", createResult)
+	}
+	tasks, err := store.ListTasks(meta.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("invalid create priority created task: %#v", tasks)
+	}
+	task, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "existing", Priority: "high"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	updateResult, err := registry.Execute(context.Background(), "task_update", execCtx, json.RawMessage(`{"task_id":"task_0001","priority":"urgent"}`))
+	if err != nil {
+		t.Fatalf("task_update: %v", err)
+	}
+	if !updateResult.IsError || !strings.Contains(updateResult.DisplayOutput, "invalid priority") {
+		t.Fatalf("expected task_update invalid priority error, got %#v", updateResult)
+	}
+	unchanged, err := store.GetTask(meta.ID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if unchanged.Priority != "high" {
+		t.Fatalf("invalid update priority mutated task: %#v", unchanged)
+	}
+}
+
 func TestTaskUpdateRejectsBlankInputs(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
