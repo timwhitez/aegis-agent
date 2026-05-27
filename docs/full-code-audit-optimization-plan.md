@@ -7482,6 +7482,12 @@ Evidence gates:
 - Confirmed this is distinct from prior Settings save/test/API-key slices. Those hardened mutation/probe semantics and already show backend errors on save/test failures; this slice covers the initial Settings render path when `GET /api/config` fails.
 - Confirmed the minimal fix belongs in `settings-view.js`: render the backend API error into the Settings empty panel and toast using text-only DOM insertion, without changing Settings backend validation, config persistence, API-key handling, provider probes, or audit events.
 
+### Review 233
+
+- Confirmed FCA-20260527-240 against `spec/17-web-console.md`'s Sessions/history browser and frontend error-display contracts: `/api/history` failures are object-level operator feedback and should remain visible in the Sessions panel/toast.
+- Confirmed this is distinct from FCA-20260527-233. That slice fixed backend `/api/history` query bounds and overflow metadata; this slice covers the frontend catch path that still discarded actionable backend messages after `requestJSON` parsed them.
+- Confirmed the minimal fix belongs in `app.js`: derive displayed history failures from `requestJSON`'s `APIError.message` while keeping a generic fallback for non-API failures, without changing session store pagination, backend history status mapping, or runtime/session authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7543,6 +7549,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260527-240
+
+Slice: `fix(webconsole): surface history load errors`
+
+Finding:
+
+- `requestJSON()` already parses backend `{"error": ...}` responses into `APIError.message`.
+- `fetchHistory()` still caught `/api/history` failures and replaced that backend message with generic "Failed to load recent activity" panel/toast text.
+- Before the fix, the focused embedded-asset contract failed because `app.js` had no helper or text-only panel path proving Sessions/history load failures displayed backend API errors.
+
+Impact:
+
+- If `/api/history` failed because a local session summary, Goal/Plan summary, or history backing fact could not be loaded, the browser hid the actionable backend diagnostic.
+- Operators using the default Sessions/history browser would see a generic UI failure even though the Web API already returned a more useful message.
+
+Changes:
+
+- Added `historyErrorMessage()` to prefer `APIError.message` from `requestJSON` and keep a generic fallback for non-API failures.
+- Updated the `fetchHistory()` catch path to render that message in a text-only empty panel and toast.
+- Added an embedded frontend asset contract assertion that history load failures surface backend API messages.
+- Left backend history pagination, session store listing, history page state, and runtime/session facts unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because history load failures did not surface backend API errors.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceServesEmbeddedShellAndAssets|TestServiceHistoryPagination' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l internal/webconsole/service_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-239
 

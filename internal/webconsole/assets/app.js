@@ -2309,6 +2309,10 @@ function showToast(message, tone = 'info') {
   }, 3200);
 }
 
+function historyErrorMessage(err, fallback = 'Failed to load recent activity.') {
+  return err?.message || fallback;
+}
+
 async function fetchHistory(page = state.historyPage, options = {}) {
   if (state.refreshingHistory) {
     return;
@@ -2331,11 +2335,15 @@ async function fetchHistory(page = state.historyPage, options = {}) {
     });
   } catch (err) {
     console.error('history error', err);
+    const message = historyErrorMessage(err);
     if (!state.historyData) {
-      container.innerHTML = '<div class="empty-panel">Failed to load recent activity.</div>';
+      const panel = document.createElement('div');
+      panel.className = 'empty-panel';
+      panel.textContent = message;
+      container.replaceChildren(panel);
     }
     if (!silentError) {
-      showToast('Failed to load recent activity.', 'error');
+      showToast(message, 'error');
     }
   } finally {
     state.refreshingHistory = false;

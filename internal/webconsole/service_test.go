@@ -5018,6 +5018,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "const message = err?.message || 'Failed to load local skills.'") || !strings.Contains(jsBody, "showToast(message, 'error')") {
 		t.Fatalf("expected skills list failures to surface backend errors, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "function historyErrorMessage") || !strings.Contains(jsBody, "const message = historyErrorMessage(err)") || !strings.Contains(jsBody, "panel.textContent = message") || !strings.Contains(jsBody, "showToast(message, 'error')") {
+		t.Fatalf("expected history load failures to surface backend errors, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "setComposerMode") || !strings.Contains(jsBody, "normalizeComposerMode") || !strings.Contains(jsBody, "mode === 'goal'") || !strings.Contains(jsBody, "mode === 'plan'") {
 		t.Fatalf("expected Goal and Plan composer controls to be mutually exclusive, got app.js body: %s", jsBody)
 	}
