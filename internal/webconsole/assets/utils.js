@@ -19,11 +19,39 @@ function collectPlanInputAnswers(request, selections) {
     if (!label && !value) {
       return [];
     }
+    if (!selected.is_other) {
+      const option = maybeArray(question?.options).find((item) => {
+        const itemLabel = String(item?.label || '').trim();
+        const itemDescription = String(item?.description || '').trim();
+        if (label) {
+          return itemLabel === label;
+        }
+        return value && (itemLabel === value || itemDescription === value);
+      });
+      if (!option) {
+        return [];
+      }
+      const optionLabel = String(option.label || '').trim();
+      const optionDescription = String(option.description || '').trim();
+      if ((label && label !== optionLabel) || (value && value !== optionLabel && value !== optionDescription)) {
+        return [];
+      }
+      answers.push({
+        question_id: questionID,
+        label: optionLabel,
+        value: value || optionLabel,
+        is_other: false
+      });
+      continue;
+    }
+    if (!value) {
+      return [];
+    }
     answers.push({
       question_id: questionID,
-      label,
-      value: value || label,
-      is_other: Boolean(selected.is_other)
+      label: label || 'Other',
+      value,
+      is_other: true
     });
   }
   return answers;

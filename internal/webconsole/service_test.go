@@ -2646,6 +2646,18 @@ func TestServicePlanModeInputDetailKeepsLiveHandle(t *testing.T) {
 		t.Fatalf("expected invalid answer rejection before live input delivery, got %#v", errResp)
 	}
 
+	errResp = postJSONError(t, ts.URL+"/api/sessions/"+result.SessionID+"/planmode/input", map[string]any{
+		"request_id": planMode.PendingRequest.RequestID,
+		"answers": []map[string]any{{
+			"question_id": "scope_choice",
+			"label":       "Surprise",
+			"value":       "Surprise",
+		}},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "must match an offered option") {
+		t.Fatalf("expected invalid option rejection before live input delivery, got %#v", errResp)
+	}
+
 	var inputLaunch LaunchResponse
 	postJSON(t, ts.URL+"/api/sessions/"+result.SessionID+"/planmode/input", map[string]any{
 		"request_id": planMode.PendingRequest.RequestID,

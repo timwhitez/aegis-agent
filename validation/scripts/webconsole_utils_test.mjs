@@ -176,6 +176,36 @@ test('collectPlanInputAnswers preserves selected multi-question answers', () => 
   ]);
 });
 
+test('collectPlanInputAnswers rejects non-other selections outside offered options', () => {
+  const request = {
+    questions: [
+      { id: 'scope', options: [{ label: 'Small' }, { label: 'Large' }] }
+    ]
+  };
+
+  const answers = context.collectPlanInputAnswers(request, {
+    scope: { label: 'Surprise', value: 'Surprise' }
+  });
+
+  assert.deepEqual(sameRealm(answers), []);
+});
+
+test('collectPlanInputAnswers accepts offered option descriptions as non-other values', () => {
+  const request = {
+    questions: [
+      { id: 'scope', options: [{ label: 'Small', description: 'Keep it focused.' }, { label: 'Large', description: 'Include cleanup.' }] }
+    ]
+  };
+
+  const answers = context.collectPlanInputAnswers(request, {
+    scope: { label: 'Small', value: 'Keep it focused.' }
+  });
+
+  assert.deepEqual(sameRealm(answers), [
+    { question_id: 'scope', label: 'Small', value: 'Keep it focused.', is_other: false }
+  ]);
+});
+
 test('isAcceptedLaunchResponse recognizes async launch responses only', () => {
   assert.equal(context.isAcceptedLaunchResponse({ session_id: 'session_123', status: 'accepted' }), true);
   assert.equal(context.isAcceptedLaunchResponse({ session_id: 'session_123', status: 'ACCEPTED' }), true);

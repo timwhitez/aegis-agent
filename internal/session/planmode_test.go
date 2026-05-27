@@ -317,6 +317,40 @@ func TestPlanModeInputValidationAndAnswer(t *testing.T) {
 	}
 }
 
+func TestValidatePlanModeAnswersRejectsUnknownOption(t *testing.T) {
+	request := PlanModeInputRequest{
+		RequestID:  "pmq_options",
+		ToolCallID: "call_options",
+		Questions:  []PlanModeInputQuestion{validPlanModeQuestion("scope_choice")},
+	}
+
+	err := ValidatePlanModeAnswers(request, []PlanModeInputAnswer{{
+		QuestionID: "scope_choice",
+		Label:      "Surprise",
+		Value:      "Surprise",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "must match an offered option") {
+		t.Fatalf("expected unknown option rejection, got %v", err)
+	}
+}
+
+func TestValidatePlanModeAnswersAllowsOfferedOptionDescription(t *testing.T) {
+	request := PlanModeInputRequest{
+		RequestID:  "pmq_options",
+		ToolCallID: "call_options",
+		Questions:  []PlanModeInputQuestion{validPlanModeQuestion("scope_choice")},
+	}
+
+	err := ValidatePlanModeAnswers(request, []PlanModeInputAnswer{{
+		QuestionID: "scope_choice",
+		Label:      "Narrow (Recommended)",
+		Value:      "Keep the change limited.",
+	}})
+	if err != nil {
+		t.Fatalf("expected offered option description to be accepted, got %v", err)
+	}
+}
+
 func TestPlanModeConcurrentMutationsReadLatestSnapshot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)

@@ -244,25 +244,66 @@ func ValidatePlanModeAnswers(request PlanModeInputRequest, answers []PlanModeInp
 	if len(answers) != len(request.Questions) {
 		return fmt.Errorf("plan input answer count mismatch: got %d want %d", len(answers), len(request.Questions))
 	}
-	questionIDs := map[string]struct{}{}
+	questionsByID := map[string]PlanModeInputQuestion{}
 	for _, question := range request.Questions {
-		questionIDs[question.ID] = struct{}{}
+		questionsByID[strings.TrimSpace(question.ID)] = question
 	}
 	seen := map[string]struct{}{}
 	for _, answer := range answers {
 		id := strings.TrimSpace(answer.QuestionID)
-		if _, ok := questionIDs[id]; !ok {
+		question, ok := questionsByID[id]
+		if !ok {
 			return fmt.Errorf("unknown plan input question id: %s", id)
 		}
 		if _, ok := seen[id]; ok {
 			return fmt.Errorf("duplicate plan input answer for question id: %s", id)
 		}
 		seen[id] = struct{}{}
-		if strings.TrimSpace(answer.Value) == "" && strings.TrimSpace(answer.Label) == "" {
+		label := strings.TrimSpace(answer.Label)
+		value := strings.TrimSpace(answer.Value)
+		if value == "" && label == "" {
 			return fmt.Errorf("plan input answer for %s is empty", id)
+		}
+		if answer.IsOther {
+			if !question.IsOther {
+				return fmt.Errorf("plan input answer for %s cannot use other", id)
+			}
+			if value == "" {
+				return fmt.Errorf("plan input other answer for %s is empty", id)
+			}
+			continue
+		}
+		option, ok := findPlanModeQuestionOption(question, label, value)
+		if !ok {
+			return fmt.Errorf("plan input answer for %s must match an offered option", id)
+		}
+		if label != "" && strings.TrimSpace(option.Label) != label {
+			return fmt.Errorf("plan input answer label for %s must match selected option label", id)
+		}
+		if value != "" && value != strings.TrimSpace(option.Label) && value != strings.TrimSpace(option.Description) {
+			return fmt.Errorf("plan input answer value for %s must match selected option", id)
 		}
 	}
 	return nil
+}
+
+func findPlanModeQuestionOption(question PlanModeInputQuestion, label, value string) (PlanModeInputOption, bool) {
+	label = strings.TrimSpace(label)
+	value = strings.TrimSpace(value)
+	for _, option := range question.Options {
+		optionLabel := strings.TrimSpace(option.Label)
+		optionDescription := strings.TrimSpace(option.Description)
+		if label != "" {
+			if optionLabel == label {
+				return option, true
+			}
+			continue
+		}
+		if value != "" && (optionLabel == value || optionDescription == value) {
+			return option, true
+		}
+	}
+	return PlanModeInputOption{}, false
 }
 
 func (s *Store) CreatePlanMode(sessionID string, draft PlanModeDraft) (PlanModeState, error) {

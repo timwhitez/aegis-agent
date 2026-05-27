@@ -7620,6 +7620,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-258. That slice normalized explicit `model:"default"` on continue; this slice covers legacy or manually-created sessions whose `session.json` lacks `provider_options`, causing a resume with no explicit provider override to omit provider defaults such as OpenAI-compatible `store=false`.
 - Confirmed the minimal fix belongs in `Runner.Continue`: when a loaded session has an empty provider-options snapshot on a path that will resume execution, reconstruct the effective provider options from the resolved provider config before invoking the provider, preserving existing non-empty durable options, explicit provider/model overrides, provider-independent Plan Mode cancellation, Web adapter thinness, provider adapter replay boundaries, and current configuration validation behavior.
 
+### Review 256
+
+- Confirmed FCA-20260528-263 against `spec/04-tools-and-skills.md` and `spec/17-web-console.md`'s Plan Mode `request_user_input` contract: the model offers two or three mutually exclusive choices and the client adds a separate free-form Other path, so non-Other answers must be traceable to one of the offered choices.
+- Confirmed this is distinct from existing Plan Mode answer-count, duplicate, unknown-question, rollback, active-handle, and plan-approval coverage. Those slices proved answer delivery and recovery facts are durable; this slice covers forged or stale answer payloads that name a valid question but select text the model never offered.
+- Confirmed the minimal fix belongs in the shared session answer validator with a mirrored Web helper check: reject non-Other answers that do not map to an offered option label or description, while preserving explicit Other answers, CLI interactive option selection, Web active-handle delivery, runtime recovery, provider adapters, and Plan Mode gate autonomy.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7681,6 +7687,52 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-263
+
+Slice: `fix(planmode): validate input option answers`
+
+Finding:
+
+- `ValidatePlanModeAnswers` required answer count, known question IDs, uniqueness, and a non-empty value/label, but did not verify that a non-Other answer matched any option in the pending Plan Mode input request.
+- The Web Plan Mode input route reused that validator, so an API client or stale frontend state could submit `{question_id:"scope_choice", label:"Surprise", value:"Surprise"}` for a pending question whose offered options were only `Narrow` / `Broad`, and the route accepted it as a real answer.
+
+Impact:
+
+- Plan Mode could persist `pending_request.answers` and append `request_user_input` tool results containing a choice the model never offered, weakening the approval/input contract that the model asks for bounded decisions and the client supplies free-form data only via explicit Other.
+- Browser submit enablement also trusted locally selected answer objects without checking them against the current pending request options, so stale in-memory selections could appear complete until the backend rejected them after the fix.
+
+Changes:
+
+- Updated `ValidatePlanModeAnswers` to bind each non-Other answer to the pending question's offered options. A non-Other answer may use the option label or option description as its value, preserving existing CLI/responder behavior, but arbitrary text now requires `is_other=true`.
+- Kept explicit Other answers available only for pending requests whose questions were marked Other-capable by the store.
+- Mirrored the same option matching in `collectPlanInputAnswers`, so the Web submit button only enables for current offered options or explicit Other values.
+- Added focused session, Web REST, and Web utility regressions for unknown non-Other options.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestValidatePlanModeAnswersRejectsUnknownOption -count=1`: failed before the fix because `ValidatePlanModeAnswers` returned nil for the forged non-Other option.
+- `go test -timeout 120s ./internal/webconsole -run TestServicePlanModeInputDetailKeepsLiveHandle -count=1`: failed before the fix because the Plan Mode input endpoint returned HTTP 202 for the forged non-Other option.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'collectPlanInputAnswers rejects non-other selections outside offered options'`: failed before the fix because the helper returned a forged answer instead of an empty answer set.
+- `go test -timeout 120s ./internal/session -run 'Test(ValidatePlanModeAnswersRejectsUnknownOption|ValidatePlanModeAnswersAllowsOfferedOptionDescription|PlanModeInputValidationAndAnswer)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServicePlanMode(InputDetailKeepsLiveHandle|ReviseInputAndCancelControls)' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput' -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l internal/session/planmode.go internal/session/planmode_test.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-262
 
