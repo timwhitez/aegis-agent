@@ -1972,6 +1972,7 @@ async function refreshCurrentSession(options = {}) {
   if (!hasDurableSession() || isEphemeralSessionId(state.sessionId)) {
     return;
   }
+  const sessionID = state.sessionId;
   if (state.refreshingSession) {
     state.needsSessionRefresh = true;
     return;
@@ -1979,7 +1980,10 @@ async function refreshCurrentSession(options = {}) {
   state.refreshingSession = true;
   state.needsSessionRefresh = false;
   try {
-    const detail = await requestJSON(`/api/sessions/${encodeURIComponent(state.sessionId)}?limit=40`);
+    const detail = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}?limit=40`);
+    if (state.sessionId !== sessionID) {
+      return;
+    }
     mergeLoadedMessagesIntoDetail(detail);
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
@@ -2011,7 +2015,9 @@ async function refreshCurrentSession(options = {}) {
   } catch (err) {
     console.error('session detail error', err);
     if (options.surfaceError) {
-      showSessionLoadError(err, { toast: options.toastError !== false });
+      if (state.sessionId === sessionID) {
+        showSessionLoadError(err, { toast: options.toastError !== false });
+      }
     }
   } finally {
     state.refreshingSession = false;

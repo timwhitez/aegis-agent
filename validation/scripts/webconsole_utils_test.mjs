@@ -490,6 +490,47 @@ test('refreshSelectedQueueJobDetail ignores stale async responses after selectio
   });
 });
 
+test('refreshCurrentSession ignores stale session detail responses after selection changes', async () => {
+  const appContext = createAppHarnessContext();
+  const slowRefresh = vm.runInContext(`
+    state.sessionId = 'session_slow_a';
+    state.sessionBacked = true;
+    refreshCurrentSession();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_slow_a/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({
+    metadata: { id: 'session_slow_a' },
+    state: { status: 'failed', last_error: 'stale detail' },
+    messages: [{ id: 'm_slow', role: 'assistant', text: 'stale' }]
+  });
+  await slowRefresh;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    detailID: state.sessionDetail?.metadata?.id,
+    status: state.sessionDetail?.state?.status,
+    messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
+  })`, appContext)), {
+    selected: 'session_fast_b',
+    detailID: 'session_fast_b',
+    status: 'completed',
+    messageIDs: []
+  });
+});
+
 test('task panel renders cancelled count separately from completed tasks', () => {
   const html = context.renderTasksPanel({
     task_board: {

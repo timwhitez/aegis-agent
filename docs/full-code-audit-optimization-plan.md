@@ -7662,6 +7662,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-040 and later queue fact-source repairs. Those slices added `Open job` actions and hardened backend queue/session/background facts; this slice covers the client-side async race where an older `/api/queue/jobs/{id}` response could overwrite `selectedQueueJobDetail` after the user had selected a different job.
 - Confirmed the minimal fix belongs in `refreshSelectedQueueJobDetail`: apply an async queue-detail success or error only if `state.selectedQueueJobId` still matches the captured request id, without changing session store, queue reconciliation, worker lifecycle, or background notification semantics.
 
+### Review 263
+
+- Confirmed FCA-20260528-270 against `spec/17-web-console.md`'s Session workspace contract: the selected session detail panel must describe the currently selected durable session, and polling / explicit opens must not let stale client requests become a second UI authority.
+- Confirmed this is distinct from FCA-20260528-269. That slice protected the selected queue job facts panel after a session detail had already loaded; this slice covers the higher-level `/api/sessions/{id}` detail request race where an older session response could overwrite `state.sessionDetail` after the operator selected a different session.
+- Confirmed the minimal fix belongs in `refreshCurrentSession`: capture the requested session id, apply success/error UI changes only if it still matches `state.sessionId`, and always release the refresh lock so a queued refresh can load the new current session.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7723,6 +7729,35 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-270
+
+Slice: `fix(webconsole): ignore stale session detail responses`
+
+Finding:
+
+- `refreshCurrentSession` read `state.sessionId` when issuing `/api/sessions/{id}?limit=40`, then applied the response to `state.sessionDetail` without checking whether the operator had selected another session while the request was in flight.
+- A slow old response could replace the current session detail, message window, timeline, live activity, and generation state after `state.sessionId` had already changed.
+- The same stale-response window could surface an old session load error through the current session view if the explicit-open path used `surfaceError`.
+
+Impact:
+
+- The Web Console could show messages, status, errors, and inspector facts for a session different from the selected session id.
+- This did not mutate durable session files, but it weakened the local Web control surface by making polling or slow explicit-open responses override the current operator selection.
+
+Changes:
+
+- `refreshCurrentSession` now captures the requested session id before issuing the detail request.
+- Success and surfaced-error UI updates are applied only when the captured id still matches `state.sessionId`.
+- The refresh lock is always released in `finally`, even for stale responses, so a queued refresh can load the newly selected session.
+- Added a VM-level WebConsole JS regression that starts a slow session detail request, switches to another session, resolves the old response, and proves the current session detail remains aligned with the selected session id.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the stale `session_slow_a` response replaced the selected `session_fast_b` detail.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after the current-session guard.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
 
 ### FCA-20260528-269
 
