@@ -3859,6 +3859,15 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	managedSkillDir := ""
+	managedSkillIndex := -1
+	if index, rawManagedDir, ok := firstConfiguredSkillDir(cfg.Skills.Dirs); ok {
+		managedSkillIndex = index
+		managedSkillDir, err = resolveSkillDir(rawManagedDir)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	for index, rawDir := range cfg.Skills.Dirs {
 		if strings.TrimSpace(rawDir) == "" {
 			continue
@@ -3868,10 +3877,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if managedSkillDir == "" {
-			managedSkillDir = dir
-		}
-		managed := index == 0 && filepath.Clean(dir) == filepath.Clean(managedSkillDir)
+		managed := index == managedSkillIndex && filepath.Clean(dir) == filepath.Clean(managedSkillDir)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -4513,7 +4519,12 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	dest, err := resolveManagedSkillDir(cfg.Skills.Dirs[0])
+	_, rawManagedDir, ok := firstConfiguredSkillDir(cfg.Skills.Dirs)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
+		return
+	}
+	dest, err := resolveManagedSkillDir(rawManagedDir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -4598,7 +4609,12 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootDir, err := resolveManagedSkillDir(cfg.Skills.Dirs[0])
+	_, rawManagedDir, ok := firstConfiguredSkillDir(cfg.Skills.Dirs)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
+		return
+	}
+	rootDir, err := resolveManagedSkillDir(rawManagedDir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -5675,7 +5691,21 @@ func webTaskIDs(tasks []session.Task) []string {
 	return ids
 }
 
+func firstConfiguredSkillDir(dirs []string) (int, string, bool) {
+	for index, rawDir := range dirs {
+		dir := strings.TrimSpace(rawDir)
+		if dir != "" {
+			return index, dir, true
+		}
+	}
+	return -1, "", false
+}
+
 func resolveSkillDir(rawDir string) (string, error) {
+	rawDir = strings.TrimSpace(rawDir)
+	if rawDir == "" {
+		return "", errors.New("skill directory is required")
+	}
 	if filepath.IsAbs(rawDir) {
 		return filepath.Clean(rawDir), nil
 	}

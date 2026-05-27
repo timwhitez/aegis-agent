@@ -7794,6 +7794,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-203, FCA-20260525-027, FCA-20260526-055, and FCA-20260528-264. Those slices required acquired events, protected duplicate handle ownership, mapped released clues correctly, and retained handles on state-load errors; this slice covers terminal-state pruning deleting the in-memory handle while leaving the latest durable owner clue as `webconsole.handle.acquired`.
 - Confirmed the minimal fix belongs in `pruneInactiveHandles`: when a readable terminal state proves a current-process handle is stale and should be removed, capture that handle and best-effort append `webconsole.handle.released` with a prune reason, preserving cleanup semantics and not making release events authoritative.
 
+### Review 285
+
+- Confirmed FCA-20260528-292 against `spec/17-web-console.md`'s local Skills control contract: skill upload/uninstall mutations are bounded to the managed local skill directory, while `/api/skills` is only a catalog projection over configured skill roots.
+- Confirmed this is distinct from FCA-20260528-287 and FCA-20260528-288. Those slices corrected non-managed skill mutability metadata and rendered disabled reasons; this slice covers blank configured skill-dir entries making the backend disagree on which root is managed.
+- Confirmed the minimal fix belongs in the WebConsole skill root resolver: choose the first non-empty configured skill directory for list/upload/uninstall, and reject blank skill-dir resolution instead of letting it collapse to the server cwd.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7855,6 +7861,50 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-292
+
+Slice: `fix(webconsole): use first nonblank skill root`
+
+Finding:
+
+- `/api/skills` skipped blank configured `skills.dirs` entries while building the local skill catalog, but still used the original slice index to decide whether a discovered skill was managed.
+- Skill upload and uninstall used `cfg.Skills.Dirs[0]` directly.
+- `resolveSkillDir("")` resolved to the server cwd, so a blank first configured skill dir could make upload target the WebConsole process cwd while the real first non-blank skill dir was displayed as read-only.
+
+Impact:
+
+- A valid local skill root could become unmanageable in the WebConsole when a blank optional config entry preceded it.
+- Worse, skill upload could install a skill directory under the server cwd instead of the intended managed skill root, violating the Web-first local-console boundary that skill mutations stay inside the managed skill directory.
+
+Changes:
+
+- Added `firstConfiguredSkillDir` to select the first non-empty configured skill directory.
+- Updated skill listing, upload, and uninstall to use that same first non-empty managed root.
+- Changed `resolveSkillDir` to reject blank inputs rather than treating them as the current working directory.
+- Added a route-level regression covering blank-first `skills.dirs`: the first non-blank root is mutable, later roots remain read-only, upload lands in the managed root, and uninstall removes from that managed root.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillRoutesUseFirstNonBlankManagedSkillDir -count=1`: failed before the fix because the first non-blank skill was marked read-only.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillRoutesUseFirstNonBlankManagedSkillDir -count=1`: passed after routing list/upload/uninstall through the first non-empty configured skill directory.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkill(RoutesUseFirstNonBlankManagedSkillDir|ListMarksNonManagedSkillDirsReadOnly|RoutesUploadListUninstallAndInstallUnsupported|ListRequiresReadableSkillManifest|UninstallRejectsSymlinkedSkillDir)|TestSkillUploadRejectsMalformedPackageAsBadRequest|TestProcessSkillZip' -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-291
 

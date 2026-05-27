@@ -8402,6 +8402,108 @@ func TestServiceSkillListMarksNonManagedSkillDirsReadOnly(t *testing.T) {
 	}
 }
 
+func TestServiceSkillRoutesUseFirstNonBlankManagedSkillDir(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	workdir := t.TempDir()
+	if err := os.Chdir(workdir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+
+	cfg := testConfig(t, "")
+	managedDir := filepath.Join(workdir, "managed-skills")
+	externalDir := filepath.Join(workdir, "external-skills")
+	cfg.Skills.Dirs = []string{"", managedDir, externalDir}
+	managedSkill := filepath.Join(managedDir, "managed-skill")
+	externalSkill := filepath.Join(externalDir, "external-skill")
+	if err := os.MkdirAll(managedSkill, 0o755); err != nil {
+		t.Fatalf("mkdir managed skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(managedSkill, "SKILL.md"), []byte("---\nname: managed-skill\ndescription: managed skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write managed skill: %v", err)
+	}
+	if err := os.MkdirAll(externalSkill, 0o755); err != nil {
+		t.Fatalf("mkdir external skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(externalSkill, "SKILL.md"), []byte("---\nname: external-skill\ndescription: external skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write external skill: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	byID := map[string]map[string]any{}
+	for _, item := range listed {
+		if id, ok := item["id"].(string); ok {
+			byID[id] = item
+		}
+	}
+	if byID["managed-skill"] == nil || byID["external-skill"] == nil {
+		t.Fatalf("expected managed and external skill cards, got %#v", listed)
+	}
+	if byID["managed-skill"]["read_only"] == true || byID["managed-skill"]["disabled_reason"] != nil {
+		t.Fatalf("first non-blank skill dir should be managed, got %#v", byID["managed-skill"])
+	}
+	if byID["external-skill"]["read_only"] != true || byID["external-skill"]["disabled_reason"] == "" {
+		t.Fatalf("later skill dir should be read-only, got %#v", byID["external-skill"])
+	}
+
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	createSkillZip(t, zipPath, "uploaded-skill", "---\nname: uploaded-skill\ndescription: uploaded\n---\nbody\n")
+	zipBytes, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(zipPath))
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(zipBytes); err != nil {
+		t.Fatalf("write zip to multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/upload", body)
+	if err != nil {
+		t.Fatalf("new upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	uploadBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected upload status %d body=%s", resp.StatusCode, string(uploadBody))
+	}
+	if _, err := os.Stat(filepath.Join(managedDir, "uploaded-skill", "SKILL.md")); err != nil {
+		t.Fatalf("uploaded skill should install under first non-blank managed dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "uploaded-skill")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blank skill dir entry must not install under server cwd, got err=%v", err)
+	}
+
+	postJSON(t, ts.URL+"/api/skills/managed-skill/uninstall", map[string]any{}, http.StatusOK, nil)
+	if _, err := os.Stat(managedSkill); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed skill should be uninstalled from first non-blank managed dir, got err=%v", err)
+	}
+}
+
 func TestServiceSkillListRequiresReadableSkillManifest(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")
