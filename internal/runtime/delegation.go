@@ -180,13 +180,18 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		out.LastError = handoffErr.Error()
 	}
 	if result.SessionID != "" {
-		r.emit(req.ParentSessionID, "session.child.spawned", "delegate", map[string]any{
+		if eventErr := r.appendEvent(req.ParentSessionID, "session.child.spawned", "delegate", map[string]any{
 			"session_id": result.SessionID,
 			"status":     out.Status,
 			"agent_name": req.AgentName,
 			"agent_role": out.AgentRole,
 			"wait_mode":  normalizeParentWaitMode(req.WaitMode),
-		})
+		}); eventErr != nil {
+			if err != nil {
+				return out, err
+			}
+			return out, fmt.Errorf("append session.child.spawned event for child session %s: %w", result.SessionID, eventErr)
+		}
 		if coordinationErr := addParentChildSession(r.store, req.ParentSessionID, result.SessionID, req.WaitMode); coordinationErr != nil {
 			if err != nil {
 				return out, err

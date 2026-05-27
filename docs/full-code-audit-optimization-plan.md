@@ -6616,7 +6616,49 @@ Evidence gates:
 - Confirmed the issue is distinct from the prior queue lifecycle event hardening. `ProcessNextJob` already requires worker claim/notification/terminal lifecycle events, while `QueueSubmit` owns the submit-time parent-linked job creation boundary.
 - Confirmed the minimal fix belongs in runtime delegation, not Web or CLI adapters: parent-linked `QueueSubmit` must persist the queued job, parent coordination, and `session.child.queued` as one success boundary; failed event append must roll back the just-created job and parent coordination instead of leaving a durable queue item with no parent timeline evidence.
 
+### Review 192
+
+- Confirmed FCA-20260527-199 against the same child event catalog in `spec/01-runtime-architecture.md`: `session.child.spawned` is the durable parent-session event for synchronous child sessions.
+- Confirmed this is distinct from FCA-20260527-198. The previous slice covered background queue submission and `session.child.queued`; this slice covers the direct synchronous `Delegate` / `agent_spawn(background=false)` path after the child session has already run.
+- Confirmed the minimal fix belongs in runtime delegation: after a child session ID exists, the parent timeline must durably record `session.child.spawned` before parent coordination advances. If the parent event cannot be written, return the event error while preserving the child result for inspection and without adding parent coordination.
+
 ## Update Log
+
+### FCA-20260527-199
+
+Slice: `fix(runtime): require child spawned events`
+
+Finding:
+
+- `SpawnAgent` synchronous child mode created and ran a child session, then emitted `session.child.spawned` to the parent timeline through unchecked `r.emit`.
+- The same code then advanced `parent-coordination.json` through `addParentChildSession` / `resolveParentChildSession`.
+- A blocked parent `events.jsonl` path could therefore return a successful delegate result and parent coordination facts while the parent timeline lacked the catalogued child-spawn evidence.
+
+Changes:
+
+- Switched synchronous `session.child.spawned` emission to checked `appendEvent`.
+- Required the spawned event before parent coordination is updated.
+- Preserved the child session result in the returned `DelegateResult` when the parent event append fails, so the caller can still inspect the already-created child.
+- Added a focused regression proving blocked parent `events.jsonl` now returns a `session.child.spawned` error and does not advance parent coordination.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerDelegateReportsChildSpawnedEventAppendError -count=1`: failed before the fix because delegate returned success while parent `events.jsonl` was blocked.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerDelegate(ReportsChildSpawnedEventAppendError|ReportsParentCoordinationError|CreatesChildSessionWithIsolation|TreatsNoneIsolationModeAsOff)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerDelegate(ReportsChildSpawnedEventAppendError|ReportsParentCoordinationError|CreatesChildSessionWithIsolation|TreatsNoneIsolationModeAsOff|KeepsExistingCwdRelativeWorkdir|AppliesRoleProviderOverrideWhenProviderModelOmitted)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/runtime/delegation.go internal/runtime/delegation_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-198
 

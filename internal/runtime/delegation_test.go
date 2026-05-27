@@ -82,6 +82,32 @@ func TestRunnerDelegateReportsParentCoordinationError(t *testing.T) {
 	}
 }
 
+func TestRunnerDelegateReportsChildSpawnedEventAppendError(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	blockRuntimeEventsPath(t, runner.store, parentID)
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		IsolationMode:   "off",
+	})
+	if err == nil || !strings.Contains(err.Error(), "session.child.spawned") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected child spawned event append error, got result=%#v err=%v", result, err)
+	}
+	if result.SessionID == "" || result.Status != session.StatusCompleted {
+		t.Fatalf("expected child session result to remain inspectable after event failure, got %#v", result)
+	}
+	_, coordErr := runner.store.LoadParentCoordination(parentID)
+	if !os.IsNotExist(coordErr) {
+		t.Fatalf("failed spawned event should not advance parent coordination, got err=%v", coordErr)
+	}
+}
+
 func TestRunnerDelegateTreatsNoneIsolationModeAsOff(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
