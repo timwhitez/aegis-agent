@@ -4817,6 +4817,33 @@ Validation:
 - Focused post-fix registry regression proving blocked `planmode.plan_submitted` returns an error result and restores previous Plan Mode state, history, and generated plan artifact.
 - Standard grouped validation before commit.
 
+### FCA-20260527-190: Plan input request tool can continue without the required request event
+
+Severity: Medium
+
+Evidence:
+
+- `spec/01-runtime-architecture.md` lists `planmode.input_requested` in the session event catalog, and the Plan Mode spec requires pending `request_user_input` facts to support active Web runners and recovery.
+- Earlier FCA-20260526-073 moved `planmode.input_requested` emission and responder invocation after both the pending request and awaiting-input `state.json` transition are durable.
+- `internal/tools/registry.go` `defRequestUserInput` still emitted `planmode.input_requested` through unchecked `ExecContext.Emit`, then called the interactive responder.
+- A focused registry regression blocked the required event callback; before the fix, the responder was still called and the tool returned answered input even though the session event was unavailable.
+
+Impact:
+
+A live Plan Mode runner could consume user input without the event timeline fact that says an input request was actually surfaced. Web/recovery would still see durable pending request and awaiting-input state, but the active model turn could move past that decision while observability and replay facts were incomplete.
+
+Minimal fix:
+
+- Route model-tool `planmode.input_requested` through the checked tool event callback.
+- If the required event cannot be written, return an error tool result before calling the interactive responder.
+- Preserve the already-durable pending request and awaiting-input state as recovery facts, matching the earlier FCA-20260526-073 decision.
+
+Validation:
+
+- Focused pre-fix registry regression proving `request_user_input` called the responder and returned answers when required event persistence was unavailable.
+- Focused post-fix registry regression proving blocked `planmode.input_requested` returns an error result before the responder is called while preserving durable pending request/state.
+- Standard grouped validation before commit.
+
 ### FCA-20260526-166: Web session routes report corrupt metadata without the source fact name
 
 Severity: Low
@@ -6507,7 +6534,49 @@ Evidence gates:
 - Confirmed the store helper already rolls back if `planmode-history.jsonl` append fails; the remaining gap is the composed model-tool path after `SubmitPlanMode` has succeeded but the matching session event append fails.
 - Confirmed the minimal fix should use existing `SnapshotPlanMode`, `RestorePlanModeSnapshot`, and `RestorePlanModeHistory` helpers around the checked event call, without changing Plan Mode gate semantics or adding a workflow engine.
 
+### Review 183
+
+- Confirmed FCA-20260527-190 against `spec/01-runtime-architecture.md`: `planmode.input_requested` is a catalogued session event for the Plan Mode input request boundary.
+- Confirmed this is narrower than FCA-20260526-073. That slice made pending request and awaiting-input state durable before responder invocation; this slice handles the later event append failure after those facts already succeeded.
+- Confirmed the minimal fix should not roll back the pending request or awaiting-input state, because earlier recovery semantics intentionally preserve those facts. The tool should return an error before consuming interactive input so a later recovery path can still answer the pending request.
+
 ## Update Log
+
+### FCA-20260527-190
+
+Slice: `fix(tools): require plan input request events`
+
+Finding:
+
+- `request_user_input` persisted the pending Plan Mode request and awaiting-input state, then emitted the required `planmode.input_requested` session event through unchecked `ExecContext.Emit`.
+- A blocked or unwritable `events.jsonl` path could therefore let the interactive responder run and return answers without the matching event timeline fact.
+
+Changes:
+
+- Switched model-tool `planmode.input_requested` emission to the checked tool event callback.
+- Returned an error tool result before calling the interactive responder when required event persistence fails.
+- Preserved the durable pending request and awaiting-input state as recovery facts.
+- Added focused registry coverage for blocked `planmode.input_requested` event persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputReportsRequiredEventErrorBeforeResponder -count=1`: failed before the fix because the responder was called and answers were returned.
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputReportsRequiredEventErrorBeforeResponder -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test(RequestUserInputReportsRequiredEventErrorBeforeResponder|RequestUserInputResponderErrorKeepsRecoverablePendingRequest|RequestUserInputReportsStateLoadErrorBeforeResponder|RequestUserInputReportsStateSaveErrorBeforeResponder|SubmitPlanReportsRequiredEventErrorAndRestoresPlanMode|UpdateGoalReportsRequiredEventErrorAndRestoresGoal)' -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 16/16 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260527-189
 

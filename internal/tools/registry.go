@@ -2085,12 +2085,12 @@ func defRequestUserInput() Definition {
 			if err := execCtx.Store.SaveState(execCtx.SessionID, state); err != nil {
 				return errorResult("request_user_input", err), nil
 			}
-			if execCtx.Emit != nil {
-				execCtx.Emit("planmode.input_requested", map[string]any{
-					"plan_mode_id": planMode.PlanModeID,
-					"request_id":   request.RequestID,
-					"questions":    len(request.Questions),
-				})
+			if err := emitToolEvent(execCtx, "planmode.input_requested", map[string]any{
+				"plan_mode_id": planMode.PlanModeID,
+				"request_id":   request.RequestID,
+				"questions":    len(request.Questions),
+			}); err != nil {
+				return errorResult("request_user_input", fmt.Errorf("record planmode.input_requested event: %w", err)), nil
 			}
 			answers, err := execCtx.PlanInputResponder.RequestPlanInput(ctx, execCtx.SessionID, request)
 			if err != nil {
