@@ -254,6 +254,7 @@ function inlineMarkdown(value) {
 function sanitizeHref(value) {
   const href = String(value || '').trim();
   if (!href) return '';
+  if (href.startsWith('//')) return '';
   if (/^(https?:|mailto:)/i.test(href)) return href;
   if (/^[./#][A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%\-]*$/.test(href)) return href;
   return '';

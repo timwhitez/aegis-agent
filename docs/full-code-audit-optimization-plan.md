@@ -4872,6 +4872,33 @@ Validation:
 - Focused post-fix registry regression proving blocked `goal.created` returns an error result and restores prior Goal/task facts.
 - Standard grouped validation before commit.
 
+### FCA-20260527-214: Markdown sanitizer allows protocol-relative external URLs
+
+Severity: Low
+
+Evidence:
+
+- `spec/17-web-console.md` requires Markdown rendering to go through a local HTML/XSS sanitizer and forbids direct injection of unsanitized HTML.
+- `internal/webconsole/assets/utils.js` `sanitizeHref` explicitly allowed `http:`, `https:`, `mailto:`, and local relative path forms.
+- The same helper then allowed any value starting with `.`, `/`, or `#` through the relative-path regex, which included protocol-relative URLs such as `//example.test/path`.
+- A focused Node regression rendered `[docs](//example.test/path) ![alt](//example.test/image.png)`; before the fix, WebConsole produced an external `<a href="//example.test/path">` and `<img src="//example.test/image.png">` from model/session Markdown.
+
+Impact:
+
+Model-rendered Markdown could introduce protocol-relative external links or images through the local sanitizer even though the allowlist intended either explicit safe schemes or true local relative references. That weakens the WebConsole browser injection boundary and can make untrusted session text fetch or navigate to scheme-inherited external origins.
+
+Minimal fix:
+
+- Reject `//...` before applying the relative-path allowlist in `sanitizeHref`.
+- Keep explicit `http(s)` / `mailto` links, normal relative links, markdown image lazy loading, and invalid-image text fallback unchanged.
+- Add a focused Node regression proving protocol-relative links and images do not render as `<a>` or `<img>`.
+
+Validation:
+
+- Focused pre-fix Node regression proving protocol-relative Markdown rendered as link/image HTML.
+- Focused post-fix Node regression proving the same input degrades to text.
+- WebConsole JS syntax checks, WebConsole tests, and repo test/vet gates before commit.
+
 ### FCA-20260527-213: Parent background pending gate hides event append failures
 
 Severity: Medium
@@ -6792,7 +6819,46 @@ Evidence gates:
 - Confirmed `parentCoordinationGate` was the remaining completion-gate path that emitted a `completion.gate.*` event through `_ = c.emitCompletion(...)`; a focused regression showed `completion.gate.parent_background_pending` append failure was swallowed while the controller returned an ordinary parent-background block.
 - Confirmed the minimal fix belongs in `CompletionController.parentCoordinationGate`: propagate the specific pending-background event error before returning the semantic block, without changing wait-any warning behavior or the generic `completion.gate.blocked` path.
 
+### Review 207
+
+- Confirmed `parent.coordination.parked` / `parent.coordination.resumed` remain intentionally best-effort timeline events because `parent-coordination.json` is the parent completion-gate source fact, matching Review 70's earlier boundary.
+- Confirmed FCA-20260527-214 against the local Markdown sanitizer requirement in `spec/17-web-console.md`: rendered Markdown must be sanitized locally and must not directly inject untrusted HTML.
+- Confirmed `sanitizeHref` rejected unsupported schemes but accepted protocol-relative `//host/path` through the relative-path branch; a focused Node regression showed the input rendered as external link and image HTML.
+- Confirmed the minimal fix belongs in the browser sanitizer allowlist, not backend service routes, because the unsafe transformation happens when the WebConsole renders session/plan Markdown.
+
 ## Update Log
+
+### FCA-20260527-214
+
+Slice: `fix(webconsole): reject protocol-relative markdown URLs`
+
+Finding:
+
+- WebConsole Markdown rendering uses `sanitizeHref` before injecting link/image HTML.
+- The sanitizer accepted protocol-relative URLs such as `//example.test/path` through the relative-path allowlist.
+- A focused Node regression rendered `[docs](//example.test/path) ![alt](//example.test/image.png)`; before the fix, it produced both an external `<a>` and `<img>`.
+
+Changes:
+
+- Rejected `//...` before the relative-path allowlist in `sanitizeHref`.
+- Added `safeMarkdown rejects protocol-relative links and images` coverage.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because protocol-relative Markdown rendered as external link/image HTML.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-213
 

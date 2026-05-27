@@ -121,6 +121,17 @@ test('safeMarkdown emits lazy images and noopener links', () => {
   assert.match(html, /loading="lazy"/);
 });
 
+test('safeMarkdown rejects protocol-relative links and images', () => {
+  const html = context.safeMarkdown('[docs](//example.test/path) ![alt](//example.test/image.png)');
+
+  assert.doesNotMatch(html, /href="\/\/example\.test/);
+  assert.doesNotMatch(html, /src="\/\/example\.test/);
+  assert.doesNotMatch(html, /<a\b/);
+  assert.doesNotMatch(html, /<img\b/);
+  assert.doesNotMatch(html, /class="md-img"/);
+  assert.match(html, /<p>docs !\[alt\]\(\/\/example\.test\/image\.png\)<\/p>/);
+});
+
 test('renderMarkdownCached invalidates by content hash', () => {
   context.clearMarkdownCache();
 
