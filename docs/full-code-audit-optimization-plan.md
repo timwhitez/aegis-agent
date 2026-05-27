@@ -6646,7 +6646,50 @@ Evidence gates:
 - Confirmed `internal/webconsole/service.go` made both `addHandle` and `promotePendingStart` publish `webconsole.handle.acquired` best-effort after inserting the in-memory handle, so blocked `events.jsonl` could leave a successful current-process handle with no durable owner clue.
 - Confirmed the minimal fix belongs in the Web service adapter: require `webconsole.handle.acquired` during handle acquisition before the handle becomes visible to local readers; keep release events best-effort because release is cleanup-oriented and must not strand active handles.
 
+### Review 197
+
+- Confirmed FCA-20260527-204 against the hook event catalog in `spec/01-runtime-architecture.md` and Phase 9 requirements in `spec/06-hooks.md`: `hook.triggered`, `hook.finished`, `hook.failed`, `hook.warning`, and `hook.command` are durable hook trace facts in `events.jsonl`, not best-effort process-local observations.
+- Confirmed `internal/hooks/manager.go` used an emitter with no error return, and both runtime call sites wired it to best-effort `emit`, so hook command side effects could run while the corresponding hook trace event was missing.
+- Confirmed the minimal fix belongs in the hook manager plus runtime adapters: make the hook emitter error-returning, require `hook.triggered` before hook command execution, require later hook trace events before continuing, and retarget downstream event tests now that hook event persistence is an earlier required boundary.
+
 ## Update Log
+
+### FCA-20260527-204
+
+Slice: `fix(runtime): require hook trace events`
+
+Finding:
+
+- `hooks.Manager` accepted an emitter that could not return errors, and runtime wired hook events to best-effort `emit`.
+- If `events.jsonl` was blocked during a `user.message`, session, or tool hook, the hook command or transform could run while the required `hook.triggered`, `hook.command`, `hook.warning`, `hook.failed`, or `hook.finished` trace was missing.
+- A focused regression blocked `events.jsonl` before a `user.message` hook; before the fix, the hook command still ran and the failure surfaced later at `user.message` / `session.failed` instead of the missing `hook.triggered` boundary.
+
+Changes:
+
+- Changed `hooks.EmitFunc` to return `error`, and made `hooks.Manager.Trigger` require `hook.triggered`, `hook.finished`, and `hook.failed` event persistence.
+- Made hook command trace events error-aware: `hook.command` and fail-open `hook.warning` append failures now return immediately as hook event errors instead of being converted into ordinary fail-open hook failures.
+- Wired `Engine.Run` and `Runner.transformUserMessage` hook emitters through `appendEvent`, so hook trace writes are durable session event boundaries.
+- Added hook manager coverage for `hook.command`, `hook.finished`, `hook.failed`, and `hook.warning` emitter errors.
+- Added runner coverage proving a missing `hook.triggered` blocks the hook command before side effects and leaves no user message, plus coverage for hook command trace failure during `continue`.
+- Retargeted existing downstream event tests that previously corrupted `events.jsonl` from hook commands; those tests now either call the downstream state transition directly after a successful hook or block required tool events at their owning tool event boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerUserMessageHookRequiresTriggeredEventBeforeCommand -count=1`: failed before the fix because the hook command executed and the returned error referenced the later `user.message` / `session.failed` path instead of `hook.triggered`.
+- `go test -timeout 120s ./internal/hooks ./internal/runtime -run 'TestManager|TestRunnerUserMessageHookRequiresTriggeredEventBeforeCommand' -count=1`: passed during focused hook-manager retargeting.
+- `go test -timeout 120s ./internal/hooks -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(RunnerUserMessageHookRequiresTriggeredEventBeforeCommand|RunnerUserMessageHookCommandEventFailureBlocksContinue|EngineFailReportsFailedEventAppendError|EngineToolAfterReportsEventAppendErrorWithReplayResult|EnginePauseReportsPausedEventAppendError|EngineToolBeforeReportsEventAppendErrorBeforeExecution|RunnerContinueClaimsSessionBeforeUserMessageHook|EngineRefreshesPendingSteerCountAfterConcurrentAppend)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/hooks/manager.go internal/hooks/manager_test.go internal/hooks/manager_linux_test.go internal/runtime/engine.go internal/runtime/runner.go internal/runtime/engine_test.go internal/runtime/runner_test.go internal/runtime/planmode_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260527-203
 

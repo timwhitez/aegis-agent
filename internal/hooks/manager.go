@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,7 +16,7 @@ import (
 	"go-cli-agent/internal/procutil"
 )
 
-type EmitFunc func(eventType string, data map[string]any)
+type EmitFunc func(eventType string, data map[string]any) error
 
 type FailClosedError struct {
 	Point string
@@ -28,6 +29,23 @@ func (e *FailClosedError) Error() string {
 }
 
 func (e *FailClosedError) Unwrap() error {
+	return e.Err
+}
+
+type emitError struct {
+	Event   string
+	Context string
+	Err     error
+}
+
+func (e *emitError) Error() string {
+	if e.Context != "" {
+		return fmt.Sprintf("record %s event for %s: %v", e.Event, e.Context, e.Err)
+	}
+	return fmt.Sprintf("record %s event: %v", e.Event, e.Err)
+}
+
+func (e *emitError) Unwrap() error {
 	return e.Err
 }
 
@@ -62,7 +80,7 @@ func New(cfg config.HooksConfig, workdir string) *Manager {
 			"tool.before":            cfg.ToolBefore,
 			"tool.after":             cfg.ToolAfter,
 		},
-		emit: func(string, map[string]any) {},
+		emit: func(string, map[string]any) error { return nil },
 	}
 }
 
@@ -78,12 +96,18 @@ func (m *Manager) Trigger(ctx context.Context, point string, payload map[string]
 		if !matches(hook.Match, next) {
 			continue
 		}
-		m.emit("hook.triggered", map[string]any{
+		if err := m.emit("hook.triggered", map[string]any{
 			"point": point,
 			"name":  hook.Name,
-		})
+		}); err != nil {
+			return next, fmt.Errorf("record hook.triggered event for %s/%s: %w", point, hook.Name, err)
+		}
 		execution, err := m.runHook(ctx, hook, next)
 		if err != nil {
+			var eventErr *emitError
+			if errors.As(err, &eventErr) {
+				return next, err
+			}
 			data := map[string]any{
 				"point":       point,
 				"name":        hook.Name,
@@ -96,7 +120,9 @@ func (m *Manager) Trigger(ctx context.Context, point string, payload map[string]
 			if len(execution.skipped) > 0 {
 				data["skipped"] = execution.skipped
 			}
-			m.emit("hook.failed", data)
+			if emitErr := m.emit("hook.failed", data); emitErr != nil {
+				return next, fmt.Errorf("record hook.failed event for %s/%s after %v: %w", point, hook.Name, err, emitErr)
+			}
 			if hook.FailClosed {
 				return next, &FailClosedError{
 					Point: point,
@@ -120,7 +146,9 @@ func (m *Manager) Trigger(ctx context.Context, point string, payload map[string]
 		if len(execution.skipped) > 0 {
 			data["skipped"] = execution.skipped
 		}
-		m.emit("hook.finished", data)
+		if err := m.emit("hook.finished", data); err != nil {
+			return next, fmt.Errorf("record hook.finished event for %s/%s: %w", point, hook.Name, err)
+		}
 	}
 	return next, nil
 }
@@ -155,7 +183,9 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 			if hook.FailClosed {
 				return execution, fmt.Errorf("%s", preflight.Message)
 			}
-			m.emit("hook.warning", data)
+			if err := m.emit("hook.warning", data); err != nil {
+				return execution, &emitError{Event: "hook.warning", Context: hook.Name, Err: err}
+			}
 			goto afterCommand
 		}
 		cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
@@ -170,14 +200,16 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 		}
 		text, rawLength, truncated := truncateHookOutput(string(output), hookCommandOutputLimit)
 		timedOut := callCtx.Err() == context.DeadlineExceeded
-		m.emit("hook.command", map[string]any{
+		if emitErr := m.emit("hook.command", map[string]any{
 			"name":       hook.Name,
 			"output":     text,
 			"raw_length": rawLength,
 			"truncated":  truncated,
 			"timeout":    timedOut,
 			"exit_code":  exitCode,
-		})
+		}); emitErr != nil {
+			return execution, &emitError{Event: "hook.command", Context: hook.Name, Err: emitErr}
+		}
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()

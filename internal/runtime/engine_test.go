@@ -412,35 +412,38 @@ func TestEngineProviderCancellationReportsCancelledEventAppendError(t *testing.T
 
 func TestEngineFailReportsFailedEventAppendError(t *testing.T) {
 	cfg := config.Default()
-	cfg.Hooks.SessionStart = []config.HookDefinition{{
-		Name:       "fail-start",
-		FailClosed: true,
-		Command:    []string{"/bin/sh", "-c", "exit 1"},
+	cfg.Hooks.SessionFail = []config.HookDefinition{{
+		Name:    "successful-fail-hook",
+		Command: []string{"/bin/sh", "-c", "exit 0"},
 	}}
-	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
-	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
-		t.Fatalf("append: %v", err)
-	}
+	engine, meta, state, _, hookManager, _ := newTestEngineWithConfig(t, cfg, session.ModeRun)
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("remove events: %v", err)
-	}
-	if err := os.Mkdir(eventsPath, 0o700); err != nil {
-		t.Fatalf("block events path: %v", err)
-	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		t.Fatal("provider should not be called after fail-closed session start hook")
-		return provider.TurnResult{}, nil
+	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
+		if err := engine.appendEvent(meta.ID, eventType, state.Phase, data); err != nil {
+			return err
+		}
+		if eventType == "hook.finished" && data["point"] == "session.fail" {
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
+		}
+		return nil
 	})
 
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	result, err := engine.fail(context.Background(), meta, state, errors.New("original failure"), hookManager)
 	if err == nil {
 		t.Fatalf("expected session.failed event append error, got result=%#v", result)
 	}
 	if !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected events append error with path context, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "exit status 1") {
+	if !strings.Contains(err.Error(), "session.failed") {
+		t.Fatalf("expected session.failed event context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "original failure") {
 		t.Fatalf("expected original failure context, got %v", err)
 	}
 }
@@ -715,12 +718,19 @@ func TestEngineToolAfterReportsEventAppendErrorWithReplayResult(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	firstExecuted := false
 	secondExecuted := false
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
 	registry.Register(tools.Definition{
 		Name:        "first_side_effect",
 		Description: "first side effect",
 		InputSchema: map[string]any{"type": "object"},
 		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			firstExecuted = true
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
 			return session.ToolResult{
 				LLMOutput:     "first ran",
 				DisplayOutput: "first ran",
@@ -742,13 +752,6 @@ func TestEngineToolAfterReportsEventAppendErrorWithReplayResult(t *testing.T) {
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run side effects")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	engine.cfg.Hooks.ToolAfter = append(engine.cfg.Hooks.ToolAfter, config.HookDefinition{
-		Name:    "block-events-after-first-tool",
-		Match:   config.HookMatch{Tool: "first_side_effect"},
-		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-after-first-tool", eventsPath},
-	})
-	hookManager = hooks.New(engine.cfg.Hooks, meta.Workdir)
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		return provider.TurnResult{
 			ToolCalls: []provider.ToolCall{
@@ -1189,7 +1192,13 @@ func TestEngineBudgetWrapUpAwaitsReportsCorruptGoalSnapshot(t *testing.T) {
 func TestEngineBudgetWrapUpAwaitingReportsEventAppendError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
-	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	cfg.Hooks.SessionAwaiting = []config.HookDefinition{
+		{
+			Name:    "successful-budget-awaiting-hook",
+			Command: []string{"/bin/sh", "-c", "exit 0"},
+		},
+	}
+	engine, meta, state, _, hookManager, _ := newTestEngineWithConfig(t, cfg, session.ModeExec)
 	tokenBudget := int64(1)
 	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
 		Enabled:      true,
@@ -1208,32 +1217,17 @@ func TestEngineBudgetWrapUpAwaitingReportsEventAppendError(t *testing.T) {
 		t.Fatalf("append user: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	cfg.Hooks.SessionAwaiting = []config.HookDefinition{
-		{
-			Name:    "block-events-before-budget-awaiting",
-			Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-before-budget-awaiting", eventsPath},
-		},
-	}
-	hookManager = hooks.New(cfg.Hooks, meta.Workdir)
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{
-			ToolCalls: []provider.ToolCall{
-				{
-					ID:   "call_budget_wrapup",
-					Name: "record_goal_progress",
-					Arguments: json.RawMessage(`{
-						"kind":"budget_wrapup",
-						"summary":"Budget exhausted before completion.",
-						"evidence":["runtime test"],
-						"blockers":["needs more budget"]
-					}`),
-				},
-			},
-			StopReason: "tool_use",
-		}, nil
+	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
+		if err := engine.appendEvent(meta.ID, eventType, state.Phase, data); err != nil {
+			return err
+		}
+		if eventType == "hook.finished" && data["point"] == "session.awaiting_input" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+		return nil
 	})
 
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	result, err := engine.awaitingBudgetWrapUp(context.Background(), meta, state, hookManager)
 	if err == nil {
 		t.Fatalf("expected session.awaiting_input event append error, got result=%#v", result)
 	}
@@ -2439,14 +2433,15 @@ func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
 			},
 		}},
 	}, meta.Workdir)
-	hookManager.SetEmitter(func(string, map[string]any) {
+	hookManager.SetEmitter(func(string, map[string]any) error {
 		requests, err := engine.store.LoadSteerRequests(meta.ID)
 		if err != nil || len(requests) != 1 {
-			return
+			return nil
 		}
 		if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("second", false)); err != nil {
 			t.Errorf("append concurrent steer: %v", err)
 		}
+		return nil
 	})
 	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err != nil {
@@ -3031,37 +3026,29 @@ func TestEngineToolInterruptedReportsEventAppendErrorWithReplayResult(t *testing
 }
 
 func TestEnginePauseReportsPausedEventAppendError(t *testing.T) {
-	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
-	registry.Register(tools.Definition{
-		Name:        "slow",
-		Description: "slow",
-		InputSchema: map[string]any{"type": "object"},
-		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			<-ctx.Done()
-			return session.ToolResult{}, ctx.Err()
-		},
-	})
-	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "slow")); err != nil {
-		t.Fatalf("append: %v", err)
-	}
+	cfg := config.Default()
+	cfg.Hooks.SessionPause = []config.HookDefinition{{
+		Name:    "successful-pause-hook",
+		Command: []string{"/bin/sh", "-c", "exit 0"},
+	}}
+	engine, meta, state, _, hookManager, _ := newTestEngineWithConfig(t, cfg, session.ModeRun)
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	engine.cfg.Hooks.SessionPause = append(engine.cfg.Hooks.SessionPause, config.HookDefinition{
-		Name:    "block-events-during-pause",
-		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-during-pause", eventsPath},
+	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
+		if err := engine.appendEvent(meta.ID, eventType, "interrupt", data); err != nil {
+			return err
+		}
+		if eventType == "hook.finished" && data["point"] == "session.pause" {
+			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove events: %v", err)
+			}
+			if err := os.Mkdir(eventsPath, 0o700); err != nil {
+				t.Fatalf("block events path: %v", err)
+			}
+		}
+		return nil
 	})
-	hookManager = hooks.New(engine.cfg.Hooks, meta.Workdir)
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{
-			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
-			StopReason: "tool_use",
-		}, nil
-	})
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		engine.control.requestPause()
-	}()
 
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	result, err := engine.pause(context.Background(), meta, state, "keyboard_interrupt", hookManager)
 	if err == nil {
 		t.Fatalf("expected session.paused event append error, got result=%#v", result)
 	}
@@ -3403,24 +3390,27 @@ func TestEngineToolBeforeHookCanRewriteArguments(t *testing.T) {
 }
 
 func TestEngineCompleteReportsCompletedEventAppendError(t *testing.T) {
-	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	cfg := config.Default()
+	cfg.Hooks.SessionComplete = []config.HookDefinition{{
+		Name:    "successful-complete-hook",
+		Command: []string{"/bin/sh", "-c", "exit 0"},
+	}}
+	engine, meta, state, _, hookManager, _ := newTestEngineWithConfig(t, cfg, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	engine.cfg.Hooks.SessionComplete = append(engine.cfg.Hooks.SessionComplete, config.HookDefinition{
-		Name:    "block-events-during-complete",
-		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-during-complete", eventsPath},
-	})
-	hookManager = hooks.New(engine.cfg.Hooks, meta.Workdir)
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{
-			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
-			StopReason: "tool_use",
-		}, nil
+	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
+		if err := engine.appendEvent(meta.ID, eventType, state.Phase, data); err != nil {
+			return err
+		}
+		if eventType == "hook.finished" && data["point"] == "session.complete" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+		return nil
 	})
 
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	result, err := engine.complete(context.Background(), meta, state, "done", hookManager)
 	if err == nil {
 		t.Fatalf("expected session.completed event append error, got result=%#v", result)
 	}
@@ -3593,7 +3583,7 @@ func TestEngineTodoWriteReportsRequiredEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	hookManager = blockRuntimeEventsAfterToolBefore(t, engine, meta, eventsPath, "todo_write")
+	blockRuntimeEventsOnRequiredToolEvent(t, registry, "todo_write", "todo.updated", eventsPath)
 	turns := 0
 	fake := provider.NewFake(
 		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
@@ -3766,14 +3756,37 @@ func blockRuntimeProviderAttemptsPath(t *testing.T, store *session.Store, sessio
 	}
 }
 
-func blockRuntimeEventsAfterToolBefore(t *testing.T, engine *Engine, meta session.SessionMetadata, eventsPath, toolName string) *hooks.Manager {
+func blockPathAsDir(t *testing.T, path, label string) {
 	t.Helper()
-	engine.cfg.Hooks.ToolBefore = append(engine.cfg.Hooks.ToolBefore, config.HookDefinition{
-		Name:    "block-events-after-tool-before",
-		Match:   config.HookMatch{Tool: toolName},
-		Command: []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-after-tool-before", eventsPath},
-	})
-	return hooks.New(engine.cfg.Hooks, meta.Workdir)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove %s: %v", label, err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("block %s path: %v", label, err)
+	}
+}
+
+func blockRuntimeEventsOnRequiredToolEvent(t *testing.T, registry *tools.Registry, toolName, requiredEvent, eventsPath string) {
+	t.Helper()
+	original := registry.Get(toolName)
+	if original == nil {
+		t.Fatalf("missing tool %s", toolName)
+	}
+	wrapped := *original
+	wrapped.Execute = func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+		originalEmitRequired := execCtx.EmitRequired
+		execCtx.EmitRequired = func(eventType string, data map[string]any) error {
+			if eventType == requiredEvent {
+				blockPathAsDir(t, eventsPath, "events")
+			}
+			if originalEmitRequired == nil {
+				return nil
+			}
+			return originalEmitRequired(eventType, data)
+		}
+		return original.Execute(ctx, execCtx, raw)
+	}
+	registry.Register(wrapped)
 }
 
 type emittingAdapter struct {

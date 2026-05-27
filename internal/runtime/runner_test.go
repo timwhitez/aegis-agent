@@ -1236,7 +1236,7 @@ func TestRunnerFailBeforeRunReportsStateSaveError(t *testing.T) {
 	}
 }
 
-func TestRunnerFailBeforeRunReportsFailedEventAppendError(t *testing.T) {
+func TestRunnerUserMessageHookCommandEventFailureBlocksContinue(t *testing.T) {
 	root := t.TempDir()
 	sessionID := session.NewSessionID()
 	eventsPath := filepath.Join(root, sessionID, "events.jsonl")
@@ -1254,7 +1254,7 @@ func TestRunnerFailBeforeRunReportsFailedEventAppendError(t *testing.T) {
 	cfg.Hooks.UserMessage = []config.HookDefinition{{
 		Name:       "block-events-then-fail",
 		FailClosed: true,
-		Command:    []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\" && exit 1", "block-events-then-fail", eventsPath},
+		Command:    []string{"/bin/sh", "-c", "rm -f \"$1\" && mkdir \"$1\"", "block-events-then-fail", eventsPath},
 	}}
 	runner := NewRunner(cfg)
 	meta := session.SessionMetadata{
@@ -1280,13 +1280,81 @@ func TestRunnerFailBeforeRunReportsFailedEventAppendError(t *testing.T) {
 
 	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Message: "reject me"})
 	if err == nil {
-		t.Fatalf("expected failed event append error, got result=%#v", result)
+		t.Fatalf("expected hook event append error, got result=%#v", result)
 	}
 	if !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected events append error with path context, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "exit status 1") {
-		t.Fatalf("expected original hook failure context, got %v", err)
+	if !strings.Contains(err.Error(), "hook.command") {
+		t.Fatalf("expected hook.command event context, got %v", err)
+	}
+	messages, loadErr := runner.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected failed hook trace to leave no user message, got %#v", messages)
+	}
+}
+
+func TestRunnerUserMessageHookRequiresTriggeredEventBeforeCommand(t *testing.T) {
+	root := t.TempDir()
+	sessionID := session.NewSessionID()
+	hookRan := filepath.Join(root, "hook-ran")
+	cfg := config.Default()
+	cfg.Session.Dir = root
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider: "openai-compatible",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     "http://127.0.0.1:1/v1",
+		Model:       "gpt-5.4",
+		TimeoutSec:  30,
+		WireAPI:     "responses",
+	}
+	cfg.Hooks.UserMessage = []config.HookDefinition{{
+		Name:    "touch-before-message",
+		Command: []string{"/bin/sh", "-c", "touch \"$1\"", "touch-before-message", hookRan},
+	}}
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	state := session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	blockRunnerEventsPath(t, runner.store, meta.ID)
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Message: "continue through hook"})
+	if err == nil {
+		t.Fatalf("expected hook.triggered event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "hook.triggered") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected hook.triggered events error, got %v", err)
+	}
+	if _, statErr := os.Stat(hookRan); !os.IsNotExist(statErr) {
+		t.Fatalf("expected hook command not to run without durable triggered event, stat err=%v", statErr)
+	}
+	messages, loadErr := runner.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected failed hook trace to leave no user message, got %#v", messages)
 	}
 }
 

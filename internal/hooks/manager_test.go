@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,10 +86,11 @@ func TestManagerEmitsCommandExitCodeOnFailure(t *testing.T) {
 	}, t.TempDir())
 
 	var failed map[string]any
-	manager.SetEmitter(func(eventType string, data map[string]any) {
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
 		if eventType == "hook.failed" {
 			failed = data
 		}
+		return nil
 	})
 
 	payload, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"})
@@ -117,10 +119,11 @@ func TestManagerTruncatesLargeHookCommandOutput(t *testing.T) {
 	}, t.TempDir())
 
 	var command map[string]any
-	manager.SetEmitter(func(eventType string, data map[string]any) {
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
 		if eventType == "hook.command" {
 			command = data
 		}
+		return nil
 	})
 
 	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err != nil {
@@ -150,10 +153,11 @@ func TestManagerEmitsHookCommandTimeoutMetadata(t *testing.T) {
 	}, t.TempDir())
 
 	var command map[string]any
-	manager.SetEmitter(func(eventType string, data map[string]any) {
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
 		if eventType == "hook.command" {
 			command = data
 		}
+		return nil
 	})
 
 	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err != nil {
@@ -176,13 +180,14 @@ func TestManagerSkipsMissingFailOpenCommandWithWarning(t *testing.T) {
 
 	var warning map[string]any
 	var commandRan bool
-	manager.SetEmitter(func(eventType string, data map[string]any) {
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
 		if eventType == "hook.warning" {
 			warning = data
 		}
 		if eventType == "hook.command" {
 			commandRan = true
 		}
+		return nil
 	})
 
 	payload, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"})
@@ -212,10 +217,11 @@ func TestManagerMissingFailClosedCommandBlocks(t *testing.T) {
 	}, t.TempDir())
 
 	var failed map[string]any
-	manager.SetEmitter(func(eventType string, data map[string]any) {
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
 		if eventType == "hook.failed" {
 			failed = data
 		}
+		return nil
 	})
 
 	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err == nil {
@@ -223,6 +229,100 @@ func TestManagerMissingFailClosedCommandBlocks(t *testing.T) {
 	}
 	if failed == nil || failed["error"] == "" {
 		t.Fatalf("expected hook.failed event, got %#v", failed)
+	}
+}
+
+func TestManagerReturnsHookCommandEmitterError(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name:    "command-event-fails",
+				Command: []string{"/bin/sh", "-c", "exit 0"},
+			},
+		},
+	}, t.TempDir())
+
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
+		if eventType == "hook.command" {
+			return errors.New("events closed")
+		}
+		return nil
+	})
+
+	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err == nil || !strings.Contains(err.Error(), "hook.command") || !strings.Contains(err.Error(), "events closed") {
+		t.Fatalf("expected hook.command emitter error, got %v", err)
+	}
+}
+
+func TestManagerReturnsHookFinishedEmitterError(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name: "finished-event-fails",
+				Inject: &config.HookInject{
+					Field:  "text",
+					Prefix: "updated ",
+				},
+			},
+		},
+	}, t.TempDir())
+
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
+		if eventType == "hook.finished" {
+			return errors.New("events closed")
+		}
+		return nil
+	})
+
+	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err == nil || !strings.Contains(err.Error(), "hook.finished") || !strings.Contains(err.Error(), "events closed") {
+		t.Fatalf("expected hook.finished emitter error, got %v", err)
+	}
+}
+
+func TestManagerReturnsHookFailedEmitterError(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name: "failed-event-fails",
+				Filter: &config.HookFilter{
+					Field:            "text",
+					RejectIfContains: "reject",
+				},
+			},
+		},
+	}, t.TempDir())
+
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
+		if eventType == "hook.failed" {
+			return errors.New("events closed")
+		}
+		return nil
+	})
+
+	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "reject"}); err == nil || !strings.Contains(err.Error(), "hook.failed") || !strings.Contains(err.Error(), "hook rejected payload") || !strings.Contains(err.Error(), "events closed") {
+		t.Fatalf("expected hook.failed emitter error with original context, got %v", err)
+	}
+}
+
+func TestManagerReturnsHookWarningEmitterError(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name:    "warning-event-fails",
+				Command: []string{"definitely-missing-hook-command-for-preflight"},
+			},
+		},
+	}, t.TempDir())
+
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
+		if eventType == "hook.warning" {
+			return errors.New("events closed")
+		}
+		return nil
+	})
+
+	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err == nil || !strings.Contains(err.Error(), "hook.warning") || !strings.Contains(err.Error(), "events closed") {
+		t.Fatalf("expected hook.warning emitter error, got %v", err)
 	}
 }
 
@@ -238,10 +338,11 @@ func TestManagerPreflightsMissingRelativeShellScript(t *testing.T) {
 	}, workdir)
 
 	var warning map[string]any
-	manager.SetEmitter(func(eventType string, data map[string]any) {
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
 		if eventType == "hook.warning" {
 			warning = data
 		}
+		return nil
 	})
 
 	if _, err := manager.Trigger(context.Background(), "session.complete", map[string]any{"status": "completed"}); err != nil {

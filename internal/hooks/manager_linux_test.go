@@ -28,10 +28,11 @@ func TestManagerTimeoutKillsChildProcessGroup(t *testing.T) {
 		},
 	}, workdir)
 	var command map[string]any
-	manager.SetEmitter(func(eventType string, data map[string]any) {
+	manager.SetEmitter(func(eventType string, data map[string]any) error {
 		if eventType == "hook.command" {
 			command = data
 		}
+		return nil
 	})
 
 	if _, err := manager.Trigger(context.Background(), "user.message", map[string]any{"text": "hello"}); err != nil {

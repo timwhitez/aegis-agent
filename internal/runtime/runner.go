@@ -1960,8 +1960,8 @@ func (r *Runner) appendUserMessage(ctx context.Context, meta session.SessionMeta
 
 func (r *Runner) transformUserMessage(ctx context.Context, meta session.SessionMetadata, phase, text string) (string, error) {
 	hookManager := hooks.New(r.cfg.Hooks, meta.Workdir)
-	hookManager.SetEmitter(func(eventType string, data map[string]any) {
-		r.emit(meta.ID, eventType, phase, data)
+	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
+		return r.appendEvent(meta.ID, eventType, phase, data)
 	})
 	payload, err := hookManager.Trigger(ctx, "user.message", map[string]any{
 		"session_id": meta.ID,

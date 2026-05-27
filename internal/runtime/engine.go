@@ -64,8 +64,8 @@ type RunResult struct {
 }
 
 func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string, adapter provider.Adapter, catalog *skills.Catalog, registry *tools.Registry, hookManager *hooks.Manager) (RunResult, error) {
-	hookManager.SetEmitter(func(eventType string, data map[string]any) {
-		e.emit(meta.ID, eventType, state.Phase, data)
+	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
+		return e.appendEvent(meta.ID, eventType, state.Phase, data)
 	})
 	if _, err := hookManager.Trigger(ctx, "session.start", sessionHookPayload(meta, session.StatusRunning)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)

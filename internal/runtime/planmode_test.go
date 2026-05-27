@@ -302,7 +302,7 @@ func TestEngineSubmitPlanReportsPlanSubmittedEventAppendError(t *testing.T) {
 		t.Fatalf("load initial plan mode history: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
-	hookManager = blockRuntimeEventsAfterToolBefore(t, engine, meta, eventsPath, "submit_plan")
+	blockRuntimeEventsOnRequiredToolEvent(t, registry, "submit_plan", "planmode.plan_submitted", eventsPath)
 	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
 		if !hasProviderTool(req.Tools, "submit_plan") {
 			t.Fatalf("submit_plan missing from planning tools: %#v", req.Tools)
