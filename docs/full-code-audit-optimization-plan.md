@@ -8154,6 +8154,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-148, FCA-20260528-313, FCA-20260528-331, and FCA-20260528-350. Earlier slices made store list/claim/load paths reject corrupt or malformed queue jobs, and FCA-350 covered session core files. This slice covers the remaining doctor-only path where `_queue/<status>/<job>.json` was parsed as JSON but never semantically validated.
 - Confirmed the minimal fix belongs across a read-only exported session validator plus `doctorQueueJobRecords()`: expose a no-reconcile `ValidateQueueJobSnapshot` wrapper around the shared queue job validator, then have doctor classify semantically invalid queue job JSON as `unreadable_queue_jobs`, without using `LoadJob`/`ListJobs` paths that may repair queue state.
 
+### Review 345
+
+- Confirmed FCA-20260528-352 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `events.jsonl` is a durable session event fact source used by Web detail, session summaries, checkpoints, TUI, CLI fallback, owner clues, recovery diagnostics, and runtime timeline/audit behavior.
+- Confirmed this is distinct from FCA-20260528-350 and FCA-20260528-351. Those covered doctor semantic validation for `session.json` / `state.json` / `messages.jsonl` and queue job snapshots; this slice covers the remaining doctor core-file gap where malformed `events.jsonl` was not checked at all.
+- Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: include `events.jsonl` in the doctor core file set and validate it through `SessionStore.LoadEvents`, without duplicating event validation rules or changing runtime/Web/TUI event semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11438,6 +11444,49 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/app/doctor_helpers.go internal/app/app_test.go internal/session/store.go`: passed with no output.
 - `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go internal/session/store.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-352
+
+Slice: `fix(app): validate doctor event facts`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines `events.jsonl` as a core session fact alongside `session.json`, `state.json`, and `messages.jsonl`; `spec/09-phase-plan.md` includes `doctor` in the Web-first v1 provider/diagnostic validation surface.
+- FCA-20260528-350 added doctor semantic validation for `session.json`, `state.json`, and `messages.jsonl`, but `doctorSessionCoreFileIssues()` still did not include `events.jsonl` in the core file scan.
+- A focused regression wrote `events.jsonl` with `time:"not-a-time"`. Before the fix, `checkSessionPartialState()` returned `Status:"ok"` with `unreadable_session_files:0`.
+
+Impact:
+
+- `go-cli-agent doctor` could report a session as healthy while Web detail, TUI selected snapshot, session summaries, checkpoints, and store callers would reject the event ledger.
+- Recovery diagnostics could miss a corrupt event timeline even though events drive owner clues, control history, queue lifecycle evidence, runtime timeline behavior, and auditability.
+- This is a read-only diagnostics fix only; it does not change event production, store validation rules, Web state authority, TUI rendering, provider replay, queue behavior, or runtime workflow policy.
+
+Changes:
+
+- Added `events.jsonl` to the doctor core file scan.
+- Routed doctor event validation through `SessionStore.LoadEvents`.
+- Added focused doctor coverage for invalid session event facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestDoctorReportsInvalidSessionEventFacts -count=1`: failed before the fix because `session.partial_state` returned `ok` for invalid `events.jsonl`.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReportsInvalidSessionEventFacts|TestDoctorReportsInvalidSessionCoreFacts|TestDoctorReportsUnsafeSessionCoreFiles|TestDoctorReportsMissingSessionState' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReports(InvalidSessionEventFacts|InvalidSessionCoreFacts|InvalidQueueJobFacts|UnsafeSessionCoreFiles|MissingSessionState|QueueJobMissingParentSessionRef|QueueLeaseAndMissingSessionRef|BlockedQueueJobMissingSessionRef|DuplicateQueueJobStatus)' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/webconsole ./internal/tui -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/app/doctor_helpers.go internal/app/app_test.go`: passed with no output.
+- `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

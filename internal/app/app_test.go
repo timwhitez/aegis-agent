@@ -1882,6 +1882,43 @@ func TestDoctorReportsInvalidSessionCoreFacts(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsInvalidSessionEventFacts(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "session_invalid_events"
+	store := session.NewStore(root)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        "2026-05-28T00:00:00Z",
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(sessionID), "events.jsonl"), []byte(`{"id":"event_bad_time","session_id":"session_invalid_events","type":"session.started","phase":"prepare","time":"not-a-time"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write invalid events: %v", err)
+	}
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	unreadable, ok := check.Details["unreadable_session_files"].([]map[string]any)
+	if !ok || len(unreadable) != 1 {
+		t.Fatalf("expected unreadable session file, got %#v", check.Details["unreadable_session_files"])
+	}
+	if unreadable[0]["session_id"] != sessionID || unreadable[0]["file"] != "events.jsonl" {
+		t.Fatalf("unexpected unreadable session detail: %#v", unreadable[0])
+	}
+	if !strings.Contains(fmt.Sprint(unreadable[0]["error"]), "time") {
+		t.Fatalf("expected event time validation error, got %#v", unreadable[0])
+	}
+}
+
 func TestDoctorReportsDuplicateQueueJobStatus(t *testing.T) {
 	root := t.TempDir()
 	job := session.QueueJob{ID: "job_duplicate", Status: session.QueueStatusQueued, Prompt: "hi", Mode: session.ModeExec}

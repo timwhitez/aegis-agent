@@ -405,7 +405,7 @@ func doctorSessionCoreFileIssues(sessionRoot string) ([]map[string]any, []map[st
 		sessionID := entry.Name()
 		sessionDir := filepath.Join(sessionRoot, sessionID)
 		var missing []string
-		for _, name := range []string{"session.json", "state.json", "messages.jsonl"} {
+		for _, name := range []string{"session.json", "state.json", "messages.jsonl", "events.jsonl"} {
 			path := filepath.Join(sessionDir, name)
 			info, err := os.Lstat(path)
 			if err != nil {
@@ -473,6 +473,9 @@ func doctorValidateSessionCoreFile(store *session.Store, sessionID, name string)
 		return err
 	case "messages.jsonl":
 		_, err := store.LoadMessages(sessionID)
+		return err
+	case "events.jsonl":
+		_, err := store.LoadEvents(sessionID)
 		return err
 	default:
 		return nil
