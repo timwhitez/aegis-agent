@@ -4479,11 +4479,23 @@ func mergeBackgroundNotification(existing, next BackgroundNotification) Backgrou
 	}
 	if strings.TrimSpace(next.LastError) != "" {
 		merged.LastError = next.LastError
+	} else if shouldClearBackgroundNotificationError(existing, next) {
+		merged.LastError = ""
 	}
 	if strings.TrimSpace(next.DeliveryStatus) != "" {
 		merged.DeliveryStatus = next.DeliveryStatus
 	}
 	return merged
+}
+
+func shouldClearBackgroundNotificationError(existing, next BackgroundNotification) bool {
+	if strings.TrimSpace(existing.LastError) == "" {
+		return false
+	}
+	if strings.TrimSpace(next.Status) == QueueStatusCompleted {
+		return true
+	}
+	return false
 }
 
 func backgroundNotificationFactsChanged(existing, next BackgroundNotification) bool {
@@ -4518,6 +4530,9 @@ func backgroundNotificationFactsChanged(existing, next BackgroundNotification) b
 		return true
 	}
 	if strings.TrimSpace(next.LastError) != "" && existing.LastError != next.LastError {
+		return true
+	}
+	if shouldClearBackgroundNotificationError(existing, next) {
 		return true
 	}
 	return false

@@ -3895,6 +3895,9 @@ func TestEnsureBackgroundNotificationRefreshesChangedQueueFacts(t *testing.T) {
 	if loaded[0].Status != QueueStatusCompleted || loaded[0].SessionStatus != StatusCompleted || loaded[0].FinalText != "child completed after continue" {
 		t.Fatalf("expected completed notification facts, got %#v", loaded[0])
 	}
+	if loaded[0].LastError != "" {
+		t.Fatalf("expected completed notification refresh to clear stale resumable error, got %#v", loaded[0])
+	}
 	if loaded[0].DeliveryStatus != BackgroundNotificationPending {
 		t.Fatalf("expected changed terminal facts to be re-delivered, got %#v", loaded[0])
 	}
@@ -3968,6 +3971,9 @@ func TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh(t *testing.
 	}
 	if loaded[0].Status != QueueStatusCompleted || loaded[0].SessionStatus != StatusCompleted || loaded[0].FinalText != "child completed while parent accepted blocked result" {
 		t.Fatalf("expected concurrent completed facts to survive stale accepted update, got %#v", loaded[0])
+	}
+	if loaded[0].LastError != "" {
+		t.Fatalf("expected concurrent completed refresh to clear stale resumable error, got %#v", loaded[0])
 	}
 	if loaded[0].DeliveryStatus != BackgroundNotificationPending {
 		t.Fatalf("expected completed facts to remain pending for redelivery, got %#v", loaded[0])

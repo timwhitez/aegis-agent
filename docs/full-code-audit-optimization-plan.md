@@ -8406,7 +8406,58 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-387. That slice fixed the main paired Sub agents card, while the residual issue was only the floating Sub Agents tree row rendered by `renderSubAgentSessionRow`, which still read the linked child session status directly.
 - Confirmed the minimal fix is to share the paired sub-agent display-status selection between `renderSubAgentCard` and `renderSubAgentSessionRow`, preferring terminal or `blocked` queue job status before falling back to child session status, without changing queue reconciliation, notification delivery, backend API shape, or runtime facts.
 
+### Review 377
+
+- Confirmed FCA-20260529-389 against the durable background notification contract in `spec/01-runtime-architecture.md` and `spec/17-web-console.md`: background notifications are queue/session facts that drive parent replay, Web Background visibility, and recovery.
+- Confirmed this is distinct from FCA-20260525-039, FCA-20260526-139, FCA-20260529-384, and FCA-20260529-388. Those slices covered concurrent notification loss, corrupt parent background state, notification copy priority, and frontend paired-row display. The residual issue is in the backend notification merge helper: a same-job refresh from `blocked` to `completed` leaves the stale `LastError` because empty `next.LastError` never overwrites the old error.
+- Confirmed the minimal fix belongs in `internal/session/store.go` `mergeBackgroundNotification`: when a new completed notification refresh carries no error, clear the previous resumable/blocked error while preserving normal partial-update behavior and failed-notification error persistence.
+
 ## Update Log
+
+### FCA-20260529-389
+
+Slice: `fix(session): clear refreshed background errors`
+
+Finding:
+
+- `spec/17-web-console.md` requires background child / queue results to return to the current session Background inspector and preserve visible status, final text, and error facts from durable files.
+- `internal/session/store.go` `EnsureBackgroundNotification` refreshes an existing same-`queue_job_id` notification by merging new queue facts into the old notification.
+- `mergeBackgroundNotification` only overwrote `LastError` when the incoming notification carried a nonblank error.
+- When a previously blocked child (`status=blocked`, `last_error="child session is resumable: awaiting_input"`) was later continued and refreshed as completed with `final_text` and no `last_error`, the old resumable error remained in `control/background.jsonl`.
+- Focused store regressions showed both a direct refresh and a concurrent stale-accept refresh preserved the stale error after the notification status and final text were updated to completed.
+
+Impact:
+
+- The parent session could re-deliver a completed background result whose payload still contained a stale blocked-child error.
+- WebConsole background result renderers prioritize `last_error`, so the completed child would continue to look failed or dangerous even though durable queue/session status and final text said it completed.
+- Provider-visible `background_results` could also include contradictory completed-plus-error facts.
+
+Changes:
+
+- Added `shouldClearBackgroundNotificationError` to detect completed same-job refreshes with no new error.
+- Updated `mergeBackgroundNotification` and `backgroundNotificationFactsChanged` so completed refreshes clear stale notification errors and still count as changed facts.
+- Strengthened existing store regressions for direct and concurrent notification refresh paths to assert stale resumable errors are removed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh' -count=1`: failed before the fix because completed notification refreshes retained stale resumable `LastError`.
+- `go test -timeout 120s ./internal/session -run 'TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 60 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-388
 
