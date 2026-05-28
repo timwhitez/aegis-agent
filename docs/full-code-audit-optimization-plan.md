@@ -8118,6 +8118,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-311 and FCA-20260528-327. Those slices added generic message validation and message timestamp parsing; this slice covers the remaining generic provider-content argument-shape gap where non-empty `input` / `args` fields could be syntactically valid JSON arrays instead of JSON objects.
 - Confirmed the minimal fix belongs in shared message validation: require provider-content `input` and `args` to be JSON objects when present, without validating provider-specific block types, replay policies, signatures, encrypted reasoning, thought signatures, or Web/CLI provider replay behavior.
 
+### Review 339
+
+- Confirmed FCA-20260528-346 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: provider-native `provider_content_blocks` are session-file replay facts owned by provider adapters, and every persisted block must identify the adapter family that can interpret it.
+- Confirmed this is distinct from FCA-20260528-311 and FCA-20260528-345. Those slices covered message shape basics and provider-content JSON argument object shape; this slice covers the remaining owner gap where an assistant message could contain only an ownerless provider-content block that passed store validation but would be ignored by all provider replay helpers.
+- Confirmed the minimal fix belongs in shared message validation: require every provider-content block to carry a nonblank `provider` owner, without validating provider-specific block types, profile/API/model scope policy, encrypted reasoning, signatures, thought signatures, or Web/CLI provider replay behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11126,6 +11132,53 @@ Validation:
 - `go test -timeout 120s ./internal/provider -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -run 'TestEnginePersistsProviderTurnMetadata|TestProviderRawSidecar|TestEngineProvider|TestCompaction|Test.*Replay|TestLongRunCheckpoint|TestSessionSummary' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-346
+
+Slice: `fix(session): require provider content owners`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` define `messages.jsonl` as the durable provider replay fact source, while provider-native `provider_content_blocks` are interpreted only by the owning provider adapter.
+- FCA-20260528-311 added basic provider-content block validation, and FCA-20260528-345 tightened provider-content argument shape, but blocks still did not need to identify their owning provider.
+- Focused regressions wrote an assistant message whose only payload was `provider_content_blocks: [{type:"thinking",data:"opaque"}]` with no `provider`. Before the fix, `LoadMessages()` returned nil and `AppendMessage()` accepted the ownerless opaque block.
+
+Impact:
+
+- An assistant message could satisfy the durable message shape solely through a provider-native block that no current adapter would replay because all replay helpers filter by `Provider`.
+- Web detail, CLI fallback, compaction, summaries, checkpoints, and recovery could treat an ownerless opaque block as normal durable assistant history even though the replay authority was undefined.
+- This is a store validation-boundary fix only; it does not interpret provider-specific block types, profile/API/model scope policy, encrypted reasoning, signatures, thought signatures, replay ownership beyond the provider owner, Web state authority, or model-led workflow behavior.
+
+Changes:
+
+- Required every persisted provider-content block to carry a nonblank `provider` owner.
+- Extended focused message load and append regressions to reject ownerless provider-content blocks.
+- Preserved provider adapter ownership of block-specific replay semantics.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLoadMessagesRejectsMalformedSnapshot` loaded an assistant message with an ownerless provider-content block, and `TestMessageWritesRejectMalformedFacts` accepted the same malformed append.
+- `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts|TestStoreAppendMessage|TestStoreLoadMessages' -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -run 'Test.*Replay|Test.*Thinking|Test.*Reasoning|Test.*Content|Test.*Provider' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompaction|TestEnginePersistsProviderTurnMetadata|TestProviderRawSidecar|TestSessionSummary|TestLongRunCheckpoint' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.

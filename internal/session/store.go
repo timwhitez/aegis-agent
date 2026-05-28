@@ -3870,6 +3870,9 @@ func validateToolResults(results []ToolResult) error {
 func validateProviderContentBlocks(blocks []ProviderContentBlock) error {
 	for i, block := range blocks {
 		position := i + 1
+		if strings.TrimSpace(block.Provider) == "" {
+			return fmt.Errorf("provider_content_block %d provider is required", position)
+		}
 		if strings.TrimSpace(block.Type) == "" {
 			return fmt.Errorf("provider_content_block %d type is required", position)
 		}

@@ -1219,6 +1219,18 @@ func TestLoadMessagesRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "args must be valid JSON object") {
 		t.Fatalf("expected invalid provider content args validation error, got %v", err)
 	}
+
+	malformed = NewMessage("assistant", "")
+	malformed.ProviderContentBlocks = []ProviderContentBlock{{
+		Type: "thinking",
+		Data: "opaque",
+	}}
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write ownerless provider block messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "provider is required") {
+		t.Fatalf("expected ownerless provider content validation error, got %v", err)
+	}
 }
 
 func TestMessageWritesRejectMalformedFacts(t *testing.T) {
@@ -1277,6 +1289,14 @@ func TestMessageWritesRejectMalformedFacts(t *testing.T) {
 	}}
 	if err := store.AppendMessage(meta.ID, invalidProviderArgs); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "args must be valid JSON object") {
 		t.Fatalf("expected invalid provider args append rejection, got %v", err)
+	}
+	ownerlessProviderBlock := NewMessage("assistant", "")
+	ownerlessProviderBlock.ProviderContentBlocks = []ProviderContentBlock{{
+		Type: "thinking",
+		Data: "opaque",
+	}}
+	if err := store.AppendMessage(meta.ID, ownerlessProviderBlock); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "provider is required") {
+		t.Fatalf("expected ownerless provider block append rejection, got %v", err)
 	}
 	if _, err := store.WriteTranscript(meta.ID, "bad.jsonl", []Message{invalidRole}); err == nil || !strings.Contains(err.Error(), "validate transcript messages") {
 		t.Fatalf("expected transcript validation rejection, got %v", err)
