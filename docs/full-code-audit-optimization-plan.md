@@ -8208,6 +8208,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-269, FCA-20260528-270, FCA-20260528-322, and FCA-20260528-324. Those slices guarded stale selected-job/session async responses and same-session enrichment races; this slice covers the remaining active-polling predicate that ignored an already selected queue job when it was outside the current `children.jobs` window.
 - Confirmed the minimal fix belongs in the frontend polling predicate only: treat `state.selectedQueueJobDetail` as an active descendant only when its `id` matches the current selection, its `parent_session_id` matches the current session detail, and its queue/session status is active. This keeps WebConsole as a projection of durable queue facts and prevents stale selected jobs from another parent from driving current-session polling.
 
+### Review 354
+
+- Confirmed FCA-20260528-361 against `spec/01-runtime-architecture.md`: `events.jsonl` is the durable session event source, and start lifecycle events must describe the created/running session before provider execution or user-message handling advances.
+- Confirmed this is distinct from FCA-20260526-178. That slice hardened `session.started` inside `runExisting`; this slice covers the earlier `session.created` event emitted immediately after `Store.Create` and after start-time Goal/Plan Mode initialization.
+- Confirmed the minimal fix belongs in `Runner.Start`: use checked `appendEvent` for `session.created` and stop before writing prompt/user-message or calling the provider when the created lifecycle event cannot be persisted.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11877,6 +11883,40 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/api.js internal/webconsole/assets/session-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/workspace-view.js`: passed with no output.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-361
+
+Slice: `fix(runtime): persist created lifecycle events`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines `events.jsonl` as a session store fact source and maps critical runtime actions to structured events.
+- FCA-20260526-178 already made `session.started` a checked lifecycle event before provider execution in `runExisting`.
+- `Runner.Start` still emitted the earlier `session.created` event through best-effort `r.emit` immediately after `Store.Create` and start-time Goal/Plan Mode initialization.
+- A focused runtime regression blocked `events.jsonl` at the `session.created` boundary. Before the fix, `Runner.Start` ignored the append failure, appended the initial user message, reached the provider, and returned `awaiting_input` with assistant text instead of reporting the missing `session.created` event.
+
+Impact:
+
+- Start could create durable `session.json` / `state.json` and continue execution without the creation lifecycle event in `events.jsonl`.
+- Web/service startup tracking, recovery timelines, session summaries, and audit diagnostics could see later user/provider/session events with no durable `session.created` boundary explaining how the session began.
+- This was distinct from the already-fixed `session.started` boundary: the missing event happened earlier, before the initial prompt path and before `runExisting`.
+
+Changes:
+
+- Changed `Runner.Start` to append `session.created` through checked `appendEvent`.
+- Returned errors now include `session.created` context.
+- Added focused runtime coverage that blocks `events.jsonl` exactly before `session.created`, proves provider execution does not begin, and proves the returned error names the missing lifecycle event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerStartReportsCreatedEventAppendError -count=1`: failed before the fix because `Runner.Start` reached the provider and returned `awaiting_input`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerStartReports(Created|Started)EventAppendError' -count=1`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/runner_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerStartReports(Created|Started)EventAppendError|TestRunnerStart(GoalCreatedEventAppendErrorRestoresGoal|LinkedPlanModeCreatedEventAppendErrorRestoresGoalAndPlanMode|ExplicitPlanModeCreatedEventAppendErrorRestoresPlanMode)' -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/api.js internal/webconsole/assets/session-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/workspace-view.js`: passed with no output.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 

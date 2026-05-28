@@ -40,6 +40,10 @@ type Runner struct {
 	planInputMu       sync.Mutex
 	planInputWaiters  map[string]chan planInputResponse
 	planInputHandlers map[string]PlanInputHandler
+
+	// beforeStartSessionCreatedEvent is set only by package tests to force
+	// deterministic failures around the start-time lifecycle event boundary.
+	beforeStartSessionCreatedEvent func(sessionID string)
 }
 
 const defaultSteerMaxMessageChars = 12000
@@ -377,12 +381,17 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err := r.initializeStartGoalAndPlanMode(meta.ID, req); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
-	r.emit(meta.ID, "session.created", "prepare", map[string]any{
+	if r.beforeStartSessionCreatedEvent != nil {
+		r.beforeStartSessionCreatedEvent(meta.ID)
+	}
+	if err := r.appendEvent(meta.ID, "session.created", "prepare", map[string]any{
 		"provider": meta.Provider,
 		"model":    meta.Model,
 		"mode":     meta.Mode,
 		"workdir":  meta.Workdir,
-	})
+	}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.created event: %w", err)
+	}
 	_ = writeSessionSummary(r.store, meta.ID)
 	if stringsTrim(req.Prompt) != "" {
 		if err := r.appendUserMessage(ctx, meta, "prepare", req.Prompt, nil); err != nil {

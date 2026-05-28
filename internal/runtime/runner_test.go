@@ -588,6 +588,59 @@ func TestRunnerStartReportsStartedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestRunnerStartReportsCreatedEventAppendError(t *testing.T) {
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_created_event",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"should not run"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider: "openai-compatible",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     server.URL + "/v1",
+		Model:       "gpt-5.4",
+		TimeoutSec:  30,
+		WireAPI:     "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+
+	req := StartRequest{
+		Prompt:   "start should stop when session.created cannot be recorded",
+		Mode:     session.ModeRun,
+		Provider: "openai-compatible",
+		Model:    "gpt-5.4",
+		Workdir:  t.TempDir(),
+	}
+	runner.beforeStartSessionCreatedEvent = func(sessionID string) {
+		blockRunnerEventsPath(t, runner.store, sessionID)
+	}
+	result, err := runner.Start(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected session.created event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "session.created") {
+		t.Fatalf("expected created event context, got %v", err)
+	}
+	if calls := providerCalls.Load(); calls != 0 {
+		t.Fatalf("provider should not run after missing created event, got %d calls", calls)
+	}
+}
+
 func TestRunnerStartGoalCreatedEventAppendErrorRestoresGoal(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
