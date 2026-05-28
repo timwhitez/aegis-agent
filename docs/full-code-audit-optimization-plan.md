@@ -8430,7 +8430,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-015 and FCA-20260527-232. FCA-015 made `/api/meta` stop advertising workspace root switching, and FCA-232 classified path errors after Workspace browser routes had already resolved their root. The residual issue was only the metadata endpoint: it swallowed `currentServerWorkspaceRoot()` errors and returned `200` with `workspace_root:""`.
 - Confirmed the minimal fix belongs in `internal/webconsole/service.go` `meta()`: propagate `currentServerWorkspaceRoot()` failures the same way `/api/files` and `/api/file/read` already do, instead of fabricating a partially successful metadata snapshot.
 
+### Review 381
+
+- Confirmed FCA-20260529-393 against `spec/17-web-console.md`'s Skills view / workspace extension contract and `spec/01-runtime-architecture.md`'s WebConsole file-fact boundary: `/api/skills` is the local catalog projection for configured skill roots plus discovery-only workspace `.agent` extensions, so malformed local extension facts must be visible instead of silently omitted.
+- Confirmed this is distinct from FCA-20260527-235, FCA-20260527-236, FCA-20260528-284, and FCA-20260529-392. Those slices covered configured local skill root/manifest errors, frontend display of Skills backend errors, stale Skills refreshes, and Workspace root metadata errors. The residual issue was only the workspace extension discovery branch in `handleListSkills`, which swallowed both `os.Getwd()` and `extensions.Discover()` failures.
+- Confirmed the minimal fix belongs in `internal/webconsole/service.go` `handleListSkills`: keep missing `.agent` as an empty discovery result, but propagate actual current-workdir or `.agent` discovery errors with the same backend error visibility used for local skill manifest/root failures.
+
 ## Update Log
+
+### FCA-20260529-393
+
+Slice: `fix(webconsole): report extension discovery errors`
+
+Finding:
+
+- `spec/17-web-console.md` defines Skills as a WebConsole projection of local skills and workspace-extension discovery facts, while `spec/01-runtime-architecture.md` requires WebConsole views to project local file facts rather than silently inventing a cleaner state.
+- `internal/webconsole/service.go` `handleListSkills()` already returned actionable errors for configured skill roots and unreadable `SKILL.md` manifests.
+- The workspace extension branch used `if cwd, err := os.Getwd(); err == nil { if discovery, err := extensions.Discover(cwd, false); err == nil { ... } }`, so both an unresolvable service cwd and malformed `.agent` discovery facts were silently ignored.
+- A focused WebConsole regression wrote a regular file at `<cwd>/.agent`. Before the fix, `GET /api/skills` returned `200 []` instead of reporting that `.agent` was not a directory.
+
+Impact:
+
+- The Skills page could present an apparently clean local catalog while a malformed workspace extension path prevented discovery.
+- Operators lost the concrete local path error needed to repair the checkout.
+- This made workspace-extension visibility weaker than configured skill-root visibility even though both are local file facts in the same Skills surface.
+
+Changes:
+
+- Updated `handleListSkills()` to propagate `os.Getwd()` and `extensions.Discover()` failures as HTTP 500 errors with a `discover workspace extensions` prefix.
+- Preserved the existing optional behavior for missing `.agent`, because `extensions.Discover()` still returns an empty successful discovery result when the directory does not exist.
+- Added `TestListSkillsReportsWorkspaceExtensionDiscoveryError`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestListSkillsReportsWorkspaceExtensionDiscoveryError -count=1`: failed before the fix because `/api/skills` returned `200 []`.
+- `go test -timeout 120s ./internal/webconsole -run TestListSkillsReportsWorkspaceExtensionDiscoveryError -count=1`: passed after the fix.
 
 ### FCA-20260529-392
 

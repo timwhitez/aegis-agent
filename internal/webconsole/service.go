@@ -4095,26 +4095,32 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		if discovery, err := extensions.Discover(cwd, false); err == nil {
-			for _, candidate := range discovery.Candidates {
-				skills = append(skills, skillMeta{
-					ID:             candidate.QualifiedName,
-					Name:           candidate.Name,
-					Author:         "Workspace extension",
-					Description:    "Discovery-only workspace extension.",
-					Icon:           "folder-git-2",
-					Tags:           []string{"workspace-extension", string(candidate.Trust)},
-					Downloads:      0,
-					Installed:      false,
-					ReadOnly:       true,
-					Trust:          string(candidate.Trust),
-					ExtensionPath:  candidate.Path,
-					DiscoveryPath:  discovery.DiscoveryPath,
-					DisabledReason: candidate.DisabledReason,
-				})
-			}
-		}
+	cwd, err := os.Getwd()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("discover workspace extensions: %w", err))
+		return
+	}
+	discovery, err := extensions.Discover(cwd, false)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("discover workspace extensions: %w", err))
+		return
+	}
+	for _, candidate := range discovery.Candidates {
+		skills = append(skills, skillMeta{
+			ID:             candidate.QualifiedName,
+			Name:           candidate.Name,
+			Author:         "Workspace extension",
+			Description:    "Discovery-only workspace extension.",
+			Icon:           "folder-git-2",
+			Tags:           []string{"workspace-extension", string(candidate.Trust)},
+			Downloads:      0,
+			Installed:      false,
+			ReadOnly:       true,
+			Trust:          string(candidate.Trust),
+			ExtensionPath:  candidate.Path,
+			DiscoveryPath:  discovery.DiscoveryPath,
+			DisabledReason: candidate.DisabledReason,
+		})
 	}
 
 	if len(skills) == 0 {

@@ -9554,6 +9554,44 @@ func TestListSkillsReportsWorkspaceExtensionTrustStatus(t *testing.T) {
 	}
 }
 
+func TestListSkillsReportsWorkspaceExtensionDiscoveryError(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, ".agent"), []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatalf("write malformed .agent path: %v", err)
+	}
+	if err := os.Chdir(workdir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/skills")
+	if err != nil {
+		t.Fatalf("get skills: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected extension discovery error, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), ".agent") {
+		t.Fatalf("expected error to identify malformed .agent path, got %s", string(body))
+	}
+}
+
 func TestServiceConfigUpdateSwapsSnapshotInsteadOfMutatingSharedConfig(t *testing.T) {
 	cfg := testConfig(t, "")
 	cfg.Runtime.GuardrailsMode = "standard"
