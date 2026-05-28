@@ -8070,6 +8070,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-301 and the goal-history rollback/error slices. Those slices routed loaded Goal snapshots through semantic validation and made history failures visible/atomic; this slice covers the remaining top-level Goal timestamp-shape gap where non-empty non-RFC3339 `created_at`, `updated_at`, `completed_at`, or budget timestamp values were accepted by current Goal snapshot load/save paths.
 - Confirmed the minimal fix belongs in `ValidateGoal`: parse required `SessionGoal.CreatedAt` / `UpdatedAt` and optional top-level completion/budget timestamps as RFC3339Nano while preserving `SaveGoal` compatibility for omitted `created_at` and existing automatic `updated_at` refresh.
 
+### Review 331
+
+- Confirmed FCA-20260528-338 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/13-live-input-and-steering.md`, and `spec/17-web-console.md`: `artifacts/goal-history.jsonl` is the durable Goal transition ledger consumed by runtime steer acceptance, Goal controls, Web session detail, CLI recovery views, summaries, checkpoints, and rollback paths.
+- Confirmed this is distinct from FCA-20260528-337 and the earlier goal-history rollback/error slices. FCA-20260528-337 hardened the current `goal.json` snapshot timestamps; the rollback slices made missing/unwritable/corrupt history files visible and atomic. This slice covers the remaining history-entry timestamp-shape gap where non-empty non-RFC3339 `GoalHistoryEntry.CreatedAt` values were accepted on load, append, and restore paths.
+- Confirmed the minimal fix belongs in the `SessionStore` Goal history boundary: default omitted append timestamps before validation, parse `GoalHistoryEntry.CreatedAt` as RFC3339Nano for load/append/restore, and reject malformed restore input before truncating the existing valid history file without adding workflow ordering, DAG behavior, or provider-specific logic.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10810,6 +10816,51 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go`: passed with no output.
 - `git diff --check -- internal/session/taskboard.go internal/session/taskboard_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-338
+
+Slice: `fix(goal): validate goal history timestamps`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/13-live-input-and-steering.md`, and `spec/17-web-console.md` define `artifacts/goal-history.jsonl` as a durable Goal transition fact source for Goal changes, steer acceptance, Web detail, CLI fallback, recovery, summaries, checkpoints, and rollback.
+- After FCA-20260528-337 hardened top-level `goal.json` timestamps, `GoalHistoryEntry.CreatedAt` still had no timestamp-shape validation: `LoadGoalHistory()` returned decoded entries unchecked, `AppendGoalHistory()` defaulted only omitted timestamps while accepting malformed non-empty values, and `RestoreGoalHistory()` rewrote entries unchecked.
+- A focused regression writes a raw `goal-history.jsonl` entry with `created_at:"not-a-time"`, then appends and restores malformed history entries. Before the fix, the load path accepted the malformed history timestamp with nil error.
+
+Impact:
+
+- Goal transition chronology could contain arbitrary timestamp strings while downstream Web/CLI/recovery views treated the ledger as a normal durable fact source.
+- Runtime steer acceptance, mission approval retry, Goal rollback, session summaries, and long-run checkpoints can depend on loaded Goal history facts; accepting malformed timestamps weakened traceability and error classification for corrupt local session state.
+- This was a validation-boundary fix only; it does not change Goal lifecycle semantics, completion gates, mission planning, Plan Mode linkage, provider replay, or model-led delegation.
+
+Changes:
+
+- Added shared Goal history validation that requires `GoalHistoryEntry.CreatedAt` and parses it as RFC3339Nano.
+- Routed `AppendGoalHistory()`, `LoadGoalHistory()`, and `RestoreGoalHistory()` through that validation.
+- Preserved append compatibility for omitted `created_at` by keeping the existing defaulting before validation.
+- Rejected malformed restore input before truncating/replacing an existing valid history file.
+- Added a focused regression covering corrupt on-disk history load, malformed append, malformed restore, and valid-history preservation after rejected writes.
+
+Validation:
+
+- Pre-fix focused verification failed as expected in a temporary HEAD worktree with only the new regression applied: `TestGoalHistoryRejectsMalformedTimestamps` saw `LoadGoalHistory()` accept `created_at:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run TestGoalHistoryRejectsMalformedTimestamps -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestGoalHistoryRejectsMalformedTimestamps|TestStoreGoalLifecycleAccountingAndSummary|TestAppendGoalHistoryReportsCorruptCurrentGoalSnapshot|TestStoreCompleteGoalPersistsAuditAndItemEvidence|TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptanceReportsGoalHistoryError|TestApproveLinkedMissionPlanRetryReportsCorruptGoalHistory|TestApproveLinkedMissionPlanReportsEventAppendError|TestGoal|TestBudget|TestCompletion' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/session/store_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

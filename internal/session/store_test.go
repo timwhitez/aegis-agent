@@ -1401,6 +1401,85 @@ func blockGoalHistoryPath(t *testing.T, store *Store, sessionID string) {
 	}
 }
 
+func TestGoalHistoryRejectsMalformedTimestamps(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Reject malformed goal history timestamps",
+		Source:    GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	valid := GoalHistoryEntry{
+		SchemaVersion: 1,
+		ID:            NewGoalHistoryID(),
+		SessionID:     meta.ID,
+		GoalID:        goal.GoalID,
+		Type:          "goal.created",
+		Source:        GoalSourceCLI,
+		Status:        GoalStatusActive,
+		CreatedAt:     now,
+	}
+	malformed := valid
+	malformed.ID = NewGoalHistoryID()
+	malformed.CreatedAt = "not-a-time"
+	historyPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "goal-history.jsonl")
+	writeGoalHistoryEntriesForTest(t, store, historyPath, []GoalHistoryEntry{malformed})
+	if _, err := store.LoadGoalHistory(meta.ID); err == nil || !strings.Contains(err.Error(), "validate goal-history.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed goal history load error, got %v", err)
+	}
+
+	writeGoalHistoryEntriesForTest(t, store, historyPath, []GoalHistoryEntry{valid})
+	if err := store.AppendGoalHistory(meta.ID, GoalHistoryEntry{
+		Type:      "goal.updated",
+		Source:    GoalSourceCLI,
+		CreatedAt: "not-a-time",
+	}); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed goal history append error, got %v", err)
+	}
+	if err := store.RestoreGoalHistory(meta.ID, []GoalHistoryEntry{valid, malformed}); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed goal history restore error, got %v", err)
+	}
+	history, err := store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load preserved valid goal history: %v", err)
+	}
+	if len(history) != 1 || history[0].ID != valid.ID {
+		t.Fatalf("expected malformed writes to preserve valid history, got %#v", history)
+	}
+}
+
+func writeGoalHistoryEntriesForTest(t *testing.T, store *Store, path string, entries []GoalHistoryEntry) {
+	t.Helper()
+	var data strings.Builder
+	for _, entry := range entries {
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("marshal goal history: %v", err)
+		}
+		data.Write(encoded)
+		data.WriteByte('\n')
+	}
+	if err := store.writeBytesFile(path, []byte(data.String())); err != nil {
+		t.Fatalf("write goal history: %v", err)
+	}
+}
+
 func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

@@ -1225,6 +1225,9 @@ func (s *Store) AppendGoalHistory(sessionID string, entry GoalHistoryEntry) erro
 	if entry.CreatedAt == "" {
 		entry.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	if err := validateGoalHistoryEntry(entry); err != nil {
+		return fmt.Errorf("validate goal-history.jsonl: %w", err)
+	}
 	if entry.GoalID == "" {
 		if goal, err := s.loadGoalNoLock(sessionID); err == nil {
 			entry.GoalID = goal.GoalID
@@ -1303,13 +1306,22 @@ func (s *Store) LoadGoalHistory(sessionID string) ([]GoalHistoryEntry, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return []GoalHistoryEntry{}, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validateGoalHistoryEntries(out); err != nil {
+		return nil, fmt.Errorf("validate goal-history.jsonl: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Store) RestoreGoalHistory(sessionID string, entries []GoalHistoryEntry) error {
 	path, err := s.sessionPath(sessionID, "artifacts", "goal-history.jsonl")
 	if err != nil {
 		return err
+	}
+	if err := validateGoalHistoryEntries(entries); err != nil {
+		return fmt.Errorf("validate goal-history.jsonl: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1324,6 +1336,22 @@ func (s *Store) RestoreGoalHistory(sessionID string, entries []GoalHistoryEntry)
 		return err
 	}
 	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
+}
+
+func validateGoalHistoryEntries(entries []GoalHistoryEntry) error {
+	for i, entry := range entries {
+		if err := validateGoalHistoryEntry(entry); err != nil {
+			return fmt.Errorf("entry %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validateGoalHistoryEntry(entry GoalHistoryEntry) error {
+	if err := validateGoalRequiredTimestamp("goal history created_at", entry.CreatedAt); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (SessionGoal, bool, error) {
