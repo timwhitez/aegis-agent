@@ -151,6 +151,49 @@ func ReadRegularFileNoSymlink(path string) ([]byte, os.FileInfo, error) {
 	return data, info, nil
 }
 
+func ReadRegularFileRangeNoSymlink(path string, offset, limit int64) ([]byte, os.FileInfo, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil, errors.New("path is required")
+	}
+	if offset < 0 {
+		return nil, nil, errors.New("offset must be non-negative")
+	}
+	if limit < 0 {
+		return nil, nil, errors.New("limit must be non-negative")
+	}
+	if limit > MaxRegularFileReadBytes {
+		return nil, nil, fmt.Errorf("range read limit exceeds maximum readable size: %d > %d bytes", limit, MaxRegularFileReadBytes)
+	}
+	path = filepath.Clean(path)
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return nil, nil, err
+	}
+	file, err := os.OpenFile(path, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, info, fmt.Errorf("not a regular file: %s", path)
+	}
+	if offset >= info.Size() || limit == 0 {
+		return []byte{}, info, nil
+	}
+	if remaining := info.Size() - offset; limit > remaining {
+		limit = remaining
+	}
+	data, err := io.ReadAll(io.NewSectionReader(file, offset, limit))
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
+}
+
 func MkdirAllNoSymlink(path string, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
 	if path == "" {

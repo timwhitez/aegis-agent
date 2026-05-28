@@ -163,6 +163,13 @@ function fakeAppElement(initial = {}) {
       child.parentNode = this;
       return child;
     },
+    replaceChildren(...newChildren) {
+      children.splice(0, children.length);
+      newChildren.forEach((child) => this.appendChild(child));
+      const text = newChildren.map((child) => String(child?.innerText ?? child?.textContent ?? '')).join('');
+      this.innerText = text;
+      this.textContent = text;
+    },
     remove() {},
     focus() {
       this.focused = true;
@@ -385,6 +392,9 @@ function createWorkspaceHarnessContext() {
     document: {
       createElement() {
         return fakeAppElement();
+      },
+      createTextNode(text) {
+        return { textContent: String(text ?? ''), innerText: String(text ?? '') };
       }
     },
     CSS: {
@@ -2265,6 +2275,84 @@ test('loadFile ignores stale file responses after another file is selected', asy
   })`, workspaceContext)), {
     filename: 'fast.txt',
     content: 'current file'
+  });
+});
+
+test('loadFile renders paged preview and ignores stale load-more responses', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  const firstLoad = vm.runInContext(`loadFile('large.txt')`, workspaceContext);
+
+  assert.equal(workspaceContext.pendingRequests.length, 1);
+  assert.match(workspaceContext.pendingRequests[0].url, /large\.txt/);
+  assert.match(workspaceContext.pendingRequests[0].url, /offset=0/);
+  assert.match(workspaceContext.pendingRequests[0].url, /limit=262144/);
+
+  workspaceContext.pendingRequests[0].resolve({
+    content: 'chunk-one\n',
+    offset: 0,
+    limit: 262144,
+    size: 20,
+    truncated: true,
+    next_offset: 10
+  });
+  await firstLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText,
+    preview: state.workspaceFilePreview,
+    footerClass: nodes.editorContent.__children[1].className,
+    buttonText: nodes.editorContent.__children[1].__children[1].innerText
+  })`, workspaceContext)), {
+    filename: 'large.txt',
+    content: 'chunk-one\n',
+    preview: {
+      path: 'large.txt',
+      content: 'chunk-one\n',
+      offset: 0,
+      nextOffset: 10,
+      size: 20,
+      truncated: true
+    },
+    footerClass: 'workspace-preview-footer',
+    buttonText: 'Load more'
+  });
+
+  const loadMoreButton = vm.runInContext(`nodes.editorContent.__children[1].__children[1]`, workspaceContext);
+  const loadMore = loadMoreButton.listeners.click();
+  assert.equal(workspaceContext.pendingRequests.length, 2);
+  assert.match(workspaceContext.pendingRequests[1].url, /large\.txt/);
+  assert.match(workspaceContext.pendingRequests[1].url, /offset=10/);
+
+  const otherLoad = vm.runInContext(`loadFile('other.txt')`, workspaceContext);
+  assert.equal(workspaceContext.pendingRequests.length, 3);
+  workspaceContext.pendingRequests[2].resolve({ content: 'other body' });
+  await otherLoad;
+
+  workspaceContext.pendingRequests[1].resolve({
+    content: 'stale chunk',
+    offset: 10,
+    limit: 262144,
+    size: 20,
+    truncated: false
+  });
+  await loadMore;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText,
+    preview: state.workspaceFilePreview
+  })`, workspaceContext)), {
+    filename: 'other.txt',
+    content: 'other body',
+    preview: {
+      path: 'other.txt',
+      content: 'other body',
+      offset: 0,
+      nextOffset: 10,
+      size: 10,
+      truncated: false
+    }
   });
 });
 

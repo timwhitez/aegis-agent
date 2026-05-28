@@ -61,6 +61,8 @@ const (
 	maxSkillZipEntryBytes           = 10 << 20
 	maxSkillZipTotalBytes           = 100 << 20
 	maxWebJSONBodyBytes             = 4 << 20
+	workspaceFilePreviewDefaultSize = 256 << 10
+	workspaceFilePreviewMaxSize     = 1 << 20
 	sessionStartObservationTimeout  = 15 * time.Second
 )
 
@@ -3083,6 +3085,11 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("path is required"))
 		return
 	}
+	paged, offset, limit, err := parseWorkspaceFileReadPage(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	root, err := currentServerWorkspaceRoot()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -3111,12 +3118,70 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("path is not a regular file"))
 		return
 	}
+	if paged {
+		content, info, err := fileutil.ReadRegularFileRangeNoSymlink(fullPath, offset, limit)
+		if err != nil {
+			writeError(w, workspaceBrowserStatStatus(err), err)
+			return
+		}
+		nextOffset := offset + int64(len(content))
+		response := workspaceFilePageResponse{
+			Content:   string(content),
+			Offset:    offset,
+			Limit:     limit,
+			Size:      info.Size(),
+			Truncated: nextOffset < info.Size(),
+		}
+		if response.Truncated {
+			response.NextOffset = nextOffset
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
 	content, _, err := fileutil.ReadRegularFileNoSymlink(fullPath)
 	if err != nil {
 		writeError(w, workspaceBrowserStatStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": string(content)})
+}
+
+type workspaceFilePageResponse struct {
+	Content    string `json:"content"`
+	Offset     int64  `json:"offset"`
+	Limit      int64  `json:"limit"`
+	Size       int64  `json:"size"`
+	Truncated  bool   `json:"truncated"`
+	NextOffset int64  `json:"next_offset,omitempty"`
+}
+
+func parseWorkspaceFileReadPage(r *http.Request) (bool, int64, int64, error) {
+	query := r.URL.Query()
+	offsetRaw := strings.TrimSpace(query.Get("offset"))
+	limitRaw := strings.TrimSpace(query.Get("limit"))
+	if offsetRaw == "" && limitRaw == "" {
+		return false, 0, 0, nil
+	}
+	offset := int64(0)
+	if offsetRaw != "" {
+		parsed, err := strconv.ParseInt(offsetRaw, 10, 64)
+		if err != nil || parsed < 0 {
+			return true, 0, 0, errors.New("offset must be a non-negative integer")
+		}
+		offset = parsed
+	}
+	limit := int64(workspaceFilePreviewDefaultSize)
+	if limitRaw != "" {
+		parsed, err := strconv.ParseInt(limitRaw, 10, 64)
+		if err != nil || parsed <= 0 {
+			return true, 0, 0, errors.New("limit must be a positive integer")
+		}
+		limit = parsed
+	}
+	if limit > workspaceFilePreviewMaxSize {
+		limit = workspaceFilePreviewMaxSize
+	}
+	return true, offset, limit, nil
 }
 
 func workspaceBrowserStatStatus(err error) int {

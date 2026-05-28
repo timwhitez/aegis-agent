@@ -22,6 +22,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
 
 	"github.com/gorilla/websocket"
@@ -8521,6 +8522,86 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt"), &readResp)
 	if readResp["content"] != "hello workspace" {
 		t.Fatalf("unexpected file content: %#v", readResp)
+	}
+
+	largeFile := filepath.Join(workspaceRoot, "nested", "large.log")
+	large, err := os.Create(largeFile)
+	if err != nil {
+		t.Fatalf("create large workspace file: %v", err)
+	}
+	if _, err := large.WriteString("large-start"); err != nil {
+		_ = large.Close()
+		t.Fatalf("write large workspace file prefix: %v", err)
+	}
+	if err := large.Truncate(fileutil.MaxRegularFileReadBytes + 4096); err != nil {
+		_ = large.Close()
+		t.Fatalf("truncate large workspace file: %v", err)
+	}
+	if err := large.Close(); err != nil {
+		t.Fatalf("close large workspace file: %v", err)
+	}
+
+	var pageResp struct {
+		Content    string `json:"content"`
+		Offset     int64  `json:"offset"`
+		Limit      int64  `json:"limit"`
+		Size       int64  `json:"size"`
+		Truncated  bool   `json:"truncated"`
+		NextOffset int64  `json:"next_offset"`
+	}
+	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt")+"&offset=0&limit=5", &pageResp)
+	if pageResp.Content != "hello" || pageResp.Offset != 0 || pageResp.Limit != 5 || pageResp.Size != int64(len("hello workspace")) || !pageResp.Truncated || pageResp.NextOffset != 5 {
+		t.Fatalf("unexpected first paged read response: %#v", pageResp)
+	}
+	pageResp = struct {
+		Content    string `json:"content"`
+		Offset     int64  `json:"offset"`
+		Limit      int64  `json:"limit"`
+		Size       int64  `json:"size"`
+		Truncated  bool   `json:"truncated"`
+		NextOffset int64  `json:"next_offset"`
+	}{}
+	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt")+"&offset=6&limit=32", &pageResp)
+	if pageResp.Content != "workspace" || pageResp.Offset != 6 || pageResp.Limit != 32 || pageResp.Size != int64(len("hello workspace")) || pageResp.Truncated || pageResp.NextOffset != 0 {
+		t.Fatalf("unexpected second paged read response: %#v", pageResp)
+	}
+	pageResp = struct {
+		Content    string `json:"content"`
+		Offset     int64  `json:"offset"`
+		Limit      int64  `json:"limit"`
+		Size       int64  `json:"size"`
+		Truncated  bool   `json:"truncated"`
+		NextOffset int64  `json:"next_offset"`
+	}{}
+	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt")+"&offset=99&limit=8", &pageResp)
+	if pageResp.Content != "" || pageResp.Offset != 99 || pageResp.Size != int64(len("hello workspace")) || pageResp.Truncated || pageResp.NextOffset != 0 {
+		t.Fatalf("unexpected past-end paged read response: %#v", pageResp)
+	}
+	pageResp = struct {
+		Content    string `json:"content"`
+		Offset     int64  `json:"offset"`
+		Limit      int64  `json:"limit"`
+		Size       int64  `json:"size"`
+		Truncated  bool   `json:"truncated"`
+		NextOffset int64  `json:"next_offset"`
+	}{}
+	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/large.log")+"&offset=0&limit=10", &pageResp)
+	if pageResp.Content != "large-star" || pageResp.Offset != 0 || pageResp.Limit != 10 || pageResp.Size != fileutil.MaxRegularFileReadBytes+4096 || !pageResp.Truncated || pageResp.NextOffset != 10 {
+		t.Fatalf("unexpected large paged read response: %#v", pageResp)
+	}
+	for _, query := range []string{
+		"&offset=-1&limit=5",
+		"&offset=0&limit=0",
+	} {
+		resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("nested/hello.txt") + query)
+		if err != nil {
+			t.Fatalf("invalid paged read request %s: %v", query, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected bad request for invalid paged read %s, got %d body=%s", query, resp.StatusCode, string(body))
+		}
 	}
 
 	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("../root-only.txt"), &readResp)

@@ -121,6 +121,57 @@ func TestReadRegularFileNoSymlinkRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestReadRegularFileRangeNoSymlinkReadsOversizedFileSlice(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "large.log")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if _, err := file.WriteString("0123456789"); err != nil {
+		_ = file.Close()
+		t.Fatalf("write prefix: %v", err)
+	}
+	if err := file.Truncate(MaxRegularFileReadBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("truncate file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
+	}
+
+	data, info, err := ReadRegularFileRangeNoSymlink(path, 2, 4)
+	if err != nil {
+		t.Fatalf("range read oversized file slice: %v", err)
+	}
+	if string(data) != "2345" {
+		t.Fatalf("unexpected range content: %q", string(data))
+	}
+	if info == nil || info.Size() != MaxRegularFileReadBytes+1 {
+		t.Fatalf("expected full file info for oversized range read, got %#v", info)
+	}
+}
+
+func TestReadRegularFileRangeNoSymlinkRejectsSymlinkFile(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	link := filepath.Join(root, "artifact.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	data, info, err := ReadRegularFileRangeNoSymlink(link, 0, 4)
+	if err == nil {
+		t.Fatalf("expected symlink range read rejection, got data=%q info=%#v", string(data), info)
+	}
+	if !strings.Contains(err.Error(), "symlinked") && !strings.Contains(err.Error(), "too many levels") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
 func TestMkdirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

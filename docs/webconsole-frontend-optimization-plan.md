@@ -38,7 +38,8 @@ Current implemented facts:
 - Embedded assets now use ETag validation and gzip negotiation; long immutable hashed asset URLs are not implemented.
 - Markdown rendering now has an LRU cache, lazy image rendering through `.md-img`, protocol filtering, and `rel="noopener noreferrer"` on links.
 - Workspace file tree rendering uses delegated click and keyboard events, stores the selected path in `state.selectedTreePath`, and exposes tree/treeitem semantics for the current navigational file browser.
-- Frontend unit coverage exists in `validation/scripts/webconsole_utils_test.mjs` for markdown, stale async responses, queue/job rendering, settings behavior, workspace selection races, and workspace tree keyboard semantics.
+- Workspace file preview now requests bounded pages from `/api/file/read?offset=...&limit=...` and shows a local `Load more` continuation affordance when the backend reports truncation.
+- Frontend unit coverage exists in `validation/scripts/webconsole_utils_test.mjs` for markdown, stale async responses, queue/job rendering, settings behavior, workspace selection races, workspace tree keyboard semantics, and stale paged file preview responses.
 
 ## Completed Since The First Draft
 
@@ -51,6 +52,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Markdown links use `noopener noreferrer`, and images use a CSS class plus lazy loading.
 - Workspace file tree click and keyboard handling are delegated instead of attaching one listener per node.
 - Workspace tree semantics now expose `role="tree"` and `role="treeitem"` with `aria-level` and directory `aria-expanded` facts.
+- Workspace file preview no longer reads the full file body in one request; the WebConsole requests 256 KiB pages, the backend caps page size, and large files can be continued with `Load more`.
 
 ## Remaining Optimization Backlog
 
@@ -92,18 +94,19 @@ Validation:
 
 ### P1: Large File Preview
 
-`workspace-view.js` still reads a file body in one request and assigns `nodes.editorContent.innerText = data.content`.
+Status: implemented for the current read-only workspace browser.
 
-Plan:
+Current target:
 
-- Add bounded `offset` / `limit` support to `/api/file/read`.
-- Keep workspace path escape checks in the backend.
-- Show a continuation affordance for large files rather than blocking the main thread with one huge `innerText` update.
+- Keep bounded `offset` / `limit` support on `/api/file/read`.
+- Keep workspace path escape and credential-like path checks in the backend before any paged read.
+- Keep the frontend continuation affordance for large files rather than blocking the main thread with one huge text update.
+- Add browser smoke or Playwright coverage if the project later adds a real DOM-based frontend test runner.
 
 Validation:
 
-- Backend tests for offset / limit bounds.
-- Frontend tests for stale paged file responses.
+- `TestServiceWorkspaceRoutesListReadAndRejectEscape` should cover offset / limit responses, invalid bounds, large sparse file preview, and existing escape / credential denials.
+- `validation/scripts/webconsole_utils_test.mjs` should cover stale paged file responses and `Load more` continuation state.
 
 ### P1: Render State Isolation
 

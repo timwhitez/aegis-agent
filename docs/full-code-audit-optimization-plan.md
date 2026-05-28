@@ -22396,6 +22396,45 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-106
+
+Slice: `fix(webconsole): page workspace file previews`
+
+Finding:
+
+- The WebConsole workspace browser still loaded every selected file through a single `/api/file/read` response and assigned the full body to `nodes.editorContent.innerText`.
+- That contradicted the current frontend optimization plan's P1 large-file target: the local read-only browser should keep backend workspace escape checks, but avoid making one large response and one large DOM text update the default preview path.
+- The existing backend full-file path also intentionally capped `ReadRegularFileNoSymlink` at `fileutil.MaxRegularFileReadBytes`, so large workspace files could not be previewed incrementally even though the UI only needed a bounded first page.
+
+Changes:
+
+- Added `fileutil.ReadRegularFileRangeNoSymlink` so bounded reads keep the same symlink-target and symlink-ancestor protections while allowing slices of files larger than the full-file read cap.
+- Added optional `offset` / `limit` query support to `/api/file/read`; legacy calls without paging parameters still return the previous `{content}` shape, while paged calls return `content`, `offset`, `limit`, `size`, `truncated`, and `next_offset`.
+- Capped WebConsole paged reads to a 1 MiB backend maximum and rejected negative offsets or non-positive limits with HTTP 400.
+- Updated `workspace-view.js` to request 256 KiB preview pages, render a local `Load more` affordance for truncated files, and keep stale response protection when a load-more response races with a newer file or directory selection.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Large File Preview is recorded as implemented for the current read-only workspace browser instead of remaining open.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-104
 
 Slice: `fix(webconsole): add workspace tree keyboard semantics`

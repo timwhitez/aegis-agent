@@ -1048,6 +1048,51 @@ textarea {
   min-height: 0;
 }
 
+.workspace-preview-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+  white-space: normal;
+}
+
+.workspace-preview-meta,
+.workspace-preview-error {
+  color: #A1A1AA;
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.workspace-preview-error {
+  color: #FCA5A5;
+}
+
+.workspace-preview-more {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(96, 165, 250, 0.18);
+  color: #BFDBFE;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.workspace-preview-more:hover:not(:disabled),
+.workspace-preview-more:focus-visible:not(:disabled) {
+  background: rgba(96, 165, 250, 0.28);
+  color: #EFF6FF;
+}
+
+.workspace-preview-more:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .compact-title {
   font-size: 15px;
   font-weight: 600;

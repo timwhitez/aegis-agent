@@ -1,3 +1,5 @@
+const WORKSPACE_FILE_PREVIEW_CHUNK_SIZE = 256 * 1024;
+
 async function fetchWorkspace() {
   try {
     if (!state.meta) {
@@ -58,6 +60,7 @@ async function loadWorkspaceDirectory(path = '') {
   state.workspacePath = normalized;
   state.fileTree = tree;
   state.selectedTreePath = '';
+  state.workspaceFilePreview = null;
   renderFileTree(tree);
   updateWorkspaceMeta();
   nodes.editorFilename.innerText = workspaceDisplayName();
@@ -298,20 +301,108 @@ async function loadFile(path) {
   const requestSeq = nextWorkspaceRequestSeq();
   nodes.editorFilename.innerText = path;
   nodes.editorContent.innerText = 'Loading...';
+  state.workspaceFilePreview = null;
+  return loadFilePreviewPage(path, requestSeq, 0, false);
+}
+
+async function loadFilePreviewPage(path, requestSeq, offset, append) {
   try {
-    const data = await requestJSON(`/api/file/read?path=${encodeURIComponent(path)}`);
+    const data = await requestJSON(workspaceFileReadURL(path, offset));
     if (state.workspaceRequestSeq !== requestSeq) {
       return false;
     }
-    nodes.editorContent.innerText = data.content;
+    const contentChunk = String(data?.content ?? '');
+    const pageOffset = normalizePreviewNumber(data?.offset, offset);
+    const nextOffsetFallback = pageOffset + contentChunk.length;
+    const truncated = Boolean(data?.truncated);
+    const nextOffset = truncated ? normalizePreviewNumber(data?.next_offset, nextOffsetFallback) : nextOffsetFallback;
+    const size = Math.max(normalizePreviewNumber(data?.size, nextOffset), nextOffset);
+    const previousContent = append && state.workspaceFilePreview?.path === path ? state.workspaceFilePreview.content : '';
+    const preview = {
+      path,
+      content: `${previousContent}${contentChunk}`,
+      offset: pageOffset,
+      nextOffset,
+      size,
+      truncated
+    };
+    state.workspaceFilePreview = preview;
+    renderWorkspaceFilePreview(preview);
     return true;
   } catch (err) {
     if (state.workspaceRequestSeq !== requestSeq) {
       return false;
     }
     const message = workspaceErrorMessage(err, `Failed to load file: ${path}`);
-    nodes.editorContent.innerText = message;
+    if (append && state.workspaceFilePreview?.path === path) {
+      renderWorkspaceFilePreview(state.workspaceFilePreview, message);
+    } else {
+      nodes.editorContent.innerText = message;
+    }
     showToast(message, 'error');
     return true;
   }
+}
+
+function workspaceFileReadURL(path, offset) {
+  return `/api/file/read?path=${encodeURIComponent(path)}&offset=${encodeURIComponent(String(offset || 0))}&limit=${WORKSPACE_FILE_PREVIEW_CHUNK_SIZE}`;
+}
+
+function normalizePreviewNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function renderWorkspaceFilePreview(preview, errorMessage = '') {
+  if (typeof nodes.editorContent.replaceChildren === 'function' && document.createTextNode) {
+    nodes.editorContent.replaceChildren(document.createTextNode(preview.content));
+  } else {
+    nodes.editorContent.innerText = preview.content;
+    nodes.editorContent.textContent = preview.content;
+  }
+  if (!preview.truncated && !errorMessage) {
+    return;
+  }
+  const footer = document.createElement('div');
+  footer.className = 'workspace-preview-footer';
+  const meta = document.createElement('span');
+  meta.className = errorMessage ? 'workspace-preview-error' : 'workspace-preview-meta';
+  if (errorMessage) {
+    meta.innerText = errorMessage;
+  } else {
+    const shown = Math.min(preview.nextOffset, preview.size);
+    meta.innerText = `Showing ${formatWorkspaceBytes(shown)} of ${formatWorkspaceBytes(preview.size)}.`;
+  }
+  footer.appendChild(meta);
+  if (preview.truncated) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'workspace-preview-more';
+    button.innerText = 'Load more';
+    button.addEventListener('click', async () => {
+      if (button.disabled) {
+        return;
+      }
+      button.disabled = true;
+      button.innerText = 'Loading...';
+      const requestSeq = nextWorkspaceRequestSeq();
+      await loadFilePreviewPage(preview.path, requestSeq, preview.nextOffset, true);
+    });
+    footer.appendChild(button);
+  }
+  nodes.editorContent.appendChild(footer);
+}
+
+function formatWorkspaceBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) {
+    return 'unknown size';
+  }
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KiB`;
+  }
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
