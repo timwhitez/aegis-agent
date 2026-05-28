@@ -95,6 +95,8 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
   if (level === 0) {
     container.innerHTML = '';
     ensureFileTreeDelegation(container);
+    container.setAttribute('role', 'tree');
+    container.setAttribute('aria-label', 'Workspace files');
   }
   if (!Array.isArray(tree)) {
     return;
@@ -114,6 +116,11 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     button.dataset.path = node.path || '';
     button.dataset.type = node.type || '';
     button.dataset.navigation = node.navigation || '';
+    button.setAttribute('role', 'treeitem');
+    button.setAttribute('aria-level', String(level + 1));
+    if (node.type === 'directory') {
+      button.setAttribute('aria-expanded', 'false');
+    }
     if (state.selectedTreePath && node.type === 'file' && node.path === state.selectedTreePath) {
       button.classList.add('active');
     }
@@ -143,6 +150,7 @@ function ensureFileTreeDelegation(container) {
   }
   container.dataset.delegationBound = '1';
   container.addEventListener('click', handleFileTreeClick);
+  container.addEventListener('keydown', handleFileTreeKeydown);
 }
 
 async function handleFileTreeClick(event) {
@@ -150,6 +158,46 @@ async function handleFileTreeClick(event) {
   if (!button || !nodes.fileTree.contains(button) || button.disabled) {
     return;
   }
+  event.preventDefault?.();
+  event.stopPropagation?.();
+  await activateFileTreeNode(button);
+}
+
+async function handleFileTreeKeydown(event) {
+  const button = event.target.closest('.tree-node');
+  if (!button || !nodes.fileTree.contains(button) || button.disabled) {
+    return;
+  }
+  const key = event.key || '';
+  if (key === 'Enter' || key === ' ') {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    await activateFileTreeNode(button);
+    return;
+  }
+  if (key === 'ArrowDown' || key === 'ArrowUp') {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    focusAdjacentTreeNode(button, key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if (key === 'ArrowRight' && button.dataset.type === 'directory') {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    await activateFileTreeNode(button);
+    return;
+  }
+  if (key === 'ArrowLeft') {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    const parent = findParentTreeNode(button);
+    if (parent) {
+      parent.focus?.();
+    }
+  }
+}
+
+async function activateFileTreeNode(button) {
   const path = button.dataset.path || '';
   const type = button.dataset.type || '';
   const navigation = button.dataset.navigation || '';
@@ -181,6 +229,7 @@ async function handleFileTreeClick(event) {
     button.classList.add('is-loading');
     try {
       await loadWorkspaceDirectory(path);
+      button.setAttribute('aria-expanded', 'true');
     } catch (err) {
       const message = workspaceErrorMessage(err, `Failed to load directory: ${path}`);
       nodes.editorFilename.innerText = path;
@@ -191,6 +240,39 @@ async function handleFileTreeClick(event) {
       button.classList.remove('is-loading');
     }
   }
+}
+
+function visibleTreeNodes() {
+  return Array.from(nodes.fileTree.querySelectorAll('.tree-node'))
+    .filter((node) => !node.disabled && node.offsetParent !== null);
+}
+
+function focusAdjacentTreeNode(current, direction) {
+  const buttons = visibleTreeNodes();
+  const currentIndex = buttons.indexOf(current);
+  if (currentIndex < 0) {
+    return;
+  }
+  const next = buttons[currentIndex + direction];
+  if (next) {
+    next.focus?.();
+  }
+}
+
+function findParentTreeNode(button) {
+  const currentLevel = Number(button.getAttribute('aria-level') || '1');
+  if (currentLevel <= 1) {
+    return null;
+  }
+  const buttons = visibleTreeNodes();
+  const currentIndex = buttons.indexOf(button);
+  for (let i = currentIndex - 1; i >= 0; i -= 1) {
+    const level = Number(buttons[i].getAttribute('aria-level') || '1');
+    if (level < currentLevel) {
+      return buttons[i];
+    }
+  }
+  return null;
 }
 
 function setActiveTreeNode(button, path) {

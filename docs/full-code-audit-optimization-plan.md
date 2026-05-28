@@ -22367,6 +22367,43 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-104
+
+Slice: `fix(webconsole): add workspace tree keyboard semantics`
+
+Finding:
+
+- The WebConsole workspace file tree had already moved file selection to a delegated click handler, but it still rendered a button list without tree semantics or delegated keyboard navigation.
+- `spec/17-web-console.md` keeps the workspace panel as a local read-only browser rather than a browser IDE, but the default Web-first operator surface still needs keyboard-accessible navigation for the existing file tree.
+- The stale frontend optimization draft also overstated several already-fixed frontend issues, so it could mislead follow-up work by reopening completed WebSocket, Markdown, static asset, and file-tree listener items without current evidence.
+
+Changes:
+
+- Added `role="tree"` / `aria-label` on the workspace tree container.
+- Added `role="treeitem"`, `aria-level`, and directory `aria-expanded` facts to tree nodes.
+- Added delegated keyboard support for Enter, Space, ArrowUp, ArrowDown, ArrowRight, and ArrowLeft.
+- Expanded the frontend Node test harness enough to assert generated tree semantics, focus movement, and keyboard activation without introducing a browser framework.
+- Rewrote `docs/webconsole-frontend-optimization-plan.md` as a current-state plan that marks already-implemented items complete and keeps the remaining backlog within Web-first boundaries.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServeEmbeddedFileETagAndGzip|TestServiceEmbeddedAssetsContainExpectedFrontendModules' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260526-101
 
 Slice: `fix(webconsole): roll back failed task sync`

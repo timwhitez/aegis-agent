@@ -110,18 +110,41 @@ function sameRealm(value) {
 }
 
 function fakeAppElement(initial = {}) {
-  return {
+  const classNames = new Set();
+  const attrs = {};
+  const children = [];
+  const element = {
     value: initial.value || '',
     checked: Boolean(initial.checked),
     disabled: false,
     dataset: {},
+    listeners: {},
     style: {},
     classList: {
-      add() {},
-      remove() {},
-      toggle() {},
-      contains() {
-        return false;
+      add(...names) {
+        names.forEach((name) => classNames.add(name));
+      },
+      remove(...names) {
+        names.forEach((name) => classNames.delete(name));
+      },
+      toggle(name, force) {
+        if (force === true) {
+          classNames.add(name);
+          return true;
+        }
+        if (force === false) {
+          classNames.delete(name);
+          return false;
+        }
+        if (classNames.has(name)) {
+          classNames.delete(name);
+          return false;
+        }
+        classNames.add(name);
+        return true;
+      },
+      contains(name) {
+        return classNames.has(name) || String(element.className || '').split(/\s+/).includes(name);
       }
     },
     scrollTop: 0,
@@ -131,25 +154,60 @@ function fakeAppElement(initial = {}) {
     innerText: '',
     textContent: '',
     hidden: false,
-    addEventListener() {},
-    appendChild() {},
+    offsetParent: {},
+    addEventListener(event, callback) {
+      this.listeners[event] = callback;
+    },
+    appendChild(child) {
+      children.push(child);
+      child.parentNode = this;
+      return child;
+    },
     remove() {},
-    focus() {},
+    focus() {
+      this.focused = true;
+    },
     click() {},
     dispatchEvent() {},
-    querySelector() {
-      return null;
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] || null;
     },
-    querySelectorAll() {
-      return [];
+    querySelectorAll(selector) {
+      const results = [];
+      const matches = (node) => {
+        if (selector === '.tree-node') {
+          return String(node.className || '').split(/\s+/).includes('tree-node') || node.classList?.contains?.('tree-node');
+        }
+        if (selector === '.tree-node.active') {
+          return (String(node.className || '').split(/\s+/).includes('tree-node') || node.classList?.contains?.('tree-node')) &&
+            node.classList?.contains?.('active');
+        }
+        return false;
+      };
+      const walk = (node) => {
+        if (matches(node)) {
+          results.push(node);
+        }
+        const nodeChildren = node.__children || [];
+        nodeChildren.forEach(walk);
+      };
+      children.forEach(walk);
+      return results;
     },
-    getAttribute() {
-      return null;
+    getAttribute(name) {
+      return attrs[name] || null;
     },
-    setAttribute() {},
-    removeAttribute() {},
+    setAttribute(name, value) {
+      attrs[name] = String(value);
+    },
+    removeAttribute(name) {
+      delete attrs[name];
+    },
     scrollTo() {}
   };
+  element.__children = children;
+  element.__attrs = attrs;
+  return element;
 }
 
 function fakeActionButton(attrs = {}) {
@@ -329,6 +387,11 @@ function createWorkspaceHarnessContext() {
         return fakeAppElement();
       }
     },
+    CSS: {
+      escape(value) {
+        return String(value).replace(/"/g, '\\"');
+      }
+    },
     state: {
       meta: {
         workspace_root: '/tmp/workspace',
@@ -356,8 +419,12 @@ function createWorkspaceHarnessContext() {
   vm.runInContext(utilsSource, workspaceContext, { filename: 'utils.js' });
   vm.runInContext(workspaceViewSource, workspaceContext, { filename: 'workspace-view.js' });
   vm.runInContext(`
-    renderFileTree = function(tree) {
-      state.renderedTree = tree;
+    const realRenderFileTree = renderFileTree;
+    renderFileTree = function(tree, container, level) {
+      if (!container || container === nodes.fileTree || !level) {
+        state.renderedTree = tree;
+      }
+      return realRenderFileTree(tree, container, level);
     };
   `, workspaceContext);
   workspaceContext.pendingRequests = pendingRequests;
@@ -2248,6 +2315,106 @@ test('workspace file click does not activate stale file selection', async () => 
     selectedTreePath: 'fast.txt',
     filename: 'fast.txt',
     content: 'current file'
+  });
+});
+
+test('workspace file tree renders delegated tree semantics', () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  vm.runInContext(`
+    window.lucide = null;
+    nodes.fileTree.contains = function(node) {
+      return Boolean(node);
+    };
+    renderFileTree([
+      { name: 'src', path: 'src', type: 'directory', children: [
+        { name: 'main.go', path: 'src/main.go', type: 'file' }
+      ] },
+      { name: 'README.md', path: 'README.md', type: 'file' }
+    ]);
+  `, workspaceContext);
+
+  const result = vm.runInContext(`({
+    role: nodes.fileTree.getAttribute('role'),
+    label: nodes.fileTree.getAttribute('aria-label'),
+    hasClick: typeof nodes.fileTree.listeners.click === 'function',
+    hasKeydown: typeof nodes.fileTree.listeners.keydown === 'function',
+    buttons: nodes.fileTree.querySelectorAll('.tree-node').map((button) => ({
+      path: button.dataset.path,
+      type: button.dataset.type,
+      role: button.getAttribute('role'),
+      level: button.getAttribute('aria-level'),
+      expanded: button.getAttribute('aria-expanded')
+    }))
+  })`, workspaceContext);
+
+  assert.deepEqual(sameRealm(result), {
+    role: 'tree',
+    label: 'Workspace files',
+    hasClick: true,
+    hasKeydown: true,
+    buttons: [
+      { path: 'src', type: 'directory', role: 'treeitem', level: '1', expanded: 'false' },
+      { path: 'src/main.go', type: 'file', role: 'treeitem', level: '2', expanded: null },
+      { path: 'README.md', type: 'file', role: 'treeitem', level: '1', expanded: null }
+    ]
+  });
+});
+
+test('workspace file tree keyboard activates and moves focus', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  vm.runInContext(`
+    window.lucide = null;
+    nodes.fileTree.contains = function(node) {
+      return Boolean(node);
+    };
+    renderFileTree([
+      { name: 'src', path: 'src', type: 'directory', children: [
+        { name: 'main.go', path: 'src/main.go', type: 'file' }
+      ] },
+      { name: 'README.md', path: 'README.md', type: 'file' }
+    ]);
+    treeButtons = nodes.fileTree.querySelectorAll('.tree-node');
+    keyboardEvents = [];
+    function keyEvent(key, button) {
+      return {
+        key,
+        target: { closest() { return button; } },
+        preventDefault() { keyboardEvents.push('prevent:' + key); },
+        stopPropagation() { keyboardEvents.push('stop:' + key); }
+      };
+    }
+  `, workspaceContext);
+
+  const enterPress = vm.runInContext(`handleFileTreeKeydown(keyEvent('Enter', treeButtons[1]))`, workspaceContext);
+  assert.equal(workspaceContext.pendingRequests.length, 1);
+  assert.match(workspaceContext.pendingRequests[0].url, /src%2Fmain\.go/);
+  workspaceContext.pendingRequests[0].resolve({ content: 'package main' });
+  await enterPress;
+
+  await vm.runInContext(`handleFileTreeKeydown(keyEvent('ArrowDown', treeButtons[0]))`, workspaceContext);
+  await vm.runInContext(`handleFileTreeKeydown(keyEvent('ArrowLeft', treeButtons[1]))`, workspaceContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selectedTreePath: state.selectedTreePath,
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText,
+    secondFocused: Boolean(treeButtons[1].focused),
+    parentFocused: Boolean(treeButtons[0].focused),
+    events: keyboardEvents
+  })`, workspaceContext)), {
+    selectedTreePath: 'src/main.go',
+    filename: 'src/main.go',
+    content: 'package main',
+    secondFocused: true,
+    parentFocused: true,
+    events: [
+      'prevent:Enter',
+      'stop:Enter',
+      'prevent:ArrowDown',
+      'stop:ArrowDown',
+      'prevent:ArrowLeft',
+      'stop:ArrowLeft'
+    ]
   });
 });
 
