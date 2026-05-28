@@ -571,6 +571,55 @@ func TestCompactorReportsCorruptReusableSummaryArtifact(t *testing.T) {
 	}
 }
 
+func TestCompactorReportsUnreadableCompactionArtifactDirectory(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	dir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions")
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove compactions dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-compactions"), dir); err != nil {
+		t.Fatalf("create broken compactions symlink: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", "Continue the large audit."),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
+	}
+
+	var emitted []events.Event
+	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 520, 1000, func(evt events.Event) error {
+		emitted = append(emitted, evt)
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "list compaction summary artifacts") || !strings.Contains(err.Error(), "artifacts") {
+		t.Fatalf("expected unreadable compaction directory error, got view=%#v didCompact=%t err=%v", view, didCompact, err)
+	}
+	if view != nil || didCompact {
+		t.Fatalf("expected unreadable compaction directory to stop reuse, got didCompact=%v view=%#v", didCompact, view)
+	}
+	if len(emitted) != 0 {
+		t.Fatalf("expected no compact.reused event after unreadable compaction directory, got %#v", emitted)
+	}
+}
+
 func TestCompactionAddsReferencePrefix(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()

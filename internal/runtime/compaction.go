@@ -185,7 +185,11 @@ func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error 
 }
 
 func (c *compactor) reusableCompactionSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, string, error) {
-	if relativePath := latestCompactionArtifactRelativePath(c.store, sessionID); relativePath != "" {
+	relativePath, err := latestCompactionArtifactRelativePath(c.store, sessionID)
+	if err != nil {
+		return nil, "", err
+	}
+	if relativePath != "" {
 		var summary map[string]any
 		if err := c.store.ReadArtifact(sessionID, relativePath, &summary); err != nil {
 			return nil, "", fmt.Errorf("read compaction summary artifact %s: %w", relativePath, err)
@@ -274,11 +278,27 @@ func (c *compactor) compactReusedEventData(sessionID, workdir string, size, last
 	}, nil
 }
 
-func latestCompactionArtifactRelativePath(store *session.Store, sessionID string) string {
+func latestCompactionArtifactRelativePath(store *session.Store, sessionID string) (string, error) {
 	dir := filepath.Join(store.SessionDir(sessionID), "artifacts", "compactions")
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("list compaction summary artifacts %s: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("list compaction summary artifacts %s: refusing to read symlinked directory", dir)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("list compaction summary artifacts %s: not a directory", dir)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ""
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("list compaction summary artifacts %s: %w", dir, err)
 	}
 	var latest string
 	for _, entry := range entries {
@@ -290,9 +310,9 @@ func latestCompactionArtifactRelativePath(store *session.Store, sessionID string
 		}
 	}
 	if latest == "" {
-		return ""
+		return "", nil
 	}
-	return filepath.Join("compactions", latest)
+	return filepath.Join("compactions", latest), nil
 }
 
 func recentMessagesForCompaction(messages []session.Message, minCount int) []session.Message {

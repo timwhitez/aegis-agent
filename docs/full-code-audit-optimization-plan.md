@@ -7944,6 +7944,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-151, FCA-20260526-164, and FCA-20260527-206. Those slices surfaced corrupt feature-list/Goal inputs and required compaction events; this slice covers an already-existing reusable compaction summary artifact that is present but unreadable or empty.
 - Confirmed the minimal fix belongs in the runtime compactor reuse boundary: distinguish no reusable artifact from an unusable latest reusable artifact, report the artifact path, and avoid silently falling back to a derived provider-view summary that hides the corrupt local fact.
 
+### Review 310
+
+- Confirmed FCA-20260528-317 against `spec/10-context-compaction.md`: the `artifacts/compactions/` directory is the local artifact namespace scanned to decide whether hysteresis reuse should load a previous summary or build a fallback derived summary.
+- Confirmed this is distinct from FCA-20260528-316. That slice covered a latest summary file that was found but unreadable or empty; this slice covers the earlier directory discovery boundary where an existing unusable compaction directory was collapsed into "no reusable summary exists."
+- Confirmed the minimal fix belongs in `latestCompactionArtifactRelativePath`: preserve missing-directory-as-empty compatibility, but reject symlinked, non-directory, or unreadable existing compaction artifact directories before reuse can synthesize a provider-view summary.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -9976,6 +9982,53 @@ Validation:
 
 - Pre-fix focused verification failed as expected: `TestCompactorReportsCorruptReusableSummaryArtifact` returned a derived compaction summary with `err=<nil>` over a corrupt `artifacts/compactions/summary-20260521-010000.json`.
 - `go test -timeout 120s ./internal/runtime -run 'TestCompactor(ReusesSummaryWithinHysteresisWindow|ReportsCorruptReusableSummaryArtifact|ReportsCorruptGoalDuringHysteresisReuse)|TestCompactionEventErrorsStopCompaction' -count=1`: passed.
+- `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-317
+
+Slice: `fix(runtime): report unusable compaction artifact directories`
+
+Finding:
+
+- `latestCompactionArtifactRelativePath` read `artifacts/compactions/` with raw `os.ReadDir`.
+- Every `ReadDir` error returned an empty latest path, so compaction hysteresis reuse treated an existing but unusable compaction artifact directory as if no prior summary artifact existed.
+- The fallback path then built a derived provider-view summary and could emit `compact.reused` with `summary_source=derived`.
+
+Impact:
+
+- A symlinked, non-directory, or otherwise unreadable `artifacts/compactions/` path could hide local compaction artifact corruption during long-running sessions.
+- Recovery diagnostics would lose the actionable artifact-directory error and instead present a derived summary as normal compaction reuse context.
+- This weakened the file-first compaction traceability required by `spec/10-context-compaction.md` before the runtime even selected a reusable summary file.
+
+Changes:
+
+- Changed `latestCompactionArtifactRelativePath` to return `(string, error)` and propagate directory discovery failures.
+- Preserved missing `artifacts/compactions/` as the compatible "no reusable artifact" case.
+- Rejected symlinked and non-directory compaction artifact paths with contextual `list compaction summary artifacts` errors.
+- Added a focused regression proving an unusable compaction artifact directory stops reuse and does not emit `compact.reused`.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestCompactorReportsUnreadableCompactionArtifactDirectory` returned a derived summary with `err=<nil>` over a broken `artifacts/compactions` symlink.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactor(ReusesSummaryWithinHysteresisWindow|ReportsCorruptReusableSummaryArtifact|ReportsUnreadableCompactionArtifactDirectory)' -count=1`: passed.
 - `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go`: passed with no output.
 - `git diff --check`: passed.
 - `go test -timeout 120s ./internal/runtime -count=1`: passed.
