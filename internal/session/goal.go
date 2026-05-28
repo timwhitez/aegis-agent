@@ -430,6 +430,14 @@ func ValidateGoal(goal SessionGoal) error {
 	if err := validateGoalValidations("validation plan item", goal.ValidationPlan); err != nil {
 		return err
 	}
+	if goal.CompletionAudit != nil {
+		if err := validateGoalCompletion(*goal.CompletionAudit); err != nil {
+			return err
+		}
+	}
+	if err := validateGoalProgress(goal.Progress); err != nil {
+		return err
+	}
 	if goal.Mission != nil && !IsMissionPlanStatus(goal.Mission.PlanStatus) {
 		return fmt.Errorf("invalid mission plan status: %s", goal.Mission.PlanStatus)
 	}
@@ -478,6 +486,9 @@ func validateGoalCriteria(items []GoalCriterion) error {
 		if err := validateGoalStringList("success criteria evidence", item.Evidence); err != nil {
 			return err
 		}
+		if err := validateGoalOptionalTimestamp("success criteria updated_at", item.UpdatedAt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -505,6 +516,9 @@ func validateGoalValidations(kind string, items []GoalValidation) error {
 		if err := validateGoalStringList(kind+" queue job ids", item.QueueJobIDs); err != nil {
 			return err
 		}
+		if err := validateGoalOptionalTimestamp(kind+" last_run_at", item.LastRunAt); err != nil {
+			return err
+		}
 		for _, evidence := range item.EvaluatorEvidence {
 			if err := validateGoalEvaluatorEvidence(kind, evidence); err != nil {
 				return err
@@ -515,6 +529,9 @@ func validateGoalValidations(kind string, items []GoalValidation) error {
 }
 
 func validateMissionPlan(plan MissionPlan) error {
+	if err := validateGoalOptionalTimestamp("mission approved_at", plan.ApprovedAt); err != nil {
+		return err
+	}
 	if err := validateMissionRequirements(plan.Requirements); err != nil {
 		return err
 	}
@@ -653,6 +670,25 @@ func validateMissionRoles(items []MissionRole) error {
 func validateGoalEvaluatorEvidence(kind string, item GoalEvaluatorEvidence) error {
 	if strings.TrimSpace(item.Status) != "" {
 		if err := validateGoalItemStatus(kind+" evaluator evidence", item.Status); err != nil {
+			return err
+		}
+	}
+	if err := validateGoalOptionalTimestamp(kind+" evaluator evidence created_at", item.CreatedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGoalCompletion(completion GoalCompletion) error {
+	if err := validateGoalRequiredTimestamp("goal completion completed_at", completion.CompletedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGoalProgress(items []GoalProgressRecord) error {
+	for _, item := range items {
+		if err := validateGoalRequiredTimestamp("goal progress created_at", item.CreatedAt); err != nil {
 			return err
 		}
 	}

@@ -1835,8 +1835,120 @@ func TestGoalSnapshotsRejectMalformedTimestamps(t *testing.T) {
 		t.Fatalf("expected malformed goal budget timestamp load error, got %v", err)
 	}
 
+	nestedCases := []struct {
+		name   string
+		want   string
+		mutate func(*SessionGoal)
+	}{
+		{
+			name: "success criteria updated_at",
+			want: "success criteria updated_at must be RFC3339Nano",
+			mutate: func(goal *SessionGoal) {
+				goal.SuccessCriteria = []GoalCriterion{{
+					ID:        "criterion_1",
+					Text:      "prove nested criteria timestamps",
+					Status:    "pending",
+					Required:  true,
+					UpdatedAt: "not-a-time",
+				}}
+			},
+		},
+		{
+			name: "validation last_run_at",
+			want: "validation plan item last_run_at must be RFC3339Nano",
+			mutate: func(goal *SessionGoal) {
+				goal.ValidationPlan = []GoalValidation{{
+					ID:        "validation_1",
+					Kind:      "command",
+					Status:    "pending",
+					LastRunAt: "not-a-time",
+				}}
+			},
+		},
+		{
+			name: "evaluator evidence created_at",
+			want: "validation plan item evaluator evidence created_at must be RFC3339Nano",
+			mutate: func(goal *SessionGoal) {
+				goal.ValidationPlan = []GoalValidation{{
+					ID:     "validation_1",
+					Kind:   "command",
+					Status: "pending",
+					EvaluatorEvidence: []GoalEvaluatorEvidence{{
+						Artifact:  "reports/evidence.md",
+						Status:    "verified",
+						CreatedAt: "not-a-time",
+					}},
+				}}
+			},
+		},
+		{
+			name: "mission approved_at",
+			want: "mission approved_at must be RFC3339Nano",
+			mutate: func(goal *SessionGoal) {
+				goal.Mode = GoalModeMission
+				goal.Mission = &MissionPlan{
+					PlanStatus: MissionPlanStatusApproved,
+					ApprovedAt: "not-a-time",
+				}
+			},
+		},
+		{
+			name: "completion audit completed_at",
+			want: "goal completion completed_at must be RFC3339Nano",
+			mutate: func(goal *SessionGoal) {
+				goal.Status = GoalStatusComplete
+				goal.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+				goal.CompletionAudit = &GoalCompletion{
+					Status:      GoalStatusComplete,
+					Summary:     "done",
+					CompletedAt: "not-a-time",
+				}
+			},
+		},
+		{
+			name: "progress created_at",
+			want: "goal progress created_at must be RFC3339Nano",
+			mutate: func(goal *SessionGoal) {
+				goal.Progress = []GoalProgressRecord{{
+					ID:        "progress_1",
+					Kind:      "progress",
+					Summary:   "recorded",
+					Source:    GoalSourceCLI,
+					CreatedAt: "not-a-time",
+				}}
+			},
+		},
+	}
+	for _, tc := range nestedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := goal
+			tc.mutate(&invalid)
+			data, err := json.Marshal(invalid)
+			if err != nil {
+				t.Fatalf("marshal invalid nested timestamp goal: %v", err)
+			}
+			if err := os.WriteFile(goalPath, data, 0o600); err != nil {
+				t.Fatalf("write invalid nested timestamp goal: %v", err)
+			}
+			if _, err := store.LoadGoal(meta.ID); err == nil || !strings.Contains(err.Error(), "validate goal.json") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected malformed nested goal timestamp load error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+
 	if err := store.SaveGoal(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
 		t.Fatalf("expected SaveGoal to reject invalid created_at, got %v", err)
+	}
+	invalidProgress := goal
+	invalidProgress.Progress = []GoalProgressRecord{{
+		ID:        "progress_bad_save",
+		Kind:      "progress",
+		Summary:   "recorded",
+		Source:    GoalSourceCLI,
+		CreatedAt: "not-a-time",
+	}}
+	if err := store.SaveGoal(meta.ID, invalidProgress); err == nil || !strings.Contains(err.Error(), "goal progress created_at must be RFC3339Nano") {
+		t.Fatalf("expected SaveGoal to reject invalid nested progress timestamp, got %v", err)
 	}
 }
 

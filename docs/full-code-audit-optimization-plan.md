@@ -8100,6 +8100,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-336 and FCA-20260528-341. Those slices hardened checkpoint `created_at`, contract snapshots/history, and artifact tracker timestamps; this slice covers the remaining derived owner-clue timestamp fields `started_at`, `released_at`, and `last_event_at` copied from `webconsole.handle.*` events into `session.md` and `checkpoints/longrun-latest.json`.
 - Confirmed the minimal fix belongs at the owner-clue derivation and checkpoint validation boundaries: reject malformed derived owner timestamps before writing operator-readable summaries/checkpoints and reject malformed `recent_owner` timestamps on checkpoint load/save, without changing raw event storage, active handle ownership semantics, Web state authority, or runtime execution policy.
 
+### Review 336
+
+- Confirmed FCA-20260528-343 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/12-task-system.md`, and `spec/17-web-console.md`: `goal.json` is the durable current Goal fact source for success criteria, validation evidence, completion audit, structured progress/handoff, mission approval, Web Goal facts, CLI fallback, summaries, checkpoints, and completion gating.
+- Confirmed this is distinct from FCA-20260528-337 and FCA-20260528-338. FCA-20260528-337 hardened only the top-level Goal snapshot timestamps; FCA-20260528-338 hardened `goal-history.jsonl`. This slice covers the remaining nested `goal.json` timestamp-shape gap where success criteria `updated_at`, validation `last_run_at`, evaluator evidence `created_at`, mission `approved_at`, completion audit `completed_at`, and progress `created_at` could contain arbitrary non-empty strings.
+- Confirmed the minimal fix belongs in `ValidateGoal` and its existing nested validators: parse persisted nested Goal timestamps as RFC3339Nano while preserving optional timestamp compatibility where the fields may be omitted, and without changing Goal status transitions, mission approval policy, progress semantics, completion audit requirements, Plan Mode gates, or Web state authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10975,6 +10981,54 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
 - `git diff --check -- internal/session/store.go internal/session/store_test.go internal/runtime/session_summary.go internal/runtime/contract_controller_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-343
+
+Slice: `fix(goal): validate nested goal timestamps`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/12-task-system.md`, and `spec/17-web-console.md` make `goal.json` the durable current Goal fact source for success criteria, validation evidence, completion audit, structured progress/handoff, mission approval, Web Goal facts, CLI fallback, summaries, checkpoints, and completion gating.
+- FCA-20260528-337 added RFC3339Nano parsing for top-level Goal timestamps, but the nested Goal validators still accepted arbitrary non-empty timestamp strings for success criteria `updated_at`, validation `last_run_at`, evaluator evidence `created_at`, mission `approved_at`, completion audit `completed_at`, and progress `created_at`.
+- Focused regressions wrote malformed nested timestamps directly to `goal.json`. Before the fix, `LoadGoal()` returned nil for all six malformed nested timestamps, and `SaveGoal()` accepted a progress record with `created_at:"not-a-time"`.
+
+Impact:
+
+- Web Goal facts, CLI fallback views, `session.md`, long-run checkpoints, completion audit evidence, and progress/handoff recovery could present malformed nested Goal chronology as normal durable state.
+- Invalid nested timestamps could survive load/save round trips and then become evidence for validation coverage, mission approval, or completion audit recency.
+- This is a validation-boundary fix only; it does not change Goal status transitions, mission approval policy, progress semantics, completion audit requirements, Plan Mode gates, task synchronization, Web state authority, provider replay, or model-led workflow behavior.
+
+Changes:
+
+- Extended `ValidateGoal()` to validate nested completion audit and structured progress records.
+- Parsed optional success criteria `updated_at`, validation `last_run_at`, evaluator evidence `created_at`, and mission `approved_at` as RFC3339Nano when present.
+- Parsed required completion audit `completed_at` and progress record `created_at` as RFC3339Nano.
+- Extended `TestGoalSnapshotsRejectMalformedTimestamps` to cover malformed nested timestamps on load and malformed progress timestamps on save.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestGoalSnapshotsRejectMalformedTimestamps` saw `LoadGoal()` accept malformed nested criteria, validation, evaluator evidence, mission approval, completion audit, and progress timestamps with nil errors, and saw `SaveGoal()` accept malformed progress `created_at`.
+- `go test -timeout 120s ./internal/session -run TestGoalSnapshotsRejectMalformedTimestamps -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestGoal(SnapshotsRejectMalformedTimestamps|HistoryRejectsMalformedTimestamps)|TestStore(Goal|RecordGoalProgress|CompleteGoal|ApproveMissionPlan)|TestPatchGoalRejectsMalformedStructuredItems' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestGoal|TestCompletion|TestBudget|TestApproveLinkedPlanMode|TestApproveLinkedMissionPlan|TestEngineBudgetWrapUp|TestEngineSteerAcceptanceReportsGoalHistoryError|TestSessionSummary|TestLongRunCheckpoint' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoal|TestServiceMission|TestServicePlanMode|TestServiceGoalFactsAndMissionCoverageApproval' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestGoal|TestDoctor' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test.*Goal|TestRecordGoal|TestUpdateGoal' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/goal.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
