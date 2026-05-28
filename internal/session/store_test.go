@@ -539,6 +539,76 @@ func TestStoreSaveStateIgnoresPredictableTempSymlink(t *testing.T) {
 	}
 }
 
+func TestStoreLoadMetadataRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	malformed := meta
+	malformed.ID = NewSessionID()
+	sessionPath := filepath.Join(store.SessionDir(meta.ID), "session.json")
+	if err := store.writeJSONFile(sessionPath, malformed); err != nil {
+		t.Fatalf("write malformed metadata: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err == nil || !strings.Contains(err.Error(), "validate session.json") {
+		t.Fatalf("expected malformed session.json validation error, got %v", err)
+	}
+
+	invalidMode := meta
+	invalidMode.Mode = "debug"
+	if err := store.SaveMetadata(meta.ID, invalidMode); err == nil || !strings.Contains(err.Error(), "invalid session mode") {
+		t.Fatalf("expected SaveMetadata to reject invalid mode, got %v", err)
+	}
+}
+
+func TestStoreLoadStateRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	malformed := state
+	malformed.Status = "teleport"
+	statePath := filepath.Join(store.SessionDir(meta.ID), "state.json")
+	if err := store.writeJSONFile(statePath, malformed); err != nil {
+		t.Fatalf("write malformed state: %v", err)
+	}
+	if _, err := store.LoadState(meta.ID); err == nil || !strings.Contains(err.Error(), "validate state.json") {
+		t.Fatalf("expected malformed state.json validation error, got %v", err)
+	}
+
+	invalidCounter := state
+	invalidCounter.PendingSteerCount = -1
+	if err := store.SaveState(meta.ID, invalidCounter); err == nil || !strings.Contains(err.Error(), "pending_steer_count must be non-negative") {
+		t.Fatalf("expected SaveState to reject invalid counter, got %v", err)
+	}
+}
+
 func TestStoreLoadStateRejectsSymlinkJSON(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
@@ -4055,11 +4125,15 @@ func TestLoadJobPreservesResumableChildAsBlocked(t *testing.T) {
 		t.Fatalf("save blocked job: %v", err)
 	}
 	childMeta := SessionMetadata{
-		ID:         "child-resumable",
-		Mode:       ModeRun,
-		Workdir:    t.TempDir(),
-		QueueJobID: job.ID,
-		CreatedAt:  now,
+		SchemaVersion:    1,
+		ID:               "child-resumable",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+		QueueJobID:       job.ID,
 	}
 	if err := store.Create(childMeta, State{Status: StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: now}); err != nil {
 		t.Fatalf("create child: %v", err)

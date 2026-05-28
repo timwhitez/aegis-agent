@@ -14,13 +14,14 @@ func newPlanModeTestStore(t *testing.T) (*Store, string) {
 	t.Helper()
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
-		SchemaVersion: 1,
-		ID:            NewSessionID(),
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
-		Workdir:       t.TempDir(),
-		Mode:          ModeExec,
-		Provider:      "fake",
-		Model:         "fake",
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
 	}
 	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := store.Create(meta, state); err != nil {
@@ -568,13 +569,14 @@ func TestPlanModeConcurrentMutationsReadLatestSnapshot(t *testing.T) {
 	storeA := NewStore(root)
 	storeB := NewStore(root)
 	meta := SessionMetadata{
-		SchemaVersion: 1,
-		ID:            NewSessionID(),
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
-		Workdir:       t.TempDir(),
-		Mode:          ModeExec,
-		Provider:      "fake",
-		Model:         "fake",
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
 	}
 	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := storeA.Create(meta, state); err != nil {

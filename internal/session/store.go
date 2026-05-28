@@ -98,8 +98,11 @@ func (s *Store) Create(meta SessionMetadata, state State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := validateStoreID("session", meta.ID); err != nil {
-		return err
+	if err := validateSessionMetadata(meta, meta.ID); err != nil {
+		return fmt.Errorf("validate session.json: %w", err)
+	}
+	if err := validateState(state); err != nil {
+		return fmt.Errorf("validate state.json: %w", err)
 	}
 	if err := s.EnsureRoot(); err != nil {
 		return err
@@ -145,6 +148,9 @@ func (s *Store) LoadMetadata(sessionID string) (SessionMetadata, error) {
 		}
 		return meta, fmt.Errorf("load session.json: %w", err)
 	}
+	if err := validateSessionMetadata(meta, sessionID); err != nil {
+		return meta, fmt.Errorf("validate session.json: %w", err)
+	}
 	return meta, nil
 }
 
@@ -155,6 +161,9 @@ func (s *Store) SaveMetadata(sessionID string, meta SessionMetadata) error {
 	if err != nil {
 		return err
 	}
+	if err := validateSessionMetadata(meta, sessionID); err != nil {
+		return fmt.Errorf("validate session.json: %w", err)
+	}
 	return s.writeJSONFile(path, meta)
 }
 
@@ -164,8 +173,16 @@ func (s *Store) LoadState(sessionID string) (State, error) {
 	if err != nil {
 		return state, err
 	}
-	err = readJSONFile(path, &state)
-	return state, err
+	if err := readJSONFile(path, &state); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return state, err
+		}
+		return state, fmt.Errorf("load state.json: %w", err)
+	}
+	if err := validateState(state); err != nil {
+		return state, fmt.Errorf("validate state.json: %w", err)
+	}
+	return state, nil
 }
 
 func (s *Store) SaveState(sessionID string, state State) error {
@@ -185,12 +202,18 @@ func (s *Store) SaveState(sessionID string, state State) error {
 	} else if ok {
 		state.PendingSteerCount = count
 	}
+	if err := validateState(state); err != nil {
+		return fmt.Errorf("validate state.json: %w", err)
+	}
 	return s.withFileLock(lockPath, func() error {
 		var current State
 		if err := readJSONFile(path, &current); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 		state.LoadedSkills = mergeLoadedSkills(current.LoadedSkills, state.LoadedSkills)
+		if err := validateState(state); err != nil {
+			return fmt.Errorf("validate state.json: %w", err)
+		}
 		return s.writeJSONFile(path, state)
 	})
 }
@@ -272,6 +295,9 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 		if err := readJSONFile(path, &claimed); err != nil {
 			return err
 		}
+		if err := validateState(claimed); err != nil {
+			return fmt.Errorf("validate state.json: %w", err)
+		}
 		if _, ok := allowed[claimed.Status]; !ok {
 			return errors.New("session is not resumable")
 		}
@@ -281,6 +307,9 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 		claimed.PauseReason = ""
 		claimed.ProviderAutoResumeCount = 0
 		claimed.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := validateState(claimed); err != nil {
+			return fmt.Errorf("validate state.json: %w", err)
+		}
 		return s.writeJSONFile(path, claimed)
 	})
 	if err != nil {
@@ -2821,6 +2850,144 @@ func readJSONL[T any](path string, out *[]T) error {
 			return fmt.Errorf("session JSONL record exceeds maximum readable size: %s (> %d bytes)", path, fileutil.MaxRegularFileReadBytes)
 		}
 		return err
+	}
+	return nil
+}
+
+func validateSessionMetadata(meta SessionMetadata, expectedID string) error {
+	if err := validateStoreID("session", meta.ID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(expectedID) != "" {
+		if err := validateStoreID("session", expectedID); err != nil {
+			return err
+		}
+		if meta.ID != expectedID {
+			return fmt.Errorf("session metadata id %q does not match session directory %q", meta.ID, expectedID)
+		}
+	}
+	if strings.TrimSpace(meta.CreatedAt) == "" {
+		return errors.New("session created_at is required")
+	}
+	if strings.TrimSpace(meta.Workdir) == "" {
+		return errors.New("session workdir is required")
+	}
+	switch meta.Mode {
+	case ModeRun, ModeExec, ModeInit:
+	default:
+		if strings.TrimSpace(meta.Mode) == "" {
+			return errors.New("session mode is required")
+		}
+		return fmt.Errorf("invalid session mode %q", meta.Mode)
+	}
+	if strings.TrimSpace(meta.Provider) == "" {
+		return errors.New("session provider is required")
+	}
+	if strings.TrimSpace(meta.Model) == "" {
+		return errors.New("session model is required")
+	}
+	switch meta.CompletionPolicy {
+	case CompletionPolicyInteractive, CompletionPolicyAutonomous:
+	default:
+		if strings.TrimSpace(meta.CompletionPolicy) == "" {
+			return errors.New("session completion_policy is required")
+		}
+		return fmt.Errorf("invalid session completion_policy %q", meta.CompletionPolicy)
+	}
+	if meta.Depth < 0 {
+		return errors.New("session depth must be non-negative")
+	}
+	if strings.TrimSpace(meta.ParentSessionID) != "" {
+		if err := validateStoreID("parent session", meta.ParentSessionID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(meta.RootSessionID) != "" {
+		if err := validateStoreID("root session", meta.RootSessionID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(meta.QueueJobID) != "" {
+		if err := validateStoreID("queue job", meta.QueueJobID); err != nil {
+			return err
+		}
+	}
+	if err := validateProviderOptions(meta.ProviderOptions); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateState(state State) error {
+	switch state.Status {
+	case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusFailed:
+	default:
+		if strings.TrimSpace(state.Status) == "" {
+			return errors.New("state status is required")
+		}
+		return fmt.Errorf("invalid state status %q", state.Status)
+	}
+	if state.Turn < 0 {
+		return errors.New("turn must be non-negative")
+	}
+	if state.PendingSteerCount < 0 {
+		return errors.New("pending_steer_count must be non-negative")
+	}
+	if state.RalphLoopCount < 0 {
+		return errors.New("ralph_loop_count must be non-negative")
+	}
+	if state.ProviderAutoResumeCount < 0 {
+		return errors.New("provider_auto_resume_count must be non-negative")
+	}
+	if state.LastCompactionInputChars < 0 {
+		return errors.New("last_compaction_input_chars must be non-negative")
+	}
+	if err := validateStringList("loaded_skills", state.LoadedSkills); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProviderOptions(options ProviderOptions) error {
+	if options.Temperature != nil && *options.Temperature < 0 {
+		return errors.New("provider_options.temperature must be non-negative")
+	}
+	if options.TopP != nil && *options.TopP < 0 {
+		return errors.New("provider_options.top_p must be non-negative")
+	}
+	if options.MaxOutputTokens < 0 {
+		return errors.New("provider_options.max_output_tokens must be non-negative")
+	}
+	if options.ThinkingBudget < 0 {
+		return errors.New("provider_options.thinking_budget must be non-negative")
+	}
+	if options.RetryPolicy != nil {
+		if options.RetryPolicy.MaxAttempts < 0 {
+			return errors.New("provider_options.retry_policy.max_attempts must be non-negative")
+		}
+		if options.RetryPolicy.BaseDelayMS < 0 {
+			return errors.New("provider_options.retry_policy.base_delay_ms must be non-negative")
+		}
+	}
+	if options.TimeoutPolicy != nil {
+		if options.TimeoutPolicy.TimeoutSec < 0 {
+			return errors.New("provider_options.timeout_policy.timeout_sec must be non-negative")
+		}
+		if options.TimeoutPolicy.RequestTimeoutSec < 0 {
+			return errors.New("provider_options.timeout_policy.request_timeout_sec must be non-negative")
+		}
+		if options.TimeoutPolicy.StreamIdleTimeoutMS < 0 {
+			return errors.New("provider_options.timeout_policy.stream_idle_timeout_ms must be non-negative")
+		}
+	}
+	return nil
+}
+
+func validateStringList(kind string, values []string) error {
+	for i, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s contains blank value at index %d", kind, i)
+		}
 	}
 	return nil
 }

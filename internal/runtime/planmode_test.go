@@ -391,13 +391,14 @@ func TestParentLinkedQueueBlockedDuringPendingPlanMode(t *testing.T) {
 	runner := NewRunner(cfg)
 	parentID := session.NewSessionID()
 	meta := session.SessionMetadata{
-		SchemaVersion: 1,
-		ID:            parentID,
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
-		Workdir:       t.TempDir(),
-		Mode:          session.ModeExec,
-		Provider:      "fake",
-		Model:         "fake",
+		SchemaVersion:    1,
+		ID:               parentID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
 	}
 	if err := runner.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
 		t.Fatalf("create parent: %v", err)

@@ -7872,6 +7872,12 @@ Evidence gates:
 - Confirmed this is a new fact-source validation gap, distinct from JSON corruption tests. Existing tests covered unreadable or non-JSON contract/tracker files, but semantically malformed snapshots with relative required-artifact paths could still load and drive artifact status refresh, Web detail, summaries, checkpoints, and completion gates.
 - Confirmed the minimal fix belongs in the session store: validate contract identity/source/trust/profile and validate required artifact paths on load/save/history/snapshot paths, while preserving generated absolute-path contracts and not adding workflow orchestration.
 
+### Review 298
+
+- Confirmed FCA-20260528-305 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/13-live-input-and-steering.md`: `session.json` and `state.json` are durable session facts that drive continue/resume, Web detail, queue/child reconciliation, provider/model selection, and steer pending-count visibility.
+- Confirmed this is the metadata/state counterpart to the recent durable fact-source validation slices. Prior store hardening covered goal, Plan Mode, todo/task, feature-list, contract, and artifact facts, but `LoadMetadata` / `LoadState` still trusted semantically malformed existing `session.json` / `state.json` snapshots.
+- Confirmed the minimal fix belongs at the session-store boundary: validate session identity, core metadata fields, mode/completion policy, linked IDs, provider option counters, state status, and non-negative execution counters on load/save/claim/create paths, while avoiding workflow-specific phase restrictions or Web/provider behavior changes.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7933,6 +7939,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-305
+
+Slice: `fix(session): validate metadata and state facts`
+
+Finding:
+
+- `LoadMetadata` decoded `session.json` without checking that the persisted session ID matched the directory being loaded or that mode, provider, model, completion policy, depth, linked IDs, or provider option counters were semantically valid.
+- `SaveMetadata` and `Create` could persist equivalent malformed metadata facts.
+- `LoadState`, `SaveState`, and `ClaimSessionRun` decoded or wrote `state.json` without validating session status, execution counters, steer counts, compaction counters, or loaded-skill values.
+
+Impact:
+
+- Continue/resume, Web session detail, session lists, queue/child reconciliation, session summaries, provider/model restoration, Plan Mode controls, and steer pending-count display could consume malformed durable metadata/state after restart or external modification.
+- A mismatched `session.json.id` could make a session directory describe a different session identity than the store path that selected it.
+- Invalid state statuses or negative counters could make resumability checks, queue reconciliation, and runtime diagnostics operate on impossible session states.
+
+Changes:
+
+- Added session-store validation for `session.json` facts: valid and matching session ID, nonblank `created_at`, nonblank `workdir`, supported `mode`, nonblank `provider`, nonblank `model`, supported `completion_policy`, non-negative `depth`, valid linked parent/root session IDs, valid linked queue job ID, and non-negative provider option counters.
+- Added session-store validation for `state.json` facts: supported status, non-negative turn/pending steer/loop/auto-resume/compaction counters, and nonblank loaded skill values.
+- Routed `Create`, `LoadMetadata`, `SaveMetadata`, `LoadState`, `SaveState`, and `ClaimSessionRun` through the validators.
+- Preserved missing-file behavior and JSON parse wrapping, and avoided phase-specific workflow rules so Plan Mode, queue, Web, and runtime can continue to set their existing phase strings.
+- Updated legacy test fixtures that were creating partial metadata snapshots to use valid session metadata.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestStoreLoadMetadataRejectsMalformedSnapshot|TestStoreLoadStateRejectsMalformedSnapshot' -count=1`: failed before the fix because malformed `session.json` / `state.json` snapshots loaded successfully.
+- `go test -timeout 120s ./internal/session -run 'TestStoreLoadMetadataRejectsMalformedSnapshot|TestStoreLoadStateRejectsMalformedSnapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/session/planmode_test.go internal/runtime/planmode_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-304
 
