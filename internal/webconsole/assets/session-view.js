@@ -1217,7 +1217,7 @@ function renderSelectedQueueJobPanel() {
     return '';
   }
   const job = state.selectedQueueJobDetail || queueJobByID(jobID) || { id: jobID };
-  const status = job.session_status || job.status || 'unknown';
+  const status = queueJobDisplayStatus(job);
   const detailCopy = job.last_error || job.final_text || job.prompt || 'Job detail is loading.';
   const created = job.created_at ? formatTimestamp(job.created_at) : '';
   const updated = job.updated_at ? formatTimestamp(job.updated_at) : '';
@@ -1562,7 +1562,7 @@ function renderSubAgentSessionRow(sess, job) {
 }
 
 function renderSubAgentJobRow(job) {
-  const status = job.session_status || job.status;
+  const status = queueJobDisplayStatus(job);
   const statusTone = toneForStatus(status);
   const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
   const targetAttr = job.session_id
@@ -2196,7 +2196,7 @@ function renderChildSessionCard(item) {
 }
 
 function renderQueueJobCard(job) {
-  const status = job.session_status || job.status;
+  const status = queueJobDisplayStatus(job);
   return `
     <div class="job-card ${job.id === state.selectedQueueJobId ? 'active' : ''}" data-queue-job-id="${escapeAttr(job.id)}">
       <div class="job-card-top">
@@ -2214,6 +2214,16 @@ function renderQueueJobCard(job) {
       </div>
     </div>
   `;
+}
+
+function queueJobDisplayStatus(job) {
+  if (!job) {
+    return 'unknown';
+  }
+  if (isTerminalStatus(job.status) || job.status === 'blocked') {
+    return job.status;
+  }
+  return job.session_status || job.status || 'unknown';
 }
 
 function renderSessionStopButton(sessionID, status, label = 'Stop') {

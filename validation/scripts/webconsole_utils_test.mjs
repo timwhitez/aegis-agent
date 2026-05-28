@@ -88,6 +88,13 @@ vm.runInContext(`
     const normalized = String(status).replaceAll('_', ' ').replaceAll('-', ' ').replace(/\\s+/g, ' ').trim();
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
+  function isStoppableSessionStatus(status) {
+    const normalized = String(status || '').toLowerCase();
+    return normalized === 'running' || normalized === 'awaiting_input' || normalized === 'paused';
+  }
+  function isStoppingSession(sessionID) {
+    return state.stoppingSessionIds.has(sessionID);
+  }
   function collectRecentToolEntries() {
     return [];
   }
@@ -606,6 +613,35 @@ test('background notification cards prefer errors over final text for failed fac
   assert.doesNotMatch(full, /child reported success before handoff failed/);
   assert.match(preview, /messages\.jsonl/);
   assert.doesNotMatch(preview, /child reported success before handoff failed/);
+});
+
+test('queue job renderers prefer queue failure over completed child status', () => {
+  const job = {
+    id: 'job_failed_handoff',
+    session_id: 'child_failed_handoff',
+    parent_session_id: 'parent_failed_handoff',
+    agent_name: 'reviewer',
+    agent_role: 'evaluator',
+    mode: 'exec',
+    status: 'failed',
+    session_status: 'completed',
+    prompt: 'review handoff',
+    final_text: 'child reported success before handoff failed',
+    last_error: 'load child session messages.jsonl for queue job job_failed_handoff: corrupt'
+  };
+
+  const card = context.renderQueueJobCard(job);
+  const subAgentRow = context.renderSubAgentJobRow(job);
+  vm.runInContext(`
+    state.selectedQueueJobId = 'job_failed_handoff';
+    state.selectedQueueJobDetail = ${JSON.stringify(job)};
+  `, context);
+  const selectedPanel = context.renderSelectedQueueJobPanel();
+
+  for (const html of [card, subAgentRow, selectedPanel]) {
+    assert.match(html, />Failed<\/span>/);
+    assert.doesNotMatch(html, />Completed<\/span>/);
+  }
 });
 
 test('refreshSelectedQueueJobDetail ignores stale async responses after selection changes', async () => {

@@ -8382,7 +8382,57 @@ Evidence gates:
 - Confirmed this is distinct from the corrupt child handoff backend/runtime slices. `internal/runtime/delegation.go` can persist failed queue handoff notifications with both `FinalText` from the child result and a later `LastError` from metadata or `messages.jsonl` reload, and `session.NewBackgroundNotification` intentionally carries both facts. The residual issue was only the frontend notification preview/full card choosing `final_text` before `last_error`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/session-view.js` `renderBackgroundNotificationsPreview` and `renderNotificationCard`: prefer `last_error` over `final_text` for notification copy, matching the existing background result message card and selected queue job facts panel without changing queue persistence, notification merge semantics, provider replay, or backend API shape.
 
+### Review 373
+
+- Confirmed FCA-20260529-385 against `spec/17-web-console.md`'s selected background job facts / sub-agent observability boundary: queue job cards must project the durable queue job terminal status when it differs from the linked child session status.
+- Confirmed this is distinct from FCA-20260529-384. That slice fixed notification copy priority when a failed notification carried stale `final_text`; this residual issue was the queue job status badge itself. `internal/session/store.go` intentionally allows a terminal failed queue job with `last_error` to retain a linked child `session_status=completed`, because the child can complete before queue handoff fails.
+- Confirmed the minimal fix belongs in the Web renderer status selection only: prefer terminal queue `status` and `blocked` over `session_status`, while preserving linked session status for nonterminal queued/running jobs. This avoids changing queue reconciliation, store validation, backend API shape, provider replay, or child session state.
+
 ## Update Log
+
+### FCA-20260529-385
+
+Slice: `fix(webconsole): show queue job terminal status`
+
+Finding:
+
+- `spec/17-web-console.md` requires the current session Background inspector and selected job facts panel to expose durable queue/job facts rather than becoming a second status authority.
+- A child session can finish successfully and then the queue handoff can fail while reloading child metadata or `messages.jsonl`; in that case `internal/runtime/delegation.go` persists a queue job with `status=failed`, `session_status=completed`, and `last_error` describing the handoff failure.
+- `internal/session/store.go` validates this as a legal fact shape when `LastError` is present, because terminal queue status and linked child session status describe different boundaries.
+- `internal/webconsole/assets/session-view.js` used `job.session_status || job.status` in `renderSelectedQueueJobPanel`, `renderSubAgentJobRow`, and `renderQueueJobCard`.
+- A focused frontend regression created `status=failed`, `session_status=completed`, and a `messages.jsonl` handoff error. Before the fix, the queue card rendered a live `Completed` badge instead of a danger `Failed` badge.
+
+Impact:
+
+- Operators viewing the selected job panel, sub-agent float orphan-job row, or queue job card could see a failed handoff rendered as completed.
+- The child session, queue job file, background notification, backend `sessionDetail` response, store validation, provider replay, and runtime reconciliation behavior were unchanged; the issue was limited to frontend queue-job display status priority.
+
+Changes:
+
+- Added `queueJobDisplayStatus(job)` to prefer terminal queue status (`completed` / `failed`) and `blocked` over linked `session_status`.
+- Updated selected job facts, orphan sub-agent job rows, and queue job cards to use the shared display-status helper.
+- Added a Node renderer regression proving a failed queue handoff with a completed child session renders `Failed`, not `Completed`, across all three queue-job renderers.
+
+Validation:
+
+- `node --test --test-name-pattern "queue job renderers prefer queue failure" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `renderQueueJobCard` displayed `Completed`.
+- `node --test --test-name-pattern "queue job renderers prefer queue failure" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 57 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-384
 
