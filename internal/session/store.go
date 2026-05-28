@@ -2608,6 +2608,9 @@ func (s *Store) reconcileSessionQueueJob(meta SessionMetadata) error {
 		return nil
 	}
 	_, err := s.LoadJob(meta.QueueJobID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	return err
 }
 
@@ -2621,6 +2624,9 @@ func (s *Store) ReconcileSessionQueueJob(sessionID string) (QueueJob, bool, erro
 	}
 	job, err := s.LoadJob(meta.QueueJobID)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return QueueJob{}, false, nil
+		}
 		return QueueJob{}, false, err
 	}
 	return job, true, nil

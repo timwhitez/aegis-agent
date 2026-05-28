@@ -8196,6 +8196,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-357. FCA-357 correctly rejected stored custom role provider profiles with no adapter family; this slice covers the follow-up same-request ordering gap where users could not save the adapter family and use that provider as a role default in one Settings submission.
 - Confirmed the minimal fix belongs in `handleUpdateConfig`: apply and validate provider-scoped fields into the cloned config first, then parse `role_providers` against that in-memory same-request config before any file write, env update, audit event, worker config update, or active config mutation.
 
+### Review 352
+
+- Confirmed FCA-20260528-359 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`: session metadata, state, messages, events, and queue job files are local durable facts, but a missing queue job sidecar for a metadata-only `queue_job_id` must not make the otherwise valid session unreadable.
+- Confirmed this is distinct from FCA-20260526-076 and FCA-20260526-129. FCA-076 made queue reconciliation errors visible while explicitly preserving missing queue job files as metadata-only no-ops, and FCA-129 made Web detail report real linked queue reconciliation write failures; this slice covers the remaining over-strict Web/list path where `os.ErrNotExist` from `LoadJob(meta.QueueJobID)` was still propagated.
+- Confirmed the minimal fix belongs in shared session metadata reconciliation plus Web detail: ignore only missing queue job files, while preserving malformed queue IDs, corrupt queue job JSON, linked session repair errors, parent notification/event failures, and explicit `/api/queue/jobs/{id}` missing-job 404 behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11786,6 +11792,50 @@ Validation:
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime ./internal/session ./internal/config -count=1`: passed.
 - `go test -timeout 120s ./internal/app ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-359
+
+Slice: `fix(session): tolerate metadata-only queue links`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` treats session metadata and queue job files as durable local facts, while `spec/17-web-console.md` makes Web detail, session lists, and children views projections of those facts rather than second authorities.
+- FCA-20260526-076 explicitly preserved missing queue job files as a no-op for metadata-only queue IDs, so a session whose `session.json.queue_job_id` points at a missing queue job should remain browseable while malformed or unwritable queue facts still fail.
+- `Store.reconcileSessionQueueJob`, `Store.ReconcileSessionQueueJob`, and `Service.sessionDetail` still propagated `os.ErrNotExist` / `fs.ErrNotExist` from `LoadJob(meta.QueueJobID)`. Focused regressions created otherwise valid sessions with metadata-only `queue_job_id` and no `_queue/<status>/<job>.json` file. Before the fix, `GET /api/sessions/{id}` returned HTTP 404 and `ListPage` / `ListChildren` returned `file does not exist`.
+
+Impact:
+
+- Legacy sessions, manually repaired sessions, or sessions whose linked queue job was intentionally cleaned up could disappear from Web/Sessions or fail detail loading even though the session's own `session.json`, `state.json`, and message/event facts were valid.
+- This weakened the Web-first recovery and observability contract by making a missing optional queue sidecar look like a missing session, while the runtime completion path already treated the same condition as compatible metadata-only linkage.
+- This is a compatibility-boundary fix only; it does not change queue job detail semantics, which still return 404 for explicitly requested missing jobs, and it does not hide malformed IDs, corrupt queue JSON, linked-session repair failures, parent notification failures, or unwritable queue facts.
+
+Changes:
+
+- Changed session-metadata queue reconciliation to ignore only `os.ErrNotExist` from `LoadJob(meta.QueueJobID)`.
+- Changed `ReconcileSessionQueueJob` to return `(zero, false, nil)` when the metadata queue job file is missing, matching the runtime linked-queue reconciliation compatibility boundary.
+- Changed Web session detail to ignore only missing linked queue job files before loading the session's own state and derived facts.
+- Added focused store and WebConsole regressions for metadata-only missing queue links while preserving linked queue repair and repair-error coverage.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSessionDetailAllowsMissingMetadataOnlyQueueJob -count=1`: failed before the fix because session detail returned HTTP 404 with `file does not exist`.
+- `go test -timeout 120s ./internal/session -run TestSessionListsAllowMissingMetadataOnlyQueueJob -count=1`: failed before the fix because session list returned `file does not exist`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSessionDetail(AllowsMissingMetadataOnlyQueueJob|ReconcilesLinkedQueueJob|ReportsLinkedQueueReconcileError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(SessionListsAllowMissingMetadataOnlyQueueJob|ListPageReconcilesLinkedQueueJobStatus|ReconcileStaleLinkedRunningJobFailsSession|LoadJobReportsLinkedSessionStateSaveError)' -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go internal/webconsole/service.go internal/webconsole/service_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 51 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 

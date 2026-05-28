@@ -5052,6 +5052,66 @@ func TestListPageReconcilesLinkedQueueJobStatus(t *testing.T) {
 	}
 }
 
+func TestSessionListsAllowMissingMetadataOnlyQueueJob(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_missing_metadata_queue",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyInteractive,
+		RootSessionID:    "parent_missing_metadata_queue",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_missing_metadata_queue",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		QueueJobID:       "job_missing_metadata_only_list",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusAwaitingInput, Phase: "awaiting_input", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	items, _, err := store.ListPage(10, 0)
+	if err != nil {
+		t.Fatalf("list page should tolerate missing metadata-only queue job: %v", err)
+	}
+	var foundChild bool
+	for _, item := range items {
+		if item.ID == childMeta.ID {
+			foundChild = true
+			if item.QueueJobID != childMeta.QueueJobID {
+				t.Fatalf("expected metadata queue job id in list summary, got %#v", item)
+			}
+		}
+	}
+	if !foundChild {
+		t.Fatalf("expected child session to remain listed, got %#v", items)
+	}
+	children, err := store.ListChildren(parentMeta.ID, 10)
+	if err != nil {
+		t.Fatalf("list children should tolerate missing metadata-only queue job: %v", err)
+	}
+	if len(children) != 1 || children[0].ID != childMeta.ID || children[0].QueueJobID != childMeta.QueueJobID {
+		t.Fatalf("expected child summary with metadata queue job id, got %#v", children)
+	}
+}
+
 func TestReconcileStaleLinkedRunningJobFailsSession(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)

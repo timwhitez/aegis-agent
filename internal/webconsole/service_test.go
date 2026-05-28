@@ -5757,6 +5757,37 @@ func TestServiceSessionDetailReconcilesLinkedQueueJob(t *testing.T) {
 	}
 }
 
+func TestServiceSessionDetailAllowsMissingMetadataOnlyQueueJob(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_detail_missing_queue_job")
+	meta.QueueJobID = "job_missing_metadata_only_detail"
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions/" + meta.ID)
+	if err != nil {
+		t.Fatalf("get session detail: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected metadata-only missing queue job to keep detail readable, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), meta.QueueJobID) {
+		t.Fatalf("expected detail to preserve metadata queue job id, got body=%s", string(body))
+	}
+}
+
 func TestServiceSessionDetailReportsLinkedQueueReconcileError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
