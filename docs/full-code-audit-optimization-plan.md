@@ -8304,7 +8304,55 @@ Evidence gates:
 - Confirmed this is a residual atomicity gap after FCA-20260527-216, not a new background queue feature: the previous slice restored retry state but still allowed the first acceptance event to survive when the second event failed.
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
+### Review 360
+
+- Confirmed FCA-20260528-372 against `spec/17-web-console.md`'s Workspace browser boundary: the read-only local browser must hide and reject cloud credential directories, not just the cloud families already enumerated by previous slices.
+- Confirmed this is distinct from FCA-20260528-371. That slice added `.azure` and `.config/gcloud`; this slice covers the remaining `.oci` directory family, where `.oci/config` could still be listed and read through the Web Workspace API.
+- Confirmed the minimal fix belongs in the same WebConsole Workspace browser deny helper: deny `.oci` as a cloud credential directory, without changing runtime file-tool access, report/session content, provider replay, or browser workspace root navigation.
+
 ## Update Log
+
+### FCA-20260528-372
+
+Slice: `fix(webconsole): hide oci credential workspace dirs`
+
+Finding:
+
+- `spec/17-web-console.md` requires the Workspace read-only browser to hide and reject SSH, cloud, kube, docker credential directories, private-key filenames, and credential-like paths.
+- FCA-20260528-371 extended the Web browser deny list for `.azure` and `.config/gcloud`, but the same cloud-credential boundary still allowed `.oci` to appear in `/api/files`.
+- A focused regression created `.oci/config`; before the fix, the Workspace listing exposed `.oci`, and direct reads/lists under `.oci` were not rejected by the lexical cloud-directory filter.
+
+Impact:
+
+- A local WebConsole opened over a workspace or parent directory containing OCI CLI credentials could expose that configuration through the read-only Workspace browser.
+- This violates the browser-specific leakage guard while leaving runtime file-tool behavior unchanged; the issue is limited to the local WebConsole Workspace surface.
+
+Changes:
+
+- Added `.oci` to the Workspace browser denied directory names.
+- Extended the existing Workspace route regression to prove `.oci` is hidden from listings and that `.oci/config` plus `.oci` listing requests are rejected.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: failed before the fix because `.oci` appeared in the Workspace listing.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspaceRoutesListReadAndRejectEscape|TestServiceWorkspaceRootIncludesParentNavigationWhenEmpty|TestServiceWorkspaceRoutesUseFirstNonBlankManagedSkillDir' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/config ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-371
 

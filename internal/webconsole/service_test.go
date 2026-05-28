@@ -8408,6 +8408,12 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceRoot, ".azure", "accessTokens.json"), []byte(`{"token":"azure"}`), 0o600); err != nil {
 		t.Fatalf("write workspace azure credential file: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, ".oci"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace oci credential dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, ".oci", "config"), []byte("[DEFAULT]\nuser = ocid1.user.oc1..example\n"), 0o600); err != nil {
+		t.Fatalf("write workspace oci credential file: %v", err)
+	}
 	if err := os.MkdirAll(filepath.Join(workspaceRoot, ".config", "gcloud", "configurations"), 0o755); err != nil {
 		t.Fatalf("mkdir workspace gcloud credential dir: %v", err)
 	}
@@ -8454,6 +8460,9 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 			t.Fatalf("workspace listing leaked credential-like file: %#v", tree)
 		}
 		if item["name"] == ".azure" {
+			t.Fatalf("workspace listing leaked cloud credential directory: %#v", tree)
+		}
+		if item["name"] == ".oci" {
 			t.Fatalf("workspace listing leaked cloud credential directory: %#v", tree)
 		}
 	}
@@ -8529,7 +8538,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 			t.Fatalf("expected forbidden for workspace credential read %s, got %d body=%s", deniedPath, resp.StatusCode, string(body))
 		}
 	}
-	for _, deniedAlias := range []string{".env.local", ".ssh/config", ".azure/accessTokens.json", ".config/gcloud/configurations/config_default"} {
+	for _, deniedAlias := range []string{".env.local", ".ssh/config", ".azure/accessTokens.json", ".oci/config", ".config/gcloud/configurations/config_default"} {
 		resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(deniedAlias))
 		if err != nil {
 			t.Fatalf("workspace sensitive symlink read request %s: %v", deniedAlias, err)
@@ -8549,7 +8558,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected forbidden for workspace sensitive symlink list, got %d body=%s", resp.StatusCode, string(body))
 	}
-	for _, deniedDir := range []string{".azure", ".config/gcloud"} {
+	for _, deniedDir := range []string{".azure", ".oci", ".config/gcloud"} {
 		resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape(deniedDir))
 		if err != nil {
 			t.Fatalf("workspace cloud credential list request %s: %v", deniedDir, err)

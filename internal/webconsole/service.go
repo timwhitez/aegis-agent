@@ -4948,7 +4948,7 @@ func webFileBrowserNameDenied(name string) bool {
 		return false
 	}
 	switch name {
-	case ".git", ".go-cli-agent", ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker",
+	case ".git", ".go-cli-agent", ".ssh", ".aws", ".azure", ".oci", ".gnupg", ".kube", ".docker",
 		"credentials":
 		return true
 	case ".env":
