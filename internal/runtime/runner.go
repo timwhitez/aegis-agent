@@ -676,26 +676,22 @@ func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMeta
 	model := normalizeModelOverride(modelOverride)
 	explicitProvider := providerName != ""
 	explicitModel := model != ""
-	if providerName == "" && parentMeta != nil && strings.TrimSpace(parentMeta.Provider) != "" {
-		providerName = parentMeta.Provider
+	roleOverride := config.RoleProviderOverride{}
+	if len(agentRole) > 0 && !explicitProvider {
+		roleOverride = cfg.RoleProviderOverride(agentRole[0])
 	}
-	if providerName == "" {
+	if explicitProvider {
+		providerName = normalizeProviderOverride(providerOverride)
+	} else if strings.TrimSpace(roleOverride.Provider) != "" {
+		providerName = strings.TrimSpace(roleOverride.Provider)
+	} else if parentMeta != nil && strings.TrimSpace(parentMeta.Provider) != "" {
+		providerName = parentMeta.Provider
+	} else if providerName == "" {
 		providerName = cfg.DefaultProvider
 	}
 	providerCfg, err := cfg.ProviderConfig(providerName)
 	if err != nil {
 		return "", "", config.Provider{}, err
-	}
-	roleOverride := config.RoleProviderOverride{}
-	if len(agentRole) > 0 && !explicitProvider && !explicitModel {
-		roleOverride = cfg.RoleProviderOverride(agentRole[0])
-	}
-	if strings.TrimSpace(roleOverride.Provider) != "" {
-		providerName = strings.TrimSpace(roleOverride.Provider)
-		providerCfg, err = cfg.ProviderConfig(providerName)
-		if err != nil {
-			return "", "", config.Provider{}, err
-		}
 	}
 	if strings.TrimSpace(roleOverride.APIProvider) != "" {
 		providerCfg.APIProvider = strings.TrimSpace(roleOverride.APIProvider)
@@ -703,7 +699,9 @@ func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMeta
 	if strings.TrimSpace(roleOverride.BaseURL) != "" {
 		providerCfg.BaseURL = strings.TrimSpace(roleOverride.BaseURL)
 	}
-	if strings.TrimSpace(roleOverride.Model) != "" {
+	if explicitModel {
+		model = normalizeModelOverride(modelOverride)
+	} else if strings.TrimSpace(roleOverride.Model) != "" {
 		model = strings.TrimSpace(roleOverride.Model)
 	}
 	if model == "" {

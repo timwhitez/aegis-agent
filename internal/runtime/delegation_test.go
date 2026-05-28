@@ -408,6 +408,59 @@ func TestRunnerDelegateExplicitProviderModelWinsOverRoleProviderOverride(t *test
 	}
 }
 
+func TestRunnerDelegateExplicitModelPreservesRoleProviderDefaults(t *testing.T) {
+	roleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"role override done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	t.Cleanup(roleServer.Close)
+
+	cfg := testRuntimeConfig(t)
+	cfg.Providers["validator"] = cfg.Providers["openai-compatible"]
+	validator := cfg.Providers["validator"]
+	validator.APIProvider = "openai-compatible"
+	validator.Model = "validator-default"
+	cfg.Providers["validator"] = validator
+	cfg.RoleProviders.Evaluator = config.RoleProviderOverride{
+		Provider: "validator",
+		BaseURL:  roleServer.URL,
+		Model:    "validator-role-model",
+	}
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		AgentName:       "reviewer",
+		AgentRole:       "evaluator",
+		Model:           "explicit-model",
+		IsolationMode:   "none",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	meta, err := runner.store.LoadMetadata(result.SessionID)
+	if err != nil {
+		t.Fatalf("load child metadata: %v", err)
+	}
+	if meta.Provider != "validator" || meta.Model != "explicit-model" {
+		t.Fatalf("expected explicit model to override role model while preserving role provider, got provider=%q model=%q", meta.Provider, meta.Model)
+	}
+	if meta.ProviderOptions.BaseURL != roleServer.URL {
+		t.Fatalf("expected role base URL to persist with explicit model, got %#v", meta.ProviderOptions)
+	}
+}
+
 func TestRunnerDelegateTreatsDefaultIsolationModeAsAuto(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
@@ -1026,6 +1079,38 @@ func TestRunnerQueueSubmitPersistsRoleProviderOverrideOptions(t *testing.T) {
 	}
 	if job.ProviderOptions.BaseURL != "http://role-builder.invalid/v1" {
 		t.Fatalf("expected role base URL to persist on queue job, got %#v", job.ProviderOptions)
+	}
+}
+
+func TestRunnerQueueSubmitExplicitModelPreservesRoleProviderDefaults(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Providers["builder"] = cfg.Providers["openai-compatible"]
+	builder := cfg.Providers["builder"]
+	builder.APIProvider = "openai-compatible"
+	builder.Model = "builder-default"
+	cfg.Providers["builder"] = builder
+	cfg.RoleProviders.Generator = config.RoleProviderOverride{
+		Provider: "builder",
+		BaseURL:  "http://role-builder.invalid/v1",
+		Model:    "builder-role-model",
+	}
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentRole:       "generator",
+		Model:           "explicit-model",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if job.Provider != "builder" || job.Model != "explicit-model" {
+		t.Fatalf("expected explicit model to override role model while preserving role provider, got %#v", job)
+	}
+	if job.ProviderOptions.BaseURL != "http://role-builder.invalid/v1" {
+		t.Fatalf("expected role base URL to persist with explicit model, got %#v", job.ProviderOptions)
 	}
 }
 

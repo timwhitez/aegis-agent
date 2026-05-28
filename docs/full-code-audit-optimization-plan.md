@@ -8172,6 +8172,12 @@ Evidence gates:
 - Confirmed this is distinct from the backend ownership fixes and stale completion fixes. The service already returned `active_handle=false` plus `active_handle_owner.state=running_not_owned` and rejected direct stop/interrupt with `ACTIVE_HANDLE_NOT_OWNED`; this slice covers the remaining frontend mismatch where the top-level buttons ignored those facts.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: gate only the top-level direct stop/interrupt buttons on `active_handle` and `active_handle_owner.owned_by_current_process`, while preserving interrupt steer as the fallback control for non-owned running sessions.
 
+### Review 348
+
+- Confirmed FCA-20260528-355 against `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: role provider overrides are field-level defaults for explicit `planner` / `generator` / `evaluator` role hints, and explicit provider/model request fields override only the corresponding Settings defaults rather than disabling the whole role override.
+- Confirmed this is distinct from the existing role-provider override coverage. Earlier tests covered omitted provider/model using the role override and explicit provider+model fully winning; this slice covers the remaining partial-override gap where a caller supplied only `model` and unintentionally lost the role provider, API provider, and base URL defaults.
+- Confirmed the minimal fix belongs in shared runtime provider/model resolution, because Web mission role plans, direct delegation, and queue jobs all converge on `resolveProviderAndModel`; Web Settings remains only the local config control surface and should not duplicate runtime provider selection logic.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11589,6 +11595,51 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `git diff --check -- internal/webconsole/assets/app.js validation/scripts/webconsole_utils_test.mjs docs/full-code-audit-optimization-plan.md`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-355
+
+Slice: `fix(runtime): preserve role provider defaults with explicit model`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` define role provider overrides as explicit `planner` / `generator` / `evaluator` role-hint defaults. Each override field may be blank and explicit request `provider` / `model` fields override Settings defaults.
+- `resolveProviderAndModel()` only loaded a role override when both provider and model were omitted. A caller that supplied only `model` for a role-hinted child or queue job unintentionally skipped the role provider, API provider, and base URL defaults too.
+- Focused runtime regressions covered direct delegation and queue submit with `agent_role` plus an explicit model. Before the fix, the queue regression persisted `Provider:"openai-compatible"` and the parent/default provider options instead of the configured generator provider and role base URL.
+
+Impact:
+
+- Web mission role plans, direct `agent_spawn`, and queue jobs could silently run a role-hinted generator/evaluator on the parent/default provider when the caller only wanted to override the model name.
+- The persisted child metadata or queue job facts no longer matched the Settings role-provider defaults, weakening traceability for planner/generator/evaluator separation and making configured role base URLs/API-provider choices ineffective in a common partial override case.
+- This is a provider-selection fix only; it does not create orchestration, infer roles from `agent_name`, change explicit provider+model precedence, or make Goal/Mission into a fixed workflow.
+
+Changes:
+
+- Updated shared `resolveProviderAndModel()` to load role overrides whenever an explicit role is present and provider is not explicitly supplied.
+- Preserved explicit provider precedence by skipping role override selection when `provider` is explicitly requested.
+- Preserved explicit model precedence while still applying role provider, API provider, and base URL defaults.
+- Added focused direct delegation and queue submit regressions for explicit-model partial overrides while keeping existing explicit provider+model precedence coverage.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerQueueSubmitExplicitModelPreservesRoleProviderDefaults -count=1`: failed before the fix because a generator queue job with explicit model lost its role provider/base URL defaults.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(DelegateExplicitModelPreservesRoleProviderDefaults|QueueSubmitExplicitModelPreservesRoleProviderDefaults|QueueSubmitPersistsRoleProviderOverrideOptions|DelegateExplicitProviderModelWinsOverRoleProviderOverride|DelegateAppliesRoleProviderOverrideWhenProviderModelOmitted)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(DelegateExplicitModelPreservesRoleProviderDefaults|QueueSubmitExplicitModelPreservesRoleProviderDefaults|QueueSubmitPersistsRoleProviderOverrideOptions|DelegateExplicitProviderModelWinsOverRoleProviderOverride|DelegateAppliesRoleProviderOverrideWhenProviderModelOmitted|QueueSubmitPersistsRoleProviderOverrideOptions|QueueSubmitAndWorkerCompletesJob)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(ConfigRoutesPersistRoleProviderOverrides|MissionRolePlanAppliesExactRoleProviderOverrides|ConfigRoutesUpdateActiveConfig|ConfigClearsStaleReasoningFieldsWhenSwitchingAdapterFamily)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole ./internal/session ./internal/config -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 50 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/delegation_test.go`: passed with no output.
+- `git diff --check -- internal/runtime/runner.go internal/runtime/delegation_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-339
