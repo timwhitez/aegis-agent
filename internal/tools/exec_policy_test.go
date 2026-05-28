@@ -36,6 +36,28 @@ func TestExecPolicyDetectsAbsoluteCommandPaths(t *testing.T) {
 	}
 }
 
+func TestExecPolicyDetectsWrappedPolicyCommands(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		category string
+	}{
+		{name: "env sudo", command: "env sudo systemctl restart ssh", category: "privilege_escalation"},
+		{name: "assignment curl", command: "FOO=bar curl https://example.com", category: "network_egress"},
+		{name: "env rm", command: "env rm -rf /", category: "destructive"},
+		{name: "command cp", command: "command cp token.txt .env.local", category: "secret_path_write"},
+		{name: "command path cp", command: "command -p /bin/cp token.txt .env.local", category: "secret_path_write"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(tt.command)
+			if !hasExecPolicyCategory(violations, tt.category) {
+				t.Fatalf("expected %s violation for %q, got %#v", tt.category, tt.command, violations)
+			}
+		})
+	}
+}
+
 func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 	for _, command := range []string{
 		"echo token > .env",

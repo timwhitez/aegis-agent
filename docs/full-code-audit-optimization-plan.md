@@ -8358,7 +8358,57 @@ Evidence gates:
 - Confirmed this is a residual wrapper gap after FCA-20260529-379. That slice detects direct `cp` / `mv` / `install` / `touch` / `mkdir` secret writes, but `env cp token.txt .env.local` and `env FOO=bar /bin/cp token.txt .env.local` still returned no `secret_path_write` violation because the command extractor stopped at `env`.
 - Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: peel a bounded `env` wrapper, including assignment arguments and common value-taking options, then reuse the existing common-write target extractor without changing shell execution semantics, direct workspace write policy, Web rendering, provider replay, or runtime workflow behavior.
 
+### Review 369
+
+- Confirmed FCA-20260529-381 against `spec/04-tools-and-skills.md`'s same lightweight shell exec-policy boundary: privilege escalation, destructive root deletes, network egress, and secret-path writes must be classified before deny-mode execution.
+- Confirmed this is a residual wrapper gap after FCA-20260529-380. That slice peeled `env` only for common write target extraction, but the top-level regex checks for `sudo`, `rm -rf /`, and `curl` still ran against the original command string. `env sudo ...`, `FOO=bar curl ...`, and `env rm -rf /` returned no violations, and shell `command cp ... .env.local` bypassed the common-write extractor.
+- Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: build bounded policy-only command views with leading environment assignments, `env`, and shell `command` wrappers peeled, then reuse the existing category regexes and common-write target extractor without changing shell execution semantics, provider replay, Web rendering, direct file tools, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260529-381
+
+Slice: `fix(tools): inspect wrapped policy commands`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` requires shell exec-policy to classify privilege escalation, destructive root deletes, secret path writes, and common network egress; deny mode blocks only after this classification.
+- FCA-20260529-380 added `env` peeling for common write target extraction, but the broader category checks still matched only the raw command text.
+- Focused regressions added `env sudo systemctl restart ssh`, `FOO=bar curl https://example.com`, `env rm -rf /`, `command cp token.txt .env.local`, and `command -p /bin/cp token.txt .env.local`. Before the fix, all returned no matching exec-policy violation.
+
+Impact:
+
+- A model-visible shell command could wrap sensitive commands with `env`, leading environment assignments, or shell `command` and bypass warning metadata or deny-mode blocking for the same underlying action.
+- The issue is limited to shell exec-policy classification. It does not change shell execution semantics, direct `write_file` / `edit_file` checks, Web Workspace rendering, provider replay, session/report content, or runtime workflow decisions.
+
+Changes:
+
+- Added policy-only normalized command views that peel leading environment assignments plus bounded `env` and shell `command` wrappers.
+- Reused those views for privilege escalation, destructive root-delete, and network-egress regex classification.
+- Reused the same wrapper peeling for common write target extraction so `command cp ...` paths are classified like direct `cp ...` paths.
+- Extended deny-mode shell integration coverage to prove wrapped common write commands are blocked before creating secret-path files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestExecPolicyDetectsWrappedPolicyCommands -count=1`: failed before the fix because wrapped policy commands returned no matching violation.
+- `go test -timeout 120s ./internal/tools -run TestExecPolicyDetectsWrappedPolicyCommands -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestExecPolicyDetectsWrappedPolicyCommands|TestShellDenyPolicyBlocksSecretPathWriteCommand' -count=1`: passed.
+- `gofmt -l internal/tools/exec_policy.go internal/tools/exec_policy_test.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-380
 

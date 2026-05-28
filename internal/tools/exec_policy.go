@@ -30,14 +30,15 @@ func DetectExecPolicyViolations(command string) []ExecPolicyViolation {
 	if trimmed == "" {
 		return violations
 	}
-	if privilegeEscalationPattern.MatchString(trimmed) {
+	commandViews := execPolicyCommandViews(trimmed)
+	if execPolicyAnyViewMatches(commandViews, privilegeEscalationPattern) {
 		violations = append(violations, ExecPolicyViolation{
 			Category: "privilege_escalation",
 			Pattern:  "sudo|doas|pkexec",
 			Message:  "command invokes a privilege escalation tool",
 		})
 	}
-	if rmRfRootPattern.MatchString(trimmed) {
+	if execPolicyAnyViewMatches(commandViews, rmRfRootPattern) {
 		violations = append(violations, ExecPolicyViolation{
 			Category: "destructive",
 			Pattern:  "rm -rf /",
@@ -51,7 +52,7 @@ func DetectExecPolicyViolations(command string) []ExecPolicyViolation {
 			Message:  "command appears to write to a secret or credential path",
 		})
 	}
-	if networkEgressPattern.MatchString(trimmed) {
+	if execPolicyAnyViewMatches(commandViews, networkEgressPattern) {
 		violations = append(violations, ExecPolicyViolation{
 			Category: "network_egress",
 			Pattern:  "curl|wget|nc|ncat|telnet|ssh|scp|sftp",
@@ -59,6 +60,51 @@ func DetectExecPolicyViolations(command string) []ExecPolicyViolation {
 		})
 	}
 	return violations
+}
+
+func execPolicyCommandViews(command string) []string {
+	views := []string{strings.TrimSpace(command)}
+	for _, segment := range splitExecPolicyCommandSegments(command) {
+		fields := strings.Fields(segment)
+		if len(fields) == 0 {
+			continue
+		}
+		commandIndex := 0
+		for commandIndex < len(fields) && execPolicyLooksLikeEnvAssignment(fields[commandIndex]) {
+			commandIndex++
+		}
+		if commandIndex >= len(fields) {
+			continue
+		}
+		commandName, args := execPolicyCommandAfterWrappers(fields[commandIndex:])
+		if commandName == "" {
+			continue
+		}
+		viewFields := append([]string{commandName}, args...)
+		view := strings.TrimSpace(strings.Join(viewFields, " "))
+		if view != "" && !execPolicyViewExists(views, view) {
+			views = append(views, view)
+		}
+	}
+	return views
+}
+
+func execPolicyViewExists(views []string, view string) bool {
+	for _, existing := range views {
+		if existing == view {
+			return true
+		}
+	}
+	return false
+}
+
+func execPolicyAnyViewMatches(views []string, pattern *regexp.Regexp) bool {
+	for _, view := range views {
+		if pattern.MatchString(view) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectSecretPathWrite(command string) bool {
@@ -94,7 +140,7 @@ func execPolicyCommonWriteTargetsSecretPath(command string) bool {
 		if commandIndex >= len(fields) {
 			continue
 		}
-		commandName, args := execPolicyCommandAfterEnv(fields[commandIndex:])
+		commandName, args := execPolicyCommandAfterWrappers(fields[commandIndex:])
 		if commandName == "" {
 			continue
 		}
@@ -108,16 +154,54 @@ func execPolicyCommonWriteTargetsSecretPath(command string) bool {
 	return false
 }
 
-func execPolicyCommandAfterEnv(fields []string) (string, []string) {
+func execPolicyCommandAfterWrappers(fields []string) (string, []string) {
 	if len(fields) == 0 {
 		return "", nil
 	}
 	commandIndex := 0
-	commandName := filepath.Base(strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`))
-	if commandName != "env" {
-		return commandName, fields[commandIndex+1:]
+	for commandIndex < len(fields) {
+		commandName := filepath.Base(strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`))
+		switch commandName {
+		case "env":
+			commandIndex++
+			for commandIndex < len(fields) {
+				field := strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`)
+				if field == "" {
+					commandIndex++
+					continue
+				}
+				if field == "--" {
+					commandIndex++
+					break
+				}
+				if execPolicyLooksLikeEnvAssignment(field) {
+					commandIndex++
+					continue
+				}
+				if strings.HasPrefix(field, "-") && field != "-" {
+					if execPolicyEnvOptionTakesValue(field) && !strings.Contains(field, "=") && commandIndex+1 < len(fields) {
+						commandIndex += 2
+						continue
+					}
+					commandIndex++
+					continue
+				}
+				break
+			}
+		case "command":
+			nextIndex, ok := execPolicyCommandBuiltinTargetIndex(fields, commandIndex+1)
+			if !ok {
+				return "", nil
+			}
+			commandIndex = nextIndex
+		default:
+			return commandName, fields[commandIndex+1:]
+		}
 	}
-	commandIndex++
+	return "", nil
+}
+
+func execPolicyCommandBuiltinTargetIndex(fields []string, commandIndex int) (int, bool) {
 	for commandIndex < len(fields) {
 		field := strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`)
 		if field == "" {
@@ -128,25 +212,19 @@ func execPolicyCommandAfterEnv(fields []string) (string, []string) {
 			commandIndex++
 			break
 		}
-		if execPolicyLooksLikeEnvAssignment(field) {
+		switch field {
+		case "-p":
 			commandIndex++
 			continue
+		case "-v", "-V":
+			return 0, false
 		}
 		if strings.HasPrefix(field, "-") && field != "-" {
-			if execPolicyEnvOptionTakesValue(field) && !strings.Contains(field, "=") && commandIndex+1 < len(fields) {
-				commandIndex += 2
-				continue
-			}
-			commandIndex++
-			continue
+			return 0, false
 		}
 		break
 	}
-	if commandIndex >= len(fields) {
-		return "", nil
-	}
-	commandName = filepath.Base(strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`))
-	return commandName, fields[commandIndex+1:]
+	return commandIndex, commandIndex < len(fields)
 }
 
 func execPolicyEnvOptionTakesValue(option string) bool {

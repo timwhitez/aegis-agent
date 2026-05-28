@@ -2070,33 +2070,47 @@ func TestShellDenyPolicyBlocksNoSpaceSecretRedirect(t *testing.T) {
 }
 
 func TestShellDenyPolicyBlocksSecretPathWriteCommand(t *testing.T) {
-	cfg := config.Default()
-	cfg.Runtime.ExecPolicy.Mode = "deny"
-	store := session.NewStore(t.TempDir())
-	workdir := t.TempDir()
-	sourcePath := filepath.Join(workdir, "token.txt")
-	if err := os.WriteFile(sourcePath, []byte("token\n"), 0o600); err != nil {
-		t.Fatalf("write source token: %v", err)
-	}
-	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
-	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	registry, err := NewRegistry(cfg, nil, store, nil)
-	if err != nil {
-		t.Fatalf("new registry: %v", err)
-	}
-	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
-		"command":"cp token.txt .env.local"
-	}`))
-	if err != nil {
-		t.Fatalf("shell: %v", err)
-	}
-	if !result.IsError || !strings.Contains(result.LLMOutput, "shell command denied by exec policy") {
-		t.Fatalf("expected common write command to be denied, got %#v", result)
-	}
-	if _, err := os.Stat(filepath.Join(workdir, ".env.local")); !os.IsNotExist(err) {
-		t.Fatalf("deny mode should not create .env.local, stat err=%v", err)
+	for _, tt := range []struct {
+		name    string
+		command string
+		target  string
+	}{
+		{name: "direct", command: "cp token.txt .env.local", target: ".env.local"},
+		{name: "env wrapped", command: "env cp token.txt .env.local", target: ".env.local"},
+		{name: "command wrapped", command: "command cp token.txt .env.command.local", target: ".env.command.local"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Runtime.ExecPolicy.Mode = "deny"
+			store := session.NewStore(t.TempDir())
+			workdir := t.TempDir()
+			sourcePath := filepath.Join(workdir, "token.txt")
+			if err := os.WriteFile(sourcePath, []byte("token\n"), 0o600); err != nil {
+				t.Fatalf("write source token: %v", err)
+			}
+			meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+			if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			registry, err := NewRegistry(cfg, nil, store, nil)
+			if err != nil {
+				t.Fatalf("new registry: %v", err)
+			}
+			args, err := json.Marshal(map[string]string{"command": tt.command})
+			if err != nil {
+				t.Fatalf("marshal shell args: %v", err)
+			}
+			result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, args)
+			if err != nil {
+				t.Fatalf("shell: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.LLMOutput, "shell command denied by exec policy") {
+				t.Fatalf("expected common write command to be denied, got %#v", result)
+			}
+			if _, err := os.Stat(filepath.Join(workdir, tt.target)); !os.IsNotExist(err) {
+				t.Fatalf("deny mode should not create %s, stat err=%v", tt.target, err)
+			}
+		})
 	}
 }
 
