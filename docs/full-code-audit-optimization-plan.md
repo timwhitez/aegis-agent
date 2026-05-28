@@ -8226,6 +8226,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-100 and FCA-20260526-102. Those slices rolled back goal/task/planmode facts when linked Plan Mode creation, relink event append, or goal event append failed; this slice covers the later window where `planmode.created` / `planmode.linked_goal` had already been appended to `events.jsonl`, but the following Goal mutation history/event append failed and the Plan Mode/Goal snapshots were restored.
 - Confirmed the minimal fix belongs in WebConsole rollback paths plus a store-level event restore helper: snapshot `events.jsonl` before appending linked Plan Mode events in rollback-capable Goal/Mission mutations, restore it when the later mutation fails, and validate restored event facts through the same session event validator.
 
+### Review 357
+
+- Confirmed FCA-20260528-366 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `artifacts/goal-history.jsonl` and `artifacts/planmode-history.jsonl` are durable transition ledgers for Goal and Plan Mode state, recovery, Web inspectors, summaries, checkpoints, and rollback snapshots.
+- Confirmed this is distinct from FCA-20260528-338, FCA-20260528-339, FCA-20260528-364, and FCA-20260528-365. The timestamp slices validated individual Goal/Plan Mode history entries on load/append/restore, while the latest message/contract slices validated existing ledgers before append. This slice covers the remaining Goal/Plan Mode history append boundary where an already malformed but syntactically readable ledger could still be extended by a later valid entry.
+- Confirmed the minimal fix belongs in `AppendGoalHistory` and `AppendPlanModeHistory`: read the current history under the store mutex, append the candidate in memory, validate the resulting ledger, and only then append the new JSONL record. No Goal/Plan Mode state-machine semantics, Web controls, runtime gates, or provider adapter behavior need to change.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -8287,6 +8293,49 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-366
+
+Slice: `fix(session): validate existing goal plan history before append`
+
+Finding:
+
+- `AppendGoalHistory` and `AppendPlanModeHistory` validated the new history entry but did not read and validate the existing `artifacts/goal-history.jsonl` or `artifacts/planmode-history.jsonl` before appending.
+- Both files are durable Goal / Plan Mode transition ledgers used by runtime recovery, Web inspectors, session summaries, long-run checkpoints, and rollback snapshots.
+
+Impact:
+
+- A syntactically valid but semantically malformed existing Goal or Plan Mode history ledger could keep being extended by later valid store transitions.
+- That made durable state internally inconsistent: ordinary history loads and downstream projections reject the corrupted ledger, while append callers previously saw success and could add fresh state transitions on top of the bad file.
+
+Changes:
+
+- `AppendGoalHistory` now reads the current Goal history under the existing store mutex, appends the candidate entry in memory, and validates the whole resulting ledger before writing the new JSONL row.
+- `AppendPlanModeHistory` now applies the same current-ledger validation to Plan Mode history before writing a new row.
+- Added focused store regressions for malformed existing Goal and Plan Mode history ledgers, asserting later appends fail and do not extend the corrupt files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestAppend(Goal|PlanMode)HistoryRejectsMalformedExistingHistory' -count=1`: failed before the fix because both append helpers returned nil.
+- `go test -timeout 120s ./internal/session -run 'TestAppend(Goal|PlanMode)HistoryRejectsMalformedExistingHistory' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(AppendGoalHistoryRejectsMalformedExistingHistory|AppendPlanModeHistoryRejectsMalformedExistingHistory|GoalHistoryRejectsMalformedTimestamps|PlanModeHistoryRejectsMalformedTimestamps|AppendGoalHistoryReportsCorruptCurrentGoalSnapshot|AppendPlanModeHistoryReportsCorruptCurrentPlanModeSnapshot)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/session/planmode.go internal/session/store_test.go internal/session/planmode_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-365
 

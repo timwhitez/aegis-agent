@@ -1865,6 +1865,64 @@ func TestGoalHistoryRejectsMalformedTimestamps(t *testing.T) {
 	}
 }
 
+func TestAppendGoalHistoryRejectsMalformedExistingHistory(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Reject extending corrupt goal history",
+		Source:    GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	valid := GoalHistoryEntry{
+		SchemaVersion: 1,
+		ID:            NewGoalHistoryID(),
+		SessionID:     meta.ID,
+		GoalID:        goal.GoalID,
+		Type:          "goal.created",
+		Source:        GoalSourceCLI,
+		Status:        GoalStatusActive,
+		CreatedAt:     now,
+	}
+	malformed := valid
+	malformed.ID = NewGoalHistoryID()
+	malformed.CreatedAt = "not-a-time"
+	historyPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "goal-history.jsonl")
+	writeGoalHistoryEntriesForTest(t, store, historyPath, []GoalHistoryEntry{malformed})
+
+	err = store.AppendGoalHistory(meta.ID, GoalHistoryEntry{
+		Type:      "goal.updated",
+		Source:    GoalSourceSystem,
+		Status:    GoalStatusActive,
+		CreatedAt: now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "validate goal-history.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed existing goal history error, got %v", err)
+	}
+	raw, readErr := os.ReadFile(historyPath)
+	if readErr != nil {
+		t.Fatalf("read goal history: %v", readErr)
+	}
+	if got := strings.Count(string(raw), "\n"); got != 1 {
+		t.Fatalf("malformed existing history should not be extended, got %d records: %q", got, string(raw))
+	}
+}
+
 func writeGoalHistoryEntriesForTest(t *testing.T, store *Store, path string, entries []GoalHistoryEntry) {
 	t.Helper()
 	var data strings.Builder

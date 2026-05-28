@@ -534,6 +534,14 @@ func (s *Store) AppendPlanModeHistory(sessionID string, entry PlanModeHistoryEnt
 	if err != nil {
 		return err
 	}
+	var current []PlanModeHistoryEntry
+	if err := readJSONL(path, &current); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load plan mode history %s: %w", path, err)
+	}
+	current = append(current, entry)
+	if err := validatePlanModeHistoryEntries(current); err != nil {
+		return fmt.Errorf("validate planmode-history.jsonl: %w", err)
+	}
 	if err := s.appendJSONL(path, entry); err != nil {
 		return fmt.Errorf("append plan mode history %s: %w", path, err)
 	}

@@ -597,6 +597,51 @@ func TestPlanModeHistoryRejectsMalformedTimestamps(t *testing.T) {
 	}
 }
 
+func TestAppendPlanModeHistoryRejectsMalformedExistingHistory(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	state, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Reject extending corrupt plan mode history",
+		Source:    PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	valid := PlanModeHistoryEntry{
+		SchemaVersion: 1,
+		ID:            NewPlanModeHistoryID(),
+		SessionID:     sessionID,
+		PlanModeID:    state.PlanModeID,
+		Type:          "planmode.created",
+		Source:        PlanModeSourceCLI,
+		Status:        PlanModeStatusPlanning,
+		CreatedAt:     now,
+	}
+	malformed := valid
+	malformed.ID = NewPlanModeHistoryID()
+	malformed.CreatedAt = "not-a-time"
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "planmode-history.jsonl")
+	writePlanModeHistoryEntriesForTest(t, store, historyPath, []PlanModeHistoryEntry{malformed})
+
+	err = store.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+		Type:      "planmode.plan_revised",
+		Source:    PlanModeSourceSystem,
+		Status:    PlanModeStatusPlanning,
+		CreatedAt: now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "validate planmode-history.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed existing plan mode history error, got %v", err)
+	}
+	raw, readErr := os.ReadFile(historyPath)
+	if readErr != nil {
+		t.Fatalf("read plan mode history: %v", readErr)
+	}
+	if got := strings.Count(string(raw), "\n"); got != 1 {
+		t.Fatalf("malformed existing history should not be extended, got %d records: %q", got, string(raw))
+	}
+}
+
 func writePlanModeHistoryEntriesForTest(t *testing.T, store *Store, path string, entries []PlanModeHistoryEntry) {
 	t.Helper()
 	var data strings.Builder

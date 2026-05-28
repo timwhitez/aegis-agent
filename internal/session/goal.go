@@ -1275,6 +1275,14 @@ func (s *Store) AppendGoalHistory(sessionID string, entry GoalHistoryEntry) erro
 	if err != nil {
 		return err
 	}
+	var current []GoalHistoryEntry
+	if err := readJSONL(path, &current); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load goal history %s: %w", path, err)
+	}
+	current = append(current, entry)
+	if err := validateGoalHistoryEntries(current); err != nil {
+		return fmt.Errorf("validate goal-history.jsonl: %w", err)
+	}
 	if err := s.appendJSONL(path, entry); err != nil {
 		return fmt.Errorf("append goal history %s: %w", path, err)
 	}
