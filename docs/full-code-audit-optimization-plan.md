@@ -7824,6 +7824,12 @@ Evidence gates:
 - Confirmed this is distinct from provider/config validation and from alias support. Existing behavior preserved `full-auto` and `workspace-write` aliases, but arbitrary `mode`, `wait_mode`, or `isolation_mode` strings could still be silently normalized or persisted.
 - Confirmed the minimal fix belongs at the runtime input boundary and Web status mapping: validate normalized run mode, isolation mode, and parent wait mode before `Start`, `Delegate`, or `QueueSubmit` writes files, while keeping provider adapters, tool autonomy, queue workers, and documented aliases unchanged.
 
+### Review 290
+
+- Confirmed FCA-20260528-297 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`: `goal.json` is the durable Goal/Mission fact source, while Web goal/mission patch endpoints are only a local REST control surface over that store and must not persist malformed structured plan items.
+- Confirmed this is distinct from prior Goal transaction/rollback slices. Those covered history/event/task/Plan Mode side-effect rollback after valid mutations; this slice covers malformed `success_criteria`, `validation_plan`, mission feature/milestone/requirement/validation/role data being accepted as current facts before any side-effect error.
+- Confirmed the minimal fix belongs in session-store Goal validation plus Web error classification: reject blank/duplicate item IDs, missing display text/title, invalid item statuses, and blank linked-fact strings before `SaveGoal` / `PatchGoal` writes, preserving read-only coverage reporting for absent legacy files and not adding workflow orchestration.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7885,6 +7891,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-297
+
+Slice: `fix(session): reject malformed goal plan items`
+
+Finding:
+
+- Web `PATCH /api/sessions/{id}/goal` accepted structured `success_criteria` with blank IDs and persisted them into `goal.json`.
+- Web `PATCH /api/sessions/{id}/mission/plan` accepted duplicate mission feature IDs and persisted them into `goal.json`.
+- `ValidateGoal` only checked top-level Goal mode/status, budgets, and mission plan status, so direct `SaveGoal` / `PatchGoal` callers could also write malformed criteria, validation, mission plan, and linked-fact lists.
+
+Impact:
+
+- Goal/Mission inspector, runtime prompt context, mission coverage checks, progress updates, task sync, and completion audit could consume malformed current facts that cannot be reliably referenced by ID.
+- Duplicate or blank IDs could make later `record_goal_progress`, coverage approval, or operator review ambiguous while still looking like successful Web/API mutations.
+- The Web console could report success for malformed client payloads instead of returning a correct 400 before durable Goal facts changed.
+
+Changes:
+
+- Added centralized `ValidateGoal` checks for success criteria, validation plan, mission requirements, features, milestones, validation contract, role plan, linked artifacts, and linked child/queue/task/evidence string lists.
+- Enforced nonblank and non-whitespace item IDs, duplicate ID rejection per item group, required criterion text / requirement text / feature title / milestone title, and supported item statuses.
+- Mapped Goal structured-data validation failures to Web HTTP 400 responses.
+- Added focused store and WebConsole regressions proving malformed patches are rejected without advancing `goal.json`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatchRejectsMalformedStructuredItems|MissionPlanPatchRejectsMalformedStructuredItems)' -count=1`: failed before the fix because malformed patches returned `200 OK` and persisted invalid `goal.json` facts.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatchRejectsMalformedStructuredItems|MissionPlanPatchRejectsMalformedStructuredItems)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestPatchGoalRejectsMalformedStructuredItems|TestMissionPlanCoverageReportsUncoveredAndInvalidAssignments|TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/tools ./internal/runtime ./internal/app -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/session/store_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `events.js`, `workspace-view.js`, `settings-view.js`, `utils.js`, `api.js`, and `validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServicePlanModeInputDetailKeepsLiveHandle -count=1 -v`: passed after the first full-suite run hit a transient `409 session is already active in this web console` in that unrelated test.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(PlanModeInputDetailKeepsLiveHandle|GoalPatchRejectsMalformedStructuredItems|MissionPlanPatchRejectsMalformedStructuredItems)' -count=1 -v`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed on retry.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed on retry after the transient WebConsole test failure above.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-296
 

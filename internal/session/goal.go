@@ -403,8 +403,256 @@ func ValidateGoal(goal SessionGoal) error {
 	if goal.TimeBudgetSeconds != nil && *goal.TimeBudgetSeconds <= 0 {
 		return errors.New("goal time budget must be positive")
 	}
+	if err := validateGoalCriteria(goal.SuccessCriteria); err != nil {
+		return err
+	}
+	if err := validateGoalValidations("validation plan item", goal.ValidationPlan); err != nil {
+		return err
+	}
 	if goal.Mission != nil && !IsMissionPlanStatus(goal.Mission.PlanStatus) {
 		return fmt.Errorf("invalid mission plan status: %s", goal.Mission.PlanStatus)
+	}
+	if goal.Mission != nil {
+		if err := validateMissionPlan(*goal.Mission); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGoalCriteria(items []GoalCriterion) error {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		id, err := validateGoalItemID("success criteria", item.ID)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate success criteria id: %s", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(item.Text) == "" {
+			return errors.New("success criteria text is required")
+		}
+		if err := validateGoalItemStatus("success criteria", item.Status); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("success criteria evidence", item.Evidence); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGoalValidations(kind string, items []GoalValidation) error {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		id, err := validateGoalItemID(kind, item.ID)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate %s id: %s", kind, id)
+		}
+		seen[id] = struct{}{}
+		if err := validateGoalItemStatus(kind, item.Status); err != nil {
+			return err
+		}
+		if err := validateGoalStringList(kind+" evidence", item.Evidence); err != nil {
+			return err
+		}
+		if err := validateGoalStringList(kind+" child session ids", item.ChildSessionIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList(kind+" queue job ids", item.QueueJobIDs); err != nil {
+			return err
+		}
+		for _, evidence := range item.EvaluatorEvidence {
+			if err := validateGoalEvaluatorEvidence(kind, evidence); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateMissionPlan(plan MissionPlan) error {
+	if err := validateMissionRequirements(plan.Requirements); err != nil {
+		return err
+	}
+	if err := validateMissionFeatures(plan.Features); err != nil {
+		return err
+	}
+	if err := validateMissionMilestones(plan.Milestones); err != nil {
+		return err
+	}
+	if err := validateGoalValidations("mission validation contract item", plan.ValidationContract); err != nil {
+		return err
+	}
+	if err := validateMissionRoles(plan.RolePlan); err != nil {
+		return err
+	}
+	if err := validateGoalStringList("mission shared artifacts", plan.SharedArtifacts); err != nil {
+		return err
+	}
+	if err := validateGoalStringList("mission knowledge artifacts", plan.KnowledgeArtifacts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateMissionRequirements(items []MissionRequirement) error {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		id, err := validateGoalItemID("mission requirement", item.ID)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate mission requirement id: %s", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(item.Text) == "" {
+			return errors.New("mission requirement text is required")
+		}
+		if err := validateGoalStringList("mission requirement evidence", item.Evidence); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateMissionFeatures(items []MissionFeature) error {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		id, err := validateGoalItemID("mission feature", item.ID)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate mission feature id: %s", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(item.Title) == "" {
+			return errors.New("mission feature title is required")
+		}
+		if err := validateGoalItemStatus("mission feature", item.Status); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission feature claimed assertions", item.ClaimedAssertions); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission feature task ids", item.TaskIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission feature child session ids", item.ChildSessionIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission feature queue job ids", item.QueueJobIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission feature evidence", item.Evidence); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateMissionMilestones(items []MissionMilestone) error {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		id, err := validateGoalItemID("mission milestone", item.ID)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate mission milestone id: %s", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(item.Title) == "" {
+			return errors.New("mission milestone title is required")
+		}
+		if err := validateGoalItemStatus("mission milestone", item.Status); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission milestone feature ids", item.FeatureIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission milestone validation ids", item.ValidationIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission milestone task ids", item.TaskIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission milestone child session ids", item.ChildSessionIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission milestone queue job ids", item.QueueJobIDs); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission milestone evidence", item.Evidence); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateMissionRoles(items []MissionRole) error {
+	for _, item := range items {
+		if strings.TrimSpace(item.Name) == "" && strings.TrimSpace(item.Role) == "" {
+			return errors.New("mission role name or role is required")
+		}
+		if err := validateGoalStringList("mission role tools", item.Tools); err != nil {
+			return err
+		}
+		if err := validateGoalStringList("mission role session ids", item.SessionIDs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGoalEvaluatorEvidence(kind string, item GoalEvaluatorEvidence) error {
+	if strings.TrimSpace(item.Status) != "" {
+		if err := validateGoalItemStatus(kind+" evaluator evidence", item.Status); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGoalItemID(kind, value string) (string, error) {
+	id := strings.TrimSpace(value)
+	if id == "" {
+		return "", fmt.Errorf("%s id is required", kind)
+	}
+	if id != value {
+		return "", fmt.Errorf("%s id has leading or trailing whitespace: %q", kind, value)
+	}
+	return id, nil
+}
+
+func validateGoalItemStatus(kind, value string) error {
+	status := strings.TrimSpace(value)
+	if status == "" {
+		return fmt.Errorf("%s status is required", kind)
+	}
+	if status != value {
+		return fmt.Errorf("%s status has leading or trailing whitespace: %q", kind, value)
+	}
+	switch strings.ToLower(status) {
+	case "pending", "in_progress", "completed", "verified", "failed", "skipped", "blocked":
+		return nil
+	default:
+		return fmt.Errorf("invalid %s status: %s", kind, value)
+	}
+}
+
+func validateGoalStringList(kind string, values []string) error {
+	for i, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s contains blank value at index %d", kind, i)
+		}
 	}
 	return nil
 }

@@ -866,6 +866,43 @@ func TestServiceGoalPatchPreservesRuntimeProgressFacts(t *testing.T) {
 	}
 }
 
+func TestServiceGoalPatchRejectsMalformedStructuredItems(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_patch_malformed_items")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Reject malformed structured goal items",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{
+		"success_criteria": []map[string]any{{"id": "   ", "text": "cannot be referenced", "status": "pending"}},
+	}, http.StatusBadRequest, &apiErr)
+	if !strings.Contains(apiErr.Error, "success criteria id is required") {
+		t.Fatalf("expected malformed criteria error, got %#v", apiErr)
+	}
+	loaded, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if len(loaded.SuccessCriteria) != 0 {
+		t.Fatalf("failed malformed goal patch should not advance snapshot, got %#v", loaded.SuccessCriteria)
+	}
+}
+
 func TestServiceGoalPatchReportsHistoryAppendError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -1128,6 +1165,47 @@ func TestServiceMissionPlanPatchReportsHistoryAppendError(t *testing.T) {
 	}
 	if loaded.Mission != nil && len(loaded.Mission.Features) != 0 {
 		t.Fatalf("failed mission plan patch should not advance goal snapshot, got %#v", loaded.Mission.Features)
+	}
+}
+
+func TestServiceMissionPlanPatchRejectsMalformedStructuredItems(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_patch_malformed_items")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Reject malformed mission plan items",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"features": []map[string]any{
+			{"id": "feature_api", "title": "API", "status": "pending"},
+			{"id": "feature_api", "title": "Duplicate API", "status": "pending"},
+		},
+	}, http.StatusBadRequest, &apiErr)
+	if !strings.Contains(apiErr.Error, "duplicate mission feature id") {
+		t.Fatalf("expected duplicate feature error, got %#v", apiErr)
+	}
+	loaded, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if loaded.Mission != nil && len(loaded.Mission.Features) != 0 {
+		t.Fatalf("failed malformed mission patch should not advance snapshot, got %#v", loaded.Mission.Features)
 	}
 }
 

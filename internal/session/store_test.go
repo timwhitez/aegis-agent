@@ -1479,6 +1479,49 @@ func TestMissionPlanCoverageReportsUncoveredAndInvalidAssignments(t *testing.T) 
 	}
 }
 
+func TestPatchGoalRejectsMalformedStructuredItems(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Mode:      GoalModeMission,
+		Objective: "Reject malformed structured items",
+		Source:    GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+
+	criteria := []GoalCriterion{{ID: "criterion_0001", Text: "valid", Status: "pending"}, {ID: "criterion_0001", Text: "duplicate", Status: "pending"}}
+	if _, err := store.PatchGoal(meta.ID, GoalPatchInput{SuccessCriteria: &criteria}); err == nil || !strings.Contains(err.Error(), "duplicate success criteria id") {
+		t.Fatalf("expected duplicate criteria validation error, got %v", err)
+	}
+	mission := MissionPlan{
+		Features: []MissionFeature{{ID: "feature_0001", Title: "", Status: "pending"}},
+	}
+	if _, err := store.PatchGoal(meta.ID, GoalPatchInput{Mission: &mission}); err == nil || !strings.Contains(err.Error(), "mission feature title is required") {
+		t.Fatalf("expected feature title validation error, got %v", err)
+	}
+	loaded, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if len(loaded.SuccessCriteria) != 0 || (loaded.Mission != nil && len(loaded.Mission.Features) != 0) {
+		t.Fatalf("failed malformed patches should not advance goal snapshot, got %#v", loaded)
+	}
+}
+
 func TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

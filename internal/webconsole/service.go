@@ -5237,7 +5237,14 @@ func isGoalClientError(err error) bool {
 		strings.Contains(text, "goal token budget") ||
 		strings.Contains(text, "goal time budget") ||
 		strings.Contains(text, "invalid goal mode") ||
-		strings.Contains(text, "invalid goal status")
+		strings.Contains(text, "invalid goal status") ||
+		strings.Contains(text, "success criteria") ||
+		strings.Contains(text, "validation plan item") ||
+		strings.Contains(text, "mission requirement") ||
+		strings.Contains(text, "mission feature") ||
+		strings.Contains(text, "mission milestone") ||
+		strings.Contains(text, "mission validation contract item") ||
+		strings.Contains(text, "mission role")
 }
 
 func isStoreIDClientError(err error) bool {
