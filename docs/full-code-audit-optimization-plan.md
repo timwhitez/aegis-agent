@@ -8340,7 +8340,48 @@ Evidence gates:
 - Confirmed this is a residual alias-depth gap after FCA-20260528-375. That slice denied writes to the exact real target of root pattern aliases such as `deploy.pem -> secrets/key-real`, but the implementation still used exact path equality for pattern aliases and therefore did not cover directory aliases and their children.
 - Confirmed the minimal fix belongs in `internal/tools/path.go`: reuse a tiny alias-match helper that accepts either the exact resolved alias target or any child path under it, without changing read access, shell exec-policy metadata, provider replay, Web Workspace rendering, or runtime workflow behavior.
 
+### Review 366
+
+- Confirmed FCA-20260529-378 against `spec/04-tools-and-skills.md`'s lightweight shell exec-policy boundary: secret-path writes must be classified in warning mode and blocked in deny mode, including `tee` writes that create or overwrite env secret paths.
+- Confirmed this is a residual `tee` target parsing gap after FCA-20260528-376. That slice made first-target redirect/tee writes to `.env.*` and `.env/...` paths visible to exec-policy, but `tee` can write to multiple targets and the fallback parser only inspected the first target.
+- Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: scan every non-option target in a matched `tee` command, reusing the existing path-component secret helper and `.env.example` / `.env.sample` / `.env.template` exceptions, without changing shell execution semantics, workspace write policy, Web rendering, provider replay, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260529-378
+
+Slice: `fix(tools): detect secret tee targets`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines `runtime.exec_policy.mode` as a lightweight shell safety policy that records metadata warnings by default and blocks only in `deny` mode.
+- FCA-20260528-376 added `.env.*` / `.env/...` secret-path detection through the shared path-component helper, but the `tee` extraction fallback still inspected only the first `tee` output target.
+- Focused regressions used commands such as `printf token | tee reports/out.txt .env.local`, `printf token | tee -a reports/out.txt .env/token`, and `printf token | /usr/bin/tee reports/out.txt configs/.env.production/token`. Before the fix, all three returned no `secret_path_write` violation.
+
+Impact:
+
+- A model-visible shell command could write env secret material to a later `tee` target without receiving exec-policy warning metadata or being blocked when `runtime.exec_policy.mode=deny`.
+- The issue is limited to shell exec-policy classification. It does not change direct `write_file` / `edit_file` path checks, workspace reads, Web Workspace rendering, provider replay, session/report content, or runtime workflow decisions.
+
+Changes:
+
+- Added `teeCommandPattern` to identify `tee` invocations, including absolute command paths.
+- Added `execPolicyTeeTargetsSecretPath` to inspect every non-option `tee` target via the existing `execPolicyTargetSecretPath` helper.
+- Added focused coverage for later `tee` env-secret targets and for allowed later `tee` env template targets.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets -count=1`: failed before the fix because later `.env.*` / `.env/...` `tee` targets returned no `secret_path_write` violation.
+- `go test -timeout 120s ./internal/tools -run 'TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets|TestExecPolicyAllowsEnvTemplateLaterTeeTargets|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyAllowsEnvTemplateWrites' -count=1`: passed.
+- `gofmt -l internal/tools/exec_policy.go internal/tools/exec_policy_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/{app,session-view,workspace-view,events,settings-view,utils,api,icons}.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-377
 

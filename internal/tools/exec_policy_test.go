@@ -59,11 +59,41 @@ func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 	}
 }
 
+func TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets(t *testing.T) {
+	for _, command := range []string{
+		"printf token | tee reports/out.txt .env.local",
+		"printf token | tee -a reports/out.txt .env/token",
+		"printf token | /usr/bin/tee reports/out.txt configs/.env.production/token",
+	} {
+		t.Run(command, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(command)
+			if !hasExecPolicyCategory(violations, "secret_path_write") {
+				t.Fatalf("expected secret path write violation for %q, got %#v", command, violations)
+			}
+		})
+	}
+}
+
 func TestExecPolicyAllowsEnvTemplateWrites(t *testing.T) {
 	for _, command := range []string{
 		"echo token > .env.example",
 		"echo token > .env.sample",
 		"echo token > .env.template",
+	} {
+		t.Run(command, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(command)
+			if hasExecPolicyCategory(violations, "secret_path_write") {
+				t.Fatalf("expected env template write to be allowed for %q, got %#v", command, violations)
+			}
+		})
+	}
+}
+
+func TestExecPolicyAllowsEnvTemplateLaterTeeTargets(t *testing.T) {
+	for _, command := range []string{
+		"printf token | tee reports/out.txt .env.example",
+		"printf token | tee reports/out.txt .env.sample",
+		"printf token | tee reports/out.txt .env.template",
 	} {
 		t.Run(command, func(t *testing.T) {
 			violations := DetectExecPolicyViolations(command)

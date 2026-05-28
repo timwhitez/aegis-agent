@@ -20,6 +20,7 @@ var (
 	rmRfRootPattern            = regexp.MustCompile(commandNamePrefix + `rm(?:"|')?\s+(?:-[^\s;&|]*[rR][^\s;&|]*[fF][^\s;&|]*|-[^\s;&|]*[fF][^\s;&|]*[rR][^\s;&|]*)\s+(?:/|/\*)($|[\s;&|])`)
 	secretPathWritePattern     = regexp.MustCompile(`(?i)(?:^|[\s;&|])(?:\d*>>?|\d*>\|?|tee(?:\s+-a)?)\s*[^\n;&|]*(\.env|\.ssh/[^\s;&|]*|\.aws/credentials|\.azure/[^\s;&|]*|\.oci/[^\s;&|]*|\.config/gcloud/[^\s;&|]*|\.gnupg/[^\s;&|]*|\.kube/config|\.docker/config\.json|identity|id_[^\s;&|]*|[^\s;&|]*private[_-]key[^\s;&|]*|[^\s;&|]*\.(?:pem|key|p12|pfx)|credentials(?:\.[^\s;&|]*)?|[^\s;&|]*(?:_credentials|-credentials)\.json|[^\s;&|]*\.credentials)(?:$|[\s;&|])`)
 	shellWriteTargetPattern    = regexp.MustCompile(`(?i)(?:^|[\s;&|])(?:\d*>>?|\d*>\|?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)|(?:^|[\s;&|])tee(?:\s+-a)?\s+("[^"]+"|'[^']+'|[^\s;&|]+)`)
+	teeCommandPattern          = regexp.MustCompile(commandNamePrefix + `tee(?:"|')?((?:\s+[^;&|()\n]+)*)`)
 	networkEgressPattern       = regexp.MustCompile(commandNamePrefix + `(curl|wget|nc|ncat|telnet|ssh|scp|sftp)(?:"|')?(\s|$)`)
 )
 
@@ -64,8 +65,41 @@ func detectSecretPathWrite(command string) bool {
 	if secretPathWritePattern.MatchString(command) {
 		return true
 	}
+	if execPolicyTeeTargetsSecretPath(command) {
+		return true
+	}
 	for _, match := range shellWriteTargetPattern.FindAllStringSubmatch(command, -1) {
 		for _, target := range match[1:] {
+			if execPolicyTargetSecretPath(target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func execPolicyTeeTargetsSecretPath(command string) bool {
+	for _, match := range teeCommandPattern.FindAllStringSubmatch(command, -1) {
+		if len(match) == 0 {
+			continue
+		}
+		args := strings.Fields(match[len(match)-1])
+		stopOptions := false
+		for _, arg := range args {
+			target := strings.TrimSpace(arg)
+			trimmedTarget := strings.Trim(target, `"'`)
+			if trimmedTarget == "" {
+				continue
+			}
+			if !stopOptions {
+				if trimmedTarget == "--" {
+					stopOptions = true
+					continue
+				}
+				if strings.HasPrefix(trimmedTarget, "-") {
+					continue
+				}
+			}
 			if execPolicyTargetSecretPath(target) {
 				return true
 			}
