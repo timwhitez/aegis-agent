@@ -1584,6 +1584,64 @@ test('stop completion does not update a newly selected session', async () => {
   });
 });
 
+test('child stop completion refreshes selected parent session', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  vm.runInContext(`
+    refreshCalls = [];
+    toastCalls = [];
+    queueSessionRefresh = function(delay) {
+      refreshCalls.push({ kind: 'session', delay, selected: state.sessionId });
+    };
+    queueOverviewRefresh = function(delay) {
+      refreshCalls.push({ kind: 'overview', delay, selected: state.sessionId });
+    };
+    showToast = function(message, tone) {
+      toastCalls.push({ message, tone });
+    };
+  `, appContext);
+
+  const stop = vm.runInContext(`
+    state.currentView = 'chat';
+    state.sessionId = 'parent_session_stop';
+    state.sessionBacked = true;
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Parent loaded', copy: '', tone: 'neutral' };
+    state.sessionDetail = {
+      metadata: { id: 'parent_session_stop' },
+      state: { status: 'awaiting_input' },
+      children: { sessions: [{ id: 'child_session_stop', status: 'running' }] },
+      messages: []
+    };
+    requestStopSession('child_session_stop');
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /child_session_stop\/stop/);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await stop;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    activityTitle: state.liveActivity.title,
+    stoppingChild: state.stoppingSessionIds.has('child_session_stop'),
+    refreshCalls,
+    toastCalls
+  })`, appContext)), {
+    selected: 'parent_session_stop',
+    activityTitle: 'Parent loaded',
+    stoppingChild: false,
+    refreshCalls: [
+      { kind: 'session', delay: 120, selected: 'parent_session_stop' },
+      { kind: 'overview', delay: 180, selected: 'parent_session_stop' }
+    ],
+    toastCalls: [
+      { message: 'Stop requested.', tone: 'success' }
+    ]
+  });
+});
+
 test('loadWorkspaceDirectory ignores stale directory responses after navigation changes', async () => {
   const workspaceContext = createWorkspaceHarnessContext();
   const slowLoad = vm.runInContext(`loadWorkspaceDirectory('slow')`, workspaceContext);

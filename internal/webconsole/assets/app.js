@@ -1149,6 +1149,12 @@ async function requestStopSession(sessionID, options = {}) {
   if (isStoppingSession(sessionID)) {
     return;
   }
+  const selectedSessionID = state.sessionId || '';
+  const refreshSelectedSession = state.currentView === 'chat' &&
+    selectedSessionID &&
+    selectedSessionID !== sessionID &&
+    currentSessionReferencesSession(sessionID);
+  const selectedContextStillCurrent = () => state.sessionId === selectedSessionID && hasDurableSession();
   state.stoppingSessionIds.add(sessionID);
   const button = options.button || null;
   if (button) {
@@ -1167,12 +1173,18 @@ async function requestStopSession(sessionID, options = {}) {
       showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
       queueSessionRefresh(120);
       queueOverviewRefresh(180);
+    } else if (refreshSelectedSession && selectedContextStillCurrent()) {
+      showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
+      queueSessionRefresh(120);
+      queueOverviewRefresh(180);
     }
     if (state.currentView === 'history') {
       await fetchHistory(state.historyPage, { showLoading: false, silentError: true });
     }
   } catch (err) {
     if (state.sessionId === sessionID) {
+      showToast(err.message || 'Failed to stop the session.', 'error');
+    } else if (refreshSelectedSession && selectedContextStillCurrent()) {
       showToast(err.message || 'Failed to stop the session.', 'error');
     }
   } finally {
@@ -1183,7 +1195,7 @@ async function requestStopSession(sessionID, options = {}) {
     if (state.currentView === 'history') {
       renderHistory();
     }
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID || (refreshSelectedSession && selectedContextStillCurrent())) {
       renderCurrentSession();
     }
   }
@@ -1991,6 +2003,27 @@ async function refreshSelectedQueueJobDetail(jobs = queueJobItems()) {
 
 function isStoppingSession(sessionID) {
   return state.stoppingSessionIds.has(sessionID);
+}
+
+function currentSessionReferencesSession(sessionID) {
+  if (!sessionID) {
+    return false;
+  }
+  const detail = state.sessionDetail || {};
+  if (detail.metadata?.id === sessionID) {
+    return true;
+  }
+  const children = detail.children || {};
+  if (maybeArray(children.sessions).some((item) => item?.id === sessionID)) {
+    return true;
+  }
+  if (maybeArray(children.jobs).some((item) => item?.session_id === sessionID)) {
+    return true;
+  }
+  if (maybeArray(detail.background_notifications).some((item) => item?.session_id === sessionID)) {
+    return true;
+  }
+  return state.selectedQueueJobDetail?.session_id === sessionID;
 }
 
 function sessionActivityForState(sessionState = {}) {

@@ -7962,6 +7962,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-270 / `fix(webconsole): ignore stale workspace responses`. That earlier slice guarded stale directory/file response bodies; this slice covers the remaining click-handler path that still updated `selectedTreePath` after a stale `loadFile()` returned without applying content.
 - Confirmed the minimal fix belongs in `workspace-view.js`: make `loadFile()` report whether its response/error belonged to the latest Workspace selection, and only update the active tree selection when that report is true. This keeps backend Workspace path policy, runtime file tools, and Web session state authority unchanged.
 
+### Review 313
+
+- Confirmed FCA-20260528-320 against `spec/17-web-console.md`: child sessions and queue-linked child facts are shown inside the selected parent session's Background/Children inspector, and object-level controls from that inspector must refresh the selected parent projection after the backend accepts the control action.
+- Confirmed this is distinct from FCA-20260528-279. That slice prevented slow top-bar stop completions for session A from updating a newly selected session B; this slice covers the inline child Stop button while the parent session remains selected and should refresh its child/background facts.
+- Confirmed the minimal fix belongs in `app.js`: detect when the current selected session references the stopped child, then toast and refresh the current parent session only if that selected context is still current after the async stop request resolves. This preserves backend stop/steer semantics and avoids making the browser a second child-session state source.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10139,6 +10145,46 @@ Validation:
 - `git diff --check`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-320
+
+Slice: `fix(webconsole): refresh parent after child stop`
+
+Finding:
+
+- Inline child Stop buttons in the parent Background/Children inspector call `requestStopSession(childID)`.
+- `requestStopSession()` only showed success, queued a session refresh, and re-rendered when `state.sessionId === childID`.
+- When the selected session was the parent, a successful child stop returned with no toast and no parent session refresh, even though the selected parent detail contained the child/background facts that needed to update.
+
+Impact:
+
+- Operators could click Stop on a running child from the parent inspector and see no visible acknowledgement or refreshed child state until a later unrelated poll.
+- This weakened the Web-first Background inspector as a projection of local session/queue facts, while the backend stop action itself could already be accepted.
+- This was a frontend refresh/feedback issue only; backend stop, interrupt-steer fallback, queue, child session, and runtime control semantics were not changed.
+
+Changes:
+
+- Added `currentSessionReferencesSession()` to recognize selected-session references through child sessions, child jobs, background notifications, selected queue job details, or the current session itself.
+- Changed `requestStopSession()` so child-stop success/error paths toast and refresh the selected parent session when the selected parent still references the child after the async stop request resolves.
+- Preserved the prior stale-completion guard: if the operator switches to another session before stop completion, no new session state is polluted.
+- Added a focused frontend regression proving child Stop refreshes the selected parent session and overview after successful backend acceptance.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `child stop completion refreshes selected parent session` saw no parent refresh calls and no success toast after the child stop request resolved.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
 - `node --check internal/webconsole/assets/settings-view.js`: passed.
