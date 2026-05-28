@@ -3362,6 +3362,9 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 	if strings.TrimSpace(notification.CreatedAt) == "" {
 		return errors.New("background notification created_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, notification.CreatedAt); err != nil {
+		return fmt.Errorf("background notification created_at must be RFC3339Nano: %w", err)
+	}
 	switch notification.Source {
 	case "queue":
 	default:

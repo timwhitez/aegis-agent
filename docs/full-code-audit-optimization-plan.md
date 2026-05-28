@@ -8022,6 +8022,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-306. That slice added generic steer queue semantic validation for IDs, source, text, status, and duplicates; this slice covers the remaining timestamp-shape gap where non-empty non-RFC3339 `created_at` values were accepted on read and append.
 - Confirmed the minimal fix belongs in `SessionStore` steer request validation: parse `SteerRequest.CreatedAt` as RFC3339Nano in the existing generic steer validator, without changing queue-first scheduling, runtime steer acceptance order, Web steer controls, or event workflow rules.
 
+### Review 323
+
+- Confirmed FCA-20260528-330 against `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and the background-result completion/queue contracts: `control/background.jsonl` is the durable queue/child-result notification fact source used by background drain, parent completion coordination, Web detail, session summaries, and long-run checkpoints.
+- Confirmed this is distinct from FCA-20260528-307. That slice added generic background notification semantic validation for IDs, source, queue/job/session status, delivery status, duplicate queue jobs, and visible paths; this slice covers the remaining timestamp-shape gap where a non-empty but non-RFC3339 `created_at` value was accepted on read and append.
+- Confirmed the minimal fix belongs in `SessionStore` background notification validation: parse `BackgroundNotification.CreatedAt` as RFC3339Nano in the existing generic background validator, without changing queue scheduling, background drain ordering, Web controls, or parent coordination semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10546,6 +10552,47 @@ Validation:
 
 - Pre-fix focused verification failed as expected: `TestLoadSteerRequestsRejectsMalformedSnapshot` loaded an invalid steer timestamp without error, and `TestSteerRequestWritesRejectMalformedRequests` appended one without error.
 - `go test -timeout 120s ./internal/session -run 'TestLoadSteerRequestsRejectsMalformedSnapshot|TestSteerRequestWritesRejectMalformedRequests' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-330
+
+Slice: `fix(session): validate background notification timestamps`
+
+Finding:
+
+- `validateBackgroundNotification()` required `BackgroundNotification.CreatedAt` to be non-empty but did not parse it.
+- `LoadBackgroundNotifications()` and `PendingBackgroundNotifications()` therefore accepted an existing `control/background.jsonl` record with `created_at:"not-a-time"`.
+- `AppendBackgroundNotification()` could also persist a malformed background notification timestamp as long as the notification id, queue job id, statuses, and visible paths were otherwise valid.
+
+Impact:
+
+- `control/background.jsonl` is the durable queue/child-result notification fact source used by background drain, parent completion coordination, Web detail, session summaries, and long-run checkpoints.
+- Accepting arbitrary timestamp strings let parent/background views and recovery paths treat malformed chronological queue-result notifications as valid durable facts.
+- This was a store-boundary validation gap only; it did not change queue scheduling, background drain ordering, Web controls, parent coordination semantics, or queue worker behavior.
+
+Changes:
+
+- Added RFC3339Nano parsing for background notification `created_at` through the existing generic background notification validator.
+- Extended background notification store regressions to cover invalid timestamp load, pending-background load, and append paths while preserving existing ID, queue job, delivery status, visible path, duplicate queue job, and durable queue preservation coverage.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLoadBackgroundNotificationsRejectsMalformedSnapshot` loaded an invalid background notification timestamp without error, and `TestBackgroundNotificationWritesRejectMalformedFacts` appended one without error.
+- `go test -timeout 120s ./internal/session -run 'TestLoadBackgroundNotificationsRejectsMalformedSnapshot|TestBackgroundNotificationWritesRejectMalformedFacts' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
 - `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.

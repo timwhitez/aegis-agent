@@ -3264,6 +3264,17 @@ func TestLoadBackgroundNotificationsRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.PendingBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") {
 		t.Fatalf("expected pending background load to reject malformed background.jsonl, got %v", err)
 	}
+
+	invalidCreatedAt := malformed
+	invalidCreatedAt.ID = "background_bad_time"
+	invalidCreatedAt.QueueJobID = "job_background_bad_time"
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{invalidCreatedAt}); err != nil {
+		t.Fatalf("write invalid-time background queue: %v", err)
+	}
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid background notification timestamp validation error, got %v", err)
+	}
 }
 
 func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
@@ -3291,6 +3302,16 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 	})
 	if err := store.AppendBackgroundNotification(meta.ID, blankQueueJob); err == nil || !strings.Contains(err.Error(), "background notification queue_job_id is required") {
 		t.Fatalf("expected append to reject missing queue job id, got %v", err)
+	}
+	invalidCreatedAt := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_bad_time",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_bad_time",
+		SessionStatus: StatusCompleted,
+	})
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.AppendBackgroundNotification(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected append to reject invalid background timestamp, got %v", err)
 	}
 
 	valid := NewBackgroundNotification(QueueJob{
