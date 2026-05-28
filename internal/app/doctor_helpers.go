@@ -397,6 +397,7 @@ func doctorSessionCoreFileIssues(sessionRoot string) ([]map[string]any, []map[st
 	}
 	var missingOut []map[string]any
 	var unreadableOut []map[string]any
+	store := session.NewStore(sessionRoot)
 	for _, entry := range entries {
 		if !entry.IsDir() || entry.Name() == "_queue" {
 			continue
@@ -443,6 +444,14 @@ func doctorSessionCoreFileIssues(sessionRoot string) ([]map[string]any, []map[st
 				continue
 			}
 			_ = file.Close()
+			if err := doctorValidateSessionCoreFile(store, sessionID, name); err != nil {
+				unreadableOut = append(unreadableOut, map[string]any{
+					"session_id": sessionID,
+					"file":       name,
+					"path":       path,
+					"error":      err.Error(),
+				})
+			}
 		}
 		if len(missing) > 0 {
 			missingOut = append(missingOut, map[string]any{
@@ -452,6 +461,22 @@ func doctorSessionCoreFileIssues(sessionRoot string) ([]map[string]any, []map[st
 		}
 	}
 	return missingOut, unreadableOut, nil
+}
+
+func doctorValidateSessionCoreFile(store *session.Store, sessionID, name string) error {
+	switch name {
+	case "session.json":
+		_, err := store.LoadMetadata(sessionID)
+		return err
+	case "state.json":
+		_, err := store.LoadState(sessionID)
+		return err
+	case "messages.jsonl":
+		_, err := store.LoadMessages(sessionID)
+		return err
+	default:
+		return nil
+	}
 }
 
 type doctorQueueJobRecord struct {

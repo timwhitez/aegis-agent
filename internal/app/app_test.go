@@ -1821,6 +1821,60 @@ func TestDoctorReportsUnsafeSessionCoreFiles(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsInvalidSessionCoreFacts(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "session_invalid_core")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	metadata := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_invalid_core",
+		CreatedAt:        "not-a-time",
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "session.json"), data, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		UpdatedAt: "2026-05-28T00:00:00Z",
+	}
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "state.json"), data, 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "messages.jsonl"), nil, 0o600); err != nil {
+		t.Fatalf("write messages: %v", err)
+	}
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	unreadable, ok := check.Details["unreadable_session_files"].([]map[string]any)
+	if !ok || len(unreadable) != 1 {
+		t.Fatalf("expected unreadable session file, got %#v", check.Details["unreadable_session_files"])
+	}
+	if unreadable[0]["session_id"] != "session_invalid_core" || unreadable[0]["file"] != "session.json" {
+		t.Fatalf("unexpected unreadable session detail: %#v", unreadable[0])
+	}
+	if !strings.Contains(fmt.Sprint(unreadable[0]["error"]), "created_at") {
+		t.Fatalf("expected created_at validation error, got %#v", unreadable[0])
+	}
+}
+
 func TestDoctorReportsDuplicateQueueJobStatus(t *testing.T) {
 	root := t.TempDir()
 	job := session.QueueJob{ID: "job_duplicate", Status: session.QueueStatusQueued, Prompt: "hi", Mode: session.ModeExec}

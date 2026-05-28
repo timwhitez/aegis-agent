@@ -8142,6 +8142,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-146 and FCA-20260528-348. FCA-146 covered corrupt `state.json` after readable metadata, while FCA-348 covered selected-session detail facts in TUI; this slice covers the remaining root-list gap where a present but corrupt `session.json` made the whole session directory look like a non-session directory.
 - Confirmed the minimal fix belongs in shared `Store.listAllSessions` and `Store.ListChildren`: continue ignoring non-session directories such as `_queue`, but report unreadable or invalid metadata when a `session.json` file exists.
 
+### Review 343
+
+- Confirmed FCA-20260528-350 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `doctor` is a Web-first v1 fallback and recovery surface, and `session.partial_state` must diagnose the same local session facts that runtime, Web, CLI, TUI, and SDK/store callers use as authority.
+- Confirmed this is distinct from FCA-20260528-323 and FCA-20260528-349. FCA-323 covered symlinked, non-regular, unopenable, and missing core files; FCA-349 covered shared store list behavior when `session.json` is corrupt. This slice covers the remaining doctor-only gap where syntactically readable but semantically invalid `session.json`, `state.json`, or `messages.jsonl` facts were reported as healthy partial state.
+- Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: after the existing Lstat/no-symlink/open checks pass, reuse `SessionStore.LoadMetadata`, `LoadState`, and `LoadMessages` for semantic validation, without duplicating store rules, introducing Web state authority, changing provider replay, or adding runtime workflow behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11338,6 +11344,49 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
 - `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-350
+
+Slice: `fix(app): validate doctor core facts`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines `session.json`, `state.json`, and `messages.jsonl` as local session file facts, and `spec/09-phase-plan.md` includes `doctor` in the Web-first v1 provider/diagnostic validation surface.
+- FCA-20260528-323 made `doctor` report missing, symlinked, non-regular, and unopenable session core files, but `doctorSessionCoreFileIssues()` still stopped at filesystem openability and never reused the store's semantic validators.
+- A focused regression wrote a syntactically valid `session.json` with `created_at:"not-a-time"` plus valid `state.json` and `messages.jsonl`. Before the fix, `checkSessionPartialState()` returned `Status:"ok"` with `unreadable_session_files:0`.
+
+Impact:
+
+- `go-cli-agent doctor` could report `session.partial_state` as healthy while runtime, Web, CLI, TUI, and SDK/store callers would reject the same core session facts.
+- Operators using `doctor` for recovery could miss malformed metadata/state/message facts and misdiagnose a session as structurally sound even though the authoritative store could not load it.
+- This is a CLI fallback diagnostics fix only; it does not change session store validation rules, Web state authority, provider replay behavior, queue worker semantics, or runtime workflow policy.
+
+Changes:
+
+- Added `doctorValidateSessionCoreFile()` to validate readable `session.json`, `state.json`, and `messages.jsonl` through `SessionStore.LoadMetadata`, `LoadState`, and `LoadMessages`.
+- Kept the existing missing-file and unsafe-file checks before semantic validation, so symlinked, non-regular, unopenable, and absent files remain reported through the same details keys.
+- Added focused doctor coverage for semantically invalid session core facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestDoctorReportsInvalidSessionCoreFacts -count=1`: failed before the fix because `session.partial_state` returned `ok` for invalid `session.json`.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReportsInvalidSessionCoreFacts|TestDoctorReportsUnsafeSessionCoreFiles|TestDoctorReportsMissingSessionState' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReports(InvalidSessionCoreFacts|UnsafeSessionCoreFiles|MissingSessionState|QueueJobMissingParentSessionRef|QueueLeaseAndMissingSessionRef|BlockedQueueJobMissingSessionRef|DuplicateQueueJobStatus)' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/webconsole ./internal/tui -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/app/doctor_helpers.go internal/app/app_test.go`: passed with no output.
+- `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
