@@ -380,7 +380,13 @@ func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return []events.Event{}, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validateEvents(sessionID, out); err != nil {
+		return nil, fmt.Errorf("validate events.jsonl: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Store) LoadContract(sessionID string) (SessionContract, error) {
@@ -820,6 +826,9 @@ func (s *Store) WriteSessionMarkdown(sessionID string, content string) error {
 }
 
 func (s *Store) AppendEvent(sessionID string, event events.Event) error {
+	if err := validateEvents(sessionID, []events.Event{event}); err != nil {
+		return fmt.Errorf("validate events.jsonl: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "events.jsonl")
@@ -836,6 +845,9 @@ func (s *Store) AppendEvents(sessionID string, items []events.Event) error {
 	if len(items) == 0 {
 		return nil
 	}
+	if err := validateEvents(sessionID, items); err != nil {
+		return fmt.Errorf("validate events.jsonl: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "events.jsonl")
@@ -849,6 +861,9 @@ func (s *Store) AppendEvents(sessionID string, items []events.Event) error {
 		}
 	}
 	existing = append(existing, items...)
+	if err := validateEvents(sessionID, existing); err != nil {
+		return fmt.Errorf("validate events.jsonl: %w", err)
+	}
 	if err := s.writeEventsJSONL(path, existing); err != nil {
 		return fmt.Errorf("append events %s: %w", path, err)
 	}
@@ -3647,6 +3662,42 @@ func validateProviderContentBlocks(blocks []ProviderContentBlock) error {
 		if len(bytes.TrimSpace(block.Args)) > 0 && !json.Valid(block.Args) {
 			return fmt.Errorf("provider_content_block %d args must be valid JSON", position)
 		}
+	}
+	return nil
+}
+
+func validateEvents(sessionID string, items []events.Event) error {
+	seen := map[string]struct{}{}
+	for i, item := range items {
+		if err := validateEvent(sessionID, item); err != nil {
+			return fmt.Errorf("event %d: %w", i+1, err)
+		}
+		if _, exists := seen[item.ID]; exists {
+			return fmt.Errorf("duplicate event id: %s", item.ID)
+		}
+		seen[item.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateEvent(sessionID string, item events.Event) error {
+	if err := validateStoreID("event", item.ID); err != nil {
+		return err
+	}
+	if err := validateStoreID("event session", item.SessionID); err != nil {
+		return err
+	}
+	if item.SessionID != sessionID {
+		return fmt.Errorf("event session_id %q does not match session %q", item.SessionID, sessionID)
+	}
+	if strings.TrimSpace(item.Type) == "" {
+		return errors.New("event type is required")
+	}
+	if strings.TrimSpace(item.Time) == "" {
+		return errors.New("event time is required")
+	}
+	if strings.TrimSpace(item.Phase) == "" {
+		return errors.New("event phase is required")
 	}
 	return nil
 }

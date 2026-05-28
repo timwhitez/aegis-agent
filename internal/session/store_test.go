@@ -131,6 +131,76 @@ func TestStoreAppendEventsAppendsBatchAtomically(t *testing.T) {
 	}
 }
 
+func TestLoadEventsRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	malformed := events.New(meta.ID, "bad.event", "test", nil)
+	malformed.SessionID = NewSessionID()
+	path := filepath.Join(store.SessionDir(meta.ID), "events.jsonl")
+	if err := store.writeEventsJSONL(path, []events.Event{malformed}); err != nil {
+		t.Fatalf("write malformed events: %v", err)
+	}
+	if _, err := store.LoadEvents(meta.ID); err == nil || !strings.Contains(err.Error(), "validate events.jsonl") || !strings.Contains(err.Error(), "does not match session") {
+		t.Fatalf("expected malformed events validation error, got %v", err)
+	}
+}
+
+func TestEventWritesRejectMalformedFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := events.New(meta.ID, "valid.event", "test", nil)
+	if err := store.AppendEvent(meta.ID, valid); err != nil {
+		t.Fatalf("append valid event: %v", err)
+	}
+
+	blankType := events.New(meta.ID, "invalid.event", "test", nil)
+	blankType.Type = " "
+	if err := store.AppendEvent(meta.ID, blankType); err == nil || !strings.Contains(err.Error(), "validate events.jsonl") || !strings.Contains(err.Error(), "type is required") {
+		t.Fatalf("expected blank type append rejection, got %v", err)
+	}
+	mismatchedSession := events.New(meta.ID, "other.event", "test", nil)
+	mismatchedSession.SessionID = NewSessionID()
+	if err := store.AppendEvents(meta.ID, []events.Event{mismatchedSession}); err == nil || !strings.Contains(err.Error(), "does not match session") {
+		t.Fatalf("expected mismatched session batch rejection, got %v", err)
+	}
+	loaded, err := store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != valid.ID {
+		t.Fatalf("malformed event writes changed durable log: %#v", loaded)
+	}
+}
+
 func TestStoreAppendMessageRejectsSymlinkJSONL(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

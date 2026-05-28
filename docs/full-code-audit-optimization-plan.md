@@ -7914,6 +7914,12 @@ Evidence gates:
 - Confirmed this is distinct from prior corrupt/oversized/symlink JSONL hardening. Those rejected unreadable or unsafe files; this slice covers semantically malformed but syntactically valid message records and direct malformed append/transcript writes.
 - Confirmed the minimal fix belongs in `SessionStore` message read/write APIs: validate message IDs, roles, timestamps, role-specific payload shape, assistant tool calls, tool result names, and provider-content block basics without adding provider-specific replay policy to Web, CLI, or tool layers.
 
+### Review 305
+
+- Confirmed FCA-20260528-312 against `spec/01-runtime-architecture.md`, `spec/13-live-input-and-steering.md`, and `spec/18-durable-contract-and-completion.md`: `events.jsonl` is the durable timeline/audit fact source used by Web detail, session summaries, checkpoints, owner clues, live steer/control evidence, queue reconciliation, and completion diagnostics.
+- Confirmed this is distinct from prior event append atomicity and append-error propagation slices. Those made event writes fail coherently; this slice covers syntactically valid but semantically invalid event records and malformed append batches.
+- Confirmed the minimal fix belongs in `SessionStore` event read/write APIs: validate event IDs, session identity, type, time, phase, duplicate IDs, and append-batch consistency while preserving existing runtime event names and not adding event-type-specific workflow policy.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7975,6 +7981,54 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-312
+
+Slice: `fix(session): validate event log facts`
+
+Finding:
+
+- `LoadEvents` decoded `events.jsonl` without semantic validation.
+- `AppendEvent` and `AppendEvents` accepted malformed event facts with blank types, mismatched session IDs, or duplicate IDs in the durable event log.
+- Web detail, session summaries, checkpoint owner clues, live steer/control evidence, completion diagnostics, and queue reconciliation all consume `events.jsonl` as timeline/audit facts.
+
+Impact:
+
+- A mismatched event `session_id` could make session detail, summaries, or checkpoint owner clues interpret another session's timeline as local state.
+- Blank event types or phases could make audit records unsearchable and weaken failure diagnostics.
+- Duplicate or malformed event batches could make timeline-derived views ambiguous after append.
+
+Changes:
+
+- Added event validation for valid event IDs, matching valid session IDs, nonblank event types, nonblank timestamps, nonblank phases, and duplicate event IDs.
+- Routed `LoadEvents`, `AppendEvent`, and `AppendEvents` through event validation.
+- Kept validation generic: no event-type-specific policy, no hardcoded workflow rules, and no changes to runtime event production.
+- Added focused regressions for malformed loaded events, invalid single-event appends, mismatched batch appends, append batch atomicity, and durable log preservation after rejected writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadEventsRejectsMalformedSnapshot|TestEventWritesRejectMalformedFacts' -count=1`: failed before the fix because malformed event facts loaded/appended successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLoadEventsRejectsMalformedSnapshot|TestEventWritesRejectMalformedFacts|TestStoreAppendEventsAppendsBatchAtomically' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 45 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-311
 
