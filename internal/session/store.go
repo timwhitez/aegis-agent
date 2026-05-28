@@ -2534,7 +2534,7 @@ func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
 
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	originalStatus := job.Status
-	meta, state, messages, ok, err := s.findSessionForQueueJob(job.ID)
+	meta, state, messages, ok, err := s.findSessionForQueueJob(job)
 	if err != nil {
 		return job, false, err
 	}
@@ -2839,7 +2839,26 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func (s *Store) findSessionForQueueJob(jobID string) (SessionMetadata, State, []Message, bool, error) {
+func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, []Message, bool, error) {
+	jobID := strings.TrimSpace(job.ID)
+	if linkedSessionID := strings.TrimSpace(job.SessionID); linkedSessionID != "" {
+		meta, err := s.LoadMetadata(linkedSessionID)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, fs.ErrNotExist) {
+				return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s session.json: %w", linkedSessionID, err)
+			}
+		} else if meta.QueueJobID == jobID {
+			state, err := s.LoadState(meta.ID)
+			if err != nil {
+				return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s state.json: %w", meta.ID, err)
+			}
+			messages, err := s.LoadMessages(meta.ID)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s messages.jsonl: %w", meta.ID, err)
+			}
+			return meta, state, messages, true, nil
+		}
+	}
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

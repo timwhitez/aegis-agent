@@ -5402,9 +5402,11 @@ func TestReconcileStaleLinkedRunningJobFailsSession(t *testing.T) {
 
 func TestLoadJobReportsCorruptLinkedSessionFacts(t *testing.T) {
 	cases := []struct {
-		name string
-		file string
+		name          string
+		file          string
+		persistJobSID bool
 	}{
+		{name: "metadata", file: "session.json", persistJobSID: true},
 		{name: "state", file: "state.json"},
 		{name: "messages", file: "messages.jsonl"},
 	}
@@ -5445,6 +5447,9 @@ func TestLoadJobReportsCorruptLinkedSessionFacts(t *testing.T) {
 				Prompt:          "stale",
 				Mode:            ModeExec,
 				Background:      true,
+			}
+			if tc.persistJobSID {
+				job.SessionID = childMeta.ID
 			}
 			if err := store.SaveJob(job); err != nil {
 				t.Fatalf("save stale running job: %v", err)
