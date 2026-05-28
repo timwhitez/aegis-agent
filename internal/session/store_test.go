@@ -2884,6 +2884,16 @@ func TestLoadSteerRequestsRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.RefreshPendingSteerCount(meta.ID); err == nil || !strings.Contains(err.Error(), "validate steer.jsonl") {
 		t.Fatalf("expected pending count refresh to reject malformed steer.jsonl, got %v", err)
 	}
+
+	invalidCreatedAt := malformed
+	invalidCreatedAt.ID = "steer_bad_time"
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.writeJSONL(steerPath, []SteerRequest{invalidCreatedAt}); err != nil {
+		t.Fatalf("write invalid-time steer queue: %v", err)
+	}
+	if _, err := store.LoadSteerRequests(meta.ID); err == nil || !strings.Contains(err.Error(), "validate steer.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid steer timestamp validation error, got %v", err)
+	}
 }
 
 func TestSteerRequestWritesRejectMalformedRequests(t *testing.T) {
@@ -2907,6 +2917,11 @@ func TestSteerRequestWritesRejectMalformedRequests(t *testing.T) {
 	blankText := NewSteerRequest("   ", false)
 	if err := store.AppendSteerRequest(meta.ID, blankText); err == nil || !strings.Contains(err.Error(), "steer request text is required") {
 		t.Fatalf("expected append to reject blank steer text, got %v", err)
+	}
+	invalidCreatedAt := NewSteerRequest("bad time", false)
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.AppendSteerRequest(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected append to reject invalid steer timestamp, got %v", err)
 	}
 
 	valid := NewSteerRequest("focus on tests", false)

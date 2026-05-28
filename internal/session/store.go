@@ -3316,6 +3316,9 @@ func validateSteerRequest(request SteerRequest) error {
 	if strings.TrimSpace(request.CreatedAt) == "" {
 		return errors.New("steer request created_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err != nil {
+		return fmt.Errorf("steer request created_at must be RFC3339Nano: %w", err)
+	}
 	switch request.Source {
 	case "cli", "web":
 	default:

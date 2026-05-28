@@ -8016,6 +8016,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-327. That slice hardened `events.jsonl` timestamps; this slice covers the remaining message-log timestamp gap where non-empty non-RFC3339 `created_at` values were accepted on load and append.
 - Confirmed the minimal fix belongs in `SessionStore` message validation: parse `Message.CreatedAt` as RFC3339Nano in the existing generic message validator, without changing provider adapters, runtime message production, Web rendering, or role/tool-call workflow rules.
 
+### Review 322
+
+- Confirmed FCA-20260528-329 against `spec/01-runtime-architecture.md`, `spec/13-live-input-and-steering.md`, and `spec/17-web-console.md`: `control/steer.jsonl` is the durable cross-process live-input queue shared by CLI and Web, and its records drive pending-count refresh, interrupt deferral, acceptance, recovery, and Web session detail.
+- Confirmed this is distinct from FCA-20260528-306. That slice added generic steer queue semantic validation for IDs, source, text, status, and duplicates; this slice covers the remaining timestamp-shape gap where non-empty non-RFC3339 `created_at` values were accepted on read and append.
+- Confirmed the minimal fix belongs in `SessionStore` steer request validation: parse `SteerRequest.CreatedAt` as RFC3339Nano in the existing generic steer validator, without changing queue-first scheduling, runtime steer acceptance order, Web steer controls, or event workflow rules.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10499,6 +10505,47 @@ Validation:
 
 - Pre-fix focused verification failed as expected: `TestLoadMessagesRejectsMalformedSnapshot` loaded an invalid message timestamp without error, and `TestMessageWritesRejectMalformedFacts` appended one without error.
 - `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-329
+
+Slice: `fix(session): validate steer request timestamps`
+
+Finding:
+
+- `validateSteerRequest()` required `SteerRequest.CreatedAt` to be non-empty but did not parse it.
+- `LoadSteerRequests()` and `RefreshPendingSteerCount()` therefore accepted an existing `control/steer.jsonl` record with `created_at:"not-a-time"`.
+- `AppendSteerRequest()` could also persist a malformed steer timestamp as long as the steer id, source, text, and status were otherwise valid.
+
+Impact:
+
+- `control/steer.jsonl` is the durable cross-process live-input queue shared by CLI and Web, and it drives pending-count refresh, interrupt deferral, safe-boundary acceptance, recovery, Web session detail, and session summaries.
+- Accepting arbitrary timestamp strings let operator-facing views and recovery paths treat malformed chronological live-input facts as valid queued steer records.
+- This was a store-boundary validation gap only; it did not change queue-first steer scheduling, runtime acceptance order, Web steer controls, or event workflow rules.
+
+Changes:
+
+- Added RFC3339Nano parsing for steer request `created_at` through the existing generic steer request validator.
+- Extended steer queue store regressions to cover invalid timestamp load, pending-count refresh, and append paths while preserving existing ID, source/text/status, duplicate ID, and durable queue preservation coverage.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLoadSteerRequestsRejectsMalformedSnapshot` loaded an invalid steer timestamp without error, and `TestSteerRequestWritesRejectMalformedRequests` appended one without error.
+- `go test -timeout 120s ./internal/session -run 'TestLoadSteerRequestsRejectsMalformedSnapshot|TestSteerRequestWritesRejectMalformedRequests' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
 - `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
