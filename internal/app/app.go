@@ -630,7 +630,15 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		return fmt.Errorf("goal %s requires <session-id>", subcommand)
 	}
 	sessionID := fs.Arg(0)
-	cwd, _ := os.Getwd()
+	switch subcommand {
+	case "show", "pause", "resume", "complete", "clear":
+	default:
+		return fmt.Errorf("unknown goal subcommand: %s", subcommand)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, _, err := storeRunnerLoader(*configPath, cwd)
 	if err != nil {
 		return err
@@ -699,9 +707,8 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		}
 		_, _ = fmt.Fprintf(stdout, "goal cleared: %t\n", cleared)
 		return nil
-	default:
-		return fmt.Errorf("unknown goal subcommand: %s", subcommand)
 	}
+	return nil
 }
 
 func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -723,9 +730,12 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return fmt.Errorf("goal plan %s requires <session-id>", subcommand)
 	}
 	sessionID := fs.Arg(0)
-	cwd, _ := os.Getwd()
 	switch subcommand {
 	case "show":
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
 		runner, _, err := storeRunnerLoader(*configPath, cwd)
 		if err != nil {
 			return err
@@ -740,6 +750,10 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		printMissionPlan(stdout, goal)
 		return nil
 	case "check":
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
 		runner, _, err := storeRunnerLoader(*configPath, cwd)
 		if err != nil {
 			return err
@@ -755,14 +769,17 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		printMissionCoverage(stdout, coverage)
 		return nil
 	case "approve":
-		return goalPlanApproveCommand(ctx, sessionID, *configPath, *jsonMode, *overrideCoverage, stdout)
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return goalPlanApproveCommand(ctx, sessionID, *configPath, cwd, *jsonMode, *overrideCoverage, stdout)
 	default:
 		return fmt.Errorf("unknown goal plan subcommand: %s", subcommand)
 	}
 }
 
-func goalPlanApproveCommand(ctx context.Context, sessionID, configPath string, jsonMode bool, overrideCoverage bool, stdout io.Writer) error {
-	cwd, _ := os.Getwd()
+func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd string, jsonMode bool, overrideCoverage bool, stdout io.Writer) error {
 	storeRunner, _, err := storeRunnerLoader(configPath, cwd)
 	if err != nil {
 		return err
@@ -902,7 +919,10 @@ func goalValidationCommand(args []string, stdout, stderr io.Writer) error {
 	if subcommand != "show" {
 		return fmt.Errorf("unknown goal validation subcommand: %s", subcommand)
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, _, err := storeRunnerLoader(*configPath, cwd)
 	if err != nil {
 		return err
@@ -1113,7 +1133,10 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() < 1 {
 		return fmt.Errorf("tasks requires <session-id>")
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, _, err := runnerLoader(*configPath, cwd)
 	if err != nil {
 		return err
@@ -1167,7 +1190,10 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, cfg, err := runnerLoader(*configPath, cwd)
 	if err != nil {
 		return err
@@ -1409,7 +1435,10 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return err
 	}
 
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, cfg, err := runnerLoader(*configPath, cwd)
 	if err != nil {
 		return err

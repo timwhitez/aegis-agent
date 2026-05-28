@@ -407,6 +407,88 @@ func TestControlCommandsReportMissingCurrentDirectoryBeforeLoadingRunner(t *test
 	}
 }
 
+func TestFallbackCommandsReportMissingCurrentDirectoryBeforeLoadingRunner(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := testAppSessionMetadata(t, "session_cli_fallback_missing_cwd")
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: meta.CreatedAt}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:        true,
+		Mode:           session.GoalModeMission,
+		Objective:      "Audit fallback commands",
+		ValidationPlan: []string{"go test ./internal/app"},
+		Features:       []string{"CLI fallback"},
+		Milestones:     []string{"Validation"},
+		Source:         session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.Features[0].ClaimedAssertions = []string{"validation_0001"}
+	goal.Mission.Milestones[0].ValidationIDs = []string{"validation_0001"}
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	missingWD := t.TempDir()
+	if err := os.Chdir(missingWD); err != nil {
+		t.Fatalf("chdir missing cwd seed: %v", err)
+	}
+	if err := os.Remove(missingWD); err != nil {
+		_ = os.Chdir(originalWD)
+		t.Fatalf("remove cwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	fake := newFakeRunner()
+	fake.store = store
+	fake.taskBoard = session.TaskBoard{Groups: map[string][]session.Task{}}
+	fake.probeResult = runtime.ProbeResult{Provider: "fake", Model: "fake-model", StopReason: "completed"}
+	restoreRunner := runnerLoader
+	restoreStoreRunner := storeRunnerLoader
+	runnerLoads := 0
+	storeRunnerLoads := 0
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		runnerLoads++
+		return fake, config.Default(), nil
+	}
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		storeRunnerLoads++
+		return fake, config.Default(), nil
+	}
+	defer func() {
+		runnerLoader = restoreRunner
+		storeRunnerLoader = restoreStoreRunner
+	}()
+
+	cases := [][]string{
+		{"goal", "show", meta.ID, "--json"},
+		{"goal", "plan", "show", meta.ID, "--json"},
+		{"goal", "plan", "check", meta.ID, "--json"},
+		{"goal", "plan", "approve", meta.ID, "--json"},
+		{"goal", "validation", "show", meta.ID, "--json"},
+		{"tasks", meta.ID, "--json"},
+		{"probe-provider", "--json", "--provider", "fake", "--model", "fake-model"},
+		{"doctor", "--skip-probe", "--json"},
+	}
+	for _, args := range cases {
+		err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "getwd") {
+			t.Fatalf("expected missing current directory error for %v, got %v", args, err)
+		}
+	}
+	if runnerLoads != 0 || storeRunnerLoads != 0 {
+		t.Fatalf("expected no runner loads after missing cwd, got runner=%d store=%d", runnerLoads, storeRunnerLoads)
+	}
+}
+
 func TestGoalCommandAcceptsFlagsAfterSessionID(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

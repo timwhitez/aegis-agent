@@ -8460,7 +8460,43 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-395 and FCA-20260529-396. Those slices covered WebConsole service startup and the repo-writing init bootstrap command. The residual issue is the already-existing CLI control/read fallback commands, which could continue with an empty cwd-derived runner context.
 - Confirmed the minimal fix belongs in `internal/app/app.go`: return `os.Getwd()` errors in `continueCommand`, `steerCommand`, and `sessionsCommand` before calling `runnerLoader`.
 
+### Review 386
+
+- Confirmed FCA-20260529-398 against `AGENTS.md`'s current default CLI fallback path, `spec/00-product.md`'s Goal / task / probe / doctor requirements, and `spec/01-runtime-architecture.md`'s session-store fact-source boundary: `goal`, `goal plan`, `goal validation`, `tasks`, `probe-provider`, and `doctor` all derive local config/session/provider checks from the invocation cwd and must not continue when that cwd cannot be resolved.
+- Confirmed this is distinct from FCA-20260529-395, FCA-20260529-396, and FCA-20260529-397. Those slices covered WebConsole startup, init bootstrap writes, and the live control/read trio `continue` / `steer` / `sessions`. The residual issue was the remaining default CLI fallback and diagnostics commands in `internal/app/app.go`, which still ignored `os.Getwd()` before runner construction.
+- Confirmed the minimal fix belongs in the CLI adapter only: return `os.Getwd()` errors in the affected command handlers before calling `storeRunnerLoader` or `runnerLoader`, while preserving normal successful parsing, rendering, provider probe, doctor, goal, and task-board behavior.
+
 ## Update Log
+
+### FCA-20260529-398
+
+Slice: `fix(cli): fail fast for missing cwd fallback commands`
+
+Finding:
+
+- `AGENTS.md` lists `goal`, `tasks`, `probe-provider`, and `doctor` in the current default `web` + CLI fallback path.
+- `spec/00-product.md` requires Goal / Plan Mode / Settings provider diagnostics and task visibility to share the local session and runtime facts used by Web.
+- `spec/01-runtime-architecture.md` keeps Web / CLI as adapters over the same local session store and provider/runtime boundaries; diagnostics must reflect the real local process cwd rather than a fabricated empty fallback.
+- `internal/app/app.go` ignored `os.Getwd()` in `goalCommand`, `goalPlanCommand`, `goalPlanApproveCommand`, `goalValidationCommand`, `tasksCommand`, `probeProviderCommand`, and `doctorCommand`, then constructed `storeRunnerLoader` or `runnerLoader` with an empty cwd.
+- A focused CLI regression deleted the invocation cwd and ran `goal show`, `goal plan show`, `goal plan check`, `goal plan approve`, `goal validation show`, `tasks`, `probe-provider`, and `doctor` with fake runners. Before the fix, `goal show` loaded the fake store and returned success instead of reporting the missing cwd.
+
+Impact:
+
+- CLI fallback Goal, task, provider probe, and doctor commands could read or mutate local facts from an invalid cwd-derived configuration context.
+- `goal plan approve` could approve mission/Plan Mode state without proving that the command resolved the same local file authority as the target session environment.
+- `doctor` could produce a misleading clean diagnostic report for the wrong fallback config/session root instead of surfacing the broken process cwd.
+
+Changes:
+
+- Updated the affected CLI command handlers to return `os.Getwd()` errors before runner/store construction.
+- Passed the already-validated cwd into `goalPlanApproveCommand` so approval does not re-read and swallow cwd failures.
+- Added `TestFallbackCommandsReportMissingCurrentDirectoryBeforeLoadingRunner`, covering all affected commands and asserting neither `runnerLoader` nor `storeRunnerLoader` is called after the cwd failure.
+- Preserved existing command parsing, JSON/text rendering, provider probe result shaping, doctor checks, and goal/task successful behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestFallbackCommandsReportMissingCurrentDirectoryBeforeLoadingRunner -count=1`: failed before the fix because `goal show` returned nil and loaded the fake store.
+- `go test -timeout 120s ./internal/app -run TestFallbackCommandsReportMissingCurrentDirectoryBeforeLoadingRunner -count=1`: passed after the fix.
 
 ### FCA-20260529-397
 
