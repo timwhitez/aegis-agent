@@ -588,6 +588,7 @@ function createWorkspaceHarnessContext() {
   vm.createContext(workspaceContext);
   vm.runInContext(utilsSource, workspaceContext, { filename: 'utils.js' });
   vm.runInContext(workspaceViewSource, workspaceContext, { filename: 'workspace-view.js' });
+  vm.runInContext(`delete state.workspaceRequestSeq; workspaceViewState.requestSeq = 0;`, workspaceContext);
   vm.runInContext(`
     const realRenderFileTree = renderFileTree;
     renderFileTree = function(tree, container, level) {
@@ -2376,11 +2377,13 @@ test('loadWorkspaceDirectory ignores stale directory responses after navigation 
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     path: state.workspacePath,
+    stateHasRequestSeq: Object.prototype.hasOwnProperty.call(state, 'workspaceRequestSeq'),
     renderedNames: state.renderedTree.map((node) => node.name),
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText
   })`, workspaceContext)), {
     path: 'fast',
+    stateHasRequestSeq: false,
     renderedNames: ['current.txt'],
     filename: 'Workspace / fast',
     content: 'Choose a file or directory to inspect inside the current server workspace.'

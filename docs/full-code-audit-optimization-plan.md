@@ -22396,6 +22396,45 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-111
+
+Slice: `fix(webconsole): isolate workspace request guard`
+
+Finding:
+
+- `workspace-view.js` used `state.workspaceRequestSeq` as the stale-response guard for Workspace directory navigation, file reads, and paged file preview continuation.
+- The request sequence is view-local browser request coordination, not a durable workspace fact, session-store fact, runtime control fact, or backend workspace path authority. Keeping it on the main `state` contradicted the P1 Render State Isolation plan while leaving a Workspace-only async guard coupled to the default app state object.
+- A focused frontend regression strengthened the existing stale Workspace directory response test to require that `state` does not acquire `workspaceRequestSeq`. Before the fix, stale directory/file response suppression worked, but the assertion failed because `nextWorkspaceRequestSeq()` wrote `workspaceRequestSeq` onto `state`.
+
+Changes:
+
+- Added a tiny `workspaceViewState` object in `workspace-view.js` to own Workspace request sequencing.
+- Updated directory, file, file-error, and paged-preview stale-response checks to compare against `workspaceViewState.requestSeq`.
+- Kept durable UI facts such as `state.workspacePath`, `state.fileTree`, `state.selectedTreePath`, and `state.workspaceFilePreview` unchanged.
+- Extended the stale Workspace directory response regression so it proves request sequencing stays out of the main app state while stale Workspace responses remain ignored.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Workspace-local guard slice and narrows the remaining request-guard backlog.
+
+Validation:
+
+- `node --test --test-name-pattern "loadWorkspaceDirectory ignores stale directory responses" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `workspaceRequestSeq`.
+- `node --test --test-name-pattern "loadWorkspaceDirectory ignores stale directory responses|workspace file responses do not overwrite later directory navigation|workspace directory responses do not overwrite later file selection|loadFile ignores stale file responses" validation/scripts/webconsole_utils_test.mjs`: passed after moving the guard into `workspaceViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 68/68 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-110
 
 Slice: `fix(webconsole): isolate settings request guard`

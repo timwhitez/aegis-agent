@@ -1,5 +1,9 @@
 const WORKSPACE_FILE_PREVIEW_CHUNK_SIZE = 256 * 1024;
 
+const workspaceViewState = {
+  requestSeq: 0
+};
+
 async function fetchWorkspace() {
   try {
     if (!state.meta) {
@@ -49,12 +53,12 @@ async function loadWorkspaceDirectory(path = '') {
   try {
     tree = await requestJSON(`/api/files?path=${encodeURIComponent(queryPath)}`);
   } catch (err) {
-    if (state.workspaceRequestSeq !== requestSeq) {
+    if (workspaceViewState.requestSeq !== requestSeq) {
       return;
     }
     throw err;
   }
-  if (state.workspaceRequestSeq !== requestSeq) {
+  if (workspaceViewState.requestSeq !== requestSeq) {
     return;
   }
   state.workspacePath = normalized;
@@ -68,9 +72,7 @@ async function loadWorkspaceDirectory(path = '') {
 }
 
 function nextWorkspaceRequestSeq() {
-  const requestSeq = (state.workspaceRequestSeq || 0) + 1;
-  state.workspaceRequestSeq = requestSeq;
-  return requestSeq;
+  return ++workspaceViewState.requestSeq;
 }
 
 function normalizeWorkspacePath(path = '') {
@@ -308,7 +310,7 @@ async function loadFile(path) {
 async function loadFilePreviewPage(path, requestSeq, offset, append) {
   try {
     const data = await requestJSON(workspaceFileReadURL(path, offset));
-    if (state.workspaceRequestSeq !== requestSeq) {
+    if (workspaceViewState.requestSeq !== requestSeq) {
       return false;
     }
     const contentChunk = String(data?.content ?? '');
@@ -330,7 +332,7 @@ async function loadFilePreviewPage(path, requestSeq, offset, append) {
     renderWorkspaceFilePreview(preview);
     return true;
   } catch (err) {
-    if (state.workspaceRequestSeq !== requestSeq) {
+    if (workspaceViewState.requestSeq !== requestSeq) {
       return false;
     }
     const message = workspaceErrorMessage(err, `Failed to load file: ${path}`);

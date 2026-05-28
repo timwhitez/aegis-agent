@@ -25,14 +25,14 @@ Current resource size:
 | `internal/webconsole/assets/events.js` | 454 |
 | `internal/webconsole/assets/settings-view.js` | 432 |
 | `internal/webconsole/assets/api.js` | 193 |
-| `internal/webconsole/assets/workspace-view.js` | 408 |
+| `internal/webconsole/assets/workspace-view.js` | 410 |
 | `internal/webconsole/assets/icons.js` | 56 |
-| Total | 12,090 |
+| Total | 12,092 |
 
 Current implemented facts:
 
 - Script loading is still ordered global-script loading in `index.html`; no ES module graph exists yet.
-- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, and Settings config request sequencing lives in `settingsViewState`; selected workspace tree path and the remaining cross-view request sequence guards remain in `state`.
+- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, Settings config request sequencing lives in `settingsViewState`, and Workspace navigation/read request sequencing lives in `workspaceViewState`; selected workspace tree path and the remaining cross-view request sequence guards remain in `state`.
 - WebSocket reconnect has exponential backoff with jitter, visibility-state handling, and fallback polling coordination.
 - Polling defaults to 5 seconds and uses a 1.6 second active interval while disconnected, generating, or tracking active descendants.
 - Embedded assets now use ETag validation and gzip negotiation; long immutable hashed asset URLs are not implemented.
@@ -58,6 +58,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Chat stream diff cache no longer lives on the main global `state`; it is isolated in `renderState.chatCache` with helper accessors and invalidation.
 - WebSocket object, reconnect timer / attempts, polling timer / interval, queued refresh timers, and layout observer no longer live on the main global `state`; they are isolated in `runtimeHandles`.
 - Settings config request sequencing no longer lives on the main global `state`; it is isolated in `settingsViewState` while preserving stale config response suppression.
+- Workspace directory/file request sequencing no longer lives on the main global `state`; it is isolated in `workspaceViewState` while preserving stale directory, file, and paged preview suppression.
 
 ## Remaining Optimization Backlog
 
@@ -110,7 +111,7 @@ Validation:
 
 ### P1: Render State Isolation
 
-The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and several cross-view request sequence guards. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, and Settings config request sequencing into `settingsViewState`.
+The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and several cross-view request sequence guards. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, Settings config request sequencing into `settingsViewState`, and Workspace request sequencing into `workspaceViewState`.
 
 Plan:
 
@@ -123,6 +124,7 @@ Validation:
 - `validation/scripts/webconsole_utils_test.mjs` should assert that chat render cache is not stored on the main `state`, and that cache invalidation still works.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that runtime handles are not stored on the main `state`, and that queued refresh handles still clear through the helper path.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that Settings config request sequencing is not stored on the main `state`, and that stale Settings config responses remain ignored.
+- `validation/scripts/webconsole_utils_test.mjs` should assert that Workspace request sequencing is not stored on the main `state`, and that stale Workspace directory/file/page responses remain ignored.
 - Existing stale response tests must continue to pass.
 
 ### P2: Message And Timeline Rendering Scale
