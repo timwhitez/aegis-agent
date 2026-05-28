@@ -1970,9 +1970,11 @@ test('fetchHistory queues the latest requested page and ignores stale in-flight 
   assert.equal(appContext.pendingRequests.length, 2);
   assert.match(appContext.pendingRequests[1].url, /\/api\/history\?page=3&page_size=8/);
   assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasHistoryRequestSeq: Object.prototype.hasOwnProperty.call(state, 'historyRequestSeq'),
     page: state.historyPage,
     historyIDs: maybeArray(state.historyData?.items).map((item) => item.id)
   })`, appContext)), {
+    stateHasHistoryRequestSeq: false,
     page: 3,
     historyIDs: []
   });

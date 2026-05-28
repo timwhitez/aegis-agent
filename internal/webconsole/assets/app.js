@@ -38,7 +38,6 @@ const state = {
   refreshingHistory: false,
   needsHistoryRefresh: false,
   pendingHistoryRefreshOptions: null,
-  historyRequestSeq: 0,
   toastCounter: 0,
   skills: [],
   skillUploadInFlight: false,
@@ -97,6 +96,10 @@ const skillsViewState = {
 };
 
 const overviewViewState = {
+  requestSeq: 0
+};
+
+const historyViewState = {
   requestSeq: 0
 };
 
@@ -2627,8 +2630,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
   const showLoading = options.showLoading ?? !state.historyData;
   const silentError = options.silentError ?? false;
   const pageSize = state.historyPageSize;
-  const requestSeq = state.historyRequestSeq + 1;
-  state.historyRequestSeq = requestSeq;
+  const requestSeq = ++historyViewState.requestSeq;
   state.refreshingHistory = true;
   state.needsHistoryRefresh = false;
   state.pendingHistoryRefreshOptions = null;
@@ -2639,7 +2641,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
   }
   try {
     const data = await requestJSON(`/api/history?page=${encodeURIComponent(requestedPage)}&page_size=${encodeURIComponent(pageSize)}`);
-    if (state.historyRequestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
       return;
     }
     state.historyData = data;
@@ -2648,7 +2650,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
       console.error('overview refresh error', err);
     });
   } catch (err) {
-    if (state.historyRequestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
       return;
     }
     console.error('history error', err);
