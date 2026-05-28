@@ -440,6 +440,29 @@ test('runtime handles are isolated from durable app state', () => {
   assert.equal(result.pendingOverviewRefresh, null);
 });
 
+test('toast id counter is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    nodes.toastRack.__children.splice(0, nodes.toastRack.__children.length);
+    if (typeof toastViewState !== 'undefined') {
+      toastViewState.counter = 0;
+    }
+    showToast('First toast', 'info');
+    showToast('Second toast', 'error');
+    return {
+      stateHasToastCounter: Object.prototype.hasOwnProperty.call(state, 'toastCounter'),
+      toastIDs: nodes.toastRack.__children.map((node) => node.id),
+      toastClasses: nodes.toastRack.__children.map((node) => node.className),
+      toastTexts: nodes.toastRack.__children.map((node) => node.textContent)
+    };
+  })()`, appContext);
+
+  assert.equal(result.stateHasToastCounter, false);
+  assert.deepEqual(sameRealm(result.toastIDs), ['toast-1', 'toast-2']);
+  assert.deepEqual(sameRealm(result.toastClasses), ['toast toast-info', 'toast toast-error']);
+  assert.deepEqual(sameRealm(result.toastTexts), ['First toast', 'Second toast']);
+});
+
 test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {
   const appContext = createAppHarnessContext();
   const action = vm.runInContext(`

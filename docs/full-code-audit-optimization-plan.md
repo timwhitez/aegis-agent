@@ -8472,7 +8472,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-392, FCA-20260529-393, FCA-20260529-395, and the prior Settings transaction slices. Those covered Web metadata, Skills discovery, Web startup, and audit/env/config rollback ordering. The residual issue was the already-running Settings save route: `handleUpdateConfig` still swallowed `os.Getwd()` after service startup and could persist settings through a stale explicit config path after the service cwd disappeared.
 - Confirmed the minimal fix belongs in `internal/webconsole/service.go` `handleUpdateConfig`: resolve cwd once before constructing any default config/API-key path or writing local settings, return the error on failure, and reuse that cwd for both `config.DefaultEnvFilePath` and `config.PersistPath`.
 
+### Review 388
+
+- Confirmed FCA-20260529-116 against `spec/17-web-console.md`'s local WebConsole boundary and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: toast id allocation is browser DOM display machinery, not durable session state, queue state, provider replay state, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-108 through FCA-20260529-115. Those slices moved chat render cache, runtime handles, and request-sequence guards out of the main `state`; the residual issue was only `showToast()` using `state.toastCounter` for transient DOM ids.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: add a tiny `toastViewState.counter`, update `showToast()` to use it, and keep toast rendering, tone classes, timeout removal, and all backend API/error behavior unchanged.
+
 ## Update Log
+
+### FCA-20260529-116
+
+Slice: `fix(webconsole): isolate toast id counter`
+
+Finding:
+
+- `showToast()` used the main WebConsole `state.toastCounter` field to allocate transient DOM ids such as `toast-1`.
+- The counter is browser display machinery for the local toast rack, not durable UI state, session-store fact, backend queue/session metadata, provider replay state, or WebConsole file-fact authority.
+- A focused frontend regression required that toast id allocation not create or use `state.toastCounter` while preserving deterministic unique toast ids. Before the fix, the regression failed because `state` still owned `toastCounter`.
+
+Changes:
+
+- Added a tiny `toastViewState.counter` object in `app.js` to own toast id allocation.
+- Updated `showToast()` to allocate ids from `toastViewState.counter`.
+- Removed `toastCounter` from the main `state` object while preserving toast DOM insertion, tone classes, text-only rendering, and timeout removal behavior.
+- Added a Node frontend regression proving `state.toastCounter` is absent and two toasts still render as `toast-1` / `toast-2` with the expected classes and text.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this toast-local state slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "toast id counter is isolated" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `toastCounter`.
+- `node --test --test-name-pattern "toast id counter is isolated" validation/scripts/webconsole_utils_test.mjs`: passed after moving the counter into `toastViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-399
 

@@ -38,7 +38,6 @@ const state = {
   refreshingHistory: false,
   needsHistoryRefresh: false,
   pendingHistoryRefreshOptions: null,
-  toastCounter: 0,
   skills: [],
   skillUploadInFlight: false,
   fileTree: [],
@@ -104,6 +103,10 @@ const historyViewState = {
 
 const messagePagingViewState = {
   requestSeq: 0
+};
+
+const toastViewState = {
+  counter: 0
 };
 
 function createEmptyChatRenderCache() {
@@ -2604,7 +2607,7 @@ function reconcileOptimisticMessages(detail) {
 }
 
 function showToast(message, tone = 'info') {
-  const id = `toast-${++state.toastCounter}`;
+  const id = `toast-${++toastViewState.counter}`;
   const toast = document.createElement('div');
   toast.className = `toast toast-${tone}`;
   toast.id = id;
