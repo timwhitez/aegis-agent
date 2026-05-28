@@ -56,7 +56,6 @@ const state = {
   refreshingSession: false,
   needsSessionRefresh: false,
   lastInputWasEmpty: true,
-  showHelp: false,
   needsOverviewRefresh: false,
   hasMoreMessages: false,
   oldestMessageId: '',
@@ -120,6 +119,18 @@ const floatingPanelViewState = {
 const planInputViewState = {
   selections: {}
 };
+
+const helpViewState = {
+  visible: false
+};
+
+function isHelpVisible() {
+  return helpViewState.visible;
+}
+
+function setHelpVisible(visible) {
+  helpViewState.visible = Boolean(visible);
+}
 
 function isFloatingPanelExpanded(panel) {
   return floatingPanelViewState[panel] !== false;
@@ -901,7 +912,7 @@ function setupEventListeners() {
         switchView('settings');
         break;
       case 'help':
-        state.showHelp = !state.showHelp;
+        setHelpVisible(!isHelpVisible());
         renderShortcutHelp();
         break;
     }

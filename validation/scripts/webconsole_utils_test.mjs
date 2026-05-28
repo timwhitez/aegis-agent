@@ -622,6 +622,69 @@ test('floating panel expansion preferences are isolated from durable app state',
   assert.equal(result.collapsedTodoHasBody, false);
 });
 
+test('shortcut help overlay visibility is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const appended = [];
+  let overlay = null;
+  let removed = false;
+
+  appContext.document = {
+    getElementById(id) {
+      return id === 'shortcut-help-overlay' ? overlay : fakeAppElement();
+    },
+    createElement() {
+      const element = fakeAppElement();
+      element.__listeners = {};
+      element.addEventListener = function addEventListener(event, callback) {
+        if (!this.__listeners[event]) {
+          this.__listeners[event] = [];
+        }
+        this.__listeners[event].push(callback);
+      };
+      element.remove = function remove() {
+        removed = true;
+        overlay = null;
+      };
+      return element;
+    },
+    body: {
+      appendChild(node) {
+        overlay = node;
+        appended.push(node);
+      }
+    }
+  };
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const rendered = vm.runInContext(`(() => {
+    setHelpVisible(true);
+    renderShortcutHelp();
+    const helpOverlay = document.getElementById('shortcut-help-overlay');
+    return {
+      stateHasShowHelp: Object.prototype.hasOwnProperty.call(state, 'showHelp'),
+      visible: isHelpVisible(),
+      listenerCount: helpOverlay.__listeners.click.length,
+      html: helpOverlay.innerHTML
+    };
+  })()`, appContext);
+
+  assert.equal(rendered.stateHasShowHelp, false);
+  assert.equal(rendered.visible, true);
+  assert.equal(rendered.listenerCount, 2);
+  assert.equal(rendered.html.includes('Keyboard Shortcuts'), true);
+  assert.equal(appended.length, 1);
+
+  overlay.__listeners.click[0]({ target: overlay });
+
+  const closed = vm.runInContext(`({
+    stateHasShowHelp: Object.prototype.hasOwnProperty.call(state, 'showHelp'),
+    visible: isHelpVisible()
+  })`, appContext);
+  assert.equal(closed.stateHasShowHelp, false);
+  assert.equal(closed.visible, false);
+  assert.equal(removed, true);
+});
+
 test('plan input selections are isolated from durable app state', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);

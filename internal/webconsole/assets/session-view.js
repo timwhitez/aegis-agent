@@ -7,7 +7,7 @@ function renderShortcutHelp() {
   let overlay = document.getElementById('shortcut-help-overlay');
   const isNew = !overlay;
 
-  if (!state.showHelp) {
+  if (!isHelpVisible()) {
     if (overlay) {
       overlay.remove();
     }
@@ -22,7 +22,7 @@ function renderShortcutHelp() {
     // Bind delegated listeners once — they survive innerHTML changes on children
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay || e.target.classList.contains('shortcut-close-btn')) {
-        state.showHelp = false;
+        setHelpVisible(false);
         renderShortcutHelp();
       }
     });

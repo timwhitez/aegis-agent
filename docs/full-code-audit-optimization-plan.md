@@ -8502,7 +8502,46 @@ Evidence gates:
 - Confirmed this is distinct from earlier Plan Mode input correctness slices. Those fixed explicit-answer validation, stale completion refreshes, live waiter retention, delivery validation, and durable input answer/cancel events; this residual issue was only unsent selected-option drafts living on the main `state` object.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move request-scoped selection drafts into a tiny `planInputViewState`, keep `getPlanInputSelections()` as the renderer-facing helper, preserve stale request cleanup, clear selections on session reset/switch and successful submit, and leave `planmode.json` / input-answer API behavior unchanged.
 
+### Review 393
+
+- Confirmed FCA-20260529-121 against `spec/17-web-console.md`'s local WebConsole keyboard-shortcut surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: shortcut help overlay visibility is browser display state, not durable session state, message history, provider replay data, queue facts, Goal/Plan Mode facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-107 and FCA-20260529-120. Those slices replaced native confirmation dialogs and isolated pending Plan Mode input selections; this residual issue was only the `?` shortcut help overlay visibility bit that `renderShortcutHelp()` read and wrote through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move the overlay visibility bit into a tiny `helpViewState`, expose helper reads/writes for the renderer, and preserve `?` shortcut toggling plus overlay close behavior without changing session, queue, provider, Goal, Plan Mode, or backend API facts.
+
 ## Update Log
+
+### FCA-20260529-121
+
+Slice: `fix(webconsole): isolate help overlay state`
+
+Finding:
+
+- The WebConsole's main `state` object still stored `showHelp`, the boolean used only by `renderShortcutHelp()` to show or remove the local keyboard-shortcut overlay.
+- The overlay is pure browser display state. It is not durable session metadata, message state, provider replay data, queue/child state, Goal/Plan Mode facts, or WebConsole file-fact authority.
+- Source evidence showed the global shortcut handler toggling `state.showHelp` and the overlay close handler in `session-view.js` setting `state.showHelp = false`, coupling a transient DOM overlay to the same state object that carries real session/detail/history facts.
+
+Changes:
+
+- Added a tiny `helpViewState.visible` store with `isHelpVisible()` / `setHelpVisible()` helpers.
+- Updated the `?` shortcut handler to toggle `helpViewState` before re-rendering shortcut help.
+- Updated `renderShortcutHelp()` and its overlay close handler to use the helper path instead of mutating main `state`.
+- Added a frontend regression proving `showHelp` is absent from `state`, the overlay still renders keyboard-shortcut content, and clicking the overlay close path clears `helpViewState` and removes the overlay.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this help-overlay-local slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "shortcut help overlay visibility is isolated" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 74/74 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-120
 
