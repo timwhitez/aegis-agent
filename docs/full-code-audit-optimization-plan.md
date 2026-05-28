@@ -7938,6 +7938,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-304 and FCA-20260527-182. Those slices validated contract/tracker snapshots and made contract refresh rollback on write/event failures; this slice covers the remaining rollback-snapshot path where syntactically valid but semantically invalid contract history entries were accepted by `SnapshotContractRefresh`.
 - Confirmed the minimal fix belongs in `SessionStore` contract history snapshot validation: reuse the existing contract history entry validator before a refresh can use history as rollback state, without changing contract derivation, artifact tracking, Web state authority, or completion workflow behavior.
 
+### Review 309
+
+- Confirmed FCA-20260528-316 against `spec/10-context-compaction.md`: `artifacts/compactions/summary-*.json` is the durable compact summary artifact reused inside the hysteresis window, while original logs remain the source of truth and compaction reuse must stay traceable through `compact.reused`.
+- Confirmed this is distinct from FCA-20260526-151, FCA-20260526-164, and FCA-20260527-206. Those slices surfaced corrupt feature-list/Goal inputs and required compaction events; this slice covers an already-existing reusable compaction summary artifact that is present but unreadable or empty.
+- Confirmed the minimal fix belongs in the runtime compactor reuse boundary: distinguish no reusable artifact from an unusable latest reusable artifact, report the artifact path, and avoid silently falling back to a derived provider-view summary that hides the corrupt local fact.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -9931,6 +9937,53 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
 - `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/contract_controller_test.go`: passed with no output.
 - `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-316
+
+Slice: `fix(runtime): report corrupt compaction reuse artifacts`
+
+Finding:
+
+- `reusableCompactionSummary` used `latestCompactionArtifactRelativePath` to find the newest `artifacts/compactions/summary-*.json` file during compaction hysteresis reuse.
+- When that latest summary artifact existed but `ReadArtifact` failed, or decoded to an empty summary map, the compactor ignored the failure and generated a fallback `"derived"` summary from current messages.
+- That fallback produced a provider-visible compacted summary and `compact.reused` event without exposing that the latest durable compaction artifact was corrupt or unusable.
+
+Impact:
+
+- A long-running session could continue through compaction hysteresis with a newly derived provider view while the local `artifacts/compactions/summary-*.json` fact was broken.
+- Operators and recovery diagnostics could see `summary_source=derived` instead of the corrupt reusable artifact path, making the broken durable compaction artifact harder to detect.
+- This weakened compaction traceability exactly where the spec requires compacted provider views to remain tied to local file facts and events.
+
+Changes:
+
+- Changed compaction reuse to return a contextual `read compaction summary artifact <path>` error when the latest reusable summary artifact cannot be decoded.
+- Treat an empty latest summary artifact as an unusable artifact error instead of falling back to a derived summary.
+- Kept fallback-derived reuse only for the no-artifact case, preserving the existing behavior when no prior compaction summary exists.
+- Added a focused regression proving corrupt reusable summary artifacts stop reuse and do not emit `compact.reused`.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestCompactorReportsCorruptReusableSummaryArtifact` returned a derived compaction summary with `err=<nil>` over a corrupt `artifacts/compactions/summary-20260521-010000.json`.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompactor(ReusesSummaryWithinHysteresisWindow|ReportsCorruptReusableSummaryArtifact|ReportsCorruptGoalDuringHysteresisReuse)|TestCompactionEventErrorsStopCompaction' -count=1`: passed.
+- `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

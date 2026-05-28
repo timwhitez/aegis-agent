@@ -187,9 +187,13 @@ func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error 
 func (c *compactor) reusableCompactionSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, string, error) {
 	if relativePath := latestCompactionArtifactRelativePath(c.store, sessionID); relativePath != "" {
 		var summary map[string]any
-		if err := c.store.ReadArtifact(sessionID, relativePath, &summary); err == nil && len(summary) > 0 {
-			return summary, relativePath, nil
+		if err := c.store.ReadArtifact(sessionID, relativePath, &summary); err != nil {
+			return nil, "", fmt.Errorf("read compaction summary artifact %s: %w", relativePath, err)
 		}
+		if len(summary) == 0 {
+			return nil, "", fmt.Errorf("read compaction summary artifact %s: empty summary", relativePath)
+		}
+		return summary, relativePath, nil
 	}
 	summary, err := c.fallbackCompactionReuseSummary(sessionID, workdir, state, messages, todo, tasks, profile)
 	if err != nil {
