@@ -384,8 +384,13 @@ func (s *Store) LoadPlanMode(sessionID string) (PlanModeState, error) {
 	if err != nil {
 		return state, err
 	}
-	err = readJSONFile(path, &state)
-	return state, err
+	if err := readJSONFile(path, &state); err != nil {
+		return state, err
+	}
+	if err := ValidatePlanMode(state); err != nil {
+		return PlanModeState{}, fmt.Errorf("validate planmode.json: %w", err)
+	}
+	return state, nil
 }
 
 func (s *Store) SavePlanMode(sessionID string, state PlanModeState) error {
@@ -1011,8 +1016,13 @@ func (s *Store) loadPlanModeNoLock(sessionID string) (PlanModeState, error) {
 	if err != nil {
 		return state, err
 	}
-	err = readJSONFile(path, &state)
-	return state, err
+	if err := readJSONFile(path, &state); err != nil {
+		return state, err
+	}
+	if err := ValidatePlanMode(state); err != nil {
+		return PlanModeState{}, fmt.Errorf("validate planmode.json: %w", err)
+	}
+	return state, nil
 }
 
 func LoadPlanModeOptional(store *Store, sessionID string) (*PlanModeState, error) {

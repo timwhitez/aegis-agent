@@ -7842,6 +7842,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-298. That slice hardened the `submit_plan` transition input; this slice covers direct `SavePlanMode` / `MutatePlanMode` validation for whole-snapshot callers and recovery helpers that bypass `submit_plan`.
 - Confirmed the minimal fix belongs in `ValidatePlanMode`: require positive `plan_version`, nonblank Markdown, nonblank summary, and at least one normalized verification item for submitted states; additionally require approved/executing snapshots to have an `approved_version` that references an existing submitted plan version.
 
+### Review 293
+
+- Confirmed FCA-20260528-300 against the same `planmode.json` fact-source contract as FCA-20260528-299: read paths must reject invalid current Plan Mode snapshots, not only write paths.
+- Confirmed this is a residual read-side gap after FCA-20260528-299. `SavePlanMode` / `MutatePlanMode` now reject impossible submitted states, but an already-corrupt or externally modified `planmode.json` could still be returned by `LoadPlanMode` and then trusted by Web, runtime, list summaries, rollback snapshots, and history append helpers.
+- Confirmed the minimal fix belongs in `LoadPlanMode` and the internal no-lock Plan Mode loader: apply `ValidatePlanMode` immediately after decoding `planmode.json`, while preserving `fs.ErrNotExist` behavior and existing JSON parse error propagation.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7903,6 +7909,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-300
+
+Slice: `fix(session): validate loaded Plan Mode snapshots`
+
+Finding:
+
+- `LoadPlanMode` decoded `planmode.json` and returned it without running `ValidatePlanMode`.
+- `loadPlanModeNoLock`, used while appending Plan Mode history, had the same behavior.
+- After FCA-20260528-299, writes rejected impossible submitted/approved/executing Plan Mode snapshots, but stale, corrupt, or externally modified snapshots already on disk could still load as trusted current state.
+
+Impact:
+
+- Session list/detail, Web Plan inspector, runtime Plan Mode approval/revision/cancellation paths, linked Goal approval checks, rollback snapshots, and session summaries could consume an invalid `planmode.json`.
+- A malformed loaded snapshot could present a session as approval-ready or executing without the submitted plan facts that approval and execution depend on.
+- History append helpers could attach new history entries to a semantically invalid current Plan Mode snapshot instead of reporting the corrupted fact source.
+
+Changes:
+
+- Routed `LoadPlanMode` through `ValidatePlanMode` after decoding `planmode.json`.
+- Routed the internal no-lock Plan Mode loader through the same validation so history append and rollback helpers do not trust invalid current snapshots.
+- Preserved missing-file behavior and existing JSON parse diagnostics while wrapping semantic validation errors with `validate planmode.json`.
+- Added a focused store regression proving an invalid loaded submitted snapshot is rejected.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadPlanModeRejectsInvalidSubmittedSnapshot -count=1`: failed before the fix because an invalid `awaiting_approval` snapshot with missing Markdown loaded successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLoadPlanModeRejectsInvalidSubmittedSnapshot|TestSavePlanModeRejectsSubmittedStatesWithoutPlanFacts|TestAppendPlanModeHistoryReportsCorruptCurrentPlanModeSnapshot' -count=1`: passed.
 
 ### FCA-20260528-299
 

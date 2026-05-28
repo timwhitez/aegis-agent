@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -324,6 +325,36 @@ func TestSavePlanModeRejectsSubmittedStatesWithoutPlanFacts(t *testing.T) {
 				t.Fatalf("invalid full snapshot should not be persisted, got %#v", loaded)
 			}
 		})
+	}
+}
+
+func TestLoadPlanModeRejectsInvalidSubmittedSnapshot(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	state, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Validate loaded plan mode",
+		Source:    PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	state.Status = PlanModeStatusAwaitingApproval
+	state.PlanVersion = 1
+	state.PlanMarkdown = ""
+	state.Summary = "Missing markdown should be invalid."
+	state.Verification = []string{"manual"}
+	planModePath := filepath.Join(store.SessionDir(sessionID), "planmode.json")
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal invalid plan mode: %v", err)
+	}
+	if err := os.WriteFile(planModePath, data, 0o600); err != nil {
+		t.Fatalf("write invalid plan mode: %v", err)
+	}
+
+	loaded, err := store.LoadPlanMode(sessionID)
+	if err == nil || !strings.Contains(err.Error(), "plan mode submitted plan markdown is required") {
+		t.Fatalf("expected invalid loaded plan mode error, got state=%#v err=%v", loaded, err)
 	}
 }
 
