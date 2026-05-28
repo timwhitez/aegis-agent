@@ -8300,6 +8300,50 @@ Evidence gates:
 
 ## Update Log
 
+### FCA-20260528-368
+
+Slice: `fix(webconsole): validate existing audit log before append`
+
+Finding:
+
+- WebConsole `appendAuditEvent` rejected symlinked or directory audit paths, but did not read and validate existing `webconsole-audit.jsonl` records before appending a new required audit event.
+- `spec/17-web-console.md` requires config/API-key writes, session delete/clear, and skill install/uninstall to write searchable audit events, with API-key events omitting secret values.
+- Existing rollback slices made these mutations depend on successful audit append, but a syntactically valid and semantically malformed existing audit log could still be extended by later valid audit events.
+
+Impact:
+
+- A malformed existing local WebConsole audit ledger could remain corrupt while later risky local mutations reported successful audit persistence.
+- That weakens the operator evidence trail for Settings/API-key changes, destructive session history actions, and skill install/uninstall: later readers can fail or misinterpret the same audit log even though new mutation handlers saw success.
+
+Changes:
+
+- Added WebConsole audit event validation for `schema_version`, `id`, `type`, and RFC3339Nano `time`.
+- `appendAuditEvent` now serializes audit appends with a service-local mutex, opens the audit log read/write with `O_APPEND|O_NOFOLLOW`, validates the existing JSONL before writing, and rejects malformed existing records without extending the file.
+- `ensureAuditLogWritable` now performs the same existing-log validation during risky-action preflight, so rollback-capable mutation handlers fail before side effects when the audit ledger is already corrupt.
+- Added a focused WebConsole regression that writes a malformed existing audit log and proves a later audit append fails without adding a second record.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAppendAuditEventRejectsMalformedExistingLog -count=1`: failed before the fix because `appendAuditEvent` returned nil.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAppendAuditEventRejectsMalformedExistingLog|TestSensitiveWebActionsEmitAuditEvents|TestAPIKeyWriteDoesNotLogSecretValue|TestAppendAuditEventRejectsSymlinkedAuditLog|TestSensitiveActionsPreflightAuditBeforeMutating' -count=1`: passed.
+- `gofmt -l internal/webconsole/audit.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
 ### FCA-20260528-367
 
 Slice: `fix(session): validate existing event log before append`

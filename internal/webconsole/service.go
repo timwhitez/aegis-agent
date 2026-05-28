@@ -104,6 +104,8 @@ type Service struct {
 	// goal mutation persistence failures after earlier side facts have been recorded.
 	beforeAppendGoalMutation func(sessionID string, goal session.SessionGoal, eventType string) error
 
+	auditMu sync.Mutex
+
 	mu      sync.RWMutex
 	handles map[string]*launchHandle
 	closed  bool

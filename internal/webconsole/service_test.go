@@ -5191,6 +5191,36 @@ func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
 	}
 }
 
+func TestAppendAuditEventRejectsMalformedExistingLog(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if err := os.MkdirAll(filepath.Dir(auditPath), 0o700); err != nil {
+		t.Fatalf("mkdir audit dir: %v", err)
+	}
+	malformed := `{"schema_version":1,"id":"","type":"web.session.delete","time":"2026-05-28T00:00:00Z"}` + "\n"
+	if err := os.WriteFile(auditPath, []byte(malformed), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	if err := svc.appendAuditEvent("web.test", nil); err == nil {
+		t.Fatal("expected malformed existing audit log append to fail")
+	}
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("malformed existing audit log should not be extended, got %d records: %q", len(lines), string(data))
+	}
+}
+
 func TestSensitiveActionsPreflightAuditBeforeMutating(t *testing.T) {
 	cfg := testConfig(t, "")
 	base := t.TempDir()
