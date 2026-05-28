@@ -7974,6 +7974,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-040. That slice added `Open job` actions for notifications with `queue_job_id`; this slice covers the remaining Summary preview gap where notifications with `session_id` did not expose the already-supported `Open child session` action.
 - Confirmed the minimal fix belongs in `session-view.js`: reuse existing `data-open-session` handling in the preview renderer only, without adding a standalone queue page, mutating backend facts, or creating browser-side authority.
 
+### Review 315
+
+- Confirmed FCA-20260528-322 against `spec/17-web-console.md`: session detail, queue job facts, and selected object controls are frontend projections of local file facts, and slow browser-side enrichment must not update the currently selected session after the operator switches away.
+- Confirmed this is distinct from FCA-20260528-270 and FCA-20260528-269. Those slices guarded the initial `/api/sessions/{id}` detail response and standalone `/api/queue/jobs/{id}` response; this slice covers the gap between the accepted session-detail response and the awaited selected queue-job enrichment inside the same refresh path.
+- Confirmed the minimal fix belongs in `app.js` after `refreshSelectedQueueJobDetail(...)`: recheck the captured session id and queued-refresh flag before applying generation/activity/render side effects, without changing backend session, queue, runtime, provider, or worker semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10236,6 +10242,33 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
 - `git diff --check`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+
+### FCA-20260528-322
+
+Slice: `fix(webconsole): ignore stale enriched session refreshes`
+
+Finding:
+
+- `refreshCurrentSession()` captured `state.sessionId`, loaded `/api/sessions/{id}?limit=40`, and already checked whether the selected session or queued-refresh flag changed before applying the detail.
+- After that first guard, it assigned `state.sessionDetail = detail` and awaited `refreshSelectedQueueJobDetail(...)` to enrich the Background inspector's selected queue job.
+- If the operator selected another session while that queue-job enrichment request was pending, the old refresh resumed and applied old-session generation/activity/render side effects to the newly selected session.
+
+Impact:
+
+- A stale refresh for session A could mark selected session B as generating, replace B's live activity with A's running phase text, and render the selected session once from the old refresh path.
+- This did not mutate durable session or queue files, but it weakened the Web-first local console by allowing the browser-side enrichment step to become stale display authority after the session selection changed.
+- The gap was specific to the combined session-refresh plus selected-queue-job-enrichment path; standalone session detail and queue detail stale responses were already guarded.
+
+Changes:
+
+- Added a second `state.sessionId` / `state.needsSessionRefresh` check immediately after `refreshSelectedQueueJobDetail(...)` returns.
+- Kept the existing behavior of assigning the accepted detail before enrichment so the selected queue job can still resolve against the latest child-job list when the selected session remains current.
+- Added a VM frontend regression that resolves session detail for session A, delays selected queue-job enrichment, switches to session B, then proves the old refresh does not mark B as generating or render from A's refresh path.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `refreshCurrentSession rechecks selected session after queue detail enrichment` left selected session B with `generating: true`, activity title `Prepare`, and one stale render after session A's queue-job enrichment resolved.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "refreshCurrentSession rechecks selected session after queue detail enrichment"`: passed.
 
 ### FCA-20260528-265
 

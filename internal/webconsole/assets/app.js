@@ -2145,6 +2145,9 @@ async function refreshCurrentSession(options = {}) {
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
     await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs));
+    if (state.sessionId !== sessionID || state.needsSessionRefresh) {
+      return;
+    }
     updateSessionId();
     reconcileOptimisticMessages(detail);
     state.hasMoreMessages = state.loadedAllEarlierMessages ? false : detail?.has_more_messages === true;

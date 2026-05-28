@@ -668,6 +668,78 @@ test('refreshCurrentSession ignores stale session detail responses after selecti
   });
 });
 
+test('refreshCurrentSession rechecks selected session after queue detail enrichment', async () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(`
+    updateSessionId = function() {};
+    reconcileOptimisticMessages = function() {};
+    renderCurrentSession = function() {
+      state.renderCount = (state.renderCount || 0) + 1;
+    };
+    updateUI = function() {};
+    syncPollingForState = function() {};
+  `, appContext);
+  const slowRefresh = vm.runInContext(`
+    state.sessionId = 'session_slow_queue_a';
+    state.sessionBacked = true;
+    state.inspectorTab = 'agents';
+    state.selectedQueueJobId = 'job_slow_queue_a';
+    state.selectedQueueJobDetail = null;
+    state.liveEvents = [];
+    refreshCurrentSession();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_slow_queue_a/);
+
+  appContext.pendingRequests[0].resolve({
+    metadata: { id: 'session_slow_queue_a' },
+    state: { status: 'running' },
+    children: { jobs: [] },
+    messages: [{ id: 'm_slow_queue', role: 'assistant', text: 'slow queue detail' }],
+    timeline: []
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.match(appContext.pendingRequests[1].url, /job_slow_queue_a/);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_queue_b';
+    state.sessionBacked = true;
+    state.selectedQueueJobId = '';
+    state.selectedQueueJobDetail = null;
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_queue_b' },
+      state: { status: 'completed' },
+      messages: []
+    };
+    state.isGenerating = false;
+    state.liveActivity = { title: 'Fast selected', copy: '', tone: 'neutral' };
+  `, appContext);
+
+  appContext.pendingRequests[1].resolve({ id: 'job_slow_queue_a', prompt: 'stale queue detail' });
+  await slowRefresh;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    detailID: state.sessionDetail?.metadata?.id,
+    status: state.sessionDetail?.state?.status,
+    generating: state.isGenerating,
+    activityTitle: state.liveActivity?.title,
+    renderCount: state.renderCount || 0,
+    messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
+  })`, appContext)), {
+    selected: 'session_fast_queue_b',
+    detailID: 'session_fast_queue_b',
+    status: 'completed',
+    generating: false,
+    activityTitle: 'Fast selected',
+    renderCount: 0,
+    messageIDs: []
+  });
+});
+
 test('refreshCurrentSession skips stale same-session detail when a newer refresh is queued', async () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(`
