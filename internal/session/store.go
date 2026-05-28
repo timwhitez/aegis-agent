@@ -3863,6 +3863,9 @@ func validateEvent(sessionID string, item events.Event) error {
 	if strings.TrimSpace(item.Time) == "" {
 		return errors.New("event time is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, item.Time); err != nil {
+		return fmt.Errorf("event time must be RFC3339Nano: %w", err)
+	}
 	if strings.TrimSpace(item.Phase) == "" {
 		return errors.New("event phase is required")
 	}

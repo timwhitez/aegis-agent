@@ -8004,6 +8004,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-309. That slice made provider-attempt facts reject unknown outcomes, missing required fields, and negative counters; this slice covers the remaining timestamp-shape gap where a non-empty but non-RFC3339 `created_at` value was accepted as a diagnostic fact.
 - Confirmed the minimal fix belongs in `SessionStore` provider-attempt validation: parse `created_at` as RFC3339Nano on load and append, without moving retry policy out of provider/runtime code or adding provider-specific replay behavior to store, Web, CLI, or tools.
 
+### Review 320
+
+- Confirmed FCA-20260528-327 against `spec/01-runtime-architecture.md`, `spec/13-live-input-and-steering.md`, and `spec/17-web-console.md`: `events.jsonl` is the durable timeline/audit fact source used by Web detail, session summaries, checkpoints, owner clues, live steer/control evidence, queue reconciliation, and completion diagnostics.
+- Confirmed this is a document-accuracy follow-up to FCA-20260528-312. That slice documented semantic event-log validation including nonblank timestamps, but the code still accepted non-empty non-RFC3339 `time` strings; this slice narrows the remaining timestamp-shape gap without changing event-type-specific workflow policy.
+- Confirmed the minimal fix belongs in `SessionStore` event validation: parse `Event.Time` as RFC3339Nano on load and append, preserving generic event validation and leaving runtime event production, Web rendering, provider adapters, and tool behavior unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10429,6 +10435,38 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
 - `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-327
+
+Slice: `fix(session): validate event log timestamps`
+
+Finding:
+
+- FCA-20260528-312 added generic semantic validation for `events.jsonl`, but `validateEvent()` only required `Event.Time` to be non-empty.
+- `LoadEvents()` therefore accepted existing event log entries with `time:"not-a-time"`.
+- `AppendEvent()` and `AppendEvents()` could also persist malformed event timestamps as long as the event id, session id, type, and phase were otherwise valid.
+
+Impact:
+
+- `events.jsonl` is the durable timeline and audit source for Web detail, session summaries, long-run checkpoint owner clues, live steer/control evidence, queue reconciliation, and completion diagnostics.
+- Accepting arbitrary time strings weakened chronological event ordering and allowed derived views to treat malformed audit timestamps as valid session facts.
+- This was a store-boundary validation gap only; it did not change runtime event production or add event-type-specific workflow rules.
+
+Changes:
+
+- Added RFC3339Nano parsing for `Event.Time` during event log load and append validation.
+- Extended event-log store regressions to cover invalid timestamp load and append paths while preserving existing mismatched-session, blank-type, duplicate-id, and batch-atomicity coverage.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLoadEventsRejectsMalformedSnapshot` loaded an invalid event timestamp without error, and `TestEventWritesRejectMalformedFacts` appended one without error.
+- `go test -timeout 120s ./internal/session -run 'TestLoadEventsRejectsMalformedSnapshot|TestEventWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadEventsRejectsMalformedSnapshot|TestEventWritesRejectMalformedFacts|TestStoreAppendEventsAppendsBatchAtomically' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-265
 

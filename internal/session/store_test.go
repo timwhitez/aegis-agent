@@ -158,6 +158,15 @@ func TestLoadEventsRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadEvents(meta.ID); err == nil || !strings.Contains(err.Error(), "validate events.jsonl") || !strings.Contains(err.Error(), "does not match session") {
 		t.Fatalf("expected malformed events validation error, got %v", err)
 	}
+
+	malformed = events.New(meta.ID, "bad.event", "test", nil)
+	malformed.Time = "not-a-time"
+	if err := store.writeEventsJSONL(path, []events.Event{malformed}); err != nil {
+		t.Fatalf("write invalid-time events: %v", err)
+	}
+	if _, err := store.LoadEvents(meta.ID); err == nil || !strings.Contains(err.Error(), "validate events.jsonl") || !strings.Contains(err.Error(), "time must be RFC3339Nano") {
+		t.Fatalf("expected invalid event time validation error, got %v", err)
+	}
 }
 
 func TestEventWritesRejectMalformedFacts(t *testing.T) {
@@ -186,6 +195,11 @@ func TestEventWritesRejectMalformedFacts(t *testing.T) {
 	blankType.Type = " "
 	if err := store.AppendEvent(meta.ID, blankType); err == nil || !strings.Contains(err.Error(), "validate events.jsonl") || !strings.Contains(err.Error(), "type is required") {
 		t.Fatalf("expected blank type append rejection, got %v", err)
+	}
+	invalidTime := events.New(meta.ID, "invalid.event", "test", nil)
+	invalidTime.Time = "not-a-time"
+	if err := store.AppendEvent(meta.ID, invalidTime); err == nil || !strings.Contains(err.Error(), "validate events.jsonl") || !strings.Contains(err.Error(), "time must be RFC3339Nano") {
+		t.Fatalf("expected invalid time append rejection, got %v", err)
 	}
 	mismatchedSession := events.New(meta.ID, "other.event", "test", nil)
 	mismatchedSession.SessionID = NewSessionID()
