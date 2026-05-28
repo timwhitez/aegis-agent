@@ -2059,9 +2059,11 @@ test('fetchSkills ignores stale skill catalog responses', async () => {
   await secondLoad;
 
   const currentState = sameRealm(vm.runInContext(`({
+    stateHasSkillsRequestSeq: Object.prototype.hasOwnProperty.call(state, 'skillsRequestSeq'),
     skillIDs: maybeArray(state.skills).map((skill) => skill.id),
     grid: nodes.skillsGrid.innerHTML
   })`, appContext));
+  assert.equal(currentState.stateHasSkillsRequestSeq, false);
   assert.deepEqual(currentState.skillIDs, ['skill_current']);
   assert.match(currentState.grid, /Current Skill/);
 

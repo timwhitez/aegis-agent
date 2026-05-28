@@ -41,7 +41,6 @@ const state = {
   historyRequestSeq: 0,
   toastCounter: 0,
   skills: [],
-  skillsRequestSeq: 0,
   skillUploadInFlight: false,
   fileTree: [],
   workspacePath: '',
@@ -92,6 +91,10 @@ const runtimeHandles = {
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
   layoutObserver: null
+};
+
+const skillsViewState = {
+  requestSeq: 0
 };
 
 function createEmptyChatRenderCache() {
@@ -2916,18 +2919,17 @@ async function clearHistory() {
 
 
 async function fetchSkills() {
-  const requestSeq = state.skillsRequestSeq + 1;
-  state.skillsRequestSeq = requestSeq;
+  const requestSeq = ++skillsViewState.requestSeq;
   try {
     nodes.skillsGrid.innerHTML = '<div class="view-loading">Loading local skills…</div>';
     const skills = await requestJSON('/api/skills');
-    if (state.skillsRequestSeq !== requestSeq) {
+    if (skillsViewState.requestSeq !== requestSeq) {
       return;
     }
     state.skills = skills;
     renderSkills(skills);
   } catch (err) {
-    if (state.skillsRequestSeq !== requestSeq) {
+    if (skillsViewState.requestSeq !== requestSeq) {
       return;
     }
     console.error('skills error', err);

@@ -22396,6 +22396,45 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-112
+
+Slice: `fix(webconsole): isolate skills request guard`
+
+Finding:
+
+- `fetchSkills()` used the main WebConsole `state.skillsRequestSeq` field as its stale `/api/skills` catalog response guard.
+- The request sequence is Skills-view browser request coordination, not a durable skill catalog fact, runtime skill-loading fact, provider fact, or backend skill root authority. Keeping it on the main `state` contradicted the P1 Render State Isolation plan while leaving a Skills-only async guard coupled to the default app state object.
+- A focused frontend regression strengthened the existing stale Skills catalog response test to require that `state` does not acquire `skillsRequestSeq`. Before the fix, stale catalog suppression worked, but the assertion failed because `fetchSkills()` wrote `skillsRequestSeq` onto `state`.
+
+Changes:
+
+- Added a tiny `skillsViewState` object in `app.js` to own Skills catalog request sequencing while the Skills renderer remains in `app.js`.
+- Updated `fetchSkills()` success and error stale-response checks to compare against `skillsViewState.requestSeq`.
+- Removed `skillsRequestSeq` from the main `state` object while keeping the user-visible `state.skills` catalog fact unchanged.
+- Extended the stale Skills catalog response regression so it proves request sequencing stays out of the main app state while stale catalog responses remain ignored.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Skills-local guard slice and narrows the remaining request-guard backlog.
+
+Validation:
+
+- `node --test --test-name-pattern "fetchSkills ignores stale skill catalog responses" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `skillsRequestSeq`.
+- `node --test --test-name-pattern "fetchSkills ignores stale skill catalog responses" validation/scripts/webconsole_utils_test.mjs`: passed after moving the guard into `skillsViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-111
 
 Slice: `fix(webconsole): isolate workspace request guard`
