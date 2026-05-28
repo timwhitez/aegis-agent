@@ -97,9 +97,18 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
 	}
-	mode := strings.TrimSpace(req.Mode)
-	mode = normalizeRunMode(mode, session.ModeExec)
-	isolationMode := normalizeIsolationMode(req.IsolationMode, "auto")
+	mode, err := normalizeAndValidateRunMode(req.Mode, session.ModeExec)
+	if err != nil {
+		return tools.AgentSpawnResult{}, err
+	}
+	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, "auto")
+	if err != nil {
+		return tools.AgentSpawnResult{}, err
+	}
+	waitMode, err := normalizeAndValidateParentWaitMode(req.WaitMode)
+	if err != nil {
+		return tools.AgentSpawnResult{}, err
+	}
 	providerName, modelName, providerCfg, err := resolveProviderAndModel(r.cfg, &parentMeta, req.Provider, req.Model, req.AgentRole)
 	if err != nil {
 		return tools.AgentSpawnResult{}, WrapConfigError(err)
@@ -117,7 +126,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			Workdir:         workdir,
 			SystemOverride:  req.SystemOverride,
 			Mode:            mode,
-			WaitMode:        req.WaitMode,
+			WaitMode:        waitMode,
 			IsolationMode:   isolationMode,
 			IsolationRoot:   req.IsolationRoot,
 		})
@@ -185,14 +194,14 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			"status":     out.Status,
 			"agent_name": req.AgentName,
 			"agent_role": out.AgentRole,
-			"wait_mode":  normalizeParentWaitMode(req.WaitMode),
+			"wait_mode":  waitMode,
 		}); eventErr != nil {
 			if err != nil {
 				return out, err
 			}
 			return out, fmt.Errorf("append session.child.spawned event for child session %s: %w", result.SessionID, eventErr)
 		}
-		if coordinationErr := addParentChildSession(r.store, req.ParentSessionID, result.SessionID, req.WaitMode); coordinationErr != nil {
+		if coordinationErr := addParentChildSession(r.store, req.ParentSessionID, result.SessionID, waitMode); coordinationErr != nil {
 			if err != nil {
 				return out, err
 			}
@@ -288,8 +297,18 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		return session.QueueJob{}, err
 	}
 	req.AgentRole = agentRole
-	mode := strings.TrimSpace(req.Mode)
-	mode = normalizeRunMode(mode, session.ModeExec)
+	mode, err := normalizeAndValidateRunMode(req.Mode, session.ModeExec)
+	if err != nil {
+		return session.QueueJob{}, err
+	}
+	waitMode, err := normalizeAndValidateParentWaitMode(req.WaitMode)
+	if err != nil {
+		return session.QueueJob{}, err
+	}
+	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, "auto")
+	if err != nil {
+		return session.QueueJob{}, err
+	}
 	rootSessionID := req.ParentSessionID
 	var parentMeta *session.SessionMetadata
 	if req.ParentSessionID != "" {
@@ -334,8 +353,8 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		RequestedWorkdir: workdir,
 		SystemOverride:   req.SystemOverride,
 		Background:       true,
-		WaitMode:         normalizeParentWaitMode(req.WaitMode),
-		IsolationMode:    normalizeIsolationMode(req.IsolationMode, "auto"),
+		WaitMode:         waitMode,
+		IsolationMode:    isolationMode,
 		IsolationRoot:    req.IsolationRoot,
 	}
 	if err := r.store.EnqueueJob(job); err != nil {

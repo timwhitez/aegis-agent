@@ -433,6 +433,29 @@ func TestRunnerDelegateTreatsDefaultIsolationModeAsAuto(t *testing.T) {
 	}
 }
 
+func TestRunnerDelegateRejectsUnsupportedWaitMode(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	result, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish delegated work",
+		WaitMode:        "eventually",
+		IsolationMode:   "off",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported wait mode") {
+		t.Fatalf("expected unsupported wait mode error, got result=%#v err=%v", result, err)
+	}
+	children, listErr := runner.store.ListChildren(parentID, 10)
+	if listErr != nil {
+		t.Fatalf("list children: %v", listErr)
+	}
+	if len(children) != 0 {
+		t.Fatalf("unsupported wait mode should not create child sessions, got %#v", children)
+	}
+}
+
 func TestRunnerQueueSubmitAndWorkerCompletesJob(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
@@ -1054,6 +1077,57 @@ func TestRunnerQueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases(t *testing.
 	}
 	if meta.Workdir != parentWorkdir {
 		t.Fatalf("expected child workdir to reuse parent workspace, got %q want %q", meta.Workdir, parentWorkdir)
+	}
+}
+
+func TestRunnerQueueSubmitRejectsUnsupportedModeControls(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	cases := []struct {
+		name string
+		req  QueueSubmitRequest
+		want string
+	}{
+		{
+			name: "mode",
+			req: QueueSubmitRequest{
+				Mode: "sideways",
+			},
+			want: "unsupported run mode",
+		},
+		{
+			name: "wait mode",
+			req: QueueSubmitRequest{
+				WaitMode: "eventually",
+			},
+			want: "unsupported wait mode",
+		},
+		{
+			name: "isolation mode",
+			req: QueueSubmitRequest{
+				IsolationMode: "moonbase",
+			},
+			want: "unsupported isolation mode",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := tc.req
+			req.ParentSessionID = parentID
+			req.Prompt = "finish queued work"
+			if _, err := runner.QueueSubmit(context.Background(), req); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+			jobs, err := runner.store.ListJobs(10)
+			if err != nil {
+				t.Fatalf("list jobs: %v", err)
+			}
+			if len(jobs) != 0 {
+				t.Fatalf("invalid queue request should not persist jobs, got %#v", jobs)
+			}
+		})
 	}
 }
 

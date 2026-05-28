@@ -7818,6 +7818,12 @@ Evidence gates:
 - Confirmed this is a residual bypass of FCA-20260528-294, not a new route family. Plain `/api/sessions/<id>%2Fmessages` and `/api/skills/<id>%2Funinstall` were already blocked; this slice covers `/%61pi/sessions/<id>%2Fmessages` and `/%61pi/%73kills/<id>%2Funinstall`.
 - Confirmed the minimal fix belongs in the shared escaped-segment extractor: align the escaped path to the decoded static prefix before checking the first dynamic segment, preserving normal `URL.Path` dispatch, store id validation, and queue job detail behavior.
 
+### Review 289
+
+- Confirmed FCA-20260528-296 against `spec/14-multi-agent-and-isolation.md`, `spec/17-web-console.md`, and the Web-first local control contract: mode, wait-mode, and isolation-mode fields are control-plane options with documented value sets and aliases, so unsupported values must be rejected before creating durable session or queue facts.
+- Confirmed this is distinct from provider/config validation and from alias support. Existing behavior preserved `full-auto` and `workspace-write` aliases, but arbitrary `mode`, `wait_mode`, or `isolation_mode` strings could still be silently normalized or persisted.
+- Confirmed the minimal fix belongs at the runtime input boundary and Web status mapping: validate normalized run mode, isolation mode, and parent wait mode before `Start`, `Delegate`, or `QueueSubmit` writes files, while keeping provider adapters, tool autonomy, queue workers, and documented aliases unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7879,6 +7885,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-296
+
+Slice: `fix(runtime): reject unsupported control modes`
+
+Finding:
+
+- `normalizeRunMode` returned unknown non-empty values unchanged.
+- `normalizeParentWaitMode` mapped every unknown non-empty value to `wait-all`.
+- `normalizeIsolationMode` returned unknown non-empty values unchanged, with later failure only if isolation preparation was reached.
+- `Runner.Start` could create and complete a session with `mode:"sideways"`, storing an unsupported mode and deriving interactive completion policy from it.
+- `QueueSubmit` could accept unsupported `mode`, `wait_mode`, or `isolation_mode` values and persist a queued job, often silently converting the bad value to defaults such as `exec` or `wait-all`.
+- Web `/api/sessions/start` returned `202 Accepted` for unsupported `mode`, and Web `/api/queue/jobs` returned `202 Accepted` for unsupported `wait_mode`.
+
+Impact:
+
+- Client/API typos could become durable session or queue facts instead of immediate client errors.
+- Queue workers could later fail jobs that should never have been accepted, weakening local Web control clarity and recovery diagnostics.
+- Unknown modes also made session metadata and completion policy inconsistent with the documented `run` / `exec` / alias contract.
+
+Changes:
+
+- Added strict `normalizeAndValidateRunMode`, `normalizeAndValidateIsolationMode`, and `normalizeAndValidateParentWaitMode` helpers.
+- Applied validation before `Runner.Start`, `Runner.SpawnAgent`, and `Runner.QueueSubmit` create session or queue facts.
+- Preserved documented aliases: `full-auto` / `full_auto` / `autonomous` -> `exec`; `interactive` -> `run`; `workspace-write` / `workspace_write` / `none` -> `off`; `any` / `wait-any` / `wait_any` -> `wait-any`; empty/default/all/wait-all -> `wait-all`.
+- Updated WebConsole error mapping so unsupported mode errors return HTTP 400 instead of 500 when surfaced through start or queue routes.
+- Added focused runtime and WebConsole regressions proving invalid controls do not persist sessions or queue jobs.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole -run 'TestRunner(StartRejectsUnsupportedRunModeBeforeCreatingSession|QueueSubmitRejectsUnsupportedModeControls)|TestStartSessionRejectsUnsupportedModeAsBadRequest|TestServiceQueueSubmitRejectsUnsupportedWaitMode' -count=1 -v`: failed before the fix because invalid start returned `202` / completed, and invalid queue requests returned `202` / persisted jobs.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole -run 'TestRunner(DelegateRejectsUnsupportedWaitMode|StartRejectsUnsupportedRunModeBeforeCreatingSession|QueueSubmitRejectsUnsupportedModeControls|QueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases)|TestStartSessionRejectsUnsupportedModeAsBadRequest|TestServiceQueueSubmitRejectsUnsupportedWaitMode' -count=1`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/delegation.go internal/runtime/parent_coordination.go internal/runtime/runner_test.go internal/runtime/delegation_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `events.js`, `workspace-view.js`, `settings-view.js`, `utils.js`, `api.js`, and `validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-295
 

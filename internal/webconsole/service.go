@@ -2161,6 +2161,8 @@ func isClientStartError(err error) bool {
 	}
 	message := err.Error()
 	return strings.Contains(message, "unsupported agent role") ||
+		strings.Contains(message, "unsupported run mode") ||
+		strings.Contains(message, "unsupported isolation mode") ||
 		strings.Contains(message, "isolation target must not be inside source workdir") ||
 		strings.Contains(message, "unknown provider")
 }
@@ -2731,6 +2733,9 @@ func queueJobActionStatus(err error) int {
 		strings.Contains(message, "session id is required") ||
 		strings.Contains(message, "invalid session id") ||
 		strings.Contains(message, "unsupported agent role") ||
+		strings.Contains(message, "unsupported run mode") ||
+		strings.Contains(message, "unsupported wait mode") ||
+		strings.Contains(message, "unsupported isolation mode") ||
 		strings.Contains(message, "unknown provider") ||
 		strings.Contains(message, "isolation target must not be inside source workdir") {
 		return http.StatusBadRequest

@@ -494,6 +494,31 @@ func TestRunnerStartPersistsProviderOptionsInSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestRunnerStartRejectsUnsupportedRunModeBeforeCreatingSession(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+
+	result, err := runner.Start(context.Background(), StartRequest{
+		Prompt:        "finish this",
+		Workdir:       t.TempDir(),
+		Mode:          "sideways",
+		IsolationMode: "off",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported run mode") {
+		t.Fatalf("expected unsupported run mode error, got result=%#v err=%v", result, err)
+	}
+	if result.SessionID != "" {
+		t.Fatalf("invalid mode should not create a session, got %#v", result)
+	}
+	sessions, listErr := runner.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("invalid mode should not persist sessions, got %#v", sessions)
+	}
+}
+
 func TestRunnerStartReportsStartedEventAppendError(t *testing.T) {
 	var providerCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

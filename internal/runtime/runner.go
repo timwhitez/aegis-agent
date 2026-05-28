@@ -277,7 +277,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err != nil {
 		return RunResult{}, err
 	}
-	mode := normalizeRunMode(req.Mode, session.ModeRun)
+	mode, err := normalizeAndValidateRunMode(req.Mode, session.ModeRun)
+	if err != nil {
+		return RunResult{}, err
+	}
 	sessionID := session.NewSessionID()
 	releaseRunSlot, err := r.acquireRunSlot(sessionID)
 	if err != nil {
@@ -315,7 +318,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		return RunResult{}, WrapConfigError(err)
 	}
 	effectiveWorkdir := requestedWorkdir
-	isolationMode := normalizeIsolationMode(req.IsolationMode, r.cfg.Runtime.Isolation.DefaultMode)
+	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, r.cfg.Runtime.Isolation.DefaultMode)
+	if err != nil {
+		return RunResult{}, err
+	}
 	var isolationInfo *session.IsolationInfo
 	if isolationMode != "" && isolationMode != "off" {
 		rootDir := req.IsolationRoot
@@ -612,6 +618,16 @@ func normalizeIsolationMode(value, fallback string) string {
 	}
 }
 
+func normalizeAndValidateIsolationMode(value, fallback string) (string, error) {
+	mode := normalizeIsolationMode(value, fallback)
+	switch mode {
+	case "", "off", "auto", "copy", "git":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported isolation mode: %s", strings.TrimSpace(value))
+	}
+}
+
 func normalizeRunMode(value, fallback string) string {
 	mode := strings.ToLower(strings.TrimSpace(value))
 	if mode == "" || mode == "default" {
@@ -626,6 +642,16 @@ func normalizeRunMode(value, fallback string) string {
 		return session.ModeInit
 	default:
 		return mode
+	}
+}
+
+func normalizeAndValidateRunMode(value, fallback string) (string, error) {
+	mode := normalizeRunMode(value, fallback)
+	switch mode {
+	case session.ModeRun, session.ModeExec, session.ModeInit:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported run mode: %s", strings.TrimSpace(value))
 	}
 }
 

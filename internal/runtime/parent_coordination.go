@@ -23,6 +23,17 @@ func normalizeParentWaitMode(value string) string {
 	}
 }
 
+func normalizeAndValidateParentWaitMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default", "all", "wait-all", "wait_all":
+		return parentWaitAll, nil
+	case "any", "wait-any", "wait_any":
+		return parentWaitAny, nil
+	default:
+		return "", fmt.Errorf("unsupported wait mode: %s", strings.TrimSpace(value))
+	}
+}
+
 func addParentChildSession(store *session.Store, parentSessionID, childSessionID, waitMode string) error {
 	if strings.TrimSpace(parentSessionID) == "" || strings.TrimSpace(childSessionID) == "" {
 		return nil

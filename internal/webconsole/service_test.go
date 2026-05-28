@@ -2534,6 +2534,33 @@ func TestServiceQueueSubmitRejectsUnknownProviderWithStructuredError(t *testing.
 	}
 }
 
+func TestServiceQueueSubmitRejectsUnsupportedWaitMode(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/queue/jobs", map[string]any{
+		"prompt":    "queued child work",
+		"wait_mode": "eventually",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unsupported wait mode") {
+		t.Fatalf("expected unsupported wait mode error, got %#v", errResp)
+	}
+	jobs, listErr := svc.store.ListJobs(10)
+	if listErr != nil {
+		t.Fatalf("list jobs: %v", listErr)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("unsupported wait mode should not persist queue jobs, got %#v", jobs)
+	}
+}
+
 func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 	server := newSubmitPlanServer()
 	defer server.Close()
@@ -4058,6 +4085,33 @@ func TestStartSessionRejectsUnknownField(t *testing.T) {
 	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "unknown field") {
 		t.Fatalf("expected unknown field error, got %#v", errResp)
+	}
+}
+
+func TestStartSessionRejectsUnsupportedModeAsBadRequest(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt": "hello",
+		"mode":   "sideways",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unsupported run mode") {
+		t.Fatalf("expected unsupported mode error, got %#v", errResp)
+	}
+	sessions, listErr := svc.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("unsupported mode should not create a session, got %#v", sessions)
 	}
 }
 
