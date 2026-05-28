@@ -2659,6 +2659,7 @@ func TestExperimentalCommandsReportMissingCurrentDirectoryBeforeLoadingRunner(t 
 		{"experimental", "queue", "list", "--json"},
 		{"experimental", "queue", "show", "job_missing_cwd", "--json"},
 		{"experimental", "queue", "worker", "--once", "--json"},
+		{"experimental", "tui", "--once"},
 	}
 	for _, args := range cases {
 		err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{})

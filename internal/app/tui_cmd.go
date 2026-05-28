@@ -22,7 +22,10 @@ func tuiCommand(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, _, err := storeRunnerLoader(*configPath, cwd)
 	if err != nil {
 		return err

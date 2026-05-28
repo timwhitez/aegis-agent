@@ -22367,6 +22367,35 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-105
+
+Slice: `fix(tui): fail fast for missing cwd`
+
+Finding:
+
+- `internal/app/tui_cmd.go` resolved the process current directory with `os.Getwd()` but ignored the returned error before constructing the store runner.
+- TUI is experimental, but it is still part of the CLI adapter surface and should fail on adapter preconditions before loading config/session facts. This was the remaining `cwd, _ := os.Getwd()` occurrence after the default CLI, Web, fallback, and advanced queue/delegate paths were fixed.
+- A focused regression added `experimental tui --once` to the missing-current-directory command matrix. Before the fix, that case returned success and loaded the fake runner despite the removed cwd.
+
+Changes:
+
+- Propagated `os.Getwd()` errors from `tuiCommand`.
+- Extended missing-cwd regression coverage to `experimental tui --once`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestExperimentalCommandsReportMissingCurrentDirectoryBeforeLoadingRunner -count=1`: failed before the fix because `experimental tui --once` returned nil.
+- `gofmt -l internal/app/tui_cmd.go internal/app/app_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/app -run TestExperimentalCommandsReportMissingCurrentDirectoryBeforeLoadingRunner -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'Test(TUISnapshotRendersPanels|ExperimentalCommandsReportMissingCurrentDirectoryBeforeLoadingRunner)' -count=1`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/tui -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-104
 
 Slice: `fix(webconsole): add workspace tree keyboard semantics`
