@@ -363,6 +363,50 @@ func TestContinueCommandParsesPlanApproval(t *testing.T) {
 	}
 }
 
+func TestControlCommandsReportMissingCurrentDirectoryBeforeLoadingRunner(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	missingWD := t.TempDir()
+	if err := os.Chdir(missingWD); err != nil {
+		t.Fatalf("chdir missing cwd seed: %v", err)
+	}
+	if err := os.Remove(missingWD); err != nil {
+		_ = os.Chdir(originalWD)
+		t.Fatalf("remove cwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	fake := newFakeRunner()
+	fake.continueResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted}
+	fake.steerResult = runtime.SteerResult{SessionID: "s1", Accepted: true, Behavior: "queued"}
+	restore := runnerLoader
+	loaderCalls := 0
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		loaderCalls++
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	cases := [][]string{
+		{"continue", "s1", "--message", "resume", "--json"},
+		{"steer", "s1", "--message", "focus tests", "--json"},
+		{"sessions", "--json"},
+	}
+	for _, args := range cases {
+		err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "getwd") {
+			t.Fatalf("expected missing current directory error for %v, got %v", args, err)
+		}
+	}
+	if loaderCalls != 0 {
+		t.Fatalf("expected no runner loads after missing cwd, got %d", loaderCalls)
+	}
+}
+
 func TestGoalCommandAcceptsFlagsAfterSessionID(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

@@ -466,7 +466,10 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if fs.NArg() < 1 {
 		return fmt.Errorf("continue requires <session-id>")
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, _, err := runnerLoader(*configPath, cwd)
 	if err != nil {
 		return err
@@ -532,7 +535,10 @@ func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if fs.NArg() < 1 {
 		return fmt.Errorf("steer requires <session-id>")
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, _, err := runnerLoader(*configPath, cwd)
 	if err != nil {
 		return err
@@ -573,7 +579,10 @@ func sessionsCommand(args []string, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	runner, _, err := runnerLoader(*configPath, cwd)
 	if err != nil {
 		return err

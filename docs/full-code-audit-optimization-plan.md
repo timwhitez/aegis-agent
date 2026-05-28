@@ -8454,7 +8454,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-395. That slice covered the default WebConsole service startup path before config load; this residual issue is the init bootstrap path, where an absolute `--config` could still be written before later cwd-derived `.env.example`, `workspace`, skill, or hook writes failed.
 - Confirmed the minimal fix belongs in `internal/app/app.go` `runInit`: return `os.Getwd()` errors immediately after flag parsing, before any config serialization or filesystem writes.
 
+### Review 385
+
+- Confirmed FCA-20260529-397 against `AGENTS.md`'s current default CLI fallback path and `spec/13-live-input-and-steering.md`: `continue`, `steer`, and `sessions` are live control / recovery / observability entry points that load config and session stores relative to the invocation cwd, so an unresolvable cwd must stop before runner construction.
+- Confirmed this is distinct from FCA-20260529-395 and FCA-20260529-396. Those slices covered WebConsole service startup and the repo-writing init bootstrap command. The residual issue is the already-existing CLI control/read fallback commands, which could continue with an empty cwd-derived runner context.
+- Confirmed the minimal fix belongs in `internal/app/app.go`: return `os.Getwd()` errors in `continueCommand`, `steerCommand`, and `sessionsCommand` before calling `runnerLoader`.
+
 ## Update Log
+
+### FCA-20260529-397
+
+Slice: `fix(cli): fail fast for missing cwd controls`
+
+Finding:
+
+- `AGENTS.md` lists `continue`, `steer`, and `sessions` as part of the current default `web` + CLI fallback path.
+- `spec/13-live-input-and-steering.md` requires steer to use durable session control files, while `spec/00-product.md` and `spec/01-runtime-architecture.md` keep CLI recovery and observability tied to the same local session store facts as Web.
+- `internal/app/app.go` ignored `os.Getwd()` in `continueCommand`, `steerCommand`, and `sessionsCommand`, then passed the empty cwd into `runnerLoader`.
+- A focused CLI regression deleted the invocation cwd and ran `continue`, `steer`, and `sessions` with fake runners. Before the fix, the commands loaded the runner and could return success instead of reporting the missing cwd.
+
+Impact:
+
+- CLI fallback controls could operate against configuration and session roots derived from an invalid cwd context.
+- `steer` could report a queued control operation without proving that the command resolved the same local file authority as the active session environment.
+- `sessions` could present a clean-looking session list from the wrong fallback root instead of surfacing the local environment error.
+
+Changes:
+
+- Updated `continueCommand`, `steerCommand`, and `sessionsCommand` to return `os.Getwd()` errors before runner construction.
+- Added `TestControlCommandsReportMissingCurrentDirectoryBeforeLoadingRunner`, covering all three commands and asserting no runner is loaded after the cwd failure.
+- Preserved existing command parsing, JSON rendering, and normal successful command behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestControlCommandsReportMissingCurrentDirectoryBeforeLoadingRunner -count=1`: failed before the fix because `continue` returned nil and loaded the fake runner.
+- `go test -timeout 120s ./internal/app -run 'TestControlCommandsReportMissingCurrentDirectoryBeforeLoadingRunner|TestContinueCommandParsesPlanApproval|TestSteerCommandAcceptsFlagsAfterSessionID|TestSessionsCommandJSONUsesEmptyArray|TestSessionsCommandRendersSummary' -count=1`: passed after the fix.
 
 ### FCA-20260529-396
 
