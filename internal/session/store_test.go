@@ -3276,6 +3276,100 @@ func TestListJobsReportsCorruptQueueJob(t *testing.T) {
 	}
 }
 
+func TestLoadParentCoordinationRejectsMalformedSnapshot(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	malformed := ParentCoordination{
+		SchemaVersion:           1,
+		ParentSessionID:         meta.ID,
+		WaitMode:                "wait-all",
+		UnresolvedChildSessions: []string{"../child"},
+		UpdatedAt:               now,
+	}
+	if err := store.writeJSONFile(filepath.Join(store.SessionDir(meta.ID), "parent-coordination.json"), malformed); err != nil {
+		t.Fatalf("write malformed parent coordination: %v", err)
+	}
+
+	if _, err := store.LoadParentCoordination(meta.ID); err == nil || !strings.Contains(err.Error(), "validate parent-coordination.json") || !strings.Contains(err.Error(), "path separators") {
+		t.Fatalf("expected malformed parent-coordination.json validation error, got %v", err)
+	}
+	if _, err := store.SnapshotParentCoordination(meta.ID); err == nil || !strings.Contains(err.Error(), "validate parent-coordination.json") {
+		t.Fatalf("expected snapshot to reject malformed parent-coordination.json, got %v", err)
+	}
+}
+
+func TestParentCoordinationWritesRejectMalformedFacts(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	invalidWaitMode := ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     meta.ID,
+		WaitMode:            "later",
+		UnresolvedQueueJobs: []string{"job_parent_valid"},
+		UpdatedAt:           now,
+	}
+	if err := store.SaveParentCoordination(meta.ID, invalidWaitMode); err == nil || !strings.Contains(err.Error(), "invalid parent coordination wait_mode") {
+		t.Fatalf("expected save to reject invalid wait mode, got %v", err)
+	}
+
+	valid := ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     meta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{"job_parent_valid"},
+		Parked:              true,
+		UpdatedAt:           now,
+	}
+	if err := store.SaveParentCoordination(meta.ID, valid); err != nil {
+		t.Fatalf("save valid parent coordination: %v", err)
+	}
+	conflicting := valid
+	conflicting.CompletedQueueJobs = []string{"job_parent_valid"}
+	if err := store.SaveParentCoordination(meta.ID, conflicting); err == nil || !strings.Contains(err.Error(), "appears in multiple parent coordination queue sets") {
+		t.Fatalf("expected save to reject conflicting queue job status, got %v", err)
+	}
+	if _, _, err := store.MutateParentCoordination(meta.ID, func(coordination *ParentCoordination) error {
+		coordination.UnresolvedChildSessions = []string{"child_parent_duplicate", "child_parent_duplicate"}
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "duplicate parent coordination child session id") {
+		t.Fatalf("expected mutate to reject duplicate child session id, got %v", err)
+	}
+	loaded, err := store.LoadParentCoordination(meta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if len(loaded.UnresolvedQueueJobs) != 1 || loaded.UnresolvedQueueJobs[0] != "job_parent_valid" || len(loaded.CompletedQueueJobs) != 0 {
+		t.Fatalf("malformed parent coordination write changed durable fact: %#v", loaded)
+	}
+}
+
 func TestReconcileFailedJobUpdatesLinkedRunningSession(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

@@ -7890,6 +7890,12 @@ Evidence gates:
 - Confirmed this is distinct from prior background atomicity, merge, rollback, and corrupt-file reporting slices. Those protected valid notification acceptance and concurrent refresh behavior; this slice covers semantically malformed notification records being accepted on read/write/merge/restore paths.
 - Confirmed the minimal fix belongs in `SessionStore` background notification APIs: reject malformed notification IDs, missing or invalid queue job IDs, duplicate queue job IDs, blank timestamps, unsupported source/status/session-status/delivery-status values, and invalid visible paths while preserving queue scheduling, background drain, Web adapters, and model-led delegation semantics.
 
+### Review 301
+
+- Confirmed FCA-20260528-308 against `spec/18-durable-contract-and-completion.md`: `parent-coordination.json` is the durable parent wait-state fact source for unresolved child/queue work and feeds the parent completion gate, Web detail, session summary, and long-run checkpoint.
+- Confirmed this is distinct from prior parent-coordination concurrency, rollback, transition-event, and corrupt-JSON reporting slices. Those handled atomic updates and unreadable/non-JSON files; this slice covers semantically invalid but syntactically valid coordination snapshots.
+- Confirmed the minimal fix belongs in `SessionStore` parent coordination read/write/mutate paths: validate parent session identity, wait mode, timestamps, store-shaped child/session IDs, duplicate IDs, and cross-set unresolved/completed/failed conflicts while preserving existing `all`/`any` wait-mode alias compatibility and not adding any runtime workflow orchestration.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7951,6 +7957,54 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-308
+
+Slice: `fix(session): validate parent coordination facts`
+
+Finding:
+
+- `LoadParentCoordination` decoded `parent-coordination.json` without semantic validation.
+- `SaveParentCoordination`, `RestoreParentCoordination`, and `MutateParentCoordination` could persist malformed parent wait-state facts or preserve malformed existing records during locked mutations.
+- Parent completion gates, queue/child reconciliation, Web detail, session summaries, and long-run checkpoints trust `parent-coordination.json` as the durable source for unresolved child and queue work.
+
+Impact:
+
+- Invalid parent session IDs, path-shaped child/job IDs, duplicate IDs, or the same child/job appearing in unresolved and terminal sets could corrupt parent completion decisions.
+- Unsupported wait modes could make a parent incorrectly block or allow `finish`, because runtime gate logic only has defined semantics for `wait-all` and `wait-any`.
+- A malformed but syntactically valid `parent-coordination.json` could survive queue repair, child resolution, rollback, summaries, and checkpoints as if it were a valid coordination snapshot.
+
+Changes:
+
+- Added parent coordination validation for matching parent session identity, valid store-shaped IDs, nonblank `updated_at`, supported wait modes, duplicate IDs, and cross-set unresolved/completed/failed conflicts.
+- Normalized existing `all` / `wait_all` and `any` / `wait_any` aliases to canonical `wait-all` / `wait-any` on store reads and writes, preserving existing durable compatibility while keeping runtime gate semantics explicit.
+- Routed `LoadParentCoordination`, `SaveParentCoordination`, `SnapshotParentCoordination`, `RestoreParentCoordination`, and `MutateParentCoordination` through validation.
+- Kept transition-event and queue/child scheduling behavior unchanged; this slice only hardens the durable fact boundary.
+- Added focused regressions for malformed loaded `parent-coordination.json`, snapshot rejection over malformed facts, malformed save writes, duplicate child IDs in locked mutations, cross-set queue job conflicts, and durable fact preservation after rejected writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadParentCoordinationRejectsMalformedSnapshot|TestParentCoordinationWritesRejectMalformedFacts' -count=1`: failed before the fix because malformed `parent-coordination.json` loaded successfully and invalid wait modes saved successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLoadParentCoordinationRejectsMalformedSnapshot|TestParentCoordinationWritesRejectMalformedFacts|TestReconcileFailedJobUpdatesLinkedRunningSession|TestLoadJobRollsBackParentCoordinationWhenLifecycleEventFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestParentCoordinationGateBlocksWaitAllAndAllowsWaitAnyAfterOneCompletion|TestParentCoordinationGateReportsCorruptCoordinationSnapshot|TestParentCoordinationWritesParkedAndResumedEvents|TestParentCoordinationTransitionEventFailureRollsBack|TestRunnerQueueSubmitReportsChildQueuedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-307
 

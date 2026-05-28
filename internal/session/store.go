@@ -667,10 +667,22 @@ func (s *Store) LoadParentCoordination(sessionID string) (ParentCoordination, er
 		return coordination, err
 	}
 	err = readJSONFile(path, &coordination)
-	return coordination, err
+	if err != nil {
+		return coordination, err
+	}
+	if err := normalizeParentCoordinationWaitMode(&coordination); err != nil {
+		return ParentCoordination{}, fmt.Errorf("validate parent-coordination.json: %w", err)
+	}
+	if err := validateParentCoordination(sessionID, coordination); err != nil {
+		return ParentCoordination{}, fmt.Errorf("validate parent-coordination.json: %w", err)
+	}
+	return coordination, nil
 }
 
 func (s *Store) SaveParentCoordination(sessionID string, coordination ParentCoordination) error {
+	if err := normalizeAndValidateParentCoordination(sessionID, &coordination); err != nil {
+		return fmt.Errorf("validate parent-coordination.json: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "parent-coordination.json")
@@ -724,6 +736,14 @@ func (s *Store) MutateParentCoordination(sessionID string, mutate func(*ParentCo
 		if err := readJSONFile(path, &coordination); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if strings.TrimSpace(coordination.ParentSessionID) != "" {
+			if err := normalizeParentCoordinationWaitMode(&coordination); err != nil {
+				return fmt.Errorf("validate parent-coordination.json: %w", err)
+			}
+			if err := validateParentCoordination(sessionID, coordination); err != nil {
+				return fmt.Errorf("validate parent-coordination.json: %w", err)
+			}
+		}
 		if mutate != nil {
 			if err := mutate(&coordination); err != nil {
 				return err
@@ -736,6 +756,9 @@ func (s *Store) MutateParentCoordination(sessionID string, mutate func(*ParentCo
 			coordination.SchemaVersion = 1
 		}
 		coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := normalizeAndValidateParentCoordination(sessionID, &coordination); err != nil {
+			return fmt.Errorf("validate parent-coordination.json: %w", err)
+		}
 		return s.writeJSONFile(path, coordination)
 	})
 	if err != nil {
@@ -3300,6 +3323,100 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 		if _, err := validateStoreRelativePath("background notification visible_paths", visiblePath); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func normalizeAndValidateParentCoordination(sessionID string, coordination *ParentCoordination) error {
+	if coordination == nil {
+		return errors.New("parent coordination is required")
+	}
+	if coordination.SchemaVersion == 0 {
+		coordination.SchemaVersion = 1
+	}
+	if strings.TrimSpace(coordination.UpdatedAt) == "" {
+		coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if err := normalizeParentCoordinationWaitMode(coordination); err != nil {
+		return err
+	}
+	return validateParentCoordination(sessionID, *coordination)
+}
+
+func normalizeParentCoordinationWaitMode(coordination *ParentCoordination) error {
+	switch strings.ToLower(strings.TrimSpace(coordination.WaitMode)) {
+	case "", "default", "all", "wait-all", "wait_all":
+		coordination.WaitMode = "wait-all"
+	case "any", "wait-any", "wait_any":
+		coordination.WaitMode = "wait-any"
+	default:
+		return fmt.Errorf("invalid parent coordination wait_mode %q", coordination.WaitMode)
+	}
+	return nil
+}
+
+func validateParentCoordination(sessionID string, coordination ParentCoordination) error {
+	if strings.TrimSpace(coordination.ParentSessionID) == "" {
+		return errors.New("parent coordination parent_session_id is required")
+	}
+	if coordination.ParentSessionID != sessionID {
+		return fmt.Errorf("parent coordination parent_session_id %q does not match session %q", coordination.ParentSessionID, sessionID)
+	}
+	if err := validateStoreID("parent coordination parent session", coordination.ParentSessionID); err != nil {
+		return err
+	}
+	switch coordination.WaitMode {
+	case "wait-all", "wait-any":
+	default:
+		if strings.TrimSpace(coordination.WaitMode) == "" {
+			return errors.New("parent coordination wait_mode is required")
+		}
+		return fmt.Errorf("invalid parent coordination wait_mode %q", coordination.WaitMode)
+	}
+	if strings.TrimSpace(coordination.UpdatedAt) == "" {
+		return errors.New("parent coordination updated_at is required")
+	}
+	seenChildSessions := map[string]string{}
+	if err := validateParentCoordinationIDList("child session", "unresolved_child_sessions", coordination.UnresolvedChildSessions, seenChildSessions); err != nil {
+		return err
+	}
+	if err := validateParentCoordinationIDList("child session", "completed_child_sessions", coordination.CompletedChildSessions, seenChildSessions); err != nil {
+		return err
+	}
+	if err := validateParentCoordinationIDList("child session", "failed_child_sessions", coordination.FailedChildSessions, seenChildSessions); err != nil {
+		return err
+	}
+	seenQueueJobs := map[string]string{}
+	if err := validateParentCoordinationIDList("queue job", "unresolved_queue_jobs", coordination.UnresolvedQueueJobs, seenQueueJobs); err != nil {
+		return err
+	}
+	if err := validateParentCoordinationIDList("queue job", "completed_queue_jobs", coordination.CompletedQueueJobs, seenQueueJobs); err != nil {
+		return err
+	}
+	if err := validateParentCoordinationIDList("queue job", "failed_queue_jobs", coordination.FailedQueueJobs, seenQueueJobs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateParentCoordinationIDList(kind, field string, values []string, seen map[string]string) error {
+	for i, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("parent coordination %s contains blank %s id at index %d", field, kind, i)
+		}
+		if err := validateStoreID("parent coordination "+kind, value); err != nil {
+			return err
+		}
+		if previousField, exists := seen[value]; exists {
+			if previousField == field {
+				return fmt.Errorf("duplicate parent coordination %s id: %s", kind, value)
+			}
+			if kind == "queue job" {
+				return fmt.Errorf("queue job %q appears in multiple parent coordination queue sets: %s and %s", value, previousField, field)
+			}
+			return fmt.Errorf("child session %q appears in multiple parent coordination child session sets: %s and %s", value, previousField, field)
+		}
+		seen[value] = field
 	}
 	return nil
 }
