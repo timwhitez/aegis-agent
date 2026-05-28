@@ -55,7 +55,6 @@ const state = {
   refreshingOverview: false,
   refreshingSession: false,
   needsSessionRefresh: false,
-  lastInputWasEmpty: true,
   needsOverviewRefresh: false,
   hasMoreMessages: false,
   oldestMessageId: '',
@@ -124,12 +123,30 @@ const helpViewState = {
   visible: false
 };
 
+const composerViewState = {
+  inputEmpty: true
+};
+
 function isHelpVisible() {
   return helpViewState.visible;
 }
 
 function setHelpVisible(visible) {
   helpViewState.visible = Boolean(visible);
+}
+
+function isComposerInputEmpty() {
+  return composerViewState.inputEmpty;
+}
+
+function setComposerInputEmpty(empty) {
+  composerViewState.inputEmpty = Boolean(empty);
+}
+
+function syncComposerInputEmpty() {
+  if (nodes.chatInput) {
+    setComposerInputEmpty(!nodes.chatInput.value.trim());
+  }
 }
 
 function isFloatingPanelExpanded(panel) {
@@ -260,7 +277,7 @@ async function init() {
   renderCurrentSession();
 
   if (state.currentView === 'chat' && nodes.chatInput) {
-    state.lastInputWasEmpty = !nodes.chatInput.value.trim();
+    syncComposerInputEmpty();
     nodes.chatInput.focus();
   }
 }
@@ -611,9 +628,9 @@ function setupEventListeners() {
 
     // Only update UI if we really need to (e.g. for empty vs non-empty state)
     const isNowEmpty = !this.value.trim();
-    const wasEmpty = state.lastInputWasEmpty;
+    const wasEmpty = isComposerInputEmpty();
     if (isNowEmpty !== wasEmpty || state.nextSendInterrupt) {
-      state.lastInputWasEmpty = isNowEmpty;
+      setComposerInputEmpty(isNowEmpty);
       updateUI();
     }
   });
@@ -975,7 +992,7 @@ function switchView(viewName, options = {}) {
   if (viewName === 'chat') {
     renderCurrentSession();
     if (nodes.chatInput) {
-      state.lastInputWasEmpty = !nodes.chatInput.value.trim();
+      syncComposerInputEmpty();
       nodes.chatInput.focus();
     }
     if (shouldPollCurrentSession()) {
@@ -1017,7 +1034,7 @@ async function sendMessage() {
 
   nodes.chatInput.value = '';
   nodes.chatInput.style.height = 'auto';
-  state.lastInputWasEmpty = true;
+  setComposerInputEmpty(true);
   updateUI();
   renderCurrentSession();
 
@@ -1403,7 +1420,7 @@ function resetChatSession() {
   };
   state.isGenerating = false;
   state.launchInFlight = false;
-  state.lastInputWasEmpty = !nodes.chatInput.value.trim();
+  syncComposerInputEmpty();
   updateSessionId();
   persistUIState();
   renderCurrentSession();

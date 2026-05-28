@@ -685,6 +685,63 @@ test('shortcut help overlay visibility is isolated from durable app state', () =
   assert.equal(removed, true);
 });
 
+test('composer input empty flag is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    let updateCalls = 0;
+    updateUI = function updateUIForComposerInputTest() {
+      updateCalls += 1;
+    };
+    updateDynamicLayoutMetrics = function updateDynamicLayoutMetricsForComposerInputTest() {};
+    nodes.chatInput.value = '';
+    nodes.chatInput.scrollHeight = 24;
+    setupEventListeners();
+    const inputListener = nodes.chatInput.listeners.input;
+    const before = {
+      stateHasLastInputWasEmpty: Object.prototype.hasOwnProperty.call(state, 'lastInputWasEmpty'),
+      empty: isComposerInputEmpty(),
+      updateCalls
+    };
+    nodes.chatInput.value = 'draft instruction';
+    nodes.chatInput.scrollHeight = 40;
+    inputListener.call(nodes.chatInput);
+    const afterDraft = {
+      empty: isComposerInputEmpty(),
+      updateCalls,
+      height: nodes.chatInput.style.height
+    };
+    inputListener.call(nodes.chatInput);
+    const afterSameNonEmpty = {
+      empty: isComposerInputEmpty(),
+      updateCalls
+    };
+    nodes.chatInput.value = '   ';
+    inputListener.call(nodes.chatInput);
+    return {
+      before,
+      afterDraft,
+      afterSameNonEmpty,
+      afterEmpty: {
+        stateHasLastInputWasEmpty: Object.prototype.hasOwnProperty.call(state, 'lastInputWasEmpty'),
+        empty: isComposerInputEmpty(),
+        updateCalls
+      }
+    };
+  })()`, appContext);
+
+  assert.equal(result.before.stateHasLastInputWasEmpty, false);
+  assert.equal(result.before.empty, true);
+  assert.equal(result.before.updateCalls, 0);
+  assert.equal(result.afterDraft.empty, false);
+  assert.equal(result.afterDraft.updateCalls, 1);
+  assert.equal(result.afterDraft.height, '40px');
+  assert.equal(result.afterSameNonEmpty.empty, false);
+  assert.equal(result.afterSameNonEmpty.updateCalls, 1);
+  assert.equal(result.afterEmpty.stateHasLastInputWasEmpty, false);
+  assert.equal(result.afterEmpty.empty, true);
+  assert.equal(result.afterEmpty.updateCalls, 2);
+});
+
 test('plan input selections are isolated from durable app state', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);
