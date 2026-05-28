@@ -401,6 +401,45 @@ test('chat render cache is isolated from durable app state', () => {
   assert.equal(vm.runInContext(`chatRenderCacheValue('todoFloat')`, appContext), '');
 });
 
+test('runtime handles are isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    const handleKeys = [
+      'ws',
+      'pollHandle',
+      'pollIntervalMs',
+      'wsReconnectAttempts',
+      'wsReconnectTimer',
+      'pendingSessionRefresh',
+      'pendingOverviewRefresh',
+      'layoutObserver'
+    ];
+    runtimeHandles.pendingSessionRefresh = 101;
+    runtimeHandles.pendingOverviewRefresh = 102;
+    clearPendingRefreshes();
+    return {
+      stateHandleKeys: handleKeys.filter((key) => Object.prototype.hasOwnProperty.call(state, key)),
+      runtimeHandleKeys: handleKeys.filter((key) => Object.prototype.hasOwnProperty.call(runtimeHandles, key)).sort(),
+      pendingSessionRefresh: runtimeHandles.pendingSessionRefresh,
+      pendingOverviewRefresh: runtimeHandles.pendingOverviewRefresh
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result.stateHandleKeys), []);
+  assert.deepEqual(sameRealm(result.runtimeHandleKeys), [
+    'layoutObserver',
+    'pendingOverviewRefresh',
+    'pendingSessionRefresh',
+    'pollHandle',
+    'pollIntervalMs',
+    'ws',
+    'wsReconnectAttempts',
+    'wsReconnectTimer'
+  ]);
+  assert.equal(result.pendingSessionRefresh, null);
+  assert.equal(result.pendingOverviewRefresh, null);
+});
+
 test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {
   const appContext = createAppHarnessContext();
   const action = vm.runInContext(`

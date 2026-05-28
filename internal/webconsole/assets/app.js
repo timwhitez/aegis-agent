@@ -23,7 +23,6 @@ const state = {
   isGenerating: false,
   launchInFlight: false,
   isConnected: false,
-  ws: null,
   meta: null,
   sessionId: nextEphemeralSessionId(),
   sessionBacked: false,
@@ -56,18 +55,11 @@ const state = {
     tone: 'neutral'
   },
   nextSendInterrupt: false,
-  pollHandle: null,
-  pollIntervalMs: POLL_INTERVAL_MS,
-  wsReconnectAttempts: 0,
-  wsReconnectTimer: null,
   visibilityHidden: false,
   refreshingOverview: false,
   refreshingSession: false,
   needsSessionRefresh: false,
-  pendingSessionRefresh: null,
-  pendingOverviewRefresh: null,
   lastInputWasEmpty: true,
-  layoutObserver: null,
   showHelp: false,
   needsOverviewRefresh: false,
   overviewRequestSeq: 0,
@@ -90,6 +82,17 @@ const state = {
 
 const renderState = {
   chatCache: createEmptyChatRenderCache()
+};
+
+const runtimeHandles = {
+  ws: null,
+  pollHandle: null,
+  pollIntervalMs: POLL_INTERVAL_MS,
+  wsReconnectAttempts: 0,
+  wsReconnectTimer: null,
+  pendingSessionRefresh: null,
+  pendingOverviewRefresh: null,
+  layoutObserver: null
 };
 
 function createEmptyChatRenderCache() {
@@ -264,13 +267,13 @@ function isLiveWebSocket(ws) {
 }
 
 function clearPendingRefreshes() {
-  if (state.pendingSessionRefresh) {
-    window.clearTimeout(state.pendingSessionRefresh);
-    state.pendingSessionRefresh = null;
+  if (runtimeHandles.pendingSessionRefresh) {
+    window.clearTimeout(runtimeHandles.pendingSessionRefresh);
+    runtimeHandles.pendingSessionRefresh = null;
   }
-  if (state.pendingOverviewRefresh) {
-    window.clearTimeout(state.pendingOverviewRefresh);
-    state.pendingOverviewRefresh = null;
+  if (runtimeHandles.pendingOverviewRefresh) {
+    window.clearTimeout(runtimeHandles.pendingOverviewRefresh);
+    runtimeHandles.pendingOverviewRefresh = null;
   }
 }
 
@@ -278,25 +281,25 @@ function setupWebSocket() {
   if (state.visibilityHidden || typeof WebSocket === 'undefined') {
     return;
   }
-  if (isLiveWebSocket(state.ws)) {
+  if (isLiveWebSocket(runtimeHandles.ws)) {
     return;
   }
-  if (state.wsReconnectTimer) {
-    window.clearTimeout(state.wsReconnectTimer);
-    state.wsReconnectTimer = null;
+  if (runtimeHandles.wsReconnectTimer) {
+    window.clearTimeout(runtimeHandles.wsReconnectTimer);
+    runtimeHandles.wsReconnectTimer = null;
   }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws`;
   const ws = new WebSocket(wsUrl);
-  state.ws = ws;
+  runtimeHandles.ws = ws;
 
   ws.onopen = () => {
-    if (state.ws !== ws) {
+    if (runtimeHandles.ws !== ws) {
       ws.close();
       return;
     }
     state.isConnected = true;
-    state.wsReconnectAttempts = 0;
+    runtimeHandles.wsReconnectAttempts = 0;
     // WS is currently a health/relay channel; keep REST polling only while a run needs snapshots.
     clearPendingRefreshes();
     updateConnectionStatus();
@@ -309,7 +312,7 @@ function setupWebSocket() {
   };
 
   ws.onmessage = (event) => {
-    if (state.ws !== ws) {
+    if (runtimeHandles.ws !== ws) {
       return;
     }
     try {
@@ -322,18 +325,18 @@ function setupWebSocket() {
   };
 
   ws.onerror = () => {
-    if (state.ws !== ws) {
+    if (runtimeHandles.ws !== ws) {
       return;
     }
     // onclose will fire after onerror; let it own the reconnect logic.
   };
 
   ws.onclose = () => {
-    if (state.ws !== ws) {
+    if (runtimeHandles.ws !== ws) {
       return;
     }
     state.isConnected = false;
-    state.ws = null;
+    runtimeHandles.ws = null;
     updateConnectionStatus();
     if (state.isGenerating) {
       state.liveActivity = {
@@ -351,15 +354,15 @@ function setupWebSocket() {
 }
 
 function scheduleWebSocketReconnect() {
-  if (state.visibilityHidden || state.wsReconnectTimer || isLiveWebSocket(state.ws)) {
+  if (state.visibilityHidden || runtimeHandles.wsReconnectTimer || isLiveWebSocket(runtimeHandles.ws)) {
     return;
   }
-  const attempt = state.wsReconnectAttempts++;
+  const attempt = runtimeHandles.wsReconnectAttempts++;
   const base = Math.min(WS_RECONNECT_BASE_MS * Math.pow(2, attempt), WS_RECONNECT_MAX_MS);
   const jitter = base * 0.2 * (Math.random() * 2 - 1);
   const delay = Math.max(WS_RECONNECT_BASE_MS, Math.round(base + jitter));
-  state.wsReconnectTimer = window.setTimeout(() => {
-    state.wsReconnectTimer = null;
+  runtimeHandles.wsReconnectTimer = window.setTimeout(() => {
+    runtimeHandles.wsReconnectTimer = null;
     if (state.visibilityHidden) {
       // Visibility handler reconnects immediately when the tab becomes active again.
       return;
@@ -378,18 +381,18 @@ function setupVisibilityHandler() {
     if (state.visibilityHidden) {
       stopPolling();
       clearPendingRefreshes();
-      if (state.wsReconnectTimer) {
-        window.clearTimeout(state.wsReconnectTimer);
-        state.wsReconnectTimer = null;
+      if (runtimeHandles.wsReconnectTimer) {
+        window.clearTimeout(runtimeHandles.wsReconnectTimer);
+        runtimeHandles.wsReconnectTimer = null;
       }
       return;
     }
     syncPollingForState();
     if (!state.isConnected) {
       // Tab visible again: restart fallback polling and try a faster reconnect.
-      if (state.wsReconnectTimer) {
-        window.clearTimeout(state.wsReconnectTimer);
-        state.wsReconnectTimer = null;
+      if (runtimeHandles.wsReconnectTimer) {
+        window.clearTimeout(runtimeHandles.wsReconnectTimer);
+        runtimeHandles.wsReconnectTimer = null;
       }
       setupWebSocket();
     }
@@ -873,10 +876,10 @@ function setupLayoutObservers() {
   updateDynamicLayoutMetrics();
   window.addEventListener('resize', updateDynamicLayoutMetrics);
   if (window.ResizeObserver && nodes.inputArea) {
-    state.layoutObserver = new ResizeObserver(updateDynamicLayoutMetrics);
-    state.layoutObserver.observe(nodes.inputArea);
+    runtimeHandles.layoutObserver = new ResizeObserver(updateDynamicLayoutMetrics);
+    runtimeHandles.layoutObserver.observe(nodes.inputArea);
     if (nodes.chatInput) {
-      state.layoutObserver.observe(nodes.chatInput);
+      runtimeHandles.layoutObserver.observe(nodes.chatInput);
     }
   }
 }
@@ -1909,16 +1912,16 @@ function startPolling() {
     }
 
     if (!shouldRunPollingLoop()) {
-      state.pollHandle = null;
+      runtimeHandles.pollHandle = null;
       return;
     }
 
-    state.pollIntervalMs = pollingIntervalForState();
-    state.pollHandle = window.setTimeout(pollStep, state.pollIntervalMs);
+    runtimeHandles.pollIntervalMs = pollingIntervalForState();
+    runtimeHandles.pollHandle = window.setTimeout(pollStep, runtimeHandles.pollIntervalMs);
   };
 
-  state.pollIntervalMs = pollingIntervalForState();
-  state.pollHandle = window.setTimeout(pollStep, state.pollIntervalMs);
+  runtimeHandles.pollIntervalMs = pollingIntervalForState();
+  runtimeHandles.pollHandle = window.setTimeout(pollStep, runtimeHandles.pollIntervalMs);
 }
 
 function shouldRunPollingLoop() {
@@ -1952,7 +1955,7 @@ function pollingIntervalForState() {
 
 function syncPollingForState() {
   if (shouldRunPollingLoop()) {
-    if (!state.pollHandle) {
+    if (!runtimeHandles.pollHandle) {
       startPolling();
     }
     return;
@@ -1961,9 +1964,9 @@ function syncPollingForState() {
 }
 
 function stopPolling() {
-  if (state.pollHandle) {
-    window.clearTimeout(state.pollHandle);
-    state.pollHandle = null;
+  if (runtimeHandles.pollHandle) {
+    window.clearTimeout(runtimeHandles.pollHandle);
+    runtimeHandles.pollHandle = null;
   }
 }
 
@@ -1971,15 +1974,15 @@ function queueSessionRefresh(delay = 120) {
   if (!hasDurableSession()) {
     return;
   }
-  window.clearTimeout(state.pendingSessionRefresh);
-  state.pendingSessionRefresh = window.setTimeout(() => {
+  window.clearTimeout(runtimeHandles.pendingSessionRefresh);
+  runtimeHandles.pendingSessionRefresh = window.setTimeout(() => {
     refreshCurrentSession();
   }, delay);
 }
 
 function queueOverviewRefresh(delay = 180) {
-  window.clearTimeout(state.pendingOverviewRefresh);
-  state.pendingOverviewRefresh = window.setTimeout(() => {
+  window.clearTimeout(runtimeHandles.pendingOverviewRefresh);
+  runtimeHandles.pendingOverviewRefresh = window.setTimeout(() => {
     refreshOverview();
   }, delay);
 }

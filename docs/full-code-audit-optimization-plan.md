@@ -22396,6 +22396,42 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-109
+
+Slice: `fix(webconsole): isolate runtime handles`
+
+Finding:
+
+- After isolating chat render cache, the WebConsole's main global `state` still carried transient runtime handles: the WebSocket object, reconnect timer / attempts, polling timer / interval, queued refresh timers, and layout observer.
+- Those handles are browser runtime machinery, not durable UI facts and not session-store facts. Keeping them on `state` contradicted the P1 Render State Isolation plan and made the default Web-first surface easier to couple accidentally to timer/socket internals.
+
+Changes:
+
+- Added a small `runtimeHandles` object in `app.js` for WebSocket, reconnect, polling, queued refresh, and layout observer handles.
+- Removed those transient handle fields from the main `state` object while leaving user-visible state, session detail, request sequence guards, and selected view facts unchanged.
+- Updated WebSocket setup/reconnect, visibility handling, polling, queued refresh, and layout observer setup paths to use `runtimeHandles`.
+- Added a frontend Node harness regression proving runtime handle keys are absent from `state`, present on `runtimeHandles`, and still cleared by `clearPendingRefreshes`.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records both completed isolation slices and keeps the remaining request guard / view-local facts explicit.
+
+Validation:
+
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 68/68 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-108
 
 Slice: `fix(webconsole): isolate chat render cache`
