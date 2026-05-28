@@ -8376,7 +8376,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-382. The backend `sessionDetail` timeline window remains intentionally newest-first for tail selection and polling, and the Flow lane already selects the latest compact events from that order. The residual issue was only the right-side inspector's full Timeline panel directly mapping that newest-first array, so `evt_newest` appeared before `evt_oldest`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/session-view.js` `renderTimelinePanel`: render a reversed copy of `detail.timeline` for chronological inspector display without mutating the detail object, changing backend API ordering, altering message paging, or changing Flow lane latest-event selection.
 
+### Review 372
+
+- Confirmed FCA-20260529-384 against `spec/17-web-console.md`'s Background inspector boundary: background notification cards should project durable child / queue result facts, including failure facts, without hiding actionable `last_error` text behind stale child `final_text`.
+- Confirmed this is distinct from the corrupt child handoff backend/runtime slices. `internal/runtime/delegation.go` can persist failed queue handoff notifications with both `FinalText` from the child result and a later `LastError` from metadata or `messages.jsonl` reload, and `session.NewBackgroundNotification` intentionally carries both facts. The residual issue was only the frontend notification preview/full card choosing `final_text` before `last_error`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/session-view.js` `renderBackgroundNotificationsPreview` and `renderNotificationCard`: prefer `last_error` over `final_text` for notification copy, matching the existing background result message card and selected queue job facts panel without changing queue persistence, notification merge semantics, provider replay, or backend API shape.
+
 ## Update Log
+
+### FCA-20260529-384
+
+Slice: `fix(webconsole): show notification errors first`
+
+Finding:
+
+- `spec/17-web-console.md` defines the current session Background inspector as a projection of durable child / queue / notification facts, and failed background work needs to expose the child session or queue job error clearly.
+- `internal/runtime/delegation.go` can set `job.FinalText` from the child run result and then mark the queue job failed with a later `job.LastError` when child handoff reload fails, such as corrupt `messages.jsonl`.
+- `session.NewBackgroundNotification` copies both `FinalText` and `LastError` into the durable notification fact.
+- `internal/webconsole/assets/session-view.js` already preferred `last_error` over `final_text` for accepted background result message cards and selected queue job details, but `renderBackgroundNotificationsPreview` and `renderNotificationCard` rendered `final_text || last_error`.
+- A focused frontend regression created a failed notification with both a stale success-looking `final_text` and a `messages.jsonl` `last_error`. Before the fix, the card displayed `child reported success before handoff failed` and omitted the actionable `messages.jsonl` failure.
+
+Impact:
+
+- Operators scanning the Summary notification preview or full Background notification list could see stale child final text while the durable notification status was failed.
+- The queue job file, background notification file, child session metadata, backend `sessionDetail` response, provider replay, and runtime handoff failure behavior were unchanged; the issue was limited to frontend notification copy priority.
+
+Changes:
+
+- Changed both background notification renderers to display `last_error` before `final_text`.
+- Added a Node renderer regression proving failed notification preview and full cards expose the `messages.jsonl` error and do not display the stale final text.
+
+Validation:
+
+- `node --test --test-name-pattern "background notification cards prefer errors" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the notification card displayed stale final text and omitted `messages.jsonl`.
+- `node --test --test-name-pattern "background notification cards prefer errors" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 56 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-383
 

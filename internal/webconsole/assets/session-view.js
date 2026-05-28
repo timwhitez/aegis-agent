@@ -2111,7 +2111,7 @@ function renderBackgroundNotificationsPreview(items) {
         <div class="job-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Background result')}</div>
         <span class="status-badge ${toneForStatus(item.status || item.session_status)}">${escapeHTML(humanizeStatus(item.status || item.session_status || 'unknown'))}</span>
       </div>
-      <div class="notification-copy">${escapeHTML(truncateText(item.final_text || item.last_error || 'No final text recorded.', 180))}</div>
+      <div class="notification-copy">${escapeHTML(truncateText(item.last_error || item.final_text || 'No final text recorded.', 180))}</div>
       <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}</div>
       ${(item.queue_job_id || item.session_id) ? `
         <div class="card-actions">
@@ -2239,7 +2239,7 @@ function renderNotificationCard(item) {
         <div class="job-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Background notification')}</div>
         <span class="status-badge ${toneForStatus(item.status || item.session_status)}">${escapeHTML(humanizeStatus(item.status || item.session_status || 'unknown'))}</span>
       </div>
-      <div class="notification-copy">${escapeHTML(truncateText(item.final_text || item.last_error || 'No final text recorded.', 200))}</div>
+      <div class="notification-copy">${escapeHTML(truncateText(item.last_error || item.final_text || 'No final text recorded.', 200))}</div>
       <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}${item.delivery_status ? ` · ${escapeHTML(item.delivery_status)}` : ''}</div>
       ${renderVisiblePaths(item.visible_paths)}
       <div class="card-actions">

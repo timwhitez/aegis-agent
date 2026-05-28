@@ -587,6 +587,27 @@ test('background notification cards expose queue job and child session actions',
   assert.match(preview, /data-open-session="child_notification_open"/);
 });
 
+test('background notification cards prefer errors over final text for failed facts', () => {
+  const notification = {
+    queue_job_id: 'job_failed_handoff',
+    session_id: 'child_failed_handoff',
+    agent_name: 'reviewer',
+    agent_role: 'evaluator',
+    status: 'failed',
+    session_status: 'completed',
+    final_text: 'child reported success before handoff failed',
+    last_error: 'load child session messages.jsonl for queue job job_failed_handoff: corrupt'
+  };
+
+  const full = context.renderNotificationCard(notification);
+  const preview = context.renderBackgroundNotificationsPreview([notification]);
+
+  assert.match(full, /messages\.jsonl/);
+  assert.doesNotMatch(full, /child reported success before handoff failed/);
+  assert.match(preview, /messages\.jsonl/);
+  assert.doesNotMatch(preview, /child reported success before handoff failed/);
+});
+
 test('refreshSelectedQueueJobDetail ignores stale async responses after selection changes', async () => {
   const appContext = createAppHarnessContext();
   const slowRefresh = vm.runInContext(`
