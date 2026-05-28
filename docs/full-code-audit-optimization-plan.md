@@ -8076,6 +8076,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-337 and the earlier goal-history rollback/error slices. FCA-20260528-337 hardened the current `goal.json` snapshot timestamps; the rollback slices made missing/unwritable/corrupt history files visible and atomic. This slice covers the remaining history-entry timestamp-shape gap where non-empty non-RFC3339 `GoalHistoryEntry.CreatedAt` values were accepted on load, append, and restore paths.
 - Confirmed the minimal fix belongs in the `SessionStore` Goal history boundary: default omitted append timestamps before validation, parse `GoalHistoryEntry.CreatedAt` as RFC3339Nano for load/append/restore, and reject malformed restore input before truncating the existing valid history file without adding workflow ordering, DAG behavior, or provider-specific logic.
 
+### Review 332
+
+- Confirmed FCA-20260528-339 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `artifacts/planmode-history.jsonl` is the durable Plan Mode transition ledger for planning, user-input, submission, approval, revision, cancellation, execution, Web Plan inspector, CLI fallback, recovery, rollback, summaries, and checkpoints.
+- Confirmed this is distinct from FCA-20260528-338 and the earlier Plan Mode history rollback/error slices. FCA-20260528-338 hardened the analogous Goal history ledger; the Plan Mode rollback slices made missing/unwritable/corrupt history files visible and atomic. This slice covers the remaining Plan Mode history timestamp-shape gap where non-empty non-RFC3339 `PlanModeHistoryEntry.CreatedAt` values were accepted on load, append, and restore paths.
+- Confirmed the minimal fix belongs in the `SessionStore` Plan Mode history boundary: default omitted append timestamps before validation, parse `PlanModeHistoryEntry.CreatedAt` as RFC3339Nano for load/append/restore, and reject malformed restore input before replacing the existing valid history file without changing Plan Mode gate semantics, approval policy, provider replay, or Web state authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10816,6 +10822,51 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go`: passed with no output.
 - `git diff --check -- internal/session/taskboard.go internal/session/taskboard_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-339
+
+Slice: `fix(planmode): validate history timestamps`
+
+Finding:
+
+- `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` define `planmode.json` plus `artifacts/planmode-history.jsonl` as Plan Mode session facts and transition history for planning, input, approval, cancellation, execution, Web inspection, CLI fallback, recovery, and rollback.
+- After FCA-20260528-338 hardened the analogous `goal-history.jsonl` timestamp boundary, `PlanModeHistoryEntry.CreatedAt` still had no timestamp-shape validation: `LoadPlanModeHistory()` returned decoded entries unchecked, `AppendPlanModeHistory()` defaulted only omitted timestamps while accepting malformed non-empty values, and `RestorePlanModeHistory()` rewrote entries unchecked.
+- A focused regression writes a raw `planmode-history.jsonl` entry with `created_at:"not-a-time"`, then appends and restores malformed history entries. Before the fix, the load path accepted the malformed history timestamp with nil error.
+
+Impact:
+
+- Plan Mode transition chronology could contain arbitrary timestamp strings while Web/CLI/recovery views treated the ledger as a normal durable fact source.
+- Plan Mode approval/revision/cancellation retry paths, linked mission approval, Web Plan inspector, rollback helpers, session summaries, and long-run checkpoints can depend on loaded Plan Mode history facts; accepting malformed timestamps weakened traceability and corrupt-state classification.
+- This was a validation-boundary fix only; it does not change Plan Mode gating, approval semantics, provider replay, mission linkage, or model-led workflow behavior.
+
+Changes:
+
+- Added shared Plan Mode history validation that requires `PlanModeHistoryEntry.CreatedAt` and parses it as RFC3339Nano.
+- Routed `AppendPlanModeHistory()`, `LoadPlanModeHistory()`, and `RestorePlanModeHistory()` through that validation.
+- Preserved append compatibility for omitted `created_at` by keeping the existing defaulting before validation.
+- Rejected malformed restore input before truncating/replacing an existing valid Plan Mode history file.
+- Added a focused regression covering corrupt on-disk history load, malformed append, malformed restore, and valid-history preservation after rejected writes.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestPlanModeHistoryRejectsMalformedTimestamps` saw `LoadPlanModeHistory()` accept `created_at:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run TestPlanModeHistoryRejectsMalformedTimestamps -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestPlanModeHistoryRejectsMalformedTimestamps|TestPlanModeSubmitApproveAndHistory|TestAppendPlanModeHistoryReportsCorruptCurrentPlanModeSnapshot|TestSubmitPlanModeReturnsHistoryAppendError|TestSubmitPlanModeRollsBackWhenMarkdownWriteFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestPlanMode|TestApprove|TestSubmit|TestCancel|TestRequestUserInput|TestContinuePlanModeCreationRetry|TestRecoveredPlanMode' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/planmode.go internal/session/planmode_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

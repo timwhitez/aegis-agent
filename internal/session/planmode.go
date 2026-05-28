@@ -483,6 +483,9 @@ func (s *Store) AppendPlanModeHistory(sessionID string, entry PlanModeHistoryEnt
 	if entry.CreatedAt == "" {
 		entry.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	if err := validatePlanModeHistoryEntry(entry); err != nil {
+		return fmt.Errorf("validate planmode-history.jsonl: %w", err)
+	}
 	if entry.PlanModeID == "" {
 		if state, err := s.loadPlanModeNoLock(sessionID); err == nil {
 			entry.PlanModeID = state.PlanModeID
@@ -510,13 +513,22 @@ func (s *Store) LoadPlanModeHistory(sessionID string) ([]PlanModeHistoryEntry, e
 	if errors.Is(err, os.ErrNotExist) {
 		return []PlanModeHistoryEntry{}, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePlanModeHistoryEntries(out); err != nil {
+		return nil, fmt.Errorf("validate planmode-history.jsonl: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Store) RestorePlanModeHistory(sessionID string, entries []PlanModeHistoryEntry) error {
 	path, err := s.sessionPath(sessionID, "artifacts", "planmode-history.jsonl")
 	if err != nil {
 		return err
+	}
+	if err := validatePlanModeHistoryEntries(entries); err != nil {
+		return fmt.Errorf("validate planmode-history.jsonl: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -531,6 +543,25 @@ func (s *Store) RestorePlanModeHistory(sessionID string, entries []PlanModeHisto
 		return err
 	}
 	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
+}
+
+func validatePlanModeHistoryEntries(entries []PlanModeHistoryEntry) error {
+	for i, entry := range entries {
+		if err := validatePlanModeHistoryEntry(entry); err != nil {
+			return fmt.Errorf("entry %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validatePlanModeHistoryEntry(entry PlanModeHistoryEntry) error {
+	if strings.TrimSpace(entry.CreatedAt) == "" {
+		return errors.New("plan mode history created_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, entry.CreatedAt); err != nil {
+		return fmt.Errorf("plan mode history created_at must be RFC3339Nano: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (PlanModeState, error) {

@@ -433,6 +433,72 @@ func TestAppendPlanModeHistoryReportsCorruptCurrentPlanModeSnapshot(t *testing.T
 	}
 }
 
+func TestPlanModeHistoryRejectsMalformedTimestamps(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	state, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Reject malformed plan mode history timestamps",
+		Source:    PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	valid := PlanModeHistoryEntry{
+		SchemaVersion: 1,
+		ID:            NewPlanModeHistoryID(),
+		SessionID:     sessionID,
+		PlanModeID:    state.PlanModeID,
+		Type:          "planmode.created",
+		Source:        PlanModeSourceCLI,
+		Status:        PlanModeStatusPlanning,
+		CreatedAt:     now,
+	}
+	malformed := valid
+	malformed.ID = NewPlanModeHistoryID()
+	malformed.CreatedAt = "not-a-time"
+	historyPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "planmode-history.jsonl")
+	writePlanModeHistoryEntriesForTest(t, store, historyPath, []PlanModeHistoryEntry{malformed})
+	if _, err := store.LoadPlanModeHistory(sessionID); err == nil || !strings.Contains(err.Error(), "validate planmode-history.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed plan mode history load error, got %v", err)
+	}
+
+	writePlanModeHistoryEntriesForTest(t, store, historyPath, []PlanModeHistoryEntry{valid})
+	if err := store.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
+		Type:      "planmode.plan_revised",
+		Source:    PlanModeSourceSystem,
+		CreatedAt: "not-a-time",
+	}); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed plan mode history append error, got %v", err)
+	}
+	if err := store.RestorePlanModeHistory(sessionID, []PlanModeHistoryEntry{valid, malformed}); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed plan mode history restore error, got %v", err)
+	}
+	history, err := store.LoadPlanModeHistory(sessionID)
+	if err != nil {
+		t.Fatalf("load preserved valid plan mode history: %v", err)
+	}
+	if len(history) != 1 || history[0].ID != valid.ID {
+		t.Fatalf("expected malformed writes to preserve valid history, got %#v", history)
+	}
+}
+
+func writePlanModeHistoryEntriesForTest(t *testing.T, store *Store, path string, entries []PlanModeHistoryEntry) {
+	t.Helper()
+	var data strings.Builder
+	for _, entry := range entries {
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("marshal plan mode history: %v", err)
+		}
+		data.Write(encoded)
+		data.WriteByte('\n')
+	}
+	if err := store.writeBytesFile(path, []byte(data.String())); err != nil {
+		t.Fatalf("write plan mode history: %v", err)
+	}
+}
+
 func TestRestorePlanModeSnapshotRemovesCreatedPlanMode(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	snapshot, err := store.SnapshotPlanMode(sessionID)
