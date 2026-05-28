@@ -3261,6 +3261,12 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		updatedCfg.Runtime.MaxTurnsHard = *req.MaxTurnsHard
 	}
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
 	var apiKeyAudit map[string]any
 	var apiKeyUpdate *webAPIKeyUpdate
 	if providerName != "" {
@@ -3292,7 +3298,6 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
-			cwd, _ := os.Getwd()
 			envPath := config.DefaultEnvFilePath(cwd)
 			apiKeyUpdate = &webAPIKeyUpdate{
 				envKey:  p.APIKeyEnv,
@@ -3316,7 +3321,6 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		updatedCfg.RoleProviders = roleProviders
 	}
 
-	cwd, _ := os.Getwd()
 	configPath := s.configPath
 	if strings.TrimSpace(configPath) == "" {
 		configPath = config.PersistPath("", cwd)

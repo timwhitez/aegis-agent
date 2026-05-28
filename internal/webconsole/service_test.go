@@ -4462,6 +4462,47 @@ func TestUpdateConfigRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigReportsMissingCurrentDirectoryBeforeDefaultPathPersistence(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	cwd := t.TempDir()
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("chdir service cwd: %v", err)
+	}
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		_ = os.Chdir(originalWD)
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	if err := os.Remove(cwd); err != nil {
+		_ = os.Chdir(originalWD)
+		t.Fatalf("remove service cwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider":        "openai",
+		"guardrails_mode": "standard",
+	}, http.StatusInternalServerError)
+	if !strings.Contains(errResp.Error, "getwd") {
+		t.Fatalf("expected missing current directory error, got %#v", errResp)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing cwd settings save should not persist config; stat err=%v", err)
+	}
+}
+
 func TestAPIKeyWriteDoesNotLogSecretValue(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)

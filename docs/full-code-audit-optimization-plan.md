@@ -8466,7 +8466,42 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-395, FCA-20260529-396, and FCA-20260529-397. Those slices covered WebConsole startup, init bootstrap writes, and the live control/read trio `continue` / `steer` / `sessions`. The residual issue was the remaining default CLI fallback and diagnostics commands in `internal/app/app.go`, which still ignored `os.Getwd()` before runner construction.
 - Confirmed the minimal fix belongs in the CLI adapter only: return `os.Getwd()` errors in the affected command handlers before calling `storeRunnerLoader` or `runnerLoader`, while preserving normal successful parsing, rendering, provider probe, doctor, goal, and task-board behavior.
 
+### Review 387
+
+- Confirmed FCA-20260529-399 against `spec/17-web-console.md`'s Settings provider/model configuration requirement and `spec/01-runtime-architecture.md`'s WebConsole app adapter boundary: `/api/config` persists local config and optional API-key env facts, so it must fail clearly if the service process cwd can no longer be resolved before deriving default config or env-file paths.
+- Confirmed this is distinct from FCA-20260529-392, FCA-20260529-393, FCA-20260529-395, and the prior Settings transaction slices. Those covered Web metadata, Skills discovery, Web startup, and audit/env/config rollback ordering. The residual issue was the already-running Settings save route: `handleUpdateConfig` still swallowed `os.Getwd()` after service startup and could persist settings through a stale explicit config path after the service cwd disappeared.
+- Confirmed the minimal fix belongs in `internal/webconsole/service.go` `handleUpdateConfig`: resolve cwd once before constructing any default config/API-key path or writing local settings, return the error on failure, and reuse that cwd for both `config.DefaultEnvFilePath` and `config.PersistPath`.
+
 ## Update Log
+
+### FCA-20260529-399
+
+Slice: `fix(webconsole): fail fast for missing cwd settings saves`
+
+Finding:
+
+- `spec/17-web-console.md` makes Settings provider/model configuration part of the default Web-first surface.
+- `spec/01-runtime-architecture.md` requires WebConsole to remain a local app/service adapter over runtime and file facts, not a second authority.
+- `internal/webconsole/service.go` `handleUpdateConfig` still used `cwd, _ := os.Getwd()` both when deriving the API-key env file and when falling back to the default config path.
+- A focused WebConsole regression started the service from a valid cwd, removed that cwd, and then posted `/api/config` with an explicit config path and a guardrails update. Before the fix, the route returned HTTP 200 and persisted config instead of reporting the missing service cwd.
+
+Impact:
+
+- An already-running WebConsole process could continue accepting Settings saves after its service cwd disappeared, even though the local workspace/config authority was no longer resolvable.
+- Requests with an explicit config path could still mutate durable settings while the service cwd fact used by workspace, default env path, and local-console diagnostics was broken.
+- Requests with API-key writes could derive `.env` from an empty cwd, weakening recovery diagnostics and potentially targeting the wrong local env file.
+
+Changes:
+
+- Updated `handleUpdateConfig` to call `os.Getwd()` once before any Settings persistence work and return HTTP 500 if it fails.
+- Reused the validated cwd for both `config.DefaultEnvFilePath(cwd)` and `config.PersistPath("", cwd)`.
+- Added `TestUpdateConfigReportsMissingCurrentDirectoryBeforeDefaultPathPersistence`, proving `/api/config` fails before writing config when cwd is missing.
+- Preserved normal Settings save validation, API-key preflights, audit-event ordering, rollback behavior, and active config updates.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigReportsMissingCurrentDirectoryBeforeDefaultPathPersistence -count=1`: failed before the fix because `/api/config` returned HTTP 200 and wrote the config.
+- `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigReportsMissingCurrentDirectoryBeforeDefaultPathPersistence -count=1`: passed after the fix.
 
 ### FCA-20260529-398
 
