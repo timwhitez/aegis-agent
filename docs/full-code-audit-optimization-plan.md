@@ -8484,7 +8484,52 @@ Evidence gates:
 - Confirmed this is distinct from the earlier stop/interrupt stale-selection slices. Those preserved target-session correctness and parent refresh behavior after async stop completion; this residual issue was only the pending duplicate-stop guard living on the main `state` object.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the per-session pending stop id set into a tiny `stopActionViewState`, keep `isStoppingSession()` as the renderer-facing helper, and preserve duplicate stop suppression, button disable/re-enable, fallback steer, selected parent refresh, and backend stop API behavior.
 
+### Review 390
+
+- Confirmed FCA-20260529-118 against `spec/17-web-console.md`'s Sessions list parent/child hierarchy requirement and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: expanded parent ids are local Sessions view render state, not durable history data, session metadata, queue facts, provider replay facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-114. That slice moved History API request sequencing into `historyViewState`; this residual issue was only the parent-row expansion set used by `renderHistory()` and the `[data-history-toggle-children]` click handler.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move parent-row expansion ids into a tiny `historyExpansionViewState`, keep history data/page facts in `state`, and preserve expanded parent/child rendering without changing `/api/history`, pagination, deletion, or session open behavior.
+
 ## Update Log
+
+### FCA-20260529-118
+
+Slice: `fix(webconsole): isolate history expansion state`
+
+Finding:
+
+- The Sessions/History view stored expanded parent session ids in the main WebConsole `state.expandedHistoryParents` set.
+- The set only controls whether already-loaded parent/child rows render expanded in the current browser view. It is not durable session history, backend pagination state, queue metadata, provider replay state, or WebConsole file-fact authority.
+- A focused frontend regression required that parent expansion ids stay out of the main `state` object while expanded parent/child rendering still works. Before the fix, the regression failed because `state` still owned `expandedHistoryParents`.
+
+Changes:
+
+- Added a tiny `historyExpansionViewState.parentIds` set in `app.js` to own Sessions/History parent-row expansion ids.
+- Updated the `[data-history-toggle-children]` click handler to add/delete ids through `historyExpansionViewState.parentIds`.
+- Updated `renderHistory()` to read expansion status from `historyExpansionViewState.parentIds`.
+- Added a frontend regression proving `state.expandedHistoryParents` is absent while an expanded parent still renders its child rows.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this History-view-local state slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "history parent expansion is isolated" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `expandedHistoryParents`.
+- `node --test --test-name-pattern "history parent expansion is isolated" validation/scripts/webconsole_utils_test.mjs`: passed after moving the set into `historyExpansionViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 71/71 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-117
 

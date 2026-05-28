@@ -61,7 +61,6 @@ const state = {
   todoFloatExpanded: true,
   fileChangesExpanded: true,
   subAgentExpanded: true,
-  expandedHistoryParents: new Set(),
   planInputSelections: {},
   hasMoreMessages: false,
   oldestMessageId: '',
@@ -98,6 +97,10 @@ const overviewViewState = {
 
 const historyViewState = {
   requestSeq: 0
+};
+
+const historyExpansionViewState = {
+  parentIds: new Set()
 };
 
 const messagePagingViewState = {
@@ -657,10 +660,10 @@ function setupEventListeners() {
     if (historyExpandToggle) {
       const parentID = historyExpandToggle.getAttribute('data-history-toggle-children');
       if (parentID) {
-        if (state.expandedHistoryParents.has(parentID)) {
-          state.expandedHistoryParents.delete(parentID);
+        if (historyExpansionViewState.parentIds.has(parentID)) {
+          historyExpansionViewState.parentIds.delete(parentID);
         } else {
-          state.expandedHistoryParents.add(parentID);
+          historyExpansionViewState.parentIds.add(parentID);
         }
         renderHistory();
       }
@@ -2725,7 +2728,7 @@ function renderHistory(data) {
     return list.map((item) => {
       const children = childrenByParent[item.id] || [];
       const hasChildren = children.length > 0;
-      const isExpanded = state.expandedHistoryParents.has(item.id);
+      const isExpanded = historyExpansionViewState.parentIds.has(item.id);
       let html = renderHistorySessionCard(item, false, hasChildren, isExpanded, chevronDown, children.length);
       if (hasChildren) {
         html += `<div class="history-tree-children${isExpanded ? ' is-expanded' : ''}">`;

@@ -503,6 +503,47 @@ test('stop action pending sessions are isolated from durable app state', async (
   assert.equal(finalState.isStopping, false);
 });
 
+test('history parent expansion is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    const history = {
+      total: 2,
+      page: 1,
+      page_size: 8,
+      total_pages: 1,
+      items: [
+        {
+          id: 'parent_history_session',
+          status: 'completed',
+          model: 'gpt-test',
+          phase: 'done',
+          updated_at: '2026-05-29T00:00:00Z'
+        },
+        {
+          id: 'child_history_session',
+          parent_session_id: 'parent_history_session',
+          status: 'completed',
+          model: 'gpt-test',
+          phase: 'done',
+          updated_at: '2026-05-29T00:00:01Z'
+        }
+      ]
+    };
+    historyExpansionViewState.parentIds.add('parent_history_session');
+    renderSessionStopButton = function() { return ''; };
+    renderHistory(history);
+    return {
+      stateHasExpandedHistoryParents: Object.prototype.hasOwnProperty.call(state, 'expandedHistoryParents'),
+      isExpanded: nodes.views.history.innerHTML.includes('history-tree-children is-expanded'),
+      childVisible: nodes.views.history.innerHTML.includes('child_history_session')
+    };
+  })()`, appContext);
+
+  assert.equal(result.stateHasExpandedHistoryParents, false);
+  assert.equal(result.isExpanded, true);
+  assert.equal(result.childVisible, true);
+});
+
 test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {
   const appContext = createAppHarnessContext();
   const action = vm.runInContext(`
