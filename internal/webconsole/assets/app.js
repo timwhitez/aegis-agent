@@ -1370,16 +1370,17 @@ function updateUI() {
   nodes.inputContainer.classList.toggle('is-busy', state.isGenerating || state.launchInFlight);
   nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
   nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
-  nodes.stopSessionBtn?.classList.toggle('is-visible', state.isGenerating);
-  nodes.interruptSessionBtn?.classList.toggle('is-visible', state.isGenerating);
+  const directSessionControlAvailable = canUseDirectSessionControl();
+  nodes.stopSessionBtn?.classList.toggle('is-visible', directSessionControlAvailable);
+  nodes.interruptSessionBtn?.classList.toggle('is-visible', directSessionControlAvailable);
   nodes.interruptToggleBtn?.classList.toggle('is-visible', state.isGenerating && hasDurableSession());
   nodes.interruptToggleBtn?.classList.toggle('is-armed', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
   nodes.interruptToggleBtn?.setAttribute('aria-pressed', state.nextSendInterrupt ? 'true' : 'false');
   if (nodes.stopSessionBtn) {
-    nodes.stopSessionBtn.disabled = !state.isGenerating || !hasDurableSession();
+    nodes.stopSessionBtn.disabled = !directSessionControlAvailable;
   }
   if (nodes.interruptSessionBtn) {
-    nodes.interruptSessionBtn.disabled = !state.isGenerating || !hasDurableSession();
+    nodes.interruptSessionBtn.disabled = !directSessionControlAvailable;
   }
   nodes.chatInput.placeholder = chatInputPlaceholder();
 
@@ -1958,6 +1959,13 @@ function isActiveRuntimeStatus(status) {
 
 function isStoppableSessionStatus(status) {
   return String(status || '').toLowerCase() === 'running';
+}
+
+function canUseDirectSessionControl() {
+  return state.isGenerating &&
+    hasDurableSession() &&
+    state.sessionDetail?.active_handle === true &&
+    state.sessionDetail?.active_handle_owner?.owned_by_current_process === true;
 }
 
 function queueJobItems(data = state.sessionDetail?.children?.jobs) {

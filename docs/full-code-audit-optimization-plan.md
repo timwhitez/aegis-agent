@@ -8166,6 +8166,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-323, FCA-20260528-350, and FCA-20260528-352. Those covered unsafe core files and semantic core/event fact validation; this slice covers the parent directory entry itself, where a symlinked session directory was skipped before any core file validation ran.
 - Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: detect symlink entries directly under the session root, report them as `unsafe_session_dirs`, and include that count in `session.partial_state`, without following the symlink or changing store/list/Web/TUI behavior.
 
+### Review 347
+
+- Confirmed FCA-20260528-354 against `spec/17-web-console.md`: running-session steer is allowed for any running durable session, but direct Web `stop` / `interrupt` controls are only available when the selected session is hosted by the current Web server process.
+- Confirmed this is distinct from the backend ownership fixes and stale completion fixes. The service already returned `active_handle=false` plus `active_handle_owner.state=running_not_owned` and rejected direct stop/interrupt with `ACTIVE_HANDLE_NOT_OWNED`; this slice covers the remaining frontend mismatch where the top-level buttons ignored those facts.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: gate only the top-level direct stop/interrupt buttons on `active_handle` and `active_handle_owner.owned_by_current_process`, while preserving interrupt steer as the fallback control for non-owned running sessions.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11543,6 +11549,46 @@ Validation:
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-354
+
+Slice: `fix(webconsole): gate direct session controls by owner`
+
+Finding:
+
+- `spec/17-web-console.md` requires direct `stop` / `interrupt` controls only when a running session is hosted by the current Web server process; otherwise users should use steer with `interrupt=true` or wait for the run to settle.
+- The backend already exposed this distinction through `active_handle` and `active_handle_owner.owned_by_current_process`, and direct stop/interrupt endpoints already returned `ACTIVE_HANDLE_NOT_OWNED` for non-owned running sessions.
+- `updateUI()` in `internal/webconsole/assets/app.js` still showed and enabled the top-level Stop and Interrupt buttons whenever `state.isGenerating` and a durable session were present, ignoring the active-handle ownership facts. A focused renderer regression with `active_handle:false` and `active_handle_owner.state:"running_not_owned"` showed both buttons visible and enabled before the fix.
+
+Impact:
+
+- The default Web surface advertised a direct control action that the backend would reject for sessions running in another Web process or CLI fallback runner.
+- Operators could confuse direct handle control with interrupt steer, creating avoidable errors on the main Web-first path.
+- This is a frontend control-surface fix only; it does not change backend ownership enforcement, steer queue semantics, direct stop/interrupt endpoints, active handle events, or runtime cancellation behavior.
+
+Changes:
+
+- Added `canUseDirectSessionControl()` in `app.js`.
+- Gated top-level Stop and Interrupt button visibility and disabled state on `active_handle === true` and `active_handle_owner.owned_by_current_process === true`.
+- Preserved the interrupt steer toggle for running durable sessions, because that remains the fallback control for non-owned sessions.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the renderer test observed visible and enabled top-level direct controls for a non-owned running session.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 50 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(SessionDetailReportsActiveHandleOwner|InterruptNonOwnedSessionReturnsStructuredError|StopNonOwnedSessionReturnsStructuredError|ServiceInterruptUsesManualPauseReason|ServiceStopSessionPausesWithManualStopReason)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `git diff --check -- internal/webconsole/assets/app.js validation/scripts/webconsole_utils_test.mjs docs/full-code-audit-optimization-plan.md`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-339

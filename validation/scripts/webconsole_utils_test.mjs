@@ -1712,6 +1712,63 @@ test('stop completion does not update a newly selected session', async () => {
   });
 });
 
+test('top-level stop and interrupt controls hide for running sessions not owned by this web process', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(`
+    const stopButton = {
+      disabled: false,
+      classList: {
+        visible: false,
+        toggle(name, value) {
+          if (name === 'is-visible') this.visible = Boolean(value);
+        }
+      }
+    };
+    const interruptButton = {
+      disabled: false,
+      classList: {
+        visible: false,
+        toggle(name, value) {
+          if (name === 'is-visible') this.visible = Boolean(value);
+        }
+      }
+    };
+    nodes.stopSessionBtn = stopButton;
+    nodes.interruptSessionBtn = interruptButton;
+    state.sessionId = 'session_external_owner_ui';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_external_owner_ui' },
+      state: { status: 'running' },
+      active_handle: false,
+      active_handle_owner: {
+        state: 'running_not_owned',
+        owned_by_current_process: false
+      }
+    };
+    updateUI();
+    ({
+      stopVisible: stopButton.classList.visible,
+      interruptVisible: interruptButton.classList.visible,
+      stopDisabled: stopButton.disabled,
+      interruptDisabled: interruptButton.disabled
+    });
+  `, appContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stopVisible: nodes.stopSessionBtn.classList.visible,
+    interruptVisible: nodes.interruptSessionBtn.classList.visible,
+    stopDisabled: nodes.stopSessionBtn.disabled,
+    interruptDisabled: nodes.interruptSessionBtn.disabled
+  })`, appContext)), {
+    stopVisible: false,
+    interruptVisible: false,
+    stopDisabled: true,
+    interruptDisabled: true
+  });
+});
+
 test('child stop completion refreshes selected parent session', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
