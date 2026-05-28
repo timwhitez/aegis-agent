@@ -671,6 +671,35 @@ test('sub-agent cards show queue final text for completed jobs', () => {
   assert.match(html, /child completed final summary for parent handoff/);
 });
 
+test('sub-agent cards prefer blocked queue status over resumable child status', () => {
+  const row = {
+    session: {
+      id: 'child_blocked_waiting',
+      status: 'awaiting_input',
+      provider: 'openai',
+      model: 'gpt-test',
+      phase: 'awaiting_input',
+      queue_job_id: 'job_blocked_waiting',
+      agent_name: 'reviewer',
+      agent_role: 'evaluator'
+    },
+    job: {
+      id: 'job_blocked_waiting',
+      session_id: 'child_blocked_waiting',
+      status: 'blocked',
+      session_status: 'awaiting_input',
+      mode: 'exec',
+      last_error: 'child session is resumable: awaiting_input'
+    }
+  };
+
+  const html = context.renderSubAgentCard(row);
+
+  assert.match(html, />Blocked<\/span>/);
+  assert.doesNotMatch(html, />Awaiting input<\/span>/);
+  assert.match(html, /child session is resumable/);
+});
+
 test('refreshSelectedQueueJobDetail ignores stale async responses after selection changes', async () => {
   const appContext = createAppHarnessContext();
   const slowRefresh = vm.runInContext(`

@@ -2147,7 +2147,8 @@ function renderTimelineItem(item, options = {}) {
 function renderSubAgentCard(row) {
   const sessionItem = row.session || null;
   const job = row.job || null;
-  const status = isTerminalStatus(job?.status) ? job.status : (sessionItem?.status || job?.status || 'unknown');
+  const jobStatus = job ? queueJobDisplayStatus(job) : '';
+  const status = jobStatus && (isTerminalStatus(jobStatus) || jobStatus === 'blocked') ? jobStatus : (sessionItem?.status || jobStatus || 'unknown');
   const label = agentLabel(sessionItem?.agent_name || job?.agent_name, sessionItem?.agent_role || job?.agent_role) || shortId(sessionItem?.id || job?.id || '');
   const model = sessionItem?.model || job?.model || sessionItem?.provider || job?.provider || 'n/a';
   const phase = sessionItem?.phase ? phaseHeadline(sessionItem.phase) : (job?.mode || 'exec');

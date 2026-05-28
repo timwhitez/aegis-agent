@@ -8394,7 +8394,44 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-384 and FCA-20260529-385. The notification cards already prefer `last_error`, and queue job badges now prefer terminal queue status. The remaining gap was only the main Sub agents card for a completed child+queue pair: it rendered model and phase, error text when present, links, and IDs, but omitted the successful queue `final_text`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/session-view.js` `renderSubAgentCard`: render a bounded success summary from queue `final_text` when no error is present, without changing durable queue/session facts, backend API shape, notification merge semantics, provider replay, or runtime queue reconciliation.
 
+### Review 375
+
+- Confirmed FCA-20260529-387 against `spec/17-web-console.md`'s Background inspector contract: blocked background queue jobs are first-class durable queue facts and should remain visible as `blocked`, even when the linked child session state is `awaiting_input`.
+- Confirmed this is distinct from FCA-20260529-385 and FCA-20260529-386. FCA-385 made selected job/orphan job renderers prefer terminal queue status and `blocked`; FCA-386 exposed completed queue `final_text` in paired Sub agents cards. The remaining gap was only paired child+queue rows in `renderSubAgentCard`, which still preferred child `status=awaiting_input` over queue `status=blocked`.
+- Confirmed the minimal fix belongs in the same renderer status selection: reuse `queueJobDisplayStatus(job)` and prefer its terminal/blocked queue status before falling back to linked child status, without changing queue reconciliation, child session state, backend API shape, notification semantics, or provider replay.
+
 ## Update Log
+
+### FCA-20260529-387
+
+Slice: `fix(webconsole): show blocked sub-agent jobs`
+
+Finding:
+
+- `spec/17-web-console.md` requires the current session Background inspector to show child sessions, child queue jobs, and failures/recovery state from durable queue/session facts.
+- `internal/runtime/delegation.go` and `internal/session/store.go` use queue `status=blocked` when a background child is resumable, such as `session_status=awaiting_input`, and preserve `last_error` like `child session is resumable: awaiting_input`.
+- `internal/webconsole/assets/session-view.js` `renderSubAgentCard` previously preferred terminal queue statuses only. For a paired child+queue row with `job.status=blocked` and `session.status=awaiting_input`, the Sub agents card rendered `Awaiting input` instead of the queue job's durable `Blocked` status.
+- A focused frontend regression created a paired blocked queue job and awaiting-input child. Before the fix, the card rendered `Awaiting input` even though the queue job fact was blocked.
+
+Impact:
+
+- Operators scanning the Sub agents panel could miss that the background job itself was blocked and resumable, seeing only the linked child session state.
+- Other queue surfaces already projected `blocked` correctly through `queueJobDisplayStatus`; the issue was limited to the paired Sub agents card.
+
+Changes:
+
+- Updated `renderSubAgentCard` to derive queue status through `queueJobDisplayStatus(job)`.
+- Preserved the existing behavior of preferring linked child status for nonterminal queued/running job states while now also preferring queue `blocked` and terminal queue states.
+- Added a Node renderer regression proving blocked queue jobs render `Blocked`, not `Awaiting input`, on paired Sub agents cards while still exposing the resumable-child error text.
+
+Validation:
+
+- `node --test --test-name-pattern "sub-agent cards prefer blocked queue status" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the card rendered `Awaiting input`.
+- `node --test --test-name-pattern "sub-agent cards prefer blocked queue status" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 59 tests.
 
 ### FCA-20260529-386
 
