@@ -7896,6 +7896,12 @@ Evidence gates:
 - Confirmed this is distinct from prior parent-coordination concurrency, rollback, transition-event, and corrupt-JSON reporting slices. Those handled atomic updates and unreadable/non-JSON files; this slice covers semantically invalid but syntactically valid coordination snapshots.
 - Confirmed the minimal fix belongs in `SessionStore` parent coordination read/write/mutate paths: validate parent session identity, wait mode, timestamps, store-shaped child/session IDs, duplicate IDs, and cross-set unresolved/completed/failed conflicts while preserving existing `all`/`any` wait-mode alias compatibility and not adding any runtime workflow orchestration.
 
+### Review 302
+
+- Confirmed FCA-20260528-309 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/18-durable-contract-and-completion.md`: `provider-attempts.jsonl` is the durable provider retry/auto-resume/failure/success ledger for recovery, diagnostics, Web detail, session summaries, and long-run checkpoints.
+- Confirmed this is distinct from prior provider-attempt append-error and corrupt-JSON reporting slices. Those made ledger write failures fatal and surfaced unreadable ledgers; this slice covers semantically malformed but syntactically valid attempt facts.
+- Confirmed the minimal fix belongs in `SessionStore` provider attempt read/append APIs: validate supported outcomes, required provider/model/timestamp fields, and non-negative counters while keeping provider adapter retry policy and runtime event ordering unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7957,6 +7963,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-309
+
+Slice: `fix(session): validate provider attempt facts`
+
+Finding:
+
+- `LoadProviderAttempts` decoded `provider-attempts.jsonl` without semantic validation.
+- `AppendProviderAttempt` could persist malformed ledger entries such as unknown outcomes or negative counters.
+- Web detail, session summaries, long-run checkpoints, runtime terminal-attempt numbering, and provider diagnostics trust this ledger.
+
+Impact:
+
+- Unknown outcomes could disappear from Web summary counters or make session summaries/checkpoints present impossible retry/failure/success histories.
+- Negative timeout, status, backoff, or cache-token counters could corrupt provider diagnostics and cache telemetry.
+- A malformed existing ledger could keep being appended to by later valid runtime provider attempts, making recovery and operator diagnosis ambiguous.
+
+Changes:
+
+- Added provider attempt validation for supported outcomes (`retry`, `auto_resume`, `failure`, `success`), nonblank provider/model/created_at, and non-negative turn, attempt, timeout, status, backoff, and cache-token counters.
+- Routed `LoadProviderAttempts` and `AppendProviderAttempt` through validation, including a current-ledger validation pass before appending new attempts.
+- Kept provider-specific retry policy, runtime event ordering, and Web rendering unchanged; this only hardens the session-store fact boundary.
+- Added focused regressions for malformed loaded provider-attempt facts, append rejection of negative counters, and durable ledger preservation after rejected writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestProviderAttemptsRejectMalformedFacts -count=1`: failed before the fix because an unknown provider-attempt outcome loaded successfully.
+- `go test -timeout 120s ./internal/session -run TestProviderAttemptsRejectMalformedFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProvider(Retry|Failure|AutoResume|Success)ReportsProviderAttemptAppendError|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable|TestEnginePersistsProviderTurnMetadata|TestEngineRecordsProviderParseFailureAttempt' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-308
 

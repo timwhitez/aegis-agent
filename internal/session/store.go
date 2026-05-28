@@ -585,11 +585,23 @@ func (s *Store) SaveArtifactTracker(sessionID string, artifacts []RequiredArtifa
 }
 
 func (s *Store) AppendProviderAttempt(sessionID string, attempt ProviderAttempt) error {
+	if err := validateProviderAttempt(attempt); err != nil {
+		return fmt.Errorf("validate provider-attempts.jsonl: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "provider-attempts.jsonl")
 	if err != nil {
 		return err
+	}
+	var current []ProviderAttempt
+	err = readJSONL(path, &current)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	current = append(current, attempt)
+	if err := validateProviderAttempts(current); err != nil {
+		return fmt.Errorf("validate provider-attempts.jsonl: %w", err)
 	}
 	if err := s.appendJSONL(path, attempt); err != nil {
 		return fmt.Errorf("append provider attempt %s: %w", path, err)
@@ -607,7 +619,13 @@ func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error
 	if errors.Is(err, os.ErrNotExist) {
 		return []ProviderAttempt{}, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProviderAttempts(out); err != nil {
+		return nil, fmt.Errorf("validate provider-attempts.jsonl: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Store) SaveProviderRawSidecar(sessionID string, sidecar ProviderRawSidecar) error {
@@ -3417,6 +3435,60 @@ func validateParentCoordinationIDList(kind, field string, values []string, seen 
 			return fmt.Errorf("child session %q appears in multiple parent coordination child session sets: %s and %s", value, previousField, field)
 		}
 		seen[value] = field
+	}
+	return nil
+}
+
+func validateProviderAttempts(attempts []ProviderAttempt) error {
+	for i, attempt := range attempts {
+		if err := validateProviderAttempt(attempt); err != nil {
+			return fmt.Errorf("provider attempt %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func validateProviderAttempt(attempt ProviderAttempt) error {
+	if attempt.Turn < 0 {
+		return errors.New("provider attempt turn must be non-negative")
+	}
+	if attempt.Attempt < 0 {
+		return errors.New("provider attempt attempt must be non-negative")
+	}
+	if strings.TrimSpace(attempt.Provider) == "" {
+		return errors.New("provider attempt provider is required")
+	}
+	if strings.TrimSpace(attempt.Model) == "" {
+		return errors.New("provider attempt model is required")
+	}
+	switch attempt.Outcome {
+	case "retry", "auto_resume", "failure", "success":
+	default:
+		if strings.TrimSpace(attempt.Outcome) == "" {
+			return errors.New("provider attempt outcome is required")
+		}
+		return fmt.Errorf("invalid provider attempt outcome %q", attempt.Outcome)
+	}
+	if attempt.RequestTimeoutSec < 0 {
+		return errors.New("provider attempt request_timeout_sec must be non-negative")
+	}
+	if attempt.StreamIdleTimeoutMS < 0 {
+		return errors.New("provider attempt stream_idle_timeout_ms must be non-negative")
+	}
+	if attempt.StatusCode < 0 {
+		return errors.New("provider attempt status_code must be non-negative")
+	}
+	if attempt.BackoffMS < 0 {
+		return errors.New("provider attempt backoff_ms must be non-negative")
+	}
+	if attempt.CacheCreationInputTokens < 0 {
+		return errors.New("provider attempt cache_creation_input_tokens must be non-negative")
+	}
+	if attempt.CacheReadInputTokens < 0 {
+		return errors.New("provider attempt cache_read_input_tokens must be non-negative")
+	}
+	if strings.TrimSpace(attempt.CreatedAt) == "" {
+		return errors.New("provider attempt created_at is required")
 	}
 	return nil
 }

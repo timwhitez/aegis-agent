@@ -609,6 +609,76 @@ func TestStoreLoadStateRejectsMalformedSnapshot(t *testing.T) {
 	}
 }
 
+func TestProviderAttemptsRejectMalformedFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	malformed := ProviderAttempt{
+		Turn:       1,
+		Attempt:    1,
+		Provider:   "fake",
+		Model:      "fake",
+		Outcome:    "maybe",
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		StatusCode: 200,
+	}
+	attemptsPath := filepath.Join(store.SessionDir(meta.ID), "provider-attempts.jsonl")
+	data, err := json.Marshal(malformed)
+	if err != nil {
+		t.Fatalf("marshal malformed provider attempt: %v", err)
+	}
+	if err := os.WriteFile(attemptsPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write malformed provider attempt: %v", err)
+	}
+	if _, err := store.LoadProviderAttempts(meta.ID); err == nil || !strings.Contains(err.Error(), "validate provider-attempts.jsonl") || !strings.Contains(err.Error(), "invalid provider attempt outcome") {
+		t.Fatalf("expected malformed provider attempts validation error, got %v", err)
+	}
+
+	if err := os.Remove(attemptsPath); err != nil {
+		t.Fatalf("remove malformed provider attempts: %v", err)
+	}
+	valid := ProviderAttempt{
+		Turn:      1,
+		Attempt:   1,
+		Provider:  "fake",
+		Model:     "fake",
+		Outcome:   "retry",
+		Error:     "temporary",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.AppendProviderAttempt(meta.ID, valid); err != nil {
+		t.Fatalf("append valid provider attempt: %v", err)
+	}
+	invalidCounter := valid
+	invalidCounter.Outcome = "success"
+	invalidCounter.Attempt = 2
+	invalidCounter.CacheReadInputTokens = -1
+	if err := store.AppendProviderAttempt(meta.ID, invalidCounter); err == nil || !strings.Contains(err.Error(), "cache_read_input_tokens must be non-negative") {
+		t.Fatalf("expected append to reject negative cache counter, got %v", err)
+	}
+	loaded, err := store.LoadProviderAttempts(meta.ID)
+	if err != nil {
+		t.Fatalf("load provider attempts: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Outcome != "retry" || loaded[0].Attempt != 1 {
+		t.Fatalf("malformed provider attempt write changed durable ledger: %#v", loaded)
+	}
+}
+
 func TestStoreLoadStateRejectsSymlinkJSON(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
