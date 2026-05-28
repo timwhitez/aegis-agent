@@ -8300,6 +8300,51 @@ Evidence gates:
 
 ## Update Log
 
+### FCA-20260528-369
+
+Slice: `fix(webconsole): append settings audit events atomically`
+
+Finding:
+
+- `spec/17-web-console.md` requires Settings config writes and API key writes to emit searchable audit events, with API key events omitting secret values.
+- FCA-20260527-223 made failed Settings audit appends roll back config, `.env`, process env, and in-memory worker config changes.
+- The combined Settings/API-key path still appended `web.config.write` before appending `web.config.api_key_write`.
+- If the second audit append failed, the handler rolled back the config/API-key state but left the earlier `web.config.write` event in `webconsole-audit.jsonl`.
+
+Impact:
+
+- A failed Settings request could leave the audit log claiming that a config write succeeded even though the matching config/env/process state was rolled back and the browser received HTTP 500.
+- That created a misleading local-console evidence trail for risky Settings/API-key mutations and weakened the operator's ability to reconcile audit facts with current persisted config.
+
+Changes:
+
+- Added a WebConsole audit batch append helper that validates every pending event and the existing audit log before writing.
+- The batch helper serializes with the existing audit mutex and writes all events from one Settings mutation as one contiguous append.
+- `handleUpdateConfig` now appends `web.config.write` and optional `web.config.api_key_write` through the batch helper, so a failure before the second event leaves no rolled-back config audit event behind.
+- Tightened the API-key audit failure regression to assert that neither the config audit event nor the API-key audit event is recorded when the combined Settings mutation is rolled back.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRollsBackWhenAPIKeyAuditAppendFails -count=1`: failed before the fix because `web.config.write` remained in the audit log after rollback.
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRollsBackWhenAPIKeyAuditAppendFails -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWriteRollsBackWhenAPIKeyAuditAppendFails|TestUpdateConfigRollsBackWhenConfigAuditAppendFails|TestAPIKeyWriteDoesNotLogSecretValue|TestSensitiveWebActionsEmitAuditEvents|TestAppendAuditEventRejectsMalformedExistingLog|TestAppendAuditEventRejectsSymlinkedAuditLog' -count=1`: passed.
+- `gofmt -l internal/webconsole/audit.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/config ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
 ### FCA-20260528-368
 
 Slice: `fix(webconsole): validate existing audit log before append`

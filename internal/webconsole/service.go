@@ -3374,7 +3374,32 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.appendAuditEvent("web.config.write", map[string]any{
+	auditEvents := []pendingWebAuditEvent{{
+		eventType: "web.config.write",
+		data:      configAuditData(updatedCfg, configPath),
+	}}
+	if apiKeyAudit != nil {
+		auditEvents = append(auditEvents, pendingWebAuditEvent{
+			eventType: "web.config.api_key_write",
+			data:      apiKeyAudit,
+		})
+	}
+	if err := s.appendAuditEvents(auditEvents...); err != nil {
+		if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists); restoreErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore settings after audit error %v: %w", err, restoreErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.cfg = updatedCfg
+	s.workers.UpdateConfig(updatedCfg)
+
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func configAuditData(updatedCfg *config.Config, configPath string) map[string]any {
+	return map[string]any{
 		"provider":               updatedCfg.DefaultProvider,
 		"config_path":            configPath,
 		"guardrails_mode":        updatedCfg.Runtime.GuardrailsMode,
@@ -3384,28 +3409,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"reasoning_mode":         providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
 		"reasoning_summary":      providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),
 		"role_provider_count":    roleProviderOverrideCount(updatedCfg.RoleProviders),
-	}); err != nil {
-		if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists); restoreErr != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore settings after config audit error %v: %w", err, restoreErr))
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
-		return
 	}
-	if apiKeyAudit != nil {
-		if err := s.appendAuditEvent("web.config.api_key_write", apiKeyAudit); err != nil {
-			if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists); restoreErr != nil {
-				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore settings after API key audit error %v: %w", err, restoreErr))
-				return
-			}
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
-	s.cfg = updatedCfg
-	s.workers.UpdateConfig(updatedCfg)
-
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
 func configRequestHasProviderScopedFields(req UpdateConfigRequest) bool {

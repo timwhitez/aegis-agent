@@ -4945,11 +4945,10 @@ func TestAPIKeyWriteRollsBackWhenAPIKeyAuditAppendFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit log after failed API key audit append: %v", err)
 	}
-	if !strings.Contains(string(auditData), "web.config.write") {
-		t.Fatalf("expected config write audit event to remain, got %q", string(auditData))
-	}
-	if strings.Contains(string(auditData), "web.config.api_key_write") || strings.Contains(string(auditData), "sk-mutated-secret") {
-		t.Fatalf("failed API key audit append should not record API key audit event or secret, got %q", string(auditData))
+	if strings.Contains(string(auditData), "web.config.write") ||
+		strings.Contains(string(auditData), "web.config.api_key_write") ||
+		strings.Contains(string(auditData), "sk-mutated-secret") {
+		t.Fatalf("failed API key audit append should not record rolled-back config/API key audit events or secret, got %q", string(auditData))
 	}
 }
 

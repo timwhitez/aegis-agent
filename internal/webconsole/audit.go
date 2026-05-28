@@ -3,6 +3,7 @@ package webconsole
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,16 +24,43 @@ type webAuditEvent struct {
 	Data          map[string]any `json:"data,omitempty"`
 }
 
+type pendingWebAuditEvent struct {
+	eventType string
+	data      map[string]any
+}
+
 func (s *Service) appendAuditEvent(eventType string, data map[string]any) error {
+	return s.appendAuditEvents(pendingWebAuditEvent{eventType: eventType, data: data})
+}
+
+func (s *Service) appendAuditEvents(pending ...pendingWebAuditEvent) error {
 	if s == nil || s.store == nil {
+		return nil
+	}
+	if len(pending) == 0 {
 		return nil
 	}
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
-	if s.beforeAppendAuditEvent != nil {
-		if err := s.beforeAppendAuditEvent(eventType, data); err != nil {
+	now := time.Now().UTC()
+	events := make([]webAuditEvent, 0, len(pending))
+	for i, item := range pending {
+		if s.beforeAppendAuditEvent != nil {
+			if err := s.beforeAppendAuditEvent(item.eventType, item.data); err != nil {
+				return err
+			}
+		}
+		event := webAuditEvent{
+			SchemaVersion: 1,
+			ID:            fmt.Sprintf("audit_%d_%d", now.UnixNano(), i),
+			Type:          item.eventType,
+			Time:          now.Format(time.RFC3339Nano),
+			Data:          item.data,
+		}
+		if err := validateAuditEvent(event); err != nil {
 			return err
 		}
+		events = append(events, event)
 	}
 	path := webAuditLogPath(s.store.Root())
 	file, err := openAuditLogNoSymlink(path)
@@ -40,20 +68,27 @@ func (s *Service) appendAuditEvent(eventType string, data map[string]any) error 
 		return err
 	}
 	defer file.Close()
-	event := webAuditEvent{
-		SchemaVersion: 1,
-		ID:            fmt.Sprintf("audit_%d", time.Now().UnixNano()),
-		Type:          eventType,
-		Time:          time.Now().UTC().Format(time.RFC3339Nano),
-		Data:          data,
-	}
-	if err := validateAuditEvent(event); err != nil {
-		return err
-	}
 	if err := validateExistingAuditLog(file); err != nil {
 		return err
 	}
-	return json.NewEncoder(file).Encode(event)
+	offset, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	for _, event := range events {
+		if err := enc.Encode(event); err != nil {
+			return err
+		}
+	}
+	if _, err := io.WriteString(file, buf.String()); err != nil {
+		if truncateErr := file.Truncate(offset); truncateErr != nil {
+			return errors.Join(err, fmt.Errorf("restore audit log after failed batch append: %w", truncateErr))
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) ensureAuditLogWritable() error {
