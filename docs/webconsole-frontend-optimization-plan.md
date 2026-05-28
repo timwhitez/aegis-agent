@@ -19,7 +19,7 @@ Current resource size:
 | --- | ---: |
 | `internal/webconsole/assets/index.html` | 180 |
 | `internal/webconsole/assets/styles.css` | 4,355 |
-| `internal/webconsole/assets/app.js` | 3,124 |
+| `internal/webconsole/assets/app.js` | 3,135 |
 | `internal/webconsole/assets/session-view.js` | 2,297 |
 | `internal/webconsole/assets/utils.js` | 673 |
 | `internal/webconsole/assets/events.js` | 454 |
@@ -27,12 +27,12 @@ Current resource size:
 | `internal/webconsole/assets/api.js` | 193 |
 | `internal/webconsole/assets/workspace-view.js` | 410 |
 | `internal/webconsole/assets/icons.js` | 56 |
-| Total | 12,174 |
+| Total | 12,185 |
 
 Current implemented facts:
 
 - Script loading is still ordered global-script loading in `index.html`; no ES module graph exists yet.
-- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, page visibility tracking lives in `pageLifecycleViewState`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, History page request sequencing lives in `historyViewState`, History parent-row expansion ids live in `historyExpansionViewState`, earlier-message paging request sequencing lives in `messagePagingViewState`, transient toast id allocation lives in `toastViewState`, stop-action pending session ids live in `stopActionViewState`, floating tracker panel expansion preferences live in `floatingPanelViewState`, pending Plan Mode input selections live in `planInputViewState`, shortcut help overlay visibility lives in `helpViewState`, and composer input empty-state tracking lives in `composerViewState`; selected workspace tree path and durable message paging facts remain in `state`.
+- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, page visibility tracking lives in `pageLifecycleViewState`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, History page request sequencing lives in `historyViewState`, History parent-row expansion ids live in `historyExpansionViewState`, earlier-message paging request sequencing lives in `messagePagingViewState`, transient toast id allocation lives in `toastViewState`, stop-action pending session ids live in `stopActionViewState`, floating tracker panel expansion preferences live in `floatingPanelViewState`, pending Plan Mode input selections live in `planInputViewState`, shortcut help overlay visibility lives in `helpViewState`, composer input empty-state tracking lives in `composerViewState`, and next-send interrupt steer intent lives in `composerControlViewState`; selected workspace tree path and durable message paging facts remain in `state`.
 - WebSocket reconnect has exponential backoff with jitter, visibility-state handling, and fallback polling coordination.
 - Polling defaults to 5 seconds and uses a 1.6 second active interval while disconnected, generating, or tracking active descendants.
 - Embedded assets now use ETag validation and gzip negotiation; long immutable hashed asset URLs are not implemented.
@@ -71,6 +71,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Pending Plan Mode input selections no longer live on the main global `state`; they are isolated in `planInputViewState` while preserving request-scoped cleanup, selected answer rendering, and submitted answer payloads.
 - Shortcut help overlay visibility no longer lives on the main global `state`; it is isolated in `helpViewState` while preserving `?` shortcut toggling and overlay close behavior.
 - Composer input empty-state tracking no longer lives on the main global `state`; it is isolated in `composerViewState` while preserving input-height handling and UI refresh throttling when the input crosses empty/nonempty boundaries.
+- Next-send interrupt steer intent no longer lives on the main global `state`; it is isolated in `composerControlViewState` while preserving the `interrupt: true` steer payload, interrupt-armed label, placeholder, button classes, and success-path cleanup.
 
 ## Remaining Optimization Backlog
 
@@ -123,7 +124,7 @@ Validation:
 
 ### P1: Render State Isolation
 
-The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and durable message paging facts. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, page visibility tracking into `pageLifecycleViewState`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, History page request sequencing into `historyViewState`, History parent-row expansion ids into `historyExpansionViewState`, earlier-message paging request sequencing into `messagePagingViewState`, toast id allocation into `toastViewState`, stop-action pending ids into `stopActionViewState`, floating tracker panel expansion preferences into `floatingPanelViewState`, pending Plan Mode input selections into `planInputViewState`, shortcut help overlay visibility into `helpViewState`, and composer input empty-state tracking into `composerViewState`.
+The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and durable message paging facts. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, page visibility tracking into `pageLifecycleViewState`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, History page request sequencing into `historyViewState`, History parent-row expansion ids into `historyExpansionViewState`, earlier-message paging request sequencing into `messagePagingViewState`, toast id allocation into `toastViewState`, stop-action pending ids into `stopActionViewState`, floating tracker panel expansion preferences into `floatingPanelViewState`, pending Plan Mode input selections into `planInputViewState`, shortcut help overlay visibility into `helpViewState`, composer input empty-state tracking into `composerViewState`, and next-send interrupt steer intent into `composerControlViewState`.
 
 Plan:
 
@@ -149,6 +150,7 @@ Validation:
 - `validation/scripts/webconsole_utils_test.mjs` should assert that pending Plan Mode input selections are not stored on the main `state`, and that request-scoped cleanup plus answer submission still work.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that shortcut help overlay visibility is not stored on the main `state`, and that overlay rendering plus close behavior still work.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that composer input empty-state tracking is not stored on the main `state`, and that input events still refresh the UI only when empty/nonempty state changes.
+- `validation/scripts/webconsole_utils_test.mjs` should assert that next-send interrupt steer intent is not stored on the main `state`, and that running-session steer still posts `interrupt: true` when armed and clears the intent after successful queueing.
 - Existing stale response tests must continue to pass.
 
 ### P2: Message And Timeline Rendering Scale

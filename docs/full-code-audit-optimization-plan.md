@@ -8520,7 +8520,45 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-109 and FCA-20260529-122. Those slices moved WebSocket/polling handles and composer input empty-state tracking out of `state`; this residual issue was only the visibility bit that `setupWebSocket()`, `scheduleWebSocketReconnect()`, `setupVisibilityHandler()`, and `shouldRunPollingLoop()` read through the main `state`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the visibility bit into a tiny `pageLifecycleViewState`, expose helper reads/writes for lifecycle synchronization, and preserve hidden-tab polling suppression plus visible-tab reconnect behavior without changing session, queue, provider, Goal, Plan Mode, or backend API facts.
 
+### Review 396
+
+- Confirmed FCA-20260529-124 against `spec/17-web-console.md`'s running-session steer action surface, `spec/13-live-input-and-steering.md`'s `interrupt` steer semantics, and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: next-send interrupt steer intent is browser composer control state, not durable session state, message history, provider replay data, queue facts, Goal/Plan Mode facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260528-275 and FCA-20260529-122. Those slices fixed stale running-session steer completion side effects and isolated composer empty/nonempty render throttling; this residual issue was only the `nextSendInterrupt` intent bit that `sendMessage()`, `toggleInterruptArm()`, `updateUI()`, `chatInputPlaceholder()`, `inputActionLabel()`, and `renderPendingStageCard()` read through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move the intent bit into a tiny `composerControlViewState`, expose helper reads/writes for the app and renderer, and preserve the `interrupt: true` steer payload, interrupt-armed label, placeholder, button classes, and success-path cleanup without changing backend steer, session, queue, provider, Goal, or Plan Mode facts.
+
 ## Update Log
+
+### FCA-20260529-124
+
+Slice: `fix(webconsole): isolate interrupt composer state`
+
+Finding:
+
+- The WebConsole's main `state` object still stored `nextSendInterrupt`, a boolean used only by the Session composer to arm the next running-session steer as an interrupt request.
+- This flag is browser composer control intent. It is not durable session metadata, message state, provider replay data, queue/child state, Goal/Plan Mode facts, or WebConsole file-fact authority.
+- Source evidence showed `sendMessage()`, `toggleInterruptArm()`, `updateUI()`, `chatInputPlaceholder()`, `inputActionLabel()`, and `renderPendingStageCard()` reading or mutating `state.nextSendInterrupt`, coupling transient browser intent to the same state object that carries selected session, history, queue, and message facts.
+
+Changes:
+
+- Added a tiny `composerControlViewState.nextSendInterrupt` store with `isNextSendInterruptArmed()` and `setNextSendInterruptArmed()` helpers.
+- Updated the Session composer send path, interrupt-arm toggle, input listener, UI state classes, aria state, placeholder, action label, pending-stage badge, session reset, session open, restore, and non-running refresh cleanup to use the helper path instead of mutating main `state`.
+- Preserved running-session steer semantics: when the intent is armed, `sendMessage()` still posts `interrupt: true` to `/api/sessions/{id}/steer`; after successful queueing for the still-selected session, the intent is cleared.
+- Added a frontend regression proving `nextSendInterrupt` is absent from `state`, armed interrupt steer sends the correct payload, and the helper state clears after successful queueing.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this composer-control-local slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "composer interrupt steer intent is isolated" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 77/77 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-123
 

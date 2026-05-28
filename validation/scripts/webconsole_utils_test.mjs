@@ -99,6 +99,9 @@ vm.runInContext(`
   function isFloatingPanelExpanded() {
     return true;
   }
+  function isNextSendInterruptArmed() {
+    return false;
+  }
   function collectRecentToolEntries() {
     return [];
   }
@@ -769,6 +772,55 @@ test('composer input empty flag is isolated from durable app state', () => {
   assert.equal(result.afterEmpty.stateHasLastInputWasEmpty, false);
   assert.equal(result.afterEmpty.empty, true);
   assert.equal(result.afterEmpty.updateCalls, 2);
+});
+
+test('composer interrupt steer intent is isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    state.sessionId = 'session_interrupt_steer';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.isConnected = true;
+    state.liveActivity = { title: 'Running session', copy: '', tone: 'live' };
+    state.sessionDetail = {
+      metadata: { id: 'session_interrupt_steer' },
+      state: { status: 'running' },
+      messages: []
+    };
+    setNextSendInterruptArmed(true);
+    nodes.chatInput.value = 'interrupt with updated instructions';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/session_interrupt_steer/steer');
+  assert.deepEqual(sameRealm(appContext.pendingRequests[0].payload.payload), {
+    message: 'interrupt with updated instructions',
+    interrupt: true
+  });
+
+  const armedBeforeResolve = vm.runInContext(`({
+    stateHasNextSendInterrupt: Object.prototype.hasOwnProperty.call(state, 'nextSendInterrupt'),
+    armed: isNextSendInterruptArmed()
+  })`, appContext);
+  assert.equal(armedBeforeResolve.stateHasNextSendInterrupt, false);
+  assert.equal(armedBeforeResolve.armed, true);
+
+  appContext.pendingRequests[0].resolve({ status: 'queued' });
+  await send;
+
+  const afterResolve = vm.runInContext(`({
+    stateHasNextSendInterrupt: Object.prototype.hasOwnProperty.call(state, 'nextSendInterrupt'),
+    armed: isNextSendInterruptArmed(),
+    activityTitle: state.liveActivity.title,
+    inputLabel: inputActionLabel()
+  })`, appContext);
+  assert.equal(afterResolve.stateHasNextSendInterrupt, false);
+  assert.equal(afterResolve.armed, false);
+  assert.equal(afterResolve.activityTitle, 'Interrupt steer requested');
+  assert.equal(afterResolve.inputLabel, 'Steer running session: next send queues guidance into the current run.');
 });
 
 test('plan input selections are isolated from durable app state', async () => {
@@ -1995,7 +2047,7 @@ test('running-session steer completion does not mark a newly selected session as
     state.sessionId = 'session_steer_slow_a';
     state.sessionBacked = true;
     state.isGenerating = true;
-    state.nextSendInterrupt = true;
+    setNextSendInterruptArmed(true);
     state.liveActivity = { title: 'Running A', copy: '', tone: 'live' };
     state.sessionDetail = {
       metadata: { id: 'session_steer_slow_a' },
@@ -2013,7 +2065,7 @@ test('running-session steer completion does not mark a newly selected session as
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.nextSendInterrupt = false;
+    setNextSendInterruptArmed(false);
     state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -2028,7 +2080,7 @@ test('running-session steer completion does not mark a newly selected session as
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     generating: state.isGenerating,
-    interruptArmed: state.nextSendInterrupt,
+    interruptArmed: isNextSendInterruptArmed(),
     activityTitle: state.liveActivity.title
   })`, appContext)), {
     selected: 'session_fast_b',

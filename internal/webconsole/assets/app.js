@@ -50,7 +50,6 @@ const state = {
     copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
     tone: 'neutral'
   },
-  nextSendInterrupt: false,
   refreshingOverview: false,
   refreshingSession: false,
   needsSessionRefresh: false,
@@ -126,6 +125,10 @@ const composerViewState = {
   inputEmpty: true
 };
 
+const composerControlViewState = {
+  nextSendInterrupt: false
+};
+
 const pageLifecycleViewState = {
   visibilityHidden: false
 };
@@ -150,6 +153,14 @@ function syncComposerInputEmpty() {
   if (nodes.chatInput) {
     setComposerInputEmpty(!nodes.chatInput.value.trim());
   }
+}
+
+function isNextSendInterruptArmed() {
+  return composerControlViewState.nextSendInterrupt;
+}
+
+function setNextSendInterruptArmed(armed) {
+  composerControlViewState.nextSendInterrupt = Boolean(armed);
 }
 
 function isPageVisibilityHidden() {
@@ -264,7 +275,7 @@ async function init() {
     state.sessionDetail = null;
     state.optimisticMessages = [];
     state.liveEvents = [];
-    state.nextSendInterrupt = false;
+    setNextSendInterruptArmed(false);
     state.isGenerating = false;
     state.liveActivity = {
       title: 'Restoring session',
@@ -646,7 +657,7 @@ function setupEventListeners() {
     // Only update UI if we really need to (e.g. for empty vs non-empty state)
     const isNowEmpty = !this.value.trim();
     const wasEmpty = isComposerInputEmpty();
-    if (isNowEmpty !== wasEmpty || state.nextSendInterrupt) {
+    if (isNowEmpty !== wasEmpty || isNextSendInterruptArmed()) {
       setComposerInputEmpty(isNowEmpty);
       updateUI();
     }
@@ -1046,7 +1057,7 @@ async function sendMessage() {
 
   const optimisticID = appendOptimisticMessage('user', text, {
     source: state.isGenerating ? 'steer' : 'user',
-    interrupt: state.nextSendInterrupt && state.isGenerating && hasDurableSession()
+    interrupt: isNextSendInterruptArmed() && state.isGenerating && hasDurableSession()
   });
 
   nodes.chatInput.value = '';
@@ -1057,7 +1068,7 @@ async function sendMessage() {
 
   if (state.isGenerating && hasDurableSession()) {
     const sessionID = state.sessionId;
-    const requestedInterrupt = state.nextSendInterrupt;
+    const requestedInterrupt = isNextSendInterruptArmed();
     try {
       await steerSession(sessionID, {
         message: text,
@@ -1066,7 +1077,7 @@ async function sendMessage() {
       if (state.sessionId !== sessionID) {
         return;
       }
-      state.nextSendInterrupt = false;
+      setNextSendInterruptArmed(false);
       state.liveActivity = {
         title: requestedInterrupt ? 'Interrupt steer requested' : 'Steer queued',
         copy: requestedInterrupt
@@ -1219,7 +1230,7 @@ function toggleInterruptArm() {
   if (!state.isGenerating || !hasDurableSession()) {
     return;
   }
-  state.nextSendInterrupt = !state.nextSendInterrupt;
+  setNextSendInterruptArmed(!isNextSendInterruptArmed());
   updateUI();
 }
 
@@ -1415,7 +1426,7 @@ function resetChatSession() {
   state.sessionDetail = null;
   state.optimisticMessages = [];
   state.liveEvents = [];
-  state.nextSendInterrupt = false;
+  setNextSendInterruptArmed(false);
   state.selectedQueueJobId = '';
   state.selectedQueueJobDetail = null;
   clearPlanInputSelections();
@@ -1448,7 +1459,7 @@ function resetChatSession() {
 function setGenerating(value, activity) {
   state.isGenerating = value;
   if (!value) {
-    state.nextSendInterrupt = false;
+    setNextSendInterruptArmed(false);
   }
   if (activity) {
     state.liveActivity = activity;
@@ -1484,7 +1495,7 @@ function updateUI() {
   const launchPendingWithoutSession = state.launchInFlight && !hasDurableSession();
   nodes.sendBtn.disabled = !hasDraft || launchPendingWithoutSession;
   nodes.sendBtn.classList.toggle('is-loading', (state.isGenerating || state.launchInFlight) && hasDraft);
-  nodes.sendBtn.classList.toggle('is-interrupt', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
+  nodes.sendBtn.classList.toggle('is-interrupt', isNextSendInterruptArmed() && state.isGenerating && hasDurableSession());
   nodes.inputContainer.classList.toggle('is-busy', state.isGenerating || state.launchInFlight);
   nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
   nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
@@ -1492,8 +1503,8 @@ function updateUI() {
   nodes.stopSessionBtn?.classList.toggle('is-visible', directSessionControlAvailable);
   nodes.interruptSessionBtn?.classList.toggle('is-visible', directSessionControlAvailable);
   nodes.interruptToggleBtn?.classList.toggle('is-visible', state.isGenerating && hasDurableSession());
-  nodes.interruptToggleBtn?.classList.toggle('is-armed', state.nextSendInterrupt && state.isGenerating && hasDurableSession());
-  nodes.interruptToggleBtn?.setAttribute('aria-pressed', state.nextSendInterrupt ? 'true' : 'false');
+  nodes.interruptToggleBtn?.classList.toggle('is-armed', isNextSendInterruptArmed() && state.isGenerating && hasDurableSession());
+  nodes.interruptToggleBtn?.setAttribute('aria-pressed', isNextSendInterruptArmed() ? 'true' : 'false');
   if (nodes.stopSessionBtn) {
     nodes.stopSessionBtn.disabled = !directSessionControlAvailable;
   }
@@ -1515,7 +1526,7 @@ function updateUI() {
 function chatInputPlaceholder() {
   const planMode = currentPlanMode();
   if (state.isGenerating && hasDurableSession()) {
-    return state.nextSendInterrupt
+    return isNextSendInterruptArmed()
       ? 'Send an interrupt steer message to the running session...'
       : 'Send a steer message into the running session...';
   }
@@ -1544,7 +1555,7 @@ function inputActionLabel() {
     return 'Plan Mode enabled: next send starts a planning gate before execution.';
   }
   if (state.isGenerating && hasDurableSession()) {
-    return state.nextSendInterrupt
+    return isNextSendInterruptArmed()
       ? 'Interrupt armed: next send requests preemption, then merges your steer prompt.'
       : 'Steer running session: next send queues guidance into the current run.';
   }
@@ -2340,7 +2351,7 @@ async function refreshCurrentSession(options = {}) {
       if (!state.liveEvents.length || toneForStatus(detail?.state?.status) !== 'live') {
         state.liveActivity = sessionActivityForState(detail?.state);
       }
-      state.nextSendInterrupt = false;
+      setNextSendInterruptArmed(false);
     }
     renderCurrentSession();
     updateUI();
@@ -2518,7 +2529,7 @@ async function openSession(sessionID, options = {}) {
   state.loadedAllEarlierMessages = false;
   state.messageGapAnchorId = '';
   state.preserveScrollAfterRender = null;
-  state.nextSendInterrupt = false;
+  setNextSendInterruptArmed(false);
   state.liveEvents = [];
   state.isGenerating = false;
   state.liveActivity = {

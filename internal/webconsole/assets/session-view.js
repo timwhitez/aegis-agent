@@ -983,7 +983,7 @@ function renderPendingStageCard() {
           <div class="pending-stage-topline">
             <span class="status-badge ${state.liveActivity.tone || 'neutral'}">${escapeHTML(state.isGenerating ? 'Running' : 'Settling')}</span>
             <span class="pending-stage-title">${escapeHTML(state.liveActivity.title)}</span>
-            ${state.nextSendInterrupt ? '<span class="status-badge queued">Interrupt armed</span>' : ''}
+            ${isNextSendInterruptArmed() ? '<span class="status-badge queued">Interrupt armed</span>' : ''}
           </div>
           <div class="pending-stage-copy">${escapeHTML(state.liveActivity.copy)}</div>
         </div>
