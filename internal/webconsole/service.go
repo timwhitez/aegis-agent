@@ -3520,8 +3520,11 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 	apiProvider := strings.TrimSpace(req.APIProvider)
 	baseURL := strings.TrimSpace(req.BaseURL)
 	model := strings.TrimSpace(req.Model)
+	var providerCfg config.Provider
 	if providerName != "" {
-		if _, ok := cfg.Providers[providerName]; !ok {
+		var ok bool
+		providerCfg, ok = cfg.Providers[providerName]
+		if !ok {
 			return config.RoleProviderOverride{}, newWebError(
 				errorCodeUnknownProvider,
 				"unknown role provider",
@@ -3531,12 +3534,16 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 		}
 	}
 	if apiProvider != "" {
-		providerCfg := config.Provider{APIProvider: apiProvider}
 		if providerName != "" {
-			providerCfg = cfg.Providers[providerName]
 			providerCfg.APIProvider = apiProvider
+		} else {
+			providerCfg = config.Provider{APIProvider: apiProvider}
 		}
 		if _, err := effectiveWebSettingsAPIProvider(firstNonEmpty(providerName, "role-"+strings.TrimSpace(role)), providerCfg); err != nil {
+			return config.RoleProviderOverride{}, err
+		}
+	} else if providerName != "" {
+		if _, err := effectiveWebSettingsAPIProvider(providerName, providerCfg); err != nil {
 			return config.RoleProviderOverride{}, err
 		}
 	}

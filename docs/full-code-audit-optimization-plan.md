@@ -8184,6 +8184,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-355 and existing backend start coverage. FCA-355 fixed runtime role-provider default selection after a role already reached runtime, and backend tests already proved `/api/sessions/start` can persist agent identity; this slice covers the remaining browser surface where the embedded Session composer had no controls and `sendMessage()` never supplied the already-supported fields.
 - Confirmed the minimal fix belongs in embedded WebConsole assets: add compact `agent_name` / `agent_role` controls to the Session composer and pass them through the existing `api.js` `startSession` wrapper, without adding provider/model advanced controls, queue orchestration, or a separate role workflow.
 
+### Review 350
+
+- Confirmed FCA-20260528-357 against `spec/17-web-console.md`: Settings role provider overrides are provider/profile/API-provider defaults for explicit `planner` / `generator` / `evaluator` role hints, so `POST /api/config` must reject a role override that points at a custom provider profile with no resolvable adapter family.
+- Confirmed this is distinct from FCA-20260528-355 and FCA-20260528-356. FCA-355 fixed runtime field-level role override precedence after a valid role default exists, and FCA-356 exposed role identity in the start form; this slice covers the remaining Settings validation gap that could persist an invalid custom role provider profile.
+- Confirmed the minimal fix belongs in Web Settings request parsing: `roleProviderOverrideFromRequest` already validates provider existence and explicit role `api_provider`; it must also validate the selected provider profile's effective API provider when no role-specific API provider override is supplied.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11688,6 +11694,50 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `git diff --check -- internal/webconsole/assets/index.html internal/webconsole/assets/app.js internal/webconsole/assets/styles.css internal/webconsole/service_test.go validation/scripts/webconsole_utils_test.mjs docs/full-code-audit-optimization-plan.md`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-357
+
+Slice: `fix(webconsole): validate role provider profiles`
+
+Finding:
+
+- `spec/17-web-console.md` defines Settings role provider overrides as optional provider/profile/API-provider defaults for explicit `planner` / `generator` / `evaluator` role hints, and the Settings API is responsible for saving provider defaults that runtime can later apply.
+- `POST /api/config` validated the normal selected provider profile through `effectiveWebSettingsAPIProvider()`, and validated explicit role `api_provider` overrides, but a role override that supplied only `provider:"vendor-x"` skipped effective API-provider validation.
+- A focused service regression added a custom provider profile with no `api_provider`, then tried to save it as the evaluator role provider. Before the fix, Settings returned `200 {"success":true}` and persisted a role default that would fail later when a role-hinted session tried to resolve an adapter family.
+
+Impact:
+
+- Browser users could save a role-specific provider default that looked accepted in Settings but could not produce a valid runtime provider adapter for planner/generator/evaluator sessions.
+- The invalid role override weakened the Web-first Settings contract by moving a configuration error from save time to later session start/delegation/queue execution.
+- This is a validation-boundary fix only; it does not change role selection, infer roles from names, add provider/model controls to the default Session composer, or alter runtime provider precedence.
+
+Changes:
+
+- Updated `roleProviderOverrideFromRequest()` to validate the selected provider profile's effective API provider when a role override supplies `provider` without an explicit role `api_provider`.
+- Preserved the existing validation for unknown role providers and explicit role `api_provider` overrides.
+- Added a focused service regression proving invalid custom role providers return 400, do not mutate active config, and do not write the config file.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceConfigRejectsRoleProviderOverrideWithoutEffectiveAPIProvider -count=1`: failed before the fix because the route returned 200 instead of rejecting the invalid role provider.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfigRejects(RoleProviderOverrideWithoutEffectiveAPIProvider|UnknownRoleProviderOverride|UnsupportedRoleAPIProviderOverride|UnsupportedAPIProvider)|TestServiceConfigRoutesPersistRoleProviderOverrides' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfigRejects(RoleProviderOverrideWithoutEffectiveAPIProvider|UnknownRoleProviderOverride|UnsupportedRoleAPIProviderOverride|UnsupportedAPIProvider|CustomProviderWithoutAPIProvider)|TestServiceConfig(RoutesPersistRoleProviderOverrides|RoutesUpdateActiveConfig|ClearsStaleReasoningFieldsWhenSwitchingAdapterFamily)' -count=1`: passed.
+- `go test -timeout 120s ./internal/config -run 'TestEffectiveAPIProviderDefaultsAndCustomValidation' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 51 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/session ./internal/config -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `git diff --check -- internal/webconsole/service.go internal/webconsole/service_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-339

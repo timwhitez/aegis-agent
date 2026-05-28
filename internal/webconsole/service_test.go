@@ -7599,6 +7599,46 @@ func TestServiceConfigRejectsUnknownRoleProviderOverride(t *testing.T) {
 	}
 }
 
+func TestServiceConfigRejectsRoleProviderOverrideWithoutEffectiveAPIProvider(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Providers["vendor-x"] = config.Provider{
+		APIKeyEnv:  "VENDOR_X_API_KEY",
+		BaseURL:    "http://vendor.invalid/v1",
+		Model:      "vendor-model",
+		TimeoutSec: 3,
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"role_providers": map[string]any{
+			"evaluator": map[string]any{
+				"provider": "vendor-x",
+			},
+		},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "requires api_provider") {
+		t.Fatalf("expected missing api_provider error, got %#v", errResp)
+	}
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.RoleProviders.Evaluator.Provider != "" {
+		t.Fatalf("invalid role provider should not mutate active config, got %#v", updated.RoleProviders.Evaluator)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid role provider should not persist config; stat err=%v", err)
+	}
+}
+
 func TestServiceConfigRoutesPersistThinkingMaxMode(t *testing.T) {
 	cfg := testConfig(t, "")
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
