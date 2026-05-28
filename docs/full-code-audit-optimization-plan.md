@@ -8190,6 +8190,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-355 and FCA-20260528-356. FCA-355 fixed runtime field-level role override precedence after a valid role default exists, and FCA-356 exposed role identity in the start form; this slice covers the remaining Settings validation gap that could persist an invalid custom role provider profile.
 - Confirmed the minimal fix belongs in Web Settings request parsing: `roleProviderOverrideFromRequest` already validates provider existence and explicit role `api_provider`; it must also validate the selected provider profile's effective API provider when no role-specific API provider override is supplied.
 
+### Review 351
+
+- Confirmed FCA-20260528-358 against `spec/17-web-console.md`: Settings is a single form for provider profile, API Provider / Adapter Family, and Role Provider Overrides, so one `POST /api/config` must validate role overrides against the provider defaults produced by that same request.
+- Confirmed this is distinct from FCA-20260528-357. FCA-357 correctly rejected stored custom role provider profiles with no adapter family; this slice covers the follow-up same-request ordering gap where users could not save the adapter family and use that provider as a role default in one Settings submission.
+- Confirmed the minimal fix belongs in `handleUpdateConfig`: apply and validate provider-scoped fields into the cloned config first, then parse `role_providers` against that in-memory same-request config before any file write, env update, audit event, worker config update, or active config mutation.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11738,6 +11744,49 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `git diff --check -- internal/webconsole/service.go internal/webconsole/service_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-358
+
+Slice: `fix(webconsole): apply provider updates before role validation`
+
+Finding:
+
+- `spec/17-web-console.md` defines Settings as the Web-first control surface for Provider Profile, API Provider / Adapter Family, and Role Provider Overrides, with role override fields inheriting provider profile defaults when left blank.
+- After FCA-20260528-357, `POST /api/config` parsed and validated `role_providers` before applying provider-scoped fields from the same request. A user who selected a custom provider, selected `api_provider:"openai-compatible"` for that provider, and selected the same provider as the evaluator role default in one Settings save still saw `custom provider "vendor-x" requires api_provider`.
+- A focused service regression constructs that exact single Settings payload. Before the fix, the route returned HTTP 400 even though the cloned config would become valid once the same request's provider `api_provider` was applied.
+
+Impact:
+
+- The browser Settings form required users to save in two separate steps for custom role-provider profiles: first save the provider adapter family, then save the role override.
+- This contradicted the Settings API's single-form semantics and made a valid role-provider configuration look invalid, while the backend already had all required information in the request.
+- This is a request-ordering fix only; it does not weaken invalid custom provider rejection, persist partial config before validation, infer roles from names, or change runtime provider/model precedence.
+
+Changes:
+
+- Moved `roleProvidersFromRequest()` evaluation after the provider-scoped update block in `handleUpdateConfig`.
+- Kept all validation inside the cloned `updatedCfg` before config file writes, env writes, audit events, worker config updates, or `s.cfg` replacement.
+- Added a focused regression proving one Settings request can assign an API Provider to a custom provider and use that provider as an evaluator role override, while adjacent invalid role-provider and unsupported API-provider regressions still pass.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceConfigRoleProviderOverrideUsesSameRequestAPIProviderUpdate -count=1`: failed before the fix because the route rejected the same-request provider/role update with `custom provider "vendor-x" requires api_provider`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfig(RoleProviderOverrideUsesSameRequestAPIProviderUpdate|RejectsRoleProviderOverrideWithoutEffectiveAPIProvider|RejectsUnsupportedRoleAPIProviderOverride|RoutesPersistRoleProviderOverrides|RejectsUnsupportedAPIProvider|RejectsCustomProviderWithoutAPIProvider)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfig(RoleProviderOverrideUsesSameRequestAPIProviderUpdate|RejectsRoleProviderOverrideWithoutEffectiveAPIProvider|RejectsUnsupportedRoleAPIProviderOverride|RoutesPersistRoleProviderOverrides|RejectsUnsupportedAPIProvider|RejectsCustomProviderWithoutAPIProvider|RoutesUpdateActiveConfig|DefaultsProviderScopedFieldsToCurrentDefault|ClearsStaleReasoningFieldsWhenSwitchingAdapterFamily)' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check -- internal/webconsole/service.go internal/webconsole/service_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 51 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/session ./internal/config -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-339

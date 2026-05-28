@@ -7639,6 +7639,45 @@ func TestServiceConfigRejectsRoleProviderOverrideWithoutEffectiveAPIProvider(t *
 	}
 }
 
+func TestServiceConfigRoleProviderOverrideUsesSameRequestAPIProviderUpdate(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Providers["vendor-x"] = config.Provider{
+		APIKeyEnv:  "VENDOR_X_API_KEY",
+		BaseURL:    "http://vendor.invalid/v1",
+		Model:      "vendor-model",
+		TimeoutSec: 3,
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":     "vendor-x",
+		"api_provider": "openai-compatible",
+		"role_providers": map[string]any{
+			"evaluator": map[string]any{
+				"provider": "vendor-x",
+			},
+		},
+	}, http.StatusOK, nil)
+
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.Providers["vendor-x"].APIProvider != "openai-compatible" {
+		t.Fatalf("expected same request to update provider API provider, got %#v", updated.Providers["vendor-x"])
+	}
+	if updated.RoleProviders.Evaluator.Provider != "vendor-x" {
+		t.Fatalf("expected evaluator role provider to persist, got %#v", updated.RoleProviders.Evaluator)
+	}
+}
+
 func TestServiceConfigRoutesPersistThinkingMaxMode(t *testing.T) {
 	cfg := testConfig(t, "")
 	configPath := filepath.Join(t.TempDir(), "config.yaml")

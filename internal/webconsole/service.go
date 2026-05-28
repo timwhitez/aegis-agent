@@ -3170,14 +3170,6 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.GuardrailsMode) != "" {
 		updatedCfg.Runtime.GuardrailsMode = configMode(req.GuardrailsMode)
 	}
-	if req.RoleProviders != nil {
-		roleProviders, err := roleProvidersFromRequest(updatedCfg, req.RoleProviders)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		updatedCfg.RoleProviders = roleProviders
-	}
 	if req.DisableHardTurnLimit {
 		updatedCfg.Runtime.MaxTurnsHard = -1
 	} else if req.MaxTurnsHard != nil {
@@ -3233,6 +3225,14 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		updatedCfg.Providers[providerName] = p
+	}
+	if req.RoleProviders != nil {
+		roleProviders, err := roleProvidersFromRequest(updatedCfg, req.RoleProviders)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updatedCfg.RoleProviders = roleProviders
 	}
 
 	cwd, _ := os.Getwd()
