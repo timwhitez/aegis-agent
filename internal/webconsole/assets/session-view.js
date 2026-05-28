@@ -430,7 +430,7 @@ function renderSessionActivityCard() {
 function renderFlowLane() {
   const detailItems = maybeArray(state.sessionDetail?.timeline)
     .filter((item) => item.kind === 'event' && isCompactFlowEvent(item.event_type))
-    .slice(-3)
+    .slice(0, 3)
     .reverse();
   if (!detailItems.length) {
     return '';

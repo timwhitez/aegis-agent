@@ -8364,7 +8364,53 @@ Evidence gates:
 - Confirmed this is a residual wrapper gap after FCA-20260529-380. That slice peeled `env` only for common write target extraction, but the top-level regex checks for `sudo`, `rm -rf /`, and `curl` still ran against the original command string. `env sudo ...`, `FOO=bar curl ...`, and `env rm -rf /` returned no violations, and shell `command cp ... .env.local` bypassed the common-write extractor.
 - Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: build bounded policy-only command views with leading environment assignments, `env`, and shell `command` wrappers peeled, then reuse the existing category regexes and common-write target extractor without changing shell execution semantics, provider replay, Web rendering, direct file tools, or runtime workflow behavior.
 
+### Review 370
+
+- Confirmed FCA-20260529-382 against `spec/17-web-console.md`'s Session workspace timeline boundary: the central Flow lane should surface the latest compact provider/tool/queue/session events from the current session detail timeline.
+- Confirmed this is distinct from the stale response and message paging fixes. The backend `buildTimeline` intentionally returns session detail timeline entries newest-first, but `renderFlowLane` selected `.slice(-3).reverse()`, which took the oldest compact events from that newest-first window and omitted newer provider/tool progress.
+- Confirmed the minimal fix belongs only in the Session workspace renderer: select the first three compact timeline events from the newest-first detail timeline, then reverse just those three for chronological compact display. No session store, backend API, provider replay, message paging, or runtime event persistence behavior changes are needed.
+
 ## Update Log
+
+### FCA-20260529-382
+
+Slice: `fix(webconsole): show latest flow events`
+
+Finding:
+
+- `spec/17-web-console.md` requires the Session workspace timeline to let operators understand current execution flow in one place, and `sessionDetail` builds `TimelineEntry` values from durable messages/events using newest-first ordering.
+- `internal/webconsole/assets/session-view.js` `renderFlowLane` filtered compact flow events from that newest-first detail timeline, then used `.slice(-3).reverse()`.
+- A focused frontend regression built a newest-first detail timeline with five compact events. Before the fix, the Flow lane rendered `evt_1_oldest`, `evt_2`, and `evt_3`, omitting the newer `evt_4` and `evt_5_newest`.
+
+Impact:
+
+- In long or active sessions, the top Session flow strip could display stale early lifecycle events while hiding the latest provider/tool/queue/session transitions.
+- The issue is limited to frontend compact rendering. The durable `events.jsonl`, backend `timeline` response, message stream, message paging, provider replay facts, session store, and runtime event persistence remain unchanged.
+
+Changes:
+
+- Changed `renderFlowLane` to select the first three compact events from the newest-first detail timeline, then reverse that small selection for chronological compact display.
+- Added a Node renderer regression proving old compact events are excluded and the latest three compact events are shown in oldest-to-newest order within the compact lane.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "flow lane renders the latest compact timeline events"`: failed before the fix because the Flow lane rendered the oldest three compact events; this script run executed the full Node test file and reported 53 passed / 1 failed.
+- `node --test --test-name-pattern "flow lane renders the latest compact timeline events" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 54 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-381
 

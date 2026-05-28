@@ -705,6 +705,38 @@ test('selected queue job detail from another parent does not keep chat polling a
   });
 });
 
+test('flow lane renders the latest compact timeline events from newest-first detail timelines', () => {
+  const previousIsCompactFlowEvent = context.isCompactFlowEvent;
+  const previousRenderTimelineItem = context.renderTimelineItem;
+  context.isCompactFlowEvent = () => true;
+  context.renderTimelineItem = (item) => `<span data-event="${item.event_id}">${item.event_id}</span>`;
+  try {
+    const html = vm.runInContext(`(() => {
+      state.sessionDetail = {
+        timeline: [
+          { kind: 'event', event_type: 'tool.after', event_id: 'evt_5_newest', time: '2026-05-29T00:00:05Z' },
+          { kind: 'event', event_type: 'tool.before', event_id: 'evt_4', time: '2026-05-29T00:00:04Z' },
+          { kind: 'event', event_type: 'provider.call', event_id: 'evt_3', time: '2026-05-29T00:00:03Z' },
+          { kind: 'event', event_type: 'session.started', event_id: 'evt_2', time: '2026-05-29T00:00:02Z' },
+          { kind: 'event', event_type: 'session.created', event_id: 'evt_1_oldest', time: '2026-05-29T00:00:01Z' }
+        ]
+      };
+      return renderFlowLane();
+    })()`, context);
+
+    assert.doesNotMatch(html, /evt_1_oldest/);
+    assert.doesNotMatch(html, /evt_2/);
+    assert.match(html, /evt_3/);
+    assert.match(html, /evt_4/);
+    assert.match(html, /evt_5_newest/);
+    assert.ok(html.indexOf('evt_3') < html.indexOf('evt_4'));
+    assert.ok(html.indexOf('evt_4') < html.indexOf('evt_5_newest'));
+  } finally {
+    context.isCompactFlowEvent = previousIsCompactFlowEvent;
+    context.renderTimelineItem = previousRenderTimelineItem;
+  }
+});
+
 test('refreshCurrentSession ignores stale session detail responses after selection changes', async () => {
   const appContext = createAppHarnessContext();
   const slowRefresh = vm.runInContext(`
