@@ -672,6 +672,36 @@ func TestContractArtifactsRejectMalformedTimestamps(t *testing.T) {
 	if err := store.SaveArtifactTracker(meta.ID, []RequiredArtifact{malformedArtifact}); err == nil || !strings.Contains(err.Error(), "status.updated_at must be RFC3339Nano") {
 		t.Fatalf("expected save to reject invalid artifact status updated_at, got %v", err)
 	}
+
+	malformedBaseline := validArtifact
+	malformedBaseline.Baseline = ArtifactSnapshot{
+		Exists: true,
+		MTime:  "not-a-time",
+	}
+	validContract.RequiredArtifacts = []RequiredArtifact{malformedBaseline}
+	data, err = json.Marshal(validContract)
+	if err != nil {
+		t.Fatalf("marshal contract with malformed baseline: %v", err)
+	}
+	if err := os.WriteFile(contractPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed baseline contract: %v", err)
+	}
+	if _, err := store.LoadContract(meta.ID); err == nil || !strings.Contains(err.Error(), "validate contract.json") || !strings.Contains(err.Error(), "baseline.mtime must be RFC3339Nano") {
+		t.Fatalf("expected invalid contract artifact baseline mtime error, got %v", err)
+	}
+	data, err = json.Marshal([]RequiredArtifact{malformedBaseline})
+	if err != nil {
+		t.Fatalf("marshal artifact tracker with malformed baseline: %v", err)
+	}
+	if err := os.WriteFile(artifactTrackerPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed baseline artifact tracker: %v", err)
+	}
+	if _, err := store.LoadArtifactTracker(meta.ID); err == nil || !strings.Contains(err.Error(), "validate artifact-tracker.json") || !strings.Contains(err.Error(), "baseline.mtime must be RFC3339Nano") {
+		t.Fatalf("expected invalid artifact tracker baseline mtime error, got %v", err)
+	}
+	if err := store.SaveArtifactTracker(meta.ID, []RequiredArtifact{malformedBaseline}); err == nil || !strings.Contains(err.Error(), "baseline.mtime must be RFC3339Nano") {
+		t.Fatalf("expected save to reject invalid artifact baseline mtime, got %v", err)
+	}
 }
 
 func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {

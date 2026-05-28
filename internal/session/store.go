@@ -4089,6 +4089,11 @@ func validateRequiredArtifacts(artifacts []RequiredArtifact) error {
 			return fmt.Errorf("duplicate required artifact path: %s", cleaned)
 		}
 		seen[cleaned] = struct{}{}
+		if strings.TrimSpace(artifact.Baseline.MTime) != "" {
+			if _, err := time.Parse(time.RFC3339Nano, artifact.Baseline.MTime); err != nil {
+				return fmt.Errorf("required artifact %d baseline.mtime must be RFC3339Nano: %w", position, err)
+			}
+		}
 		if strings.TrimSpace(artifact.Status.UpdatedAt) != "" {
 			if _, err := time.Parse(time.RFC3339Nano, artifact.Status.UpdatedAt); err != nil {
 				return fmt.Errorf("required artifact %d status.updated_at must be RFC3339Nano: %w", position, err)

@@ -8106,6 +8106,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-337 and FCA-20260528-338. FCA-20260528-337 hardened only the top-level Goal snapshot timestamps; FCA-20260528-338 hardened `goal-history.jsonl`. This slice covers the remaining nested `goal.json` timestamp-shape gap where success criteria `updated_at`, validation `last_run_at`, evaluator evidence `created_at`, mission `approved_at`, completion audit `completed_at`, and progress `created_at` could contain arbitrary non-empty strings.
 - Confirmed the minimal fix belongs in `ValidateGoal` and its existing nested validators: parse persisted nested Goal timestamps as RFC3339Nano while preserving optional timestamp compatibility where the fields may be omitted, and without changing Goal status transitions, mission approval policy, progress semantics, completion audit requirements, Plan Mode gates, or Web state authority.
 
+### Review 337
+
+- Confirmed FCA-20260528-344 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `contract.json`, `artifact-tracker.json`, and checkpoint embedded required-artifact facts are durable state for required artifact baselines, completion gates, Web detail, summaries, checkpoints, and contract refresh rollback.
+- Confirmed this is distinct from FCA-20260528-341. That slice parsed contract snapshot/history timestamps and required artifact `status.updated_at`; this slice covers the remaining artifact baseline timestamp where `RequiredArtifact.Baseline.MTime` is copied from file metadata and persisted in contract/tracker/checkpoint facts but was still accepted as an arbitrary non-empty string.
+- Confirmed the minimal fix belongs in the shared `validateRequiredArtifacts` boundary: parse optional `baseline.mtime` as RFC3339Nano while preserving compatibility for missing baseline mtime and without changing artifact snapshotting, freshness semantics, required-artifact gates, Web state authority, provider replay, or model-led workflow behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11029,6 +11035,50 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/session/goal.go internal/session/store_test.go`: passed with no output.
 - `git diff --check -- internal/session/goal.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-344
+
+Slice: `fix(contract): validate artifact baseline mtimes`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` define `contract.json`, `artifact-tracker.json`, session summaries, and long-run checkpoints as durable facts for required artifact baselines, completion gates, Web detail, summaries, checkpoints, and contract refresh rollback.
+- FCA-20260528-341 hardened contract snapshot/history timestamps and artifact `status.updated_at`, but `RequiredArtifact.Baseline.MTime` still had no timestamp-shape validation.
+- Focused regressions wrote `baseline.mtime:"not-a-time"` into `contract.json` and `artifact-tracker.json`. Before the fix, `LoadContract()` accepted the malformed contract with nil error, and the shared artifact tracker paths would also accept the same malformed baseline timestamp.
+
+Impact:
+
+- Required-artifact baseline chronology could be malformed while still looking like normal durable contract/tracker/checkpoint state.
+- Web detail, `session.md`, long-run checkpoints, and required-artifact completion gate diagnostics could preserve malformed baseline freshness facts across load/save round trips.
+- This is a validation-boundary fix only; it does not change artifact snapshotting, freshness semantics, required-artifact gates, Web state authority, provider replay, or model-led workflow behavior.
+
+Changes:
+
+- `validateRequiredArtifacts()` now parses non-empty `RequiredArtifact.Baseline.MTime` as RFC3339Nano.
+- Extended `TestContractArtifactsRejectMalformedTimestamps` to cover malformed baseline mtimes in `contract.json`, `artifact-tracker.json`, and `SaveArtifactTracker`.
+- Preserved compatibility for artifact records that omit optional baseline mtime.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestContractArtifactsRejectMalformedTimestamps` saw `LoadContract()` accept `baseline.mtime:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run TestContractArtifactsRejectMalformedTimestamps -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestContractArtifactsRejectMalformedTimestamps|TestLoadContractAndArtifactTrackerRejectMalformedSnapshots|TestSnapshotContractRefreshRejectsMalformedHistory|TestLongRunCheckpointRejectsMalformedSnapshot|TestLongRunCheckpointWritesRejectMalformedSnapshots' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionContract|TestContractRefresh|TestCompletionController.*Artifact|TestRequiredArtifact|TestLongRunCheckpointReportsCorruptArtifactTracker|TestCheckpointResumeHintReportsCorruptContractSnapshot|TestSessionSummary' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
