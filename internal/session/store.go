@@ -2847,6 +2847,8 @@ func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, []
 			if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, fs.ErrNotExist) {
 				return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s session.json: %w", linkedSessionID, err)
 			}
+		} else if strings.TrimSpace(meta.QueueJobID) != "" && meta.QueueJobID != jobID {
+			return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s session.json queue_job_id mismatch: got %q, want %q", linkedSessionID, meta.QueueJobID, jobID)
 		} else if meta.QueueJobID == jobID {
 			state, err := s.LoadState(meta.ID)
 			if err != nil {

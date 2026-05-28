@@ -8418,7 +8418,59 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-147. That slice made `findSessionForQueueJob` report corrupt linked `state.json` and `messages.jsonl` after a readable `session.json` matched the queue job. The residual issue was the explicit `QueueJob.SessionID` path: if a running queue job already carried a linked child `session_id` but that child's `session.json` was corrupt, metadata scanning skipped the child and stale-running reconciliation could mark the job as an orphan with `no linked session`.
 - Confirmed the minimal fix belongs in `internal/session/store.go` `findSessionForQueueJob`: when a queue job carries an explicit linked `session_id`, load that metadata first and report non-missing `session.json` errors before any stale-orphan repair, while preserving the existing scan fallback for jobs that do not yet have a persisted child session id.
 
+### Review 379
+
+- Confirmed FCA-20260529-391 against the same queue/session durable fact-source boundary in `spec/01-runtime-architecture.md` and the Web Background recovery visibility requirements in `spec/17-web-console.md`.
+- Confirmed this is distinct from FCA-20260526-147 and FCA-20260529-390. FCA-147 covered corrupt `state.json` / `messages.jsonl` after readable metadata matched the queue job, while FCA-390 covered corrupt explicit linked `session.json`. The residual issue was readable explicit linked metadata whose `queue_job_id` pointed at a different queue job.
+- Confirmed the minimal fix belongs in `internal/session/store.go` `findSessionForQueueJob`: when `QueueJob.SessionID` is explicit and readable, a `session.json` `queue_job_id` mismatch is a durable fact conflict that must be reported, not treated as "no linked session" for stale-orphan repair.
+
 ## Update Log
+
+### FCA-20260529-391
+
+Slice: `fix(session): report mismatched linked queue metadata`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` requires queue jobs and linked child session state to be explainable from durable file facts, with stale running job repair only when no linked session fact can be proven.
+- FCA-20260529-390 made `findSessionForQueueJob` honor explicit `QueueJob.SessionID` before scanning session roots, but a readable linked `session.json` whose `queue_job_id` pointed at a different job still fell through as if no linked child existed.
+- A focused store regression created a stale running queue job with `SessionID=child_mismatched_linked`, while that child metadata carried `QueueJobID=job_other_mismatched_linked`. Before the fix, `LoadJob` marked the job failed as `queue job stale: running job has no linked session and heartbeat is stale`.
+
+Impact:
+
+- Queue recovery could convert contradictory explicit queue/session facts into a false orphan failure.
+- Web / CLI queue views, parent coordination, background notification repair, and session summaries could be driven by an unproven "no linked session" premise even though a linked child metadata fact existed and disagreed with the queue job.
+- Operators would lose the actionable distinction between a genuinely missing child session and a corrupt or mismatched queue/session association that requires repair.
+
+Changes:
+
+- Updated `findSessionForQueueJob` so explicit `QueueJob.SessionID` metadata must point back to the same queue job.
+- Mismatched linked metadata now returns `linked session <id> session.json queue_job_id mismatch: got <other>, want <job>` and prevents stale-orphan repair.
+- Preserved the existing root scan fallback for jobs without explicit linked session ids, and preserved normal stale linked-session heartbeat repair when metadata matches the queue job.
+- Added `TestLoadJobReportsMismatchedExplicitLinkedSession`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadJobReportsMismatchedExplicitLinkedSession -count=1`: failed before the fix because `LoadJob` marked the explicit linked job failed as an orphan.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobReportsMismatchedExplicitLinkedSession|TestLoadJobReportsCorruptLinkedSessionFacts|TestReconcileStaleLinkedRunningJobFailsSession' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobReportsMismatchedExplicitLinkedSession|TestLoadJobReportsCorruptLinkedSessionFacts|TestReconcileStaleLinkedRunningJobFailsSession|TestReconcileCompletedSessionCompletesJob|TestLoadJobReportsLinkedSessionStateSaveError' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestClearSessionsRollsBackWhenAuditAppendFails -count=1`: passed after narrowing mismatch handling so legacy metadata-only linked sessions with blank `queue_job_id` remain compatible.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 60 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-390
 
