@@ -55,15 +55,6 @@ const state = {
     copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
     tone: 'neutral'
   },
-  chatRenderCache: {
-    activity: '',
-    flow: '',
-    body: '',
-    pending: '',
-    rail: '',
-    inspector: '',
-    todoFloat: ''
-  },
   nextSendInterrupt: false,
   pollHandle: null,
   pollIntervalMs: POLL_INTERVAL_MS,
@@ -96,6 +87,40 @@ const state = {
   goalEnabled: false,
   planModeEnabled: false
 };
+
+const renderState = {
+  chatCache: createEmptyChatRenderCache()
+};
+
+function createEmptyChatRenderCache() {
+  return {
+    activity: '',
+    flow: '',
+    body: '',
+    pending: '',
+    rail: '',
+    inspector: '',
+    todoFloat: ''
+  };
+}
+
+function resetChatRenderCache() {
+  renderState.chatCache = createEmptyChatRenderCache();
+}
+
+function chatRenderCacheValue(key) {
+  return renderState.chatCache[key] || '';
+}
+
+function updateChatRenderCache(key, markup) {
+  renderState.chatCache[key] = markup || '';
+}
+
+function invalidateChatRenderSlot(key) {
+  if (Object.prototype.hasOwnProperty.call(renderState.chatCache, key)) {
+    renderState.chatCache[key] = '';
+  }
+}
 
 const nodes = {
   chatInput: document.getElementById('chat-input'),
@@ -720,7 +745,7 @@ function setupEventListeners() {
     if (todoFloatToggle) {
       state.todoFloatExpanded = !state.todoFloatExpanded;
       persistUIState();
-      state.chatRenderCache.todoFloat = '';
+      invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
       return;
     }
@@ -729,7 +754,7 @@ function setupEventListeners() {
     if (filesFloatToggle) {
       state.fileChangesExpanded = !state.fileChangesExpanded;
       persistUIState();
-      state.chatRenderCache.todoFloat = '';
+      invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
       return;
     }
@@ -738,7 +763,7 @@ function setupEventListeners() {
     if (subAgentToggle) {
       state.subAgentExpanded = !state.subAgentExpanded;
       persistUIState();
-      state.chatRenderCache.todoFloat = '';
+      invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
       return;
     }

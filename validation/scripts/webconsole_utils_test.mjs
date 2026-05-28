@@ -374,6 +374,33 @@ test('confirmLocalAction resolves from local dialog controls without native conf
   }
 });
 
+test('chat render cache is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const initial = vm.runInContext(`({
+    stateHasChatCache: Object.prototype.hasOwnProperty.call(state, 'chatRenderCache'),
+    renderCacheKeys: Object.keys(renderState.chatCache).sort(),
+    emptyBody: chatRenderCacheValue('body')
+  })`, appContext);
+
+  assert.equal(initial.stateHasChatCache, false);
+  assert.deepEqual(sameRealm(initial.renderCacheKeys), [
+    'activity',
+    'body',
+    'flow',
+    'inspector',
+    'pending',
+    'rail',
+    'todoFloat'
+  ]);
+  assert.equal(initial.emptyBody, '');
+
+  vm.runInContext(`
+    updateChatRenderCache('todoFloat', '<div>cached</div>');
+    invalidateChatRenderSlot('todoFloat');
+  `, appContext);
+  assert.equal(vm.runInContext(`chatRenderCacheValue('todoFloat')`, appContext), '');
+});
+
 test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {
   const appContext = createAppHarnessContext();
   const action = vm.runInContext(`

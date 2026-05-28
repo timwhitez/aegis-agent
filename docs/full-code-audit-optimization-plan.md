@@ -22396,6 +22396,42 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-108
+
+Slice: `fix(webconsole): isolate chat render cache`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `chatRenderCache`, even though the cache is only a render-layer diff optimization for chat slots, rail, inspector, and activity float markup.
+- This contradicted the current frontend optimization plan's P1 Render State Isolation target: move render-only caches and handles out of `state` before broader view refactors, without introducing a second session/runtime authority or a frontend framework.
+
+Changes:
+
+- Added a tiny `renderState.chatCache` store with helper functions for creating, resetting, reading, updating, and invalidating chat render cache entries.
+- Updated `session-view.js` slot patching and chat shell reset paths to use the render cache helpers instead of `state.chatRenderCache`.
+- Updated activity float toggles to invalidate the render cache through a helper instead of mutating render-only state through the main app state.
+- Added a frontend Node harness regression proving `chatRenderCache` is not stored on `state` and that render-cache invalidation still works.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so the P1 Render State Isolation item records this first completed cache-isolation slice while keeping remaining handles/request guards explicit.
+
+Validation:
+
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 67/67 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-107
 
 Slice: `fix(webconsole): replace native confirm dialogs`

@@ -32,7 +32,7 @@ Current resource size:
 Current implemented facts:
 
 - Script loading is still ordered global-script loading in `index.html`; no ES module graph exists yet.
-- `app.js` still owns a large global `state` object, but it now includes polling/backoff state and selected workspace tree path.
+- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into a tiny `renderState.chatCache`; polling/backoff handles, selected workspace tree path, and request sequence guards remain in `state`.
 - WebSocket reconnect has exponential backoff with jitter, visibility-state handling, and fallback polling coordination.
 - Polling defaults to 5 seconds and uses a 1.6 second active interval while disconnected, generating, or tracking active descendants.
 - Embedded assets now use ETag validation and gzip negotiation; long immutable hashed asset URLs are not implemented.
@@ -55,6 +55,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Workspace tree semantics now expose `role="tree"` and `role="treeitem"` with `aria-level` and directory `aria-expanded` facts.
 - Workspace file preview no longer reads the full file body in one request; the WebConsole requests 256 KiB pages, the backend caps page size, and large files can be continued with `Load more`.
 - Native browser confirmation dialogs have been replaced for coverage override, goal clear, skill uninstall, session delete / clear all, settings save, and child-session open confirmation.
+- Chat stream diff cache no longer lives on the main global `state`; it is isolated in `renderState.chatCache` with helper accessors and invalidation.
 
 ## Remaining Optimization Backlog
 
@@ -107,17 +108,17 @@ Validation:
 
 ### P1: Render State Isolation
 
-The large global `state` object still mixes durable UI state, network handles, render caches, polling timers, selected queue job details, and workspace selection facts.
+The large global `state` object still mixes durable UI state, network handles, polling timers, selected queue job details, and workspace selection facts. The first render-state isolation slice moved the chat stream diff cache out of `state` into `renderState.chatCache`.
 
 Plan:
 
 - Introduce a tiny local store only when it reduces real coupling.
-- Move render-only caches and handles out of `state` before broader view refactors.
+- Continue moving render-only handles out of `state` before broader view refactors.
 - Avoid introducing React/Vue/Svelte or a second authority.
 
 Validation:
 
-- Selector/update tests if a store is introduced.
+- `validation/scripts/webconsole_utils_test.mjs` should assert that chat render cache is not stored on the main `state`, and that cache invalidation still works.
 - Existing stale response tests must continue to pass.
 
 ### P2: Message And Timeline Rendering Scale

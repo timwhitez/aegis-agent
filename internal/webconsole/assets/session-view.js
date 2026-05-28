@@ -64,7 +64,7 @@ function renderCurrentSession() {
   const slots = ensureChatSlots();
   const previousScrollTop = nodes.chatContainer.scrollTop;
   const previousScrollHeight = nodes.chatContainer.scrollHeight;
-  const shouldStick = isChatNearBottom(nodes.chatContainer) || !state.chatRenderCache.body;
+  const shouldStick = isChatNearBottom(nodes.chatContainer) || !chatRenderCacheValue('body');
   const prependScrollHeight = state.preserveScrollAfterRender;
   const sections = renderMessageStream();
   let mutated = false;
@@ -108,11 +108,11 @@ function renderCurrentSession() {
 
 function patchAuxSlot(node, key, html) {
   const markup = html || '';
-  if (state.chatRenderCache[key] === markup) {
+  if (chatRenderCacheValue(key) === markup) {
     return false;
   }
   node.innerHTML = markup;
-  state.chatRenderCache[key] = markup;
+  updateChatRenderCache(key, markup);
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: node });
   }
@@ -142,15 +142,7 @@ function ensureChatSlots() {
         <div class="chat-slot chat-slot-pending" data-chat-slot="pending"></div>
       </div>
     `;
-    state.chatRenderCache = {
-      activity: '',
-      flow: '',
-      body: '',
-      pending: '',
-      rail: '',
-      inspector: '',
-      todoFloat: ''
-    };
+    resetChatRenderCache();
     shell = nodes.chatMessages.querySelector('.chat-stream-shell');
   }
   return {
@@ -163,12 +155,12 @@ function ensureChatSlots() {
 
 function patchChatSlot(node, key, html) {
   const markup = html || '';
-  if (state.chatRenderCache[key] === markup) {
+  if (chatRenderCacheValue(key) === markup) {
     return false;
   }
   node.innerHTML = markup;
   node.hidden = markup === '';
-  state.chatRenderCache[key] = markup;
+  updateChatRenderCache(key, markup);
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: node });
   }
