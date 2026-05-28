@@ -3996,6 +3996,9 @@ func validateLongRunCheckpoint(sessionID string, checkpoint LongRunCheckpoint) e
 	if strings.TrimSpace(checkpoint.CreatedAt) == "" {
 		return errors.New("long-run checkpoint created_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, checkpoint.CreatedAt); err != nil {
+		return fmt.Errorf("long-run checkpoint created_at must be RFC3339Nano: %w", err)
+	}
 	if checkpoint.ContractSnapshot != nil {
 		if err := validateSessionContract(*checkpoint.ContractSnapshot); err != nil {
 			return fmt.Errorf("contract_snapshot: %w", err)

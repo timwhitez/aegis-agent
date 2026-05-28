@@ -8058,6 +8058,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-306 and FCA-20260528-334. Those slices routed todo load/save through semantic validation and hardened durable task file timestamps; this slice covers the remaining todo timestamp-shape gap where non-empty non-RFC3339 `updated_at` values were accepted on load/write and by `todo_write` before no-op comparison.
 - Confirmed the minimal fix belongs in the shared todo validators: parse `TodoItem.UpdatedAt` as RFC3339Nano in the store and tool snapshot validator, while preserving tool compatibility by continuing to fill omitted `updated_at` values before validation and preserving valid timestamps on no-op writes.
 
+### Review 329
+
+- Confirmed FCA-20260528-336 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/11-spec-audit-and-traceability.md`: `checkpoints/longrun-latest.json` is a durable long-run resume index for session recovery, summaries, provider options, parent wait state, and checkpoint drift diagnostics.
+- Confirmed this is distinct from FCA-20260528-302, FCA-20260528-316, FCA-20260528-317, and FCA-20260528-318. Those slices added generic long-run checkpoint semantic validation and hardened corrupt/unusable compaction artifact inputs; this slice covers the remaining checkpoint timestamp-shape gap where non-empty non-RFC3339 `created_at` values were accepted on load and save.
+- Confirmed the minimal fix belongs in `validateLongRunCheckpoint`: parse `LongRunCheckpoint.CreatedAt` as RFC3339Nano while preserving `SaveLongRunCheckpoint` compatibility for omitted `created_at` through the existing normalize-before-validate path.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10805,6 +10811,41 @@ Validation:
 - `node --check internal/webconsole/assets/settings-view.js`: passed.
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-336
+
+Slice: `fix(session): validate checkpoint timestamps`
+
+Finding:
+
+- FCA-20260528-302 routed `LoadLongRunCheckpoint()` and `SaveLongRunCheckpoint()` through semantic validation, but `validateLongRunCheckpoint()` still accepted any non-empty `LongRunCheckpoint.CreatedAt` string.
+- A focused regression wrote `checkpoints/longrun-latest.json` with `created_at:"not-a-time"`; before the fix, `LoadLongRunCheckpoint()` returned nil error and trusted the malformed checkpoint timestamp.
+- The same focused regression set `CreatedAt:"not-a-time"` on a checkpoint passed to `SaveLongRunCheckpoint()`; before the fix, the malformed checkpoint was accepted.
+
+Impact:
+
+- `checkpoints/longrun-latest.json` is a durable long-run resume index used by recovery hints, `session.md`, checkpoint drift diagnostics, provider option visibility, parent wait state, and Web/session inspection paths.
+- Accepting arbitrary checkpoint timestamp strings weakened recovery chronology and made malformed derived checkpoint facts look like normal long-run state.
+- This was a validation-boundary fix only; it does not make checkpoints override `messages.jsonl`, `events.jsonl`, `state.json`, `goal.json`, `planmode.json`, or queue source facts.
+
+Changes:
+
+- Added RFC3339Nano parsing for `LongRunCheckpoint.CreatedAt` in the shared checkpoint validator.
+- Preserved `SaveLongRunCheckpoint()` compatibility for omitted `created_at` by leaving the existing normalize-before-validate defaulting path intact.
+- Extended loaded-checkpoint and save-checkpoint regressions to cover malformed checkpoint timestamps while preserving rejected-write durability checks.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLongRunCheckpointRejectsMalformedSnapshot` loaded `created_at:"not-a-time"` with nil error, and `TestLongRunCheckpointWritesRejectMalformedSnapshots` saved `CreatedAt:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run 'TestLongRunCheckpointRejectsMalformedSnapshot|TestLongRunCheckpointWritesRejectMalformedSnapshots' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpoint|TestCheckpointResumeHint|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable|TestSessionSummaryAndCheckpointRecordRecentOwnerClue' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
 - `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
 

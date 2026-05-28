@@ -1295,6 +1295,15 @@ func TestLongRunCheckpointRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadLongRunCheckpoint(meta.ID); err == nil || !strings.Contains(err.Error(), "validate longrun-latest.json") || !strings.Contains(err.Error(), "path separators") {
 		t.Fatalf("expected malformed checkpoint validation error, got %v", err)
 	}
+
+	malformed.CreatedAt = "not-a-time"
+	malformed.UnresolvedChildSessions = nil
+	if err := store.writeJSONFile(path, malformed); err != nil {
+		t.Fatalf("write malformed checkpoint timestamp: %v", err)
+	}
+	if _, err := store.LoadLongRunCheckpoint(meta.ID); err == nil || !strings.Contains(err.Error(), "validate longrun-latest.json") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed checkpoint created_at validation error, got %v", err)
+	}
 }
 
 func TestLongRunCheckpointWritesRejectMalformedSnapshots(t *testing.T) {
@@ -1339,6 +1348,11 @@ func TestLongRunCheckpointWritesRejectMalformedSnapshots(t *testing.T) {
 	invalidCounter.TaskSummary = map[string]int{"total": -1}
 	if err := store.SaveLongRunCheckpoint(meta.ID, invalidCounter); err == nil || !strings.Contains(err.Error(), "task_summary") {
 		t.Fatalf("expected save to reject negative task summary, got %v", err)
+	}
+	invalidCreatedAt := valid
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.SaveLongRunCheckpoint(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject malformed created_at, got %v", err)
 	}
 	loaded, err := store.LoadLongRunCheckpoint(meta.ID)
 	if err != nil {
