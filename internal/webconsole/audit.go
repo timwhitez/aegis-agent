@@ -71,6 +71,9 @@ func (s *Service) appendAuditEvents(pending ...pendingWebAuditEvent) error {
 	if err := validateExistingAuditLog(file); err != nil {
 		return err
 	}
+	if err := validateAuditBatchUnique(file, events); err != nil {
+		return err
+	}
 	offset, err := file.Seek(0, io.SeekEnd)
 	if err != nil {
 		return err
@@ -141,6 +144,7 @@ func validateExistingAuditLog(file *os.File) error {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
+	seenIDs := map[string]struct{}{}
 	scanner := bufio.NewScanner(file)
 	line := 0
 	for scanner.Scan() {
@@ -156,9 +160,53 @@ func validateExistingAuditLog(file *os.File) error {
 		if err := validateAuditEvent(event); err != nil {
 			return fmt.Errorf("invalid audit log record %d: %w", line, err)
 		}
+		id := strings.TrimSpace(event.ID)
+		if _, ok := seenIDs[id]; ok {
+			return fmt.Errorf("invalid audit log record %d: duplicate audit event id %q", line, id)
+		}
+		seenIDs[id] = struct{}{}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	_, err := file.Seek(0, io.SeekEnd)
+	return err
+}
+
+func validateAuditBatchUnique(file *os.File, events []webAuditEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	seenIDs := map[string]struct{}{}
+	scanner := bufio.NewScanner(file)
+	line := 0
+	for scanner.Scan() {
+		line++
+		raw := strings.TrimSpace(scanner.Text())
+		if raw == "" {
+			continue
+		}
+		var event webAuditEvent
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return fmt.Errorf("invalid audit log record %d: %w", line, err)
+		}
+		id := strings.TrimSpace(event.ID)
+		if id != "" {
+			seenIDs[id] = struct{}{}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	for _, event := range events {
+		id := strings.TrimSpace(event.ID)
+		if _, ok := seenIDs[id]; ok {
+			return fmt.Errorf("duplicate audit event id %q", id)
+		}
+		seenIDs[id] = struct{}{}
 	}
 	_, err := file.Seek(0, io.SeekEnd)
 	return err
