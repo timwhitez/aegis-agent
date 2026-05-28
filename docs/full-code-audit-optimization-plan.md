@@ -8334,7 +8334,45 @@ Evidence gates:
 - Confirmed this is a residual local-tool gap after FCA-20260528-374 and FCA-20260528-375. Direct private-key and credential-like basenames were denied, but `.env.*` secrets other than exact `.env` were not denied, and sensitive file-like names were only checked at the final basename instead of each path component.
 - Confirmed the minimal fix belongs in `internal/tools/path.go` and `internal/tools/exec_policy.go`: reuse the existing deny-name helper for every path component, add `.env.*` with template exceptions, and make shell exec-policy classify redirect/tee writes to those env secret paths without changing read access, Web Workspace rendering, provider replay, or runtime workflow behavior.
 
+### Review 365
+
+- Confirmed FCA-20260528-377 against the same Phase 2 tool path-safety boundary as the preceding local-tool slices: symlink alias resolution must not let model-facing `write_file` / `edit_file` reach sensitive credential-like paths.
+- Confirmed this is a residual alias-depth gap after FCA-20260528-375. That slice denied writes to the exact real target of root pattern aliases such as `deploy.pem -> secrets/key-real`, but the implementation still used exact path equality for pattern aliases and therefore did not cover directory aliases and their children.
+- Confirmed the minimal fix belongs in `internal/tools/path.go`: reuse a tiny alias-match helper that accepts either the exact resolved alias target or any child path under it, without changing read access, shell exec-policy metadata, provider replay, Web Workspace rendering, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260528-377
+
+Slice: `fix(tools): deny private key directory alias writes`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines `write_file` / `edit_file` as workspace writes that must pass path-safety checks, and the repo `AGENTS.md` treats symlink-aware workspace/path safety as a hard guard.
+- FCA-20260528-375 added root pattern-alias checks for private-key and credential-like filenames, but the helper only compared the resolved alias target with the write target by exact path equality.
+- Focused regressions created directory aliases `deploy.pem -> secrets/key-dir` and `credentials.json -> secrets/creds-dir`, then wrote `secrets/key-dir/token` and `secrets/creds-dir/token`. Before the fix, both writes were allowed because the requested real target was a child of the sensitive alias target rather than the exact target path.
+
+Impact:
+
+- A model could write new files under a non-sensitive-looking directory that is exposed through a sensitive private-key or credential-like alias at the workspace root.
+- This weakened the model-facing write policy added by FCA-20260528-375. The issue is limited to workspace write tools; it does not change workspace reads, Web rendering, session/report content, provider replay, shell exec-policy metadata, or runtime workflow decisions.
+
+Changes:
+
+- Added `resolvedAliasMatches` so resolved alias checks deny both the exact resolved alias target and any child path beneath it.
+- Applied that helper to exact denied-file aliases and pattern-denied aliases.
+- Added focused coverage for `deploy.pem` and `credentials.json` directory aliases pointing at non-sensitive real directory names.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets -count=1`: failed before the fix because both alias-child writes were allowed.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets|TestWriteDeniedPrivateKeyPatternSymlinkFileTargets|TestWriteDeniedSensitiveSymlinkFileTarget' -count=1`: passed.
+- `gofmt -l internal/tools/path.go internal/tools/path_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/{app,session-view,workspace-view,events,settings-view,utils,api,icons}.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-376
 

@@ -222,6 +222,50 @@ func TestWriteDeniedPrivateKeyPatternSymlinkFileTargets(t *testing.T) {
 	}
 }
 
+func TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets(t *testing.T) {
+	tests := []struct {
+		name    string
+		alias   string
+		target  string
+		child   string
+		pattern string
+	}{
+		{
+			name:    "pem directory alias",
+			alias:   "deploy.pem",
+			target:  "key-dir",
+			child:   "token",
+			pattern: "*.pem",
+		},
+		{
+			name:    "credentials directory alias",
+			alias:   "credentials.json",
+			target:  "creds-dir",
+			child:   "token",
+			pattern: "credentials.*",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			targetDir := filepath.Join(root, "secrets", tt.target)
+			if err := os.MkdirAll(targetDir, 0o700); err != nil {
+				t.Fatalf("mkdir sensitive target dir: %v", err)
+			}
+			if err := os.Symlink(filepath.Join("secrets", tt.target), filepath.Join(root, tt.alias)); err != nil {
+				t.Fatalf("symlink %s: %v", tt.alias, err)
+			}
+			resolved, err := ResolveWorkspacePath(root, filepath.ToSlash(filepath.Join("secrets", tt.target, tt.child)))
+			if err != nil {
+				t.Fatalf("resolve sensitive target child: %v", err)
+			}
+			if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '"+tt.pattern+"'") {
+				t.Fatalf("expected resolved %s directory target child to be denied, got %v", tt.alias, err)
+			}
+		})
+	}
+}
+
 func TestWriteDeniedCloudCredentialPathSymlinkAlias(t *testing.T) {
 	root := t.TempDir()
 	targetDir := filepath.Join(root, "cloud-real", "configurations")

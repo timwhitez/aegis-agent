@@ -183,7 +183,7 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 		if err != nil {
 			return err
 		}
-		if ok && sameCleanPath(deniedPath, resolvedPath) {
+		if ok && resolvedAliasMatches(deniedPath, resolvedPath) {
 			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s'", displayPath, denied)
 		}
 	}
@@ -207,7 +207,7 @@ func checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath s
 		if err != nil {
 			return err
 		}
-		if ok && sameCleanPath(deniedPath, resolvedPath) {
+		if ok && resolvedAliasMatches(deniedPath, resolvedPath) {
 			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s'", displayPath, pattern)
 		}
 	}
@@ -305,4 +305,8 @@ func resolveExistingWorkspacePolicyPath(base, rel string) (string, bool, error) 
 
 func sameCleanPath(left, right string) bool {
 	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func resolvedAliasMatches(aliasPath, resolvedPath string) bool {
+	return sameCleanPath(aliasPath, resolvedPath) || isWithin(aliasPath, resolvedPath)
 }
