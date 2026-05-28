@@ -1231,6 +1231,33 @@ func TestLoadMessagesRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "provider is required") {
 		t.Fatalf("expected ownerless provider content validation error, got %v", err)
 	}
+
+	malformed = NewMessage("assistant", "")
+	malformed.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: "unknown-provider",
+		Type:     "thinking",
+		Data:     "opaque",
+	}}
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write unknown provider block messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "invalid provider") {
+		t.Fatalf("expected unknown provider content validation error, got %v", err)
+	}
+
+	malformed = NewMessage("assistant", "")
+	malformed.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: " openai ",
+		Type:     "reasoning",
+		ID:       "rs_1",
+		Data:     "opaque",
+	}}
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write spaced provider block messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "invalid provider") {
+		t.Fatalf("expected spaced provider content validation error, got %v", err)
+	}
 }
 
 func TestMessageWritesRejectMalformedFacts(t *testing.T) {
@@ -1297,6 +1324,25 @@ func TestMessageWritesRejectMalformedFacts(t *testing.T) {
 	}}
 	if err := store.AppendMessage(meta.ID, ownerlessProviderBlock); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "provider is required") {
 		t.Fatalf("expected ownerless provider block append rejection, got %v", err)
+	}
+	unknownProviderBlock := NewMessage("assistant", "")
+	unknownProviderBlock.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: "unknown-provider",
+		Type:     "thinking",
+		Data:     "opaque",
+	}}
+	if err := store.AppendMessage(meta.ID, unknownProviderBlock); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "invalid provider") {
+		t.Fatalf("expected unknown provider block append rejection, got %v", err)
+	}
+	spacedProviderBlock := NewMessage("assistant", "")
+	spacedProviderBlock.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: " openai ",
+		Type:     "reasoning",
+		ID:       "rs_1",
+		Data:     "opaque",
+	}}
+	if err := store.AppendMessage(meta.ID, spacedProviderBlock); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "invalid provider") {
+		t.Fatalf("expected spaced provider block append rejection, got %v", err)
 	}
 	if _, err := store.WriteTranscript(meta.ID, "bad.jsonl", []Message{invalidRole}); err == nil || !strings.Contains(err.Error(), "validate transcript messages") {
 		t.Fatalf("expected transcript validation rejection, got %v", err)

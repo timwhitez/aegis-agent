@@ -8124,6 +8124,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-311 and FCA-20260528-345. Those slices covered message shape basics and provider-content JSON argument object shape; this slice covers the remaining owner gap where an assistant message could contain only an ownerless provider-content block that passed store validation but would be ignored by all provider replay helpers.
 - Confirmed the minimal fix belongs in shared message validation: require every provider-content block to carry a nonblank `provider` owner, without validating provider-specific block types, profile/API/model scope policy, encrypted reasoning, signatures, thought signatures, or Web/CLI provider replay behavior.
 
+### Review 340
+
+- Confirmed FCA-20260528-347 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `provider_content_blocks` are durable provider replay facts, but only the OpenAI, Anthropic, and Google adapters currently own and replay those provider-native block families.
+- Confirmed this is distinct from FCA-20260528-346. That slice required the provider owner to be present; this slice covers the remaining unsupported-owner gap where a nonblank but unknown or whitespace-padded provider owner passed store validation while every adapter replay helper skipped it.
+- Confirmed the minimal fix belongs in shared message validation: require the provider-content owner to be exactly one known adapter family (`openai`, `anthropic`, or `google`), without validating provider-specific block types, signatures, encrypted reasoning payloads, profile/API/model scope policy, Web display behavior, or runtime workflow.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11173,6 +11179,53 @@ Changes:
 Validation:
 
 - Pre-fix focused verification failed as expected: `TestLoadMessagesRejectsMalformedSnapshot` loaded an assistant message with an ownerless provider-content block, and `TestMessageWritesRejectMalformedFacts` accepted the same malformed append.
+- `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts|TestStoreAppendMessage|TestStoreLoadMessages' -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -run 'Test.*Replay|Test.*Thinking|Test.*Reasoning|Test.*Content|Test.*Provider' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestCompaction|TestEnginePersistsProviderTurnMetadata|TestProviderRawSidecar|TestSessionSummary|TestLongRunCheckpoint' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-347
+
+Slice: `fix(session): validate provider content owner families`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` define `messages.jsonl` as the durable provider replay fact source, while provider-native `provider_content_blocks` are interpreted only by provider adapters.
+- The current provider contract exposes OpenAI, Anthropic, Google, and `openai-compatible` through the OpenAI Responses adapter; replay helpers only consume provider-content blocks whose owner is exactly `openai`, `anthropic`, or `google`.
+- FCA-20260528-346 required a nonblank provider owner, but shared message validation still accepted unsupported or whitespace-padded owners such as `unknown-provider` and ` openai `. Focused regressions wrote those owners into assistant provider-content blocks. Before the fix, `LoadMessages()` returned nil and `AppendMessage()` accepted both malformed replay facts.
+
+Impact:
+
+- An assistant message could satisfy the durable message shape with a nonblank provider-content owner that no adapter would replay.
+- Web detail, CLI fallback, compaction, summaries, checkpoints, and recovery could treat the opaque block as normal assistant history even though provider replay ownership was undefined.
+- This is a store validation-boundary fix only; it does not interpret provider-specific block types, signatures, encrypted reasoning payloads, thought signatures, profile/API/model scope policy, Web state authority, or model-led workflow behavior.
+
+Changes:
+
+- Tightened shared provider-content validation so `provider` must be exactly one known adapter family: `openai`, `anthropic`, or `google`.
+- Rejected whitespace-padded provider owners because adapter replay filters use exact provider owner matching.
+- Extended focused message load and append regressions to reject unsupported and whitespace-padded provider-content owners.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLoadMessagesRejectsMalformedSnapshot` loaded an assistant message with `provider_content_blocks[0].provider:"unknown-provider"`, and `TestMessageWritesRejectMalformedFacts` accepted the same malformed append.
 - `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts|TestStoreAppendMessage|TestStoreLoadMessages' -count=1`: passed.
 - `go test -timeout 120s ./internal/provider -run 'Test.*Replay|Test.*Thinking|Test.*Reasoning|Test.*Content|Test.*Provider' -count=1`: passed.

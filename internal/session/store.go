@@ -3870,8 +3870,17 @@ func validateToolResults(results []ToolResult) error {
 func validateProviderContentBlocks(blocks []ProviderContentBlock) error {
 	for i, block := range blocks {
 		position := i + 1
-		if strings.TrimSpace(block.Provider) == "" {
+		provider := strings.TrimSpace(block.Provider)
+		if provider == "" {
 			return fmt.Errorf("provider_content_block %d provider is required", position)
+		}
+		if provider != block.Provider {
+			return fmt.Errorf("provider_content_block %d invalid provider %q", position, block.Provider)
+		}
+		switch provider {
+		case "openai", "anthropic", "google":
+		default:
+			return fmt.Errorf("provider_content_block %d invalid provider %q", position, block.Provider)
 		}
 		if strings.TrimSpace(block.Type) == "" {
 			return fmt.Errorf("provider_content_block %d type is required", position)
