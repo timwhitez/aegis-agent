@@ -609,21 +609,64 @@ func doctorStaleRunningJobs(records []doctorQueueJobRecord, now time.Time) []map
 func doctorQueueJobsMissingSessions(sessionRoot string, records []doctorQueueJobRecord) []map[string]any {
 	var out []map[string]any
 	for _, record := range records {
-		sessionID := strings.TrimSpace(record.Job.SessionID)
-		if sessionID == "" {
-			continue
+		missingByID := map[string]int{}
+		var missingRefs []struct {
+			sessionID string
+			fields    []string
 		}
-		path := filepath.Join(sessionRoot, sessionID, "session.json")
-		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+		for _, ref := range doctorQueueJobSessionRefs(record.Job) {
+			path := filepath.Join(sessionRoot, ref.sessionID, "session.json")
+			if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+				if index, ok := missingByID[ref.sessionID]; ok {
+					missingRefs[index].fields = append(missingRefs[index].fields, ref.field)
+					continue
+				}
+				missingByID[ref.sessionID] = len(missingRefs)
+				missingRefs = append(missingRefs, struct {
+					sessionID string
+					fields    []string
+				}{
+					sessionID: ref.sessionID,
+					fields:    []string{ref.field},
+				})
+			}
+		}
+		for _, ref := range missingRefs {
 			out = append(out, map[string]any{
 				"job_id":     record.Job.ID,
 				"status":     record.Status,
-				"session_id": sessionID,
+				"session_id": ref.sessionID,
+				"fields":     ref.fields,
 				"path":       record.Path,
 			})
 		}
 	}
 	return out
+}
+
+func doctorQueueJobSessionRefs(job session.QueueJob) []struct {
+	field     string
+	sessionID string
+} {
+	var refs []struct {
+		field     string
+		sessionID string
+	}
+	for _, ref := range []struct {
+		field     string
+		sessionID string
+	}{
+		{field: "session_id", sessionID: job.SessionID},
+		{field: "parent_session_id", sessionID: job.ParentSessionID},
+		{field: "root_session_id", sessionID: job.RootSessionID},
+	} {
+		ref.sessionID = strings.TrimSpace(ref.sessionID)
+		if ref.sessionID == "" {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 func doctorQueueHeartbeatReference(job session.QueueJob) (string, string) {

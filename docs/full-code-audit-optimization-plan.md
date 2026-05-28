@@ -7992,6 +7992,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-322. That slice rechecked the selected session after queue-job enrichment to avoid stale generation/activity/render side effects; this slice covers the earlier write inside `refreshSelectedQueueJobDetail(...)` where an old enrichment response could still populate `state.selectedQueueJobDetail` after a newer same-session refresh had already been queued.
 - Confirmed the minimal fix belongs in `app.js`: let session refresh pass a current-refresh predicate into queue-job enrichment, preserving standalone selected-job refresh behavior while preventing stale same-session enrichment writes when `needsSessionRefresh` is already set.
 
+### Review 318
+
+- Confirmed FCA-20260528-325 against `spec/01-runtime-architecture.md` and `spec/09-phase-plan.md`: queue jobs, parent/root session links, parent coordination, and session summaries are durable local facts, and CLI `doctor` remains a Web-first v1 fallback diagnostic surface.
+- Confirmed this is distinct from FCA-20260525-037 and FCA-20260528-323. The blocked-queue doctor slice made `_queue/blocked` visible, and the unsafe-core-file slice reports malformed existing session facts; this slice covers parent-linked queue jobs that may have no child `session_id` yet but still point at missing `parent_session_id` / `root_session_id` facts.
+- Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: extend the queue missing-session reference scan across the queue job's durable session-link fields, merge duplicate same-session field hits into one diagnostic row, and leave queue scheduling, parent coordination repair, WebConsole projection, and runtime delegation semantics unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10354,6 +10360,38 @@ Validation:
 - `node --check internal/webconsole/assets/settings-view.js`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `git diff --check -- docs/full-code-audit-optimization-plan.md internal/webconsole/assets/app.js validation/scripts/webconsole_utils_test.mjs`: passed.
+
+### FCA-20260528-325
+
+Slice: `fix(app): report missing queue parent session refs`
+
+Finding:
+
+- `doctorQueueJobsMissingSessions()` only checked the child `QueueJob.SessionID` field while building the `session.partial_state` doctor report.
+- Parent-linked queue jobs can exist before a worker has created a child session, so they may legitimately have `parent_session_id` / `root_session_id` but no `session_id`.
+- If the parent/root session facts had been deleted or lost, `go-cli-agent doctor` returned `session.partial_state` as `ok` because the missing reference was not in `session_id`.
+
+Impact:
+
+- CLI fallback diagnostics could miss orphaned parent-linked queue jobs whose parent/root session facts were gone.
+- Operators could see no partial-state warning even though parent coordination, session summaries, Web Background inspector facts, and queue recovery could no longer connect the queued work back to its durable parent.
+- This did not mutate queue/runtime state; it was a diagnostic accuracy gap at the doctor queue fact boundary.
+
+Changes:
+
+- Extended queue missing-session diagnostics to inspect `session_id`, `parent_session_id`, and `root_session_id`.
+- Merged duplicate hits for the same missing session on a single queue job into one row with a `fields` list, so common parent/root duplicates do not create noisy duplicate findings.
+- Added a focused doctor regression for a parent-linked queued job with missing parent/root session facts and no child session yet.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestDoctorReportsQueueJobMissingParentSessionRef` returned `session.partial_state` as `ok` with `queue_jobs_missing_session:0`.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReports(QueueJobMissingParentSessionRef|QueueLeaseAndMissingSessionRef|BlockedQueueJobMissingSessionRef|UnsafeSessionCoreFiles|DuplicateQueueJobStatus)' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `go vet ./cmd/... ./internal/app ./internal/session ./internal/runtime ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-265
 

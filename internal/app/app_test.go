@@ -1901,6 +1901,34 @@ func TestDoctorReportsBlockedQueueJobMissingSessionRef(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsQueueJobMissingParentSessionRef(t *testing.T) {
+	root := t.TempDir()
+	writeDoctorQueueJob(t, root, session.QueueStatusQueued, session.QueueJob{
+		ID:              "job_missing_parent_session",
+		Status:          session.QueueStatusQueued,
+		Prompt:          "run child later",
+		Mode:            session.ModeExec,
+		ParentSessionID: "parent_does_not_exist",
+		RootSessionID:   "parent_does_not_exist",
+	})
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	missingRefs, ok := check.Details["queue_jobs_missing_session"].([]map[string]any)
+	if !ok || len(missingRefs) != 1 {
+		t.Fatalf("expected missing parent session ref, got %#v", check.Details["queue_jobs_missing_session"])
+	}
+	if missingRefs[0]["job_id"] != "job_missing_parent_session" || missingRefs[0]["session_id"] != "parent_does_not_exist" {
+		t.Fatalf("unexpected missing parent detail: %#v", missingRefs[0])
+	}
+	fields, ok := missingRefs[0]["fields"].([]string)
+	if !ok || len(fields) != 2 || fields[0] != "parent_session_id" || fields[1] != "root_session_id" {
+		t.Fatalf("expected parent/root fields, got %#v", missingRefs[0]["fields"])
+	}
+}
+
 func TestCheckSessionDirModeWarnsOnPermissionDrift(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o777); err != nil {
