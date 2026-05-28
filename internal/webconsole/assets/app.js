@@ -58,7 +58,6 @@ const state = {
   lastInputWasEmpty: true,
   showHelp: false,
   needsOverviewRefresh: false,
-  planInputSelections: {},
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
@@ -116,6 +115,10 @@ const floatingPanelViewState = {
   todo: true,
   files: true,
   subAgents: true
+};
+
+const planInputViewState = {
+  selections: {}
 };
 
 function isFloatingPanelExpanded(panel) {
@@ -1341,7 +1344,7 @@ function adoptSession(sessionID, backed) {
   if (sessionID !== state.sessionId) {
     state.selectedQueueJobId = '';
     state.selectedQueueJobDetail = null;
-    state.planInputSelections = {};
+    clearPlanInputSelections();
     state.hasMoreMessages = false;
     state.oldestMessageId = '';
     state.loadingEarlier = false;
@@ -1370,7 +1373,7 @@ function resetChatSession() {
   state.nextSendInterrupt = false;
   state.selectedQueueJobId = '';
   state.selectedQueueJobDetail = null;
-  state.planInputSelections = {};
+  clearPlanInputSelections();
   state.goalEnabled = false;
   state.planModeEnabled = false;
   state.hasMoreMessages = false;
@@ -1616,27 +1619,31 @@ function currentPlanMode() {
   return state.sessionDetail?.plan_mode || null;
 }
 
+function clearPlanInputSelections() {
+  planInputViewState.selections = {};
+}
+
 function getPlanInputSelections(request) {
   const requestID = String(request?.request_id || '').trim();
   if (!requestID) {
     return {};
   }
-  if (!state.planInputSelections || typeof state.planInputSelections !== 'object') {
-    state.planInputSelections = {};
+  if (!planInputViewState.selections || typeof planInputViewState.selections !== 'object') {
+    clearPlanInputSelections();
   }
-  Object.keys(state.planInputSelections).forEach((key) => {
+  Object.keys(planInputViewState.selections).forEach((key) => {
     if (key !== requestID) {
-      delete state.planInputSelections[key];
+      delete planInputViewState.selections[key];
     }
   });
-  const selections = state.planInputSelections[requestID] || {};
+  const selections = planInputViewState.selections[requestID] || {};
   const validQuestionIDs = new Set(maybeArray(request?.questions).map((question) => String(question?.id || '').trim()).filter(Boolean));
   Object.keys(selections).forEach((questionID) => {
     if (!validQuestionIDs.has(questionID)) {
       delete selections[questionID];
     }
   });
-  state.planInputSelections[requestID] = selections;
+  planInputViewState.selections[requestID] = selections;
   return selections;
 }
 
@@ -1815,7 +1822,7 @@ async function handlePlanInputAction(button) {
     if (state.sessionId !== sessionID) {
       return;
     }
-    delete state.planInputSelections[requestID];
+    delete planInputViewState.selections[requestID];
     showToast('Plan input answered.', 'success');
     queueSessionRefresh(80);
     queueOverviewRefresh(180);

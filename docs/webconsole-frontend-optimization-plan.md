@@ -19,7 +19,7 @@ Current resource size:
 | --- | ---: |
 | `internal/webconsole/assets/index.html` | 180 |
 | `internal/webconsole/assets/styles.css` | 4,355 |
-| `internal/webconsole/assets/app.js` | 3,072 |
+| `internal/webconsole/assets/app.js` | 3,079 |
 | `internal/webconsole/assets/session-view.js` | 2,297 |
 | `internal/webconsole/assets/utils.js` | 673 |
 | `internal/webconsole/assets/events.js` | 454 |
@@ -27,12 +27,12 @@ Current resource size:
 | `internal/webconsole/assets/api.js` | 193 |
 | `internal/webconsole/assets/workspace-view.js` | 410 |
 | `internal/webconsole/assets/icons.js` | 56 |
-| Total | 12,122 |
+| Total | 12,129 |
 
 Current implemented facts:
 
 - Script loading is still ordered global-script loading in `index.html`; no ES module graph exists yet.
-- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, History page request sequencing lives in `historyViewState`, History parent-row expansion ids live in `historyExpansionViewState`, earlier-message paging request sequencing lives in `messagePagingViewState`, transient toast id allocation lives in `toastViewState`, stop-action pending session ids live in `stopActionViewState`, and floating tracker panel expansion preferences live in `floatingPanelViewState`; selected workspace tree path and durable message paging facts remain in `state`.
+- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, History page request sequencing lives in `historyViewState`, History parent-row expansion ids live in `historyExpansionViewState`, earlier-message paging request sequencing lives in `messagePagingViewState`, transient toast id allocation lives in `toastViewState`, stop-action pending session ids live in `stopActionViewState`, floating tracker panel expansion preferences live in `floatingPanelViewState`, and pending Plan Mode input selections live in `planInputViewState`; selected workspace tree path and durable message paging facts remain in `state`.
 - WebSocket reconnect has exponential backoff with jitter, visibility-state handling, and fallback polling coordination.
 - Polling defaults to 5 seconds and uses a 1.6 second active interval while disconnected, generating, or tracking active descendants.
 - Embedded assets now use ETag validation and gzip negotiation; long immutable hashed asset URLs are not implemented.
@@ -67,6 +67,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Stop-action pending session ids no longer live on the main global `state`; they are isolated in `stopActionViewState` while preserving duplicate stop suppression and pending cleanup.
 - History parent-row expansion ids no longer live on the main global `state`; they are isolated in `historyExpansionViewState` while preserving expanded parent/child rendering in the Sessions view.
 - Todo/task, file-change, and sub-agent floating panel expansion preferences no longer live on the main global `state`; they are isolated in `floatingPanelViewState` while preserving the existing localStorage keys and expanded/collapsed rendering.
+- Pending Plan Mode input selections no longer live on the main global `state`; they are isolated in `planInputViewState` while preserving request-scoped cleanup, selected answer rendering, and submitted answer payloads.
 
 ## Remaining Optimization Backlog
 
@@ -119,7 +120,7 @@ Validation:
 
 ### P1: Render State Isolation
 
-The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and durable message paging facts. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, History page request sequencing into `historyViewState`, History parent-row expansion ids into `historyExpansionViewState`, earlier-message paging request sequencing into `messagePagingViewState`, toast id allocation into `toastViewState`, stop-action pending ids into `stopActionViewState`, and floating tracker panel expansion preferences into `floatingPanelViewState`.
+The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and durable message paging facts. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, History page request sequencing into `historyViewState`, History parent-row expansion ids into `historyExpansionViewState`, earlier-message paging request sequencing into `messagePagingViewState`, toast id allocation into `toastViewState`, stop-action pending ids into `stopActionViewState`, floating tracker panel expansion preferences into `floatingPanelViewState`, and pending Plan Mode input selections into `planInputViewState`.
 
 Plan:
 
@@ -141,6 +142,7 @@ Validation:
 - `validation/scripts/webconsole_utils_test.mjs` should assert that stop-action pending session ids are not stored on the main `state`, and that duplicate stop suppression and cleanup still work.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that History parent-row expansion ids are not stored on the main `state`, and that expanded parent/child rendering still works.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that floating tracker panel expansion preferences are not stored on the main `state`, and that localStorage persistence plus expanded/collapsed rendering still work.
+- `validation/scripts/webconsole_utils_test.mjs` should assert that pending Plan Mode input selections are not stored on the main `state`, and that request-scoped cleanup plus answer submission still work.
 - Existing stale response tests must continue to pass.
 
 ### P2: Message And Timeline Rendering Scale

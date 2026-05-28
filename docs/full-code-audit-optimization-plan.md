@@ -8496,7 +8496,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-108 and FCA-20260529-118. Those slices moved chat render diff cache and Sessions parent-row expansion ids; this residual issue was only the three tracker floating panel expanded/collapsed preferences that `renderTodoFloat()`, `renderFileChangesFloat()`, and `renderSubAgentFloat()` read through the main `state`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move the panel preferences into a tiny `floatingPanelViewState`, expose helper reads for renderers, keep existing localStorage key names for compatibility, and preserve expanded/collapsed rendering without changing todo/task, file-change, child, or queue source facts.
 
+### Review 392
+
+- Confirmed FCA-20260529-120 against `spec/17-web-console.md`'s Plan Mode input surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: pending Plan Mode input selections are browser form draft state, not durable Plan Mode pending-request facts, submitted answers, session messages, provider replay facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from earlier Plan Mode input correctness slices. Those fixed explicit-answer validation, stale completion refreshes, live waiter retention, delivery validation, and durable input answer/cancel events; this residual issue was only unsent selected-option drafts living on the main `state` object.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move request-scoped selection drafts into a tiny `planInputViewState`, keep `getPlanInputSelections()` as the renderer-facing helper, preserve stale request cleanup, clear selections on session reset/switch and successful submit, and leave `planmode.json` / input-answer API behavior unchanged.
+
 ## Update Log
+
+### FCA-20260529-120
+
+Slice: `fix(webconsole): isolate plan input selections`
+
+Finding:
+
+- The WebConsole's main `state` object still stored `planInputSelections`, a map of selected but not yet submitted answers for the current pending Plan Mode `request_user_input` prompt.
+- Those selections are browser form draft state used to highlight selected options and assemble the eventual answer payload. They are not durable `planmode.json` pending-request facts, submitted answers, session messages, provider replay facts, or WebConsole file-fact authority.
+- Source evidence showed `getPlanInputSelections()` mutating `state.planInputSelections`, while the durable path remains `answerPlanModeInput()` posting answers to the backend. This coupled transient form drafts to the same state object that carries real session and Plan Mode facts.
+
+Changes:
+
+- Added a tiny `planInputViewState.selections` store plus `clearPlanInputSelections()`.
+- Updated `getPlanInputSelections()` and `setPlanInputSelection()` to use `planInputViewState` while preserving current-request cleanup and invalid-question cleanup.
+- Updated session adoption, new-session reset, and successful answer submit paths to clear `planInputViewState` instead of mutating main `state`.
+- Updated the existing stale-completion regression setup to seed `planInputViewState`.
+- Added a frontend regression proving `planInputSelections` is absent from `state`, stale request selections are dropped, selected answers submit with the same payload, and successful submit clears the request draft.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Plan Mode input draft-state slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "plan input selections are isolated" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 73/73 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-119
 

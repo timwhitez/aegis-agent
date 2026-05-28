@@ -622,6 +622,75 @@ test('floating panel expansion preferences are isolated from durable app state',
   assert.equal(result.collapsedTodoHasBody, false);
 });
 
+test('plan input selections are isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  appContext.planInputSubmitButton = fakeActionButton({
+    'data-plan-input-action': 'submit',
+    'data-request-id': 'request_plan_input'
+  });
+
+  const setup = vm.runInContext(`(() => {
+    const request = {
+      request_id: 'request_plan_input',
+      questions: [
+        { id: 'scope', options: [{ label: 'Small' }, { label: 'Large' }] }
+      ]
+    };
+    state.sessionId = 'session_plan_input';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_input' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        status: 'awaiting_user_input',
+        pending_request: request
+      }
+    };
+    planInputViewState.selections = {
+      stale_request: {
+        old: { label: 'Old', value: 'Old' }
+      }
+    };
+    setPlanInputSelection(request, {
+      question_id: 'scope',
+      label: 'Large',
+      value: 'Large'
+    });
+    return {
+      stateHasPlanInputSelections: Object.prototype.hasOwnProperty.call(state, 'planInputSelections'),
+      staleRequestPresent: Object.prototype.hasOwnProperty.call(planInputViewState.selections, 'stale_request'),
+      selectedValue: getPlanInputSelections(request).scope.value
+    };
+  })()`, appContext);
+
+  assert.equal(setup.stateHasPlanInputSelections, false);
+  assert.equal(setup.staleRequestPresent, false);
+  assert.equal(setup.selectedValue, 'Large');
+
+  const action = vm.runInContext(`handlePlanInputAction(planInputSubmitButton)`, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/session_plan_input/planmode/input');
+  assert.deepEqual(sameRealm(appContext.pendingRequests[0].payload.payload), {
+    requestID: 'request_plan_input',
+    answers: [
+      { question_id: 'scope', label: 'Large', value: 'Large', is_other: false }
+    ]
+  });
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await action;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasPlanInputSelections: Object.prototype.hasOwnProperty.call(state, 'planInputSelections'),
+    requestSelections: planInputViewState.selections.request_plan_input || null
+  })`, appContext)), {
+    stateHasPlanInputSelections: false,
+    requestSelections: null
+  });
+});
+
 test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {
   const appContext = createAppHarnessContext();
   const action = vm.runInContext(`
@@ -1682,7 +1751,7 @@ test('Plan input answer does not refresh a newly selected session after stale co
         }
       }
     };
-    state.planInputSelections = {
+    planInputViewState.selections = {
       request_slow_a: {
         scope: { label: 'Small', value: 'Small' }
       }
