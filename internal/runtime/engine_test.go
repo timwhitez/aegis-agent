@@ -3963,7 +3963,7 @@ func TestEnginePreservesDeadlineToolResultMetadata(t *testing.T) {
 
 func TestEngineDoesNotHardBlockNormalFinishOnStaleFeatureList(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
-	if err := os.WriteFile(filepath.Join(engine.store.SessionDir(meta.ID), "feature_list.json"), []byte(`{"features":[{"id":"feature_0001","status":"pending"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(engine.store.SessionDir(meta.ID), "feature_list.json"), []byte(`{"features":[{"id":"feature_0001","description":"Existing roadmap feature","status":"pending"}]}`), 0o600); err != nil {
 		t.Fatalf("write feature list: %v", err)
 	}
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish current scope")); err != nil {
@@ -3986,7 +3986,7 @@ func TestEngineDoesNotHardBlockNormalFinishOnStaleFeatureList(t *testing.T) {
 
 func TestEngineStillBlocksInitFinishOnIncompleteFeatureList(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeInit)
-	if err := os.WriteFile(filepath.Join(engine.store.SessionDir(meta.ID), "feature_list.json"), []byte(`{"features":[{"id":"feature_0001","status":"pending"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(engine.store.SessionDir(meta.ID), "feature_list.json"), []byte(`{"features":[{"id":"feature_0001","description":"Existing roadmap feature","status":"pending"}]}`), 0o600); err != nil {
 		t.Fatalf("write feature list: %v", err)
 	}
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "finish init")); err != nil {

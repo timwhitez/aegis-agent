@@ -762,8 +762,13 @@ func (s *Store) LoadFeatureList(sessionID string) (FeatureList, error) {
 	if err != nil {
 		return featureList, err
 	}
-	err = readJSONFile(path, &featureList)
-	return featureList, err
+	if err := readJSONFile(path, &featureList); err != nil {
+		return featureList, err
+	}
+	if err := validateFeatureList(featureList); err != nil {
+		return featureList, fmt.Errorf("validate feature_list.json: %w", err)
+	}
+	return featureList, nil
 }
 
 func (s *Store) SaveFeatureList(sessionID string, featureList FeatureList) error {

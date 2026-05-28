@@ -355,6 +355,36 @@ func TestSaveFeatureListRejectsInvalidItems(t *testing.T) {
 	}
 }
 
+func TestLoadFeatureListRejectsMalformedSnapshot(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	body := []byte(`{
+  "features": [
+    {"id":"feature_0001","status":"pending"}
+  ]
+}`)
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "feature_list.json"), body, 0o600); err != nil {
+		t.Fatalf("write malformed feature list: %v", err)
+	}
+
+	if _, err := store.LoadFeatureList(meta.ID); err == nil || !strings.Contains(err.Error(), "validate feature_list.json") || !strings.Contains(err.Error(), "description is required") {
+		t.Fatalf("expected malformed feature_list.json error, got %v", err)
+	}
+}
+
 func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

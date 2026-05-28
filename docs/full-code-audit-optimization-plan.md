@@ -7860,6 +7860,12 @@ Evidence gates:
 - Confirmed this is the todo/task counterpart to the Plan Mode and Goal read-side validation slices. `SaveTodo` and task mutation helpers rejected common malformed writes, but already-present malformed snapshots and direct task snapshot saves could still become trusted facts.
 - Confirmed the minimal fix belongs in the session store and task graph validators: validate `todo.json` after decode, validate task files on `GetTask` / `ListTasks`, and enforce task subject/status/priority plus duplicate ID, reference, bidirectional edge, and cycle invariants on task graph writes.
 
+### Review 296
+
+- Confirmed FCA-20260528-303 against `spec/04-tools-and-skills.md` and the completion/compaction paths in `spec/01-runtime-architecture.md`: `feature_list.json` is a durable initializer roadmap fact used by feature-list tools, init-mode completion checks, and compaction context.
+- Confirmed this is distinct from FCA-20260528-302. Todo/task facts now reject invalid snapshots on read, but feature-list reads still trusted malformed existing `feature_list.json` files even though `SaveFeatureList` and `feature_list_create` rejected equivalent malformed data.
+- Confirmed the minimal fix belongs in `LoadFeatureList`: reuse the existing `validateFeatureList` helper after decode and report semantic corruption as `validate feature_list.json`, preserving missing-file, symlink, and JSON parse behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7921,6 +7927,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-303
+
+Slice: `fix(session): validate loaded feature lists`
+
+Finding:
+
+- `LoadFeatureList` decoded `feature_list.json` and returned it without running `validateFeatureList`.
+- `SaveFeatureList`, `feature_list_create`, and `feature_list_update` enforced required feature IDs, descriptions, statuses, steps, duplicate IDs, and non-negative pass counts, but stale or externally modified snapshots could bypass those invariants on read.
+
+Impact:
+
+- `feature_list_read`, `feature_list_update`, init-mode completion checks, and compaction context could consume malformed durable roadmap facts after restart.
+- An incomplete initializer roadmap file with missing descriptions or invalid statuses could be treated as authoritative state rather than reported as a corrupt feature-list fact source.
+
+Changes:
+
+- Routed `LoadFeatureList` through `validateFeatureList` after decoding `feature_list.json`.
+- Wrapped semantic read-side errors as `validate feature_list.json` while preserving missing-file, symlink, and JSON parse error behavior.
+- Added a focused store regression proving a loaded malformed feature-list snapshot is rejected.
+- Updated two runtime tests that intentionally model valid-but-incomplete roadmap state so they include the required description field.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadFeatureListRejectsMalformedSnapshot -count=1`: failed before the fix because a loaded `feature_list.json` with a missing description was accepted.
+- `go test -timeout 120s ./internal/session -run 'TestLoadFeatureListRejectsMalformedSnapshot|TestSaveFeatureListRejectsInvalidItems|TestStoreFeatureListRejectsSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineDoesNotHardBlockNormalFinishOnStaleFeatureList|TestEngineStillBlocksInitFinishOnIncompleteFeatureList|TestPreCompletionFeatureGateBlocksCorruptFeatureList|TestCompactorReportsCorruptFeatureList' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestFeatureListToolsPersistUpdateAndReadSnapshot|TestFeatureListCreateRejectsInvalidItems|TestFeatureListUpdateRejectsInvalidInputs|TestFeatureListToolsRejectSymlinkedSnapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-302
 
