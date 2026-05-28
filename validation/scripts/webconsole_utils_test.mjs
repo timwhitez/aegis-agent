@@ -740,6 +740,61 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
   });
 });
 
+test('refreshCurrentSession skips stale queue detail when a newer same-session refresh is queued', async () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(`
+    updateSessionId = function() {};
+    reconcileOptimisticMessages = function() {};
+    renderCurrentSession = function() {
+      state.renderCount = (state.renderCount || 0) + 1;
+    };
+    updateUI = function() {};
+    syncPollingForState = function() {};
+  `, appContext);
+  const firstRefresh = vm.runInContext(`
+    state.sessionId = 'session_same_enrich';
+    state.sessionBacked = true;
+    state.inspectorTab = 'agents';
+    state.selectedQueueJobId = 'job_same_enrich';
+    state.selectedQueueJobDetail = null;
+    state.liveEvents = [];
+    refreshCurrentSession();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_same_enrich/);
+
+  appContext.pendingRequests[0].resolve({
+    metadata: { id: 'session_same_enrich' },
+    state: { status: 'running' },
+    children: { jobs: [] },
+    messages: [{ id: 'm_same_enrich_old', role: 'assistant', text: 'old detail' }],
+    timeline: []
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.match(appContext.pendingRequests[1].url, /job_same_enrich/);
+
+  await vm.runInContext(`refreshCurrentSession()`, appContext);
+  assert.equal(vm.runInContext(`state.needsSessionRefresh`, appContext), true);
+
+  appContext.pendingRequests[1].resolve({ id: 'job_same_enrich', prompt: 'stale enriched detail' });
+  await firstRefresh;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    selectedJob: state.selectedQueueJobId,
+    selectedJobDetail: state.selectedQueueJobDetail,
+    renderCount: state.renderCount || 0
+  })`, appContext)), {
+    selected: 'session_same_enrich',
+    selectedJob: 'job_same_enrich',
+    selectedJobDetail: null,
+    renderCount: 0
+  });
+});
+
 test('refreshCurrentSession skips stale same-session detail when a newer refresh is queued', async () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(`

@@ -7986,6 +7986,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-037 and FCA-20260526-146. Those slices covered blocked queue-job doctor visibility and session-store list behavior for corrupt `state.json`; this slice covers the CLI doctor partial-state preflight that used `os.Stat` and could report unsafe core session files as healthy.
 - Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: classify missing core files separately from symlinked/non-regular/unopenable core files in the doctor report, without changing `SessionStore` authority, queue reconciliation, WebConsole routes, or runtime workflow behavior.
 
+### Review 317
+
+- Confirmed FCA-20260528-324 against `spec/17-web-console.md`: selected queue-job facts are a browser-side projection of durable queue/session facts, and queued session refreshes must keep the current projection from accepting stale enrichment details.
+- Confirmed this is distinct from FCA-20260528-322. That slice rechecked the selected session after queue-job enrichment to avoid stale generation/activity/render side effects; this slice covers the earlier write inside `refreshSelectedQueueJobDetail(...)` where an old enrichment response could still populate `state.selectedQueueJobDetail` after a newer same-session refresh had already been queued.
+- Confirmed the minimal fix belongs in `app.js`: let session refresh pass a current-refresh predicate into queue-job enrichment, preserving standalone selected-job refresh behavior while preventing stale same-session enrichment writes when `needsSessionRefresh` is already set.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10309,6 +10315,45 @@ Validation:
 - `go test -timeout 120s ./internal/session -count=1`: passed.
 - `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./internal/webconsole ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - Broader baseline note: `timeout 300 go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` reached the 300s timeout after printing green results through `internal/review` and no failing package output; the remaining owner packages were rerun individually above.
+
+### FCA-20260528-324
+
+Slice: `fix(webconsole): ignore stale queued enrichment details`
+
+Finding:
+
+- `refreshCurrentSession()` accepts a session detail response, assigns it to `state.sessionDetail`, then awaits `refreshSelectedQueueJobDetail(...)` so the Background inspector can enrich the selected queue job.
+- When a newer refresh for the same selected session is requested during that queue-job enrichment, `refreshCurrentSession()` sets `state.needsSessionRefresh=true` and later skips old generation/render side effects.
+- `refreshSelectedQueueJobDetail(...)` itself only checked that `state.selectedQueueJobId` still matched the job id. It did not know the enclosing session refresh had become stale, so an old `/api/queue/jobs/{id}` response could still write stale `state.selectedQueueJobDetail`.
+
+Impact:
+
+- The stale job detail write did not mutate durable queue or session files, and FCA-20260528-322 already prevented the old refresh from rendering after enrichment.
+- A later UI render could still read stale selected job facts until the queued refresh completed, briefly making the Background inspector disagree with the latest queued session projection.
+- This weakened the Web-first local console's selected-object consistency for the combined session-detail plus queue-enrichment path.
+
+Changes:
+
+- Added an optional `isCurrent` predicate to `refreshSelectedQueueJobDetail(...)`.
+- Standalone selected-job refreshes keep the existing selected job-id guard.
+- `refreshCurrentSession()` now passes `isCurrent: () => state.sessionId === sessionID && !state.needsSessionRefresh`, preventing same-session stale enrichment from writing selected job details once a newer refresh is queued.
+- Added a VM frontend regression that queues a newer same-session refresh while the old selected queue-job enrichment request is pending.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `refreshCurrentSession skips stale queue detail when a newer same-session refresh is queued` left `selectedQueueJobDetail.prompt` as `stale enriched detail`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "refreshCurrentSession skips stale queue detail when a newer same-session refresh is queued"`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check -- docs/full-code-audit-optimization-plan.md internal/webconsole/assets/app.js validation/scripts/webconsole_utils_test.mjs`: passed.
 
 ### FCA-20260528-265
 

@@ -1972,7 +1972,8 @@ function queueJobByID(jobID, data = state.sessionDetail?.children?.jobs) {
   return queueJobItems(data).find((job) => String(job?.id || '') === id) || null;
 }
 
-async function refreshSelectedQueueJobDetail(jobs = queueJobItems()) {
+async function refreshSelectedQueueJobDetail(jobs = queueJobItems(), options = {}) {
+  const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
   const jobID = String(state.selectedQueueJobId || '');
   if (!jobID) {
     state.selectedQueueJobDetail = null;
@@ -1980,17 +1981,19 @@ async function refreshSelectedQueueJobDetail(jobs = queueJobItems()) {
   }
   const listedJob = jobs.find((job) => String(job?.id || '') === jobID);
   if (listedJob) {
-    state.selectedQueueJobDetail = listedJob;
+    if (isCurrent()) {
+      state.selectedQueueJobDetail = listedJob;
+    }
     return;
   }
   try {
     const detail = await requestJSON(`/api/queue/jobs/${encodeURIComponent(jobID)}`);
-    if (String(state.selectedQueueJobId || '') !== jobID) {
+    if (String(state.selectedQueueJobId || '') !== jobID || !isCurrent()) {
       return;
     }
     state.selectedQueueJobDetail = detail;
   } catch (err) {
-    if (String(state.selectedQueueJobId || '') !== jobID) {
+    if (String(state.selectedQueueJobId || '') !== jobID || !isCurrent()) {
       return;
     }
     state.selectedQueueJobDetail = {
@@ -2144,7 +2147,9 @@ async function refreshCurrentSession(options = {}) {
     mergeLoadedMessagesIntoDetail(detail);
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
-    await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs));
+    await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs), {
+      isCurrent: () => state.sessionId === sessionID && !state.needsSessionRefresh
+    });
     if (state.sessionId !== sessionID || state.needsSessionRefresh) {
       return;
     }
