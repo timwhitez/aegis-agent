@@ -890,6 +890,94 @@ func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLongRunCheckpointRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	malformed := LongRunCheckpoint{
+		SchemaVersion:           1,
+		SessionID:               meta.ID,
+		RootSessionID:           meta.ID,
+		Provider:                "fake",
+		Model:                   "fake",
+		Workdir:                 meta.Workdir,
+		UnresolvedChildSessions: []string{"../child"},
+		CreatedAt:               time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	path := filepath.Join(store.SessionDir(meta.ID), "checkpoints", "longrun-latest.json")
+	if err := store.writeJSONFile(path, malformed); err != nil {
+		t.Fatalf("write malformed checkpoint: %v", err)
+	}
+	if _, err := store.LoadLongRunCheckpoint(meta.ID); err == nil || !strings.Contains(err.Error(), "validate longrun-latest.json") || !strings.Contains(err.Error(), "path separators") {
+		t.Fatalf("expected malformed checkpoint validation error, got %v", err)
+	}
+}
+
+func TestLongRunCheckpointWritesRejectMalformedSnapshots(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := LongRunCheckpoint{
+		SchemaVersion:      1,
+		SessionID:          meta.ID,
+		RootSessionID:      meta.ID,
+		Provider:           "fake",
+		Model:              "fake",
+		Workdir:            meta.Workdir,
+		TaskSummary:        map[string]int{"total": 1, "ready": 1},
+		SourceEventCount:   1,
+		SourceMessageCount: 1,
+		CreatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.SaveLongRunCheckpoint(meta.ID, valid); err != nil {
+		t.Fatalf("save valid checkpoint: %v", err)
+	}
+
+	invalidSession := valid
+	invalidSession.SessionID = NewSessionID()
+	if err := store.SaveLongRunCheckpoint(meta.ID, invalidSession); err == nil || !strings.Contains(err.Error(), "does not match session") {
+		t.Fatalf("expected save to reject mismatched session id, got %v", err)
+	}
+	invalidCounter := valid
+	invalidCounter.TaskSummary = map[string]int{"total": -1}
+	if err := store.SaveLongRunCheckpoint(meta.ID, invalidCounter); err == nil || !strings.Contains(err.Error(), "task_summary") {
+		t.Fatalf("expected save to reject negative task summary, got %v", err)
+	}
+	loaded, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if loaded.SessionID != meta.ID || loaded.TaskSummary["total"] != 1 {
+		t.Fatalf("malformed checkpoint write changed durable snapshot: %#v", loaded)
+	}
+}
+
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {

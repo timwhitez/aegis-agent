@@ -665,10 +665,19 @@ func (s *Store) LoadLongRunCheckpoint(sessionID string) (LongRunCheckpoint, erro
 		return checkpoint, err
 	}
 	err = readJSONFile(path, &checkpoint)
-	return checkpoint, err
+	if err != nil {
+		return checkpoint, err
+	}
+	if err := validateLongRunCheckpoint(sessionID, checkpoint); err != nil {
+		return LongRunCheckpoint{}, fmt.Errorf("validate longrun-latest.json: %w", err)
+	}
+	return checkpoint, nil
 }
 
 func (s *Store) SaveLongRunCheckpoint(sessionID string, checkpoint LongRunCheckpoint) error {
+	if err := normalizeAndValidateLongRunCheckpoint(sessionID, &checkpoint); err != nil {
+		return fmt.Errorf("validate longrun-latest.json: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "checkpoints", "longrun-latest.json")
@@ -3491,6 +3500,118 @@ func validateProviderAttempt(attempt ProviderAttempt) error {
 		return errors.New("provider attempt created_at is required")
 	}
 	return nil
+}
+
+func normalizeAndValidateLongRunCheckpoint(sessionID string, checkpoint *LongRunCheckpoint) error {
+	if checkpoint == nil {
+		return errors.New("long-run checkpoint is required")
+	}
+	if checkpoint.SchemaVersion == 0 {
+		checkpoint.SchemaVersion = 1
+	}
+	if strings.TrimSpace(checkpoint.CreatedAt) == "" {
+		checkpoint.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return validateLongRunCheckpoint(sessionID, *checkpoint)
+}
+
+func validateLongRunCheckpoint(sessionID string, checkpoint LongRunCheckpoint) error {
+	if err := validateStoreID("long-run checkpoint session", checkpoint.SessionID); err != nil {
+		return err
+	}
+	if checkpoint.SessionID != sessionID {
+		return fmt.Errorf("long-run checkpoint session_id %q does not match session %q", checkpoint.SessionID, sessionID)
+	}
+	if strings.TrimSpace(checkpoint.RootSessionID) != "" {
+		if err := validateStoreID("long-run checkpoint root session", checkpoint.RootSessionID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(checkpoint.Provider) == "" {
+		return errors.New("long-run checkpoint provider is required")
+	}
+	if strings.TrimSpace(checkpoint.Model) == "" {
+		return errors.New("long-run checkpoint model is required")
+	}
+	if err := validateProviderOptions(checkpoint.EffectiveProviderOptions); err != nil {
+		return err
+	}
+	if strings.TrimSpace(checkpoint.Workdir) == "" {
+		return errors.New("long-run checkpoint workdir is required")
+	}
+	if strings.TrimSpace(checkpoint.ParentWaitState) != "" {
+		switch checkpoint.ParentWaitState {
+		case "waiting", "parked", "ready":
+		default:
+			return fmt.Errorf("invalid long-run checkpoint parent_wait_state %q", checkpoint.ParentWaitState)
+		}
+	}
+	if err := validateStringList("long-run checkpoint resume_hints", checkpoint.ResumeHints); err != nil {
+		return err
+	}
+	if err := validateStringList("long-run checkpoint task_summary keys", mapKeys(checkpoint.TaskSummary)); err != nil {
+		return err
+	}
+	for key, value := range checkpoint.TaskSummary {
+		if value < 0 {
+			return fmt.Errorf("long-run checkpoint task_summary %q must be non-negative", key)
+		}
+	}
+	if err := validateRequiredArtifacts(checkpoint.RequiredArtifactStatus); err != nil {
+		return err
+	}
+	seenChildSessions := map[string]string{}
+	if err := validateParentCoordinationIDList("child session", "unresolved_child_sessions", checkpoint.UnresolvedChildSessions, seenChildSessions); err != nil {
+		return err
+	}
+	seenQueueJobs := map[string]string{}
+	if err := validateParentCoordinationIDList("queue job", "unresolved_queue_jobs", checkpoint.UnresolvedQueueJobs, seenQueueJobs); err != nil {
+		return err
+	}
+	if checkpoint.BackgroundNotifications < 0 {
+		return errors.New("long-run checkpoint background_notifications must be non-negative")
+	}
+	if checkpoint.SourceEventCount < 0 {
+		return errors.New("long-run checkpoint source_event_count must be non-negative")
+	}
+	if checkpoint.SourceMessageCount < 0 {
+		return errors.New("long-run checkpoint source_message_count must be non-negative")
+	}
+	if strings.TrimSpace(checkpoint.CreatedAt) == "" {
+		return errors.New("long-run checkpoint created_at is required")
+	}
+	if checkpoint.ContractSnapshot != nil {
+		if err := validateSessionContract(*checkpoint.ContractSnapshot); err != nil {
+			return fmt.Errorf("contract_snapshot: %w", err)
+		}
+	}
+	if checkpoint.GoalSnapshot != nil {
+		if err := ValidateGoal(*checkpoint.GoalSnapshot); err != nil {
+			return fmt.Errorf("goal_snapshot: %w", err)
+		}
+	}
+	if checkpoint.PlanModeSnapshot != nil {
+		if err := ValidatePlanMode(*checkpoint.PlanModeSnapshot); err != nil {
+			return fmt.Errorf("plan_mode_snapshot: %w", err)
+		}
+	}
+	if err := validateTodo(checkpoint.TodoSummary); err != nil {
+		return fmt.Errorf("todo_summary: %w", err)
+	}
+	if checkpoint.RecentOwner != nil {
+		if checkpoint.RecentOwner.PID < 0 {
+			return errors.New("long-run checkpoint recent_owner pid must be non-negative")
+		}
+	}
+	return nil
+}
+
+func mapKeys(values map[string]int) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func validateRequiredArtifacts(artifacts []RequiredArtifact) error {

@@ -7902,6 +7902,12 @@ Evidence gates:
 - Confirmed this is distinct from prior provider-attempt append-error and corrupt-JSON reporting slices. Those made ledger write failures fatal and surfaced unreadable ledgers; this slice covers semantically malformed but syntactically valid attempt facts.
 - Confirmed the minimal fix belongs in `SessionStore` provider attempt read/append APIs: validate supported outcomes, required provider/model/timestamp fields, and non-negative counters while keeping provider adapter retry policy and runtime event ordering unchanged.
 
+### Review 303
+
+- Confirmed FCA-20260528-310 against `spec/01-runtime-architecture.md`, `spec/12-task-system.md`, and `spec/18-durable-contract-and-completion.md`: `checkpoints/longrun-latest.json` is a durable resume index consumed by continue/resume hints, Web detail, and session summaries.
+- Confirmed this is distinct from prior checkpoint writer corrupt-input propagation slices. Those prevented checkpoint generation from silently ignoring corrupt source facts; this slice covers an already-present or directly saved checkpoint snapshot being syntactically valid but semantically impossible.
+- Confirmed the minimal fix belongs in `SessionStore` checkpoint read/write APIs: validate session identity, required provider/model/workdir/timestamp fields, non-negative counts, task summary counters, unresolved child/job IDs, required artifact snapshots, provider options, and embedded Goal/Plan/Contract snapshots while preserving checkpoint's derived-view status and not turning it into a second authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7963,6 +7969,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-310
+
+Slice: `fix(session): validate long-run checkpoint facts`
+
+Finding:
+
+- `LoadLongRunCheckpoint` decoded `checkpoints/longrun-latest.json` without semantic validation.
+- `SaveLongRunCheckpoint` could persist malformed checkpoint snapshots with mismatched session IDs, invalid unresolved child/job IDs, negative counts, or malformed embedded snapshots.
+- Continue/resume hints, Web detail, session summaries, and checkpoint drift diagnostics trust this checkpoint as the durable resume index.
+
+Impact:
+
+- A mismatched `session_id` or path-shaped child/job ID could make resume guidance point at the wrong session or impossible unresolved work.
+- Negative task/source/background counters or malformed required artifact/provider option snapshots could make Web detail and session summaries present invalid recovery state.
+- Invalid embedded Contract/Goal/Plan snapshots could produce inaccurate drift warnings or resume hints even when the authoritative fact files are valid.
+
+Changes:
+
+- Added long-run checkpoint validation for matching session identity, valid root ID, nonblank provider/model/workdir/created_at, supported parent wait states, nonblank resume hints, non-negative task/source/background counters, valid unresolved child/job IDs, valid required artifact snapshots, valid provider options, and valid embedded Contract/Goal/Plan snapshots.
+- Routed `LoadLongRunCheckpoint` and `SaveLongRunCheckpoint` through validation.
+- Preserved checkpoint's role as a derived resume index: the fix validates its internal shape but does not make it override messages/events/state/goal/plan/queue source facts.
+- Added focused regressions for malformed loaded checkpoints, mismatched checkpoint session IDs, negative task summary counters, and durable checkpoint preservation after rejected writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLongRunCheckpointRejectsMalformedSnapshot|TestLongRunCheckpointWritesRejectMalformedSnapshots' -count=1`: failed before the fix because malformed checkpoint snapshots loaded and mismatched session IDs saved successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLongRunCheckpointRejectsMalformedSnapshot|TestLongRunCheckpointWritesRejectMalformedSnapshots' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsCorrupt(OptionalFacts|LogFacts|ChildrenQueueFacts|ArtifactTracker|TodoState|TaskGraph)|TestSessionSummaryAndCheckpointRecordRecentOwnerClue|TestCheckpointResumeHintWarnsOnIsolationAndTrustDrift|TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 45 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-309
 
