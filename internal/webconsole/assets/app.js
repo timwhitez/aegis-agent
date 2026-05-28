@@ -60,7 +60,6 @@ const state = {
   lastInputWasEmpty: true,
   showHelp: false,
   needsOverviewRefresh: false,
-  overviewRequestSeq: 0,
   todoFloatExpanded: true,
   fileChangesExpanded: true,
   subAgentExpanded: true,
@@ -94,6 +93,10 @@ const runtimeHandles = {
 };
 
 const skillsViewState = {
+  requestSeq: 0
+};
+
+const overviewViewState = {
   requestSeq: 0
 };
 
@@ -2176,13 +2179,12 @@ async function refreshOverview() {
     state.needsOverviewRefresh = true;
     return;
   }
-  const requestSeq = state.overviewRequestSeq + 1;
-  state.overviewRequestSeq = requestSeq;
+  const requestSeq = ++overviewViewState.requestSeq;
   state.refreshingOverview = true;
   state.needsOverviewRefresh = false;
   try {
     const overview = await requestJSON('/api/overview');
-    if (state.overviewRequestSeq !== requestSeq || state.needsOverviewRefresh) {
+    if (overviewViewState.requestSeq !== requestSeq || state.needsOverviewRefresh) {
       return;
     }
     state.overview = overview;
@@ -2191,7 +2193,7 @@ async function refreshOverview() {
       renderCurrentSession();
     }
   } catch (err) {
-    if (state.overviewRequestSeq !== requestSeq || state.needsOverviewRefresh) {
+    if (overviewViewState.requestSeq !== requestSeq || state.needsOverviewRefresh) {
       return;
     }
     console.error('overview error', err);

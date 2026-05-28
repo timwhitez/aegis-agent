@@ -22396,6 +22396,45 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-113
+
+Slice: `fix(webconsole): isolate overview request guard`
+
+Finding:
+
+- `refreshOverview()` used the main WebConsole `state.overviewRequestSeq` field as its stale `/api/overview` response guard while `state.needsOverviewRefresh` queued the latest refresh during an in-flight request.
+- The request sequence is Overview browser request coordination, not a durable overview fact, session-store fact, queue fact, or backend aggregation authority. Keeping it on the main `state` contradicted the P1 Render State Isolation plan while leaving another transient async guard coupled to the default app state object.
+- A focused frontend regression strengthened the existing queued Overview refresh test to require that `state` does not acquire `overviewRequestSeq`. Before the fix, stale queued response suppression worked, but the assertion failed because `refreshOverview()` stored `overviewRequestSeq` on `state`.
+
+Changes:
+
+- Added a tiny `overviewViewState` object in `app.js` to own Overview request sequencing.
+- Updated `refreshOverview()` success and error stale-response checks to compare against `overviewViewState.requestSeq`.
+- Removed `overviewRequestSeq` from the main `state` object while keeping user-visible facts such as `state.overview`, `state.overviewError`, `state.refreshingOverview`, and `state.needsOverviewRefresh` unchanged.
+- Extended the queued Overview refresh regression so it proves request sequencing stays out of the main app state while stale queued Overview responses remain ignored.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Overview-local guard slice and narrows the remaining request-guard backlog.
+
+Validation:
+
+- `node --test --test-name-pattern "refreshOverview queues the latest refresh and ignores stale in-flight overview" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `overviewRequestSeq`.
+- `node --test --test-name-pattern "refreshOverview queues the latest refresh and ignores stale in-flight overview" validation/scripts/webconsole_utils_test.mjs`: passed after moving the guard into `overviewViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-112
 
 Slice: `fix(webconsole): isolate skills request guard`

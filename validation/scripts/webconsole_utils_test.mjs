@@ -2016,9 +2016,11 @@ test('refreshOverview queues the latest refresh and ignores stale in-flight over
   assert.equal(appContext.pendingRequests.length, 2);
   assert.equal(appContext.pendingRequests[1].url, '/api/overview');
   assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasOverviewRequestSeq: Object.prototype.hasOwnProperty.call(state, 'overviewRequestSeq'),
     overviewIDs: maybeArray(state.overview?.recent_sessions).map((item) => item.id),
     queued: state.overview?.queue_counters?.queued ?? null
   })`, appContext)), {
+    stateHasOverviewRequestSeq: false,
     overviewIDs: [],
     queued: null
   });
