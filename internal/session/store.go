@@ -1383,6 +1383,9 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 		}
 		meta, err := s.LoadMetadata(entry.Name())
 		if err != nil {
+			if sessionMetadataFileExists(s.root, entry.Name()) {
+				return nil, err
+			}
 			continue
 		}
 		if err := s.reconcileSessionQueueJob(meta); err != nil {
@@ -1440,7 +1443,13 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			continue
 		}
 		meta, err := s.LoadMetadata(entry.Name())
-		if err != nil || meta.ParentSessionID != parentSessionID {
+		if err != nil {
+			if sessionMetadataFileExists(s.root, entry.Name()) {
+				return nil, err
+			}
+			continue
+		}
+		if meta.ParentSessionID != parentSessionID {
 			continue
 		}
 		if err := s.reconcileSessionQueueJob(meta); err != nil {
@@ -1485,6 +1494,14 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+func sessionMetadataFileExists(root, sessionID string) bool {
+	if validateStoreID("session", sessionID) != nil {
+		return false
+	}
+	info, err := os.Lstat(filepath.Join(root, sessionID, "session.json"))
+	return err == nil && info != nil
 }
 
 func (s *Store) populateGoalSummary(summary *SessionSummary) error {

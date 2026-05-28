@@ -2135,6 +2135,41 @@ func TestStoreListReportsCorruptStateSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreListReportsCorruptMetadataSnapshot(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+		RootSessionID:    "metadata_snapshot_parent",
+	}
+	state := State{Status: StatusCompleted, Phase: "done", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := store.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "session.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("write invalid session.json: %v", err)
+	}
+
+	if _, err := store.List(10); err == nil || !strings.Contains(err.Error(), "session.json") {
+		t.Fatalf("expected List to report session.json, got %v", err)
+	}
+	if _, _, err := store.ListPage(10, 0); err == nil || !strings.Contains(err.Error(), "session.json") {
+		t.Fatalf("expected ListPage to report session.json, got %v", err)
+	}
+	if _, err := store.ListChildren(meta.RootSessionID, 10); err == nil || !strings.Contains(err.Error(), "session.json") {
+		t.Fatalf("expected ListChildren to report session.json, got %v", err)
+	}
+}
+
 func TestCreateGoalReturnsHistoryAppendErrorAndRollsBack(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

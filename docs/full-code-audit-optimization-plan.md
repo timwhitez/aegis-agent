@@ -8136,6 +8136,12 @@ Evidence gates:
 - Confirmed this is distinct from the earlier WebConsole and session-summary corrupt snapshot slices. Those fixes made Web detail and list summaries report unreadable optional facts; this slice covers the remaining `experimental tui --once` fallback observer that silently omitted selected-session facts when their source files were corrupt.
 - Confirmed the minimal fix belongs in `internal/tui.BuildSnapshot`: return selected-session fact load errors to the CLI/TUI caller, without creating a second authority, changing store validation, adding workflow orchestration, or making TUI part of the default Web-first surface.
 
+### Review 342
+
+- Confirmed FCA-20260528-349 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: session list, paged history, Web overview, CLI `sessions`, TUI session rail, and SDK/store list callers all derive from local session directories and `session.json` / `state.json` file facts.
+- Confirmed this is distinct from FCA-20260526-146 and FCA-20260528-348. FCA-146 covered corrupt `state.json` after readable metadata, while FCA-348 covered selected-session detail facts in TUI; this slice covers the remaining root-list gap where a present but corrupt `session.json` made the whole session directory look like a non-session directory.
+- Confirmed the minimal fix belongs in shared `Store.listAllSessions` and `Store.ListChildren`: continue ignoring non-session directories such as `_queue`, but report unreadable or invalid metadata when a `session.json` file exists.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11289,6 +11295,49 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/tui/tui.go internal/tui/tui_test.go`: passed with no output.
 - `git diff --check -- internal/tui/tui.go internal/tui/tui_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-349
+
+Slice: `fix(session): report corrupt listed metadata`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines `session.json` and `state.json` as local session file facts, and `spec/09-phase-plan.md` includes the `sessions` command and Web-first session views in the Web-first v1 validation surface.
+- FCA-20260526-146 made `List`, `ListPage`, and `ListChildren` report corrupt `state.json` after metadata loaded, but `internal/session/store.go` still treated every `LoadMetadata` failure as a skipped directory.
+- Because the store root legitimately contains non-session directories such as `_queue`, this skip is needed for directories with no metadata file. But a real session directory with a present corrupt `session.json` was also skipped. A focused regression corrupted `session.json` after creating a valid session and queue root; before the fix, `List(10)` returned nil instead of reporting the corrupt metadata fact.
+
+Impact:
+
+- CLI `sessions`, Web overview/session/history lists, SDK/store list callers, and fallback observers could make a real session disappear when its durable metadata snapshot was corrupt.
+- Operators could misdiagnose local recovery state as "no session" rather than "session metadata needs repair", even though direct `LoadMetadata` and mutation routes already report corrupt metadata facts.
+- This is a shared store observability fix only; it does not change queue directories, provider replay, Web state authority, runtime workflow, or completion behavior.
+
+Changes:
+
+- Updated `Store.listAllSessions` and `Store.ListChildren` to propagate metadata load errors only when a `session.json` path exists in the directory.
+- Preserved compatibility with non-session directories under the session root, including `_queue`, by continuing to skip entries with no `session.json`.
+- Added focused store coverage proving corrupt listed metadata is reported by `List`, `ListPage`, and `ListChildren`, while queue directories remain ignored.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestStoreListReportsCorruptMetadataSnapshot -count=1`: failed before the fix because `List` returned nil for corrupt `session.json`.
+- `go test -timeout 120s ./internal/session -run 'TestStoreListReportsCorrupt(Metadata|State)Snapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestStoreListReportsCorrupt(Metadata|State)Snapshot|TestStoreListAndMutationReportCorruptTaskFiles|TestListJobsReportsCorruptQueueJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole ./internal/app ./internal/tui -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
