@@ -51,7 +51,6 @@ const state = {
     tone: 'neutral'
   },
   nextSendInterrupt: false,
-  visibilityHidden: false,
   refreshingOverview: false,
   refreshingSession: false,
   needsSessionRefresh: false,
@@ -127,6 +126,10 @@ const composerViewState = {
   inputEmpty: true
 };
 
+const pageLifecycleViewState = {
+  visibilityHidden: false
+};
+
 function isHelpVisible() {
   return helpViewState.visible;
 }
@@ -146,6 +149,20 @@ function setComposerInputEmpty(empty) {
 function syncComposerInputEmpty() {
   if (nodes.chatInput) {
     setComposerInputEmpty(!nodes.chatInput.value.trim());
+  }
+}
+
+function isPageVisibilityHidden() {
+  return pageLifecycleViewState.visibilityHidden;
+}
+
+function setPageVisibilityHidden(hidden) {
+  pageLifecycleViewState.visibilityHidden = Boolean(hidden);
+}
+
+function syncPageVisibilityHidden() {
+  if (typeof document !== 'undefined') {
+    setPageVisibilityHidden(document.visibilityState === 'hidden');
   }
 }
 
@@ -342,7 +359,7 @@ function clearPendingRefreshes() {
 }
 
 function setupWebSocket() {
-  if (state.visibilityHidden || typeof WebSocket === 'undefined') {
+  if (isPageVisibilityHidden() || typeof WebSocket === 'undefined') {
     return;
   }
   if (isLiveWebSocket(runtimeHandles.ws)) {
@@ -418,7 +435,7 @@ function setupWebSocket() {
 }
 
 function scheduleWebSocketReconnect() {
-  if (state.visibilityHidden || runtimeHandles.wsReconnectTimer || isLiveWebSocket(runtimeHandles.ws)) {
+  if (isPageVisibilityHidden() || runtimeHandles.wsReconnectTimer || isLiveWebSocket(runtimeHandles.ws)) {
     return;
   }
   const attempt = runtimeHandles.wsReconnectAttempts++;
@@ -427,7 +444,7 @@ function scheduleWebSocketReconnect() {
   const delay = Math.max(WS_RECONNECT_BASE_MS, Math.round(base + jitter));
   runtimeHandles.wsReconnectTimer = window.setTimeout(() => {
     runtimeHandles.wsReconnectTimer = null;
-    if (state.visibilityHidden) {
+    if (isPageVisibilityHidden()) {
       // Visibility handler reconnects immediately when the tab becomes active again.
       return;
     }
@@ -439,10 +456,10 @@ function setupVisibilityHandler() {
   if (typeof document === 'undefined' || !document.addEventListener) {
     return;
   }
-  state.visibilityHidden = document.visibilityState === 'hidden';
+  syncPageVisibilityHidden();
   document.addEventListener('visibilitychange', () => {
-    state.visibilityHidden = document.visibilityState === 'hidden';
-    if (state.visibilityHidden) {
+    syncPageVisibilityHidden();
+    if (isPageVisibilityHidden()) {
       stopPolling();
       clearPendingRefreshes();
       if (runtimeHandles.wsReconnectTimer) {
@@ -1993,7 +2010,7 @@ function startPolling() {
 }
 
 function shouldRunPollingLoop() {
-  if (state.visibilityHidden) {
+  if (isPageVisibilityHidden()) {
     return false;
   }
   if (state.currentView === 'history') {

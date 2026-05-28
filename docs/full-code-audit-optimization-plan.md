@@ -8514,7 +8514,45 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-120 and FCA-20260529-121. Those slices isolated unsent Plan Mode answer drafts and shortcut overlay visibility; this residual issue was only the `lastInputWasEmpty` flag used to avoid unnecessary `updateUI()` calls while the chat input stays in the same empty/nonempty state.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the empty/nonempty flag into a tiny `composerViewState`, expose helper reads/writes for input synchronization, and preserve input height handling plus UI refresh throttling without changing start, steer, continue, Goal, Plan Mode, or backend API payload facts.
 
+### Review 395
+
+- Confirmed FCA-20260529-123 against `spec/17-web-console.md`'s polling-first local WebConsole model and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: browser page visibility is local lifecycle coordination for polling and WebSocket reconnects, not durable session state, message history, provider replay data, queue facts, Goal/Plan Mode facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-109 and FCA-20260529-122. Those slices moved WebSocket/polling handles and composer input empty-state tracking out of `state`; this residual issue was only the visibility bit that `setupWebSocket()`, `scheduleWebSocketReconnect()`, `setupVisibilityHandler()`, and `shouldRunPollingLoop()` read through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the visibility bit into a tiny `pageLifecycleViewState`, expose helper reads/writes for lifecycle synchronization, and preserve hidden-tab polling suppression plus visible-tab reconnect behavior without changing session, queue, provider, Goal, Plan Mode, or backend API facts.
+
 ## Update Log
+
+### FCA-20260529-123
+
+Slice: `fix(webconsole): isolate page visibility state`
+
+Finding:
+
+- The WebConsole's main `state` object still stored `visibilityHidden`, a boolean used only by browser lifecycle coordination for WebSocket setup/reconnect and polling-loop suppression while the tab is hidden.
+- This flag is browser page lifecycle machinery. It is not durable session metadata, message state, provider replay data, queue/child state, Goal/Plan Mode facts, or WebConsole file-fact authority.
+- Source evidence showed `setupWebSocket()`, `scheduleWebSocketReconnect()`, `setupVisibilityHandler()`, and `shouldRunPollingLoop()` reading or mutating `state.visibilityHidden`, coupling transient document visibility to the same state object that carries real session/detail/history facts.
+
+Changes:
+
+- Added a tiny `pageLifecycleViewState.visibilityHidden` store with `isPageVisibilityHidden()`, `setPageVisibilityHidden()`, and `syncPageVisibilityHidden()` helpers.
+- Updated WebSocket setup, reconnect scheduling, visibility-change handling, and polling-loop predicates to use the helper path instead of mutating main `state`.
+- Preserved hidden-tab polling suppression and visible-tab polling/reconnect behavior.
+- Added a frontend regression proving `visibilityHidden` is absent from `state`, hidden pages suppress polling, and visible pages allow eligible polling to resume.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this page-lifecycle-local slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "page visibility tracking is isolated" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 76/76 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-122
 

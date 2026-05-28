@@ -19,7 +19,7 @@ Current resource size:
 | --- | ---: |
 | `internal/webconsole/assets/index.html` | 180 |
 | `internal/webconsole/assets/styles.css` | 4,355 |
-| `internal/webconsole/assets/app.js` | 3,107 |
+| `internal/webconsole/assets/app.js` | 3,124 |
 | `internal/webconsole/assets/session-view.js` | 2,297 |
 | `internal/webconsole/assets/utils.js` | 673 |
 | `internal/webconsole/assets/events.js` | 454 |
@@ -27,12 +27,12 @@ Current resource size:
 | `internal/webconsole/assets/api.js` | 193 |
 | `internal/webconsole/assets/workspace-view.js` | 410 |
 | `internal/webconsole/assets/icons.js` | 56 |
-| Total | 12,157 |
+| Total | 12,174 |
 
 Current implemented facts:
 
 - Script loading is still ordered global-script loading in `index.html`; no ES module graph exists yet.
-- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, History page request sequencing lives in `historyViewState`, History parent-row expansion ids live in `historyExpansionViewState`, earlier-message paging request sequencing lives in `messagePagingViewState`, transient toast id allocation lives in `toastViewState`, stop-action pending session ids live in `stopActionViewState`, floating tracker panel expansion preferences live in `floatingPanelViewState`, pending Plan Mode input selections live in `planInputViewState`, shortcut help overlay visibility lives in `helpViewState`, and composer input empty-state tracking lives in `composerViewState`; selected workspace tree path and durable message paging facts remain in `state`.
+- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, page visibility tracking lives in `pageLifecycleViewState`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, History page request sequencing lives in `historyViewState`, History parent-row expansion ids live in `historyExpansionViewState`, earlier-message paging request sequencing lives in `messagePagingViewState`, transient toast id allocation lives in `toastViewState`, stop-action pending session ids live in `stopActionViewState`, floating tracker panel expansion preferences live in `floatingPanelViewState`, pending Plan Mode input selections live in `planInputViewState`, shortcut help overlay visibility lives in `helpViewState`, and composer input empty-state tracking lives in `composerViewState`; selected workspace tree path and durable message paging facts remain in `state`.
 - WebSocket reconnect has exponential backoff with jitter, visibility-state handling, and fallback polling coordination.
 - Polling defaults to 5 seconds and uses a 1.6 second active interval while disconnected, generating, or tracking active descendants.
 - Embedded assets now use ETag validation and gzip negotiation; long immutable hashed asset URLs are not implemented.
@@ -57,6 +57,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Native browser confirmation dialogs have been replaced for coverage override, goal clear, skill uninstall, session delete / clear all, settings save, and child-session open confirmation.
 - Chat stream diff cache no longer lives on the main global `state`; it is isolated in `renderState.chatCache` with helper accessors and invalidation.
 - WebSocket object, reconnect timer / attempts, polling timer / interval, queued refresh timers, and layout observer no longer live on the main global `state`; they are isolated in `runtimeHandles`.
+- Page visibility tracking no longer lives on the main global `state`; it is isolated in `pageLifecycleViewState` while preserving hidden-tab polling suppression and reconnect behavior.
 - Settings config request sequencing no longer lives on the main global `state`; it is isolated in `settingsViewState` while preserving stale config response suppression.
 - Workspace directory/file request sequencing no longer lives on the main global `state`; it is isolated in `workspaceViewState` while preserving stale directory, file, and paged preview suppression.
 - Skills catalog request sequencing no longer lives on the main global `state`; it is isolated in `skillsViewState` while preserving stale catalog response suppression.
@@ -122,7 +123,7 @@ Validation:
 
 ### P1: Render State Isolation
 
-The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and durable message paging facts. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, History page request sequencing into `historyViewState`, History parent-row expansion ids into `historyExpansionViewState`, earlier-message paging request sequencing into `messagePagingViewState`, toast id allocation into `toastViewState`, stop-action pending ids into `stopActionViewState`, floating tracker panel expansion preferences into `floatingPanelViewState`, pending Plan Mode input selections into `planInputViewState`, shortcut help overlay visibility into `helpViewState`, and composer input empty-state tracking into `composerViewState`.
+The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and durable message paging facts. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, page visibility tracking into `pageLifecycleViewState`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, History page request sequencing into `historyViewState`, History parent-row expansion ids into `historyExpansionViewState`, earlier-message paging request sequencing into `messagePagingViewState`, toast id allocation into `toastViewState`, stop-action pending ids into `stopActionViewState`, floating tracker panel expansion preferences into `floatingPanelViewState`, pending Plan Mode input selections into `planInputViewState`, shortcut help overlay visibility into `helpViewState`, and composer input empty-state tracking into `composerViewState`.
 
 Plan:
 
@@ -134,6 +135,7 @@ Validation:
 
 - `validation/scripts/webconsole_utils_test.mjs` should assert that chat render cache is not stored on the main `state`, and that cache invalidation still works.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that runtime handles are not stored on the main `state`, and that queued refresh handles still clear through the helper path.
+- `validation/scripts/webconsole_utils_test.mjs` should assert that page visibility tracking is not stored on the main `state`, and that hidden pages suppress polling while visible pages resume eligible polling.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that Settings config request sequencing is not stored on the main `state`, and that stale Settings config responses remain ignored.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that Workspace request sequencing is not stored on the main `state`, and that stale Workspace directory/file/page responses remain ignored.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that Skills catalog request sequencing is not stored on the main `state`, and that stale Skills catalog responses remain ignored.

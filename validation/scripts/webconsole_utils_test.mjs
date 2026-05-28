@@ -444,6 +444,35 @@ test('runtime handles are isolated from durable app state', () => {
   assert.equal(result.pendingOverviewRefresh, null);
 });
 
+test('page visibility tracking is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    state.currentView = 'history';
+    setPageVisibilityHidden(true);
+    const hidden = {
+      stateHasVisibilityHidden: Object.prototype.hasOwnProperty.call(state, 'visibilityHidden'),
+      visibilityHidden: isPageVisibilityHidden(),
+      runLoop: shouldRunPollingLoop()
+    };
+    setPageVisibilityHidden(false);
+    return {
+      hidden,
+      visible: {
+        stateHasVisibilityHidden: Object.prototype.hasOwnProperty.call(state, 'visibilityHidden'),
+        visibilityHidden: isPageVisibilityHidden(),
+        runLoop: shouldRunPollingLoop()
+      }
+    };
+  })()`, appContext);
+
+  assert.equal(result.hidden.stateHasVisibilityHidden, false);
+  assert.equal(result.hidden.visibilityHidden, true);
+  assert.equal(result.hidden.runLoop, false);
+  assert.equal(result.visible.stateHasVisibilityHidden, false);
+  assert.equal(result.visible.visibilityHidden, false);
+  assert.equal(result.visible.runLoop, true);
+});
+
 test('toast id counter is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
@@ -1380,7 +1409,7 @@ test('selected current-session queue job detail keeps chat polling active while 
 
   const result = vm.runInContext(`(() => {
     state.currentView = 'chat';
-    state.visibilityHidden = false;
+    setPageVisibilityHidden(false);
     state.isConnected = true;
     state.isGenerating = false;
     state.sessionId = 'parent_polling';
@@ -1419,7 +1448,7 @@ test('selected queue job detail from another parent does not keep chat polling a
 
   const result = vm.runInContext(`(() => {
     state.currentView = 'chat';
-    state.visibilityHidden = false;
+    setPageVisibilityHidden(false);
     state.isConnected = true;
     state.isGenerating = false;
     state.sessionId = 'parent_current';
