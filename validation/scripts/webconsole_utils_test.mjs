@@ -565,7 +565,7 @@ test('mergeMessagesBeforeAnchor fills middle pages before the server tail anchor
   assert.deepEqual(sameRealm(merged.map((message) => message.id)), ['m1', 'm2', 'm3', 'm4', 'm5', 'm8', 'm9']);
 });
 
-test('background notification cards expose queue job detail actions', () => {
+test('background notification cards expose queue job and child session actions', () => {
   const notification = {
     queue_job_id: 'job_notification_open',
     session_id: 'child_notification_open',
@@ -584,6 +584,7 @@ test('background notification cards expose queue job detail actions', () => {
   assert.match(full, /data-open-session="child_notification_open"/);
   assert.match(preview, /data-open-job="job_notification_open"/);
   assert.match(preview, />Open job<\/button>/);
+  assert.match(preview, /data-open-session="child_notification_open"/);
 });
 
 test('refreshSelectedQueueJobDetail ignores stale async responses after selection changes', async () => {

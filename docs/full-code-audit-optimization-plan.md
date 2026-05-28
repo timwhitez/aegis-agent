@@ -7968,6 +7968,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-279. That slice prevented slow top-bar stop completions for session A from updating a newly selected session B; this slice covers the inline child Stop button while the parent session remains selected and should refresh its child/background facts.
 - Confirmed the minimal fix belongs in `app.js`: detect when the current selected session references the stopped child, then toast and refresh the current parent session only if that selected context is still current after the async stop request resolves. This preserves backend stop/steer semantics and avoids making the browser a second child-session state source.
 
+### Review 314
+
+- Confirmed FCA-20260528-321 against `spec/17-web-console.md`: background notifications are parent-visible facts and should let the operator jump to linked child session or queue job facts from both full and summary notification projections.
+- Confirmed this is distinct from FCA-20260525-040. That slice added `Open job` actions for notifications with `queue_job_id`; this slice covers the remaining Summary preview gap where notifications with `session_id` did not expose the already-supported `Open child session` action.
+- Confirmed the minimal fix belongs in `session-view.js`: reuse existing `data-open-session` handling in the preview renderer only, without adding a standalone queue page, mutating backend facts, or creating browser-side authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10192,6 +10198,44 @@ Validation:
 - `node --check internal/webconsole/assets/api.js`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-321
+
+Slice: `fix(webconsole): link notification preview child sessions`
+
+Finding:
+
+- Full Background notification cards already render `Open job` and `Open child session` actions when the durable notification carries `queue_job_id` or `session_id`.
+- `renderBackgroundNotificationsPreview()` in the Summary panel only rendered `Open job` when `queue_job_id` existed.
+- A parent-visible notification with a linked `session_id` therefore had no direct child-session jump from the Summary preview, even though the full Background panel and global click handler already supported that navigation.
+
+Impact:
+
+- Operators scanning the Summary notification preview could see a completed or failed background child result but had to switch panels or locate another card before opening the child session facts.
+- This weakened WebConsole traceability for parent-visible background facts and made the Summary projection less capable than the full Background notification projection.
+- This was a frontend projection gap only; backend session, queue, notification, and runtime control semantics were not changed.
+
+Changes:
+
+- Updated the Summary notification preview renderer to show a `data-open-session` `Open child session` action when a notification carries `session_id`.
+- Preserved the existing `Open job` action for `queue_job_id`, and reused the existing click handler rather than adding new state or routes.
+- Extended the frontend renderer regression so both full and preview notification cards must expose queue job and child session actions.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `background notification cards expose queue job and child session actions` showed the preview had `data-open-job` but no `data-open-session`.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "background notification cards expose queue job and child session actions"`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 
 ### FCA-20260528-265
 
