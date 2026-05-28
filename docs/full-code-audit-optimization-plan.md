@@ -8436,7 +8436,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-235, FCA-20260527-236, FCA-20260528-284, and FCA-20260529-392. Those slices covered configured local skill root/manifest errors, frontend display of Skills backend errors, stale Skills refreshes, and Workspace root metadata errors. The residual issue was only the workspace extension discovery branch in `handleListSkills`, which swallowed both `os.Getwd()` and `extensions.Discover()` failures.
 - Confirmed the minimal fix belongs in `internal/webconsole/service.go` `handleListSkills`: keep missing `.agent` as an empty discovery result, but propagate actual current-workdir or `.agent` discovery errors with the same backend error visibility used for local skill manifest/root failures.
 
+### Review 382
+
+- Confirmed FCA-20260529-394 against `spec/17-web-console.md` and `spec/02-cli-and-config.md`: `go-cli-agent web --workers` is the default Web-first startup control for the local worker pool, so unsupported worker counts should be rejected at the CLI boundary rather than silently normalized into a different runtime configuration.
+- Confirmed this is distinct from the existing `/api/workers` validation coverage. The Web API already rejects `desired_count` values above the worker maximum with HTTP 400, while the CLI startup path passed `--workers` directly to `webconsole.New`, where `newWorkerPool` clamped excessive counts to `maxWorkerCount`.
+- Confirmed the minimal fix belongs in `internal/app/web_cmd.go`: validate `--workers` before loading config or creating the WebConsole service, preserving the documented `0` through `8` range, existing worker pool clamping as an internal safety net, and the advanced `/api/workers` behavior.
+
 ## Update Log
+
+### FCA-20260529-394
+
+Slice: `fix(web): reject unsupported worker counts`
+
+Finding:
+
+- `spec/17-web-console.md` keeps worker-pool tuning out of the default page but explicitly allows it through `go-cli-agent web --workers` and the backend worker API.
+- `POST /api/workers` already rejects `desired_count > maxWorkerCount` as a bad request.
+- `internal/app/web_cmd.go` parsed `--workers` and passed the value directly into `webconsole.New`; `newWorkerPool()` then silently clamped values above the maximum.
+- A focused CLI regression invoked `go-cli-agent web --workers 999` under an already-cancelled context. Before the fix, the command returned nil after creating a service whose worker count had been normalized rather than reporting the unsupported startup option.
+
+Impact:
+
+- Operators could believe the local WebConsole started with a requested high worker count while it actually ran at the internal maximum.
+- Startup validation was inconsistent with the runtime worker API for the same control-plane field.
+- This weakened CLI fallback diagnostics on the default Web-first entry point, especially for scripts that rely on bad startup flags failing fast.
+
+Changes:
+
+- Added CLI-side `--workers` validation in `webCommand`: values below `0` or above `8` now fail before config load and service creation.
+- Kept `0` as the explicit no-worker mode used by tests and local diagnostics.
+- Left WebConsole worker-pool clamping in place as an internal guard and did not change worker API scaling behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestWebCommandRejectsUnsupportedWorkerCountBeforeServing -count=1`: failed before the fix because `web --workers 999` returned nil.
+- `go test -timeout 120s ./internal/app -run TestWebCommandRejectsUnsupportedWorkerCountBeforeServing -count=1`: passed after the fix.
 
 ### FCA-20260529-393
 

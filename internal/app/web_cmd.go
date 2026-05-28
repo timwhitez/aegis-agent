@@ -16,6 +16,8 @@ import (
 	"go-cli-agent/internal/webconsole"
 )
 
+const maxWebWorkerCount = 8
+
 func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	args = normalizeInterspersedFlags(args, []string{"config", "listen", "workers"}, nil)
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
@@ -27,6 +29,12 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *workers < 0 {
+		return fmt.Errorf("workers must be >= 0")
+	}
+	if *workers > maxWebWorkerCount {
+		return fmt.Errorf("workers must be <= %d", maxWebWorkerCount)
 	}
 	cwd, _ := os.Getwd()
 	cfg, err := loadConfig(*configPath, cwd)

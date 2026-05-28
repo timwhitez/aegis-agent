@@ -2483,6 +2483,15 @@ func TestTopLevelWebCommandDispatches(t *testing.T) {
 	}
 }
 
+func TestWebCommandRejectsUnsupportedWorkerCountBeforeServing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := Run(ctx, []string{"web", "--workers", "999"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "workers must be <= 8") {
+		t.Fatalf("expected unsupported worker count error, got %v", err)
+	}
+}
+
 func testAppSessionMetadata(t *testing.T, id string) session.SessionMetadata {
 	t.Helper()
 	workdir := t.TempDir()
