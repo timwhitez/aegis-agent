@@ -7980,6 +7980,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-270 and FCA-20260528-269. Those slices guarded the initial `/api/sessions/{id}` detail response and standalone `/api/queue/jobs/{id}` response; this slice covers the gap between the accepted session-detail response and the awaited selected queue-job enrichment inside the same refresh path.
 - Confirmed the minimal fix belongs in `app.js` after `refreshSelectedQueueJobDetail(...)`: recheck the captured session id and queued-refresh flag before applying generation/activity/render side effects, without changing backend session, queue, runtime, provider, or worker semantics.
 
+### Review 316
+
+- Confirmed FCA-20260528-323 against `AGENTS.md`, `spec/01-runtime-architecture.md`, and `spec/09-phase-plan.md`: `session.json`, `state.json`, and `messages.jsonl` are local session fact sources, CLI `doctor` is a Web-first v1 fallback diagnostic surface, and session paths must not silently follow symlinks.
+- Confirmed this is distinct from FCA-20260525-037 and FCA-20260526-146. Those slices covered blocked queue-job doctor visibility and session-store list behavior for corrupt `state.json`; this slice covers the CLI doctor partial-state preflight that used `os.Stat` and could report unsafe core session files as healthy.
+- Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: classify missing core files separately from symlinked/non-regular/unopenable core files in the doctor report, without changing `SessionStore` authority, queue reconciliation, WebConsole routes, or runtime workflow behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10269,6 +10275,40 @@ Validation:
 
 - Pre-fix focused verification failed as expected: `refreshCurrentSession rechecks selected session after queue detail enrichment` left selected session B with `generating: true`, activity title `Prepare`, and one stale render after session A's queue-job enrichment resolved.
 - `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "refreshCurrentSession rechecks selected session after queue detail enrichment"`: passed.
+
+### FCA-20260528-323
+
+Slice: `fix(app): report unsafe session core files in doctor`
+
+Finding:
+
+- `checkSessionPartialState()` called `doctorMissingSessionFiles()`, which used `os.Stat` to decide whether `session.json`, `state.json`, and `messages.jsonl` existed.
+- `os.Stat` follows symlinks, so a session whose `session.json` was a symlink to an outside file was reported as healthy by `doctor`.
+- The real session store reads these fact files through no-symlink paths and rejects symlinked session facts, so the CLI fallback diagnostic could disagree with the runtime/store authority.
+
+Impact:
+
+- `go-cli-agent doctor` could report `session.partial_state` as `ok` while CLI/Web/runtime session operations would reject the same session metadata or state facts.
+- Operators diagnosing local recovery could miss an unsafe or non-store-readable session fact and look at provider/config/queue state instead of repairing the session directory.
+- This did not mutate session files; it was a CLI diagnostic accuracy gap at the fallback control surface.
+
+Changes:
+
+- Replaced the missing-only core file scan with `doctorSessionCoreFileIssues()`.
+- The doctor check now reports missing core files under `missing_session_files` and symlinked, non-regular, or unopenable core files under `unreadable_session_files`.
+- Included `unreadable_session_files` in the partial-state counts and warning decision while leaving queue diagnostics and `SessionStore` read/write behavior unchanged.
+- Added a focused regression with a symlinked `session.json`.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestDoctorReportsUnsafeSessionCoreFiles` returned `session.partial_state` as `ok` with no `unreadable_session_files`.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReports(MissingSessionState|UnsafeSessionCoreFiles|DuplicateQueueJobStatus|QueueLeaseAndMissingSessionRef|BlockedQueueJobMissingSessionRef)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check -- docs/full-code-audit-optimization-plan.md internal/app/app_test.go internal/app/doctor_helpers.go`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./internal/webconsole ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- Broader baseline note: `timeout 300 go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` reached the 300s timeout after printing green results through `internal/review` and no failing package output; the remaining owner packages were rerun individually above.
 
 ### FCA-20260528-265
 

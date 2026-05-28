@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -1781,6 +1782,42 @@ func TestDoctorReportsMissingSessionState(t *testing.T) {
 	}
 	if missing[0]["session_id"] != "session_missing_state" {
 		t.Fatalf("unexpected missing session detail: %#v", missing[0])
+	}
+}
+
+func TestDoctorReportsUnsafeSessionCoreFiles(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "session_symlinked_fact")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-session.json")
+	if err := os.WriteFile(outside, []byte(`{"id":"session_symlinked_fact"}`), 0o600); err != nil {
+		t.Fatalf("write outside metadata: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(sessionDir, "session.json")); err != nil {
+		t.Fatalf("symlink session metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "state.json"), []byte(`{"session_id":"session_symlinked_fact","status":"running","updated_at":"2026-05-28T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "messages.jsonl"), []byte{}, 0o600); err != nil {
+		t.Fatalf("write messages: %v", err)
+	}
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	unreadable, ok := check.Details["unreadable_session_files"].([]map[string]any)
+	if !ok || len(unreadable) != 1 {
+		t.Fatalf("expected unreadable session file, got %#v", check.Details["unreadable_session_files"])
+	}
+	if unreadable[0]["session_id"] != "session_symlinked_fact" || unreadable[0]["file"] != "session.json" {
+		t.Fatalf("unexpected unreadable session detail: %#v", unreadable[0])
+	}
+	if !strings.Contains(fmt.Sprint(unreadable[0]["error"]), "symlink") {
+		t.Fatalf("expected symlink error detail, got %#v", unreadable[0])
 	}
 }
 

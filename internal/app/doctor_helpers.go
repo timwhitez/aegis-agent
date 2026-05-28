@@ -348,7 +348,7 @@ func checkSessionPartialState(sessionRoot string) doctorCheck {
 			"dir": sessionRoot,
 		},
 	}
-	missingFiles, err := doctorMissingSessionFiles(sessionRoot)
+	missingFiles, unreadableSessionFiles, err := doctorSessionCoreFileIssues(sessionRoot)
 	if err != nil {
 		check.Status = "fail"
 		check.Details["error"] = err.Error()
@@ -366,6 +366,7 @@ func checkSessionPartialState(sessionRoot string) doctorCheck {
 	missingSessionRefs := doctorQueueJobsMissingSessions(sessionRoot, queueJobs)
 
 	check.Details["missing_session_files"] = missingFiles
+	check.Details["unreadable_session_files"] = unreadableSessionFiles
 	check.Details["duplicate_queue_jobs"] = duplicates
 	check.Details["running_jobs_without_lease"] = runningWithoutLease
 	check.Details["stale_running_jobs"] = staleRunning
@@ -373,27 +374,29 @@ func checkSessionPartialState(sessionRoot string) doctorCheck {
 	check.Details["unreadable_queue_jobs"] = unreadableJobs
 	check.Details["counts"] = map[string]int{
 		"missing_session_files":      len(missingFiles),
+		"unreadable_session_files":   len(unreadableSessionFiles),
 		"duplicate_queue_jobs":       len(duplicates),
 		"running_jobs_without_lease": len(runningWithoutLease),
 		"stale_running_jobs":         len(staleRunning),
 		"queue_jobs_missing_session": len(missingSessionRefs),
 		"unreadable_queue_jobs":      len(unreadableJobs),
 	}
-	if len(missingFiles)+len(duplicates)+len(runningWithoutLease)+len(staleRunning)+len(missingSessionRefs)+len(unreadableJobs) > 0 {
+	if len(missingFiles)+len(unreadableSessionFiles)+len(duplicates)+len(runningWithoutLease)+len(staleRunning)+len(missingSessionRefs)+len(unreadableJobs) > 0 {
 		check.Status = "warn"
 	}
 	return check
 }
 
-func doctorMissingSessionFiles(sessionRoot string) ([]map[string]any, error) {
+func doctorSessionCoreFileIssues(sessionRoot string) ([]map[string]any, []map[string]any, error) {
 	entries, err := os.ReadDir(sessionRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []map[string]any{}, nil
+			return []map[string]any{}, []map[string]any{}, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	var out []map[string]any
+	var missingOut []map[string]any
+	var unreadableOut []map[string]any
 	for _, entry := range entries {
 		if !entry.IsDir() || entry.Name() == "_queue" {
 			continue
@@ -402,22 +405,53 @@ func doctorMissingSessionFiles(sessionRoot string) ([]map[string]any, error) {
 		sessionDir := filepath.Join(sessionRoot, sessionID)
 		var missing []string
 		for _, name := range []string{"session.json", "state.json", "messages.jsonl"} {
-			if _, err := os.Stat(filepath.Join(sessionDir, name)); err != nil {
+			path := filepath.Join(sessionDir, name)
+			info, err := os.Lstat(path)
+			if err != nil {
 				if os.IsNotExist(err) {
 					missing = append(missing, name)
 					continue
 				}
-				return nil, err
+				return nil, nil, err
 			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				unreadableOut = append(unreadableOut, map[string]any{
+					"session_id": sessionID,
+					"file":       name,
+					"path":       path,
+					"error":      fmt.Sprintf("refusing to use symlinked session file: %s", path),
+				})
+				continue
+			}
+			if !info.Mode().IsRegular() {
+				unreadableOut = append(unreadableOut, map[string]any{
+					"session_id": sessionID,
+					"file":       name,
+					"path":       path,
+					"error":      fmt.Sprintf("not a regular file: %s", path),
+				})
+				continue
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				unreadableOut = append(unreadableOut, map[string]any{
+					"session_id": sessionID,
+					"file":       name,
+					"path":       path,
+					"error":      err.Error(),
+				})
+				continue
+			}
+			_ = file.Close()
 		}
 		if len(missing) > 0 {
-			out = append(out, map[string]any{
+			missingOut = append(missingOut, map[string]any{
 				"session_id": sessionID,
 				"missing":    missing,
 			})
 		}
 	}
-	return out, nil
+	return missingOut, unreadableOut, nil
 }
 
 type doctorQueueJobRecord struct {
