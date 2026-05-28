@@ -8288,6 +8288,46 @@ Evidence gates:
 
 ## Update Log
 
+### FCA-20260528-364
+
+Slice: `fix(session): validate existing contract history before append`
+
+Finding:
+
+- `AppendContractHistory` validated the new `SessionContract` entry but did not read and validate existing `artifacts/contract-history.jsonl` before appending.
+- `contract-history.jsonl` is a durable session fact for explicit instruction contract refreshes, required-artifact completion gates, rollback snapshots, Web/session summaries, checkpoints, and recovery diagnostics.
+
+Impact:
+
+- A syntactically valid but semantically corrupt existing contract history file could remain corrupt while later direct contract-history appends reported success.
+- That weakens the store boundary: callers could add fresh contract facts on top of a ledger that ordinary `LoadContractHistory` and contract refresh snapshot paths reject, making the durable audit trail inconsistent until a later reader fails.
+
+Changes:
+
+- `AppendContractHistory` now loads the current contract history under the existing store mutex, appends the candidate entry in memory, and validates the whole resulting ledger before writing the new JSONL record.
+- The fix is confined to the session store fact boundary; it does not change contract derivation, artifact tracking, completion gates, Web state, or runtime workflow behavior.
+- Added a focused store regression that writes malformed existing contract history and proves a later valid append is rejected without repairing or extending the corrupt ledger.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestAppendContractHistoryRejectsMalformedExistingHistory -count=1`: failed before the fix with nil error.
+- `go test -timeout 120s ./internal/session -run 'TestAppendContractHistoryRejectsMalformedExistingHistory|TestSnapshotContractRefreshRejectsMalformedHistory|TestContractArtifactsRejectMalformedTimestamps' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestContractRefresh(ReportsMalformedHistorySnapshot|ReportsHistoryAppendError|ReportsContractEventAppendErrorAndRestoresSnapshot|RestoresPreviousSnapshotOnContractUpdatedEventError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
 ### FCA-20260528-313
 
 Slice: `fix(session): validate queue job facts`

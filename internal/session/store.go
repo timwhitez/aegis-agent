@@ -430,6 +430,14 @@ func (s *Store) AppendContractHistory(sessionID string, contract SessionContract
 	if err != nil {
 		return err
 	}
+	var current []SessionContract
+	if err := readJSONL(path, &current); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load contract history %s: %w", path, err)
+	}
+	current = append(current, contract)
+	if err := validateContractHistory(current); err != nil {
+		return fmt.Errorf("validate contract-history.jsonl: %w", err)
+	}
 	if err := s.appendJSONL(path, contract); err != nil {
 		return fmt.Errorf("append contract history %s: %w", path, err)
 	}

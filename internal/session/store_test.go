@@ -621,6 +621,54 @@ func TestSnapshotContractRefreshRejectsMalformedHistory(t *testing.T) {
 	}
 }
 
+func TestAppendContractHistoryRejectsMalformedExistingHistory(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := SessionContract{
+		SchemaVersion: 1,
+		ContractID:    "contract_" + meta.ID,
+		Source:        "user_instruction",
+		TrustSource:   "explicit_user",
+		Profile:       "default",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.AppendContractHistory(meta.ID, valid); err != nil {
+		t.Fatalf("append valid contract history: %v", err)
+	}
+	malformed := valid
+	malformed.Profile = ""
+	data, err := json.Marshal(malformed)
+	if err != nil {
+		t.Fatalf("marshal malformed history: %v", err)
+	}
+	historyPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "contract-history.jsonl")
+	if err := os.WriteFile(historyPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write malformed history: %v", err)
+	}
+
+	if err := store.AppendContractHistory(meta.ID, valid); err == nil || !strings.Contains(err.Error(), "validate contract-history.jsonl") || !strings.Contains(err.Error(), "contract profile is required") {
+		t.Fatalf("expected malformed existing contract history append error, got %v", err)
+	}
+	history, err := store.LoadContractHistory(meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "contract profile is required") {
+		t.Fatalf("expected preserved malformed history load error, got history=%#v err=%v", history, err)
+	}
+}
+
 func TestContractArtifactsRejectMalformedTimestamps(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
