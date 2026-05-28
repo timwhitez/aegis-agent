@@ -698,10 +698,25 @@ func TestStoreLoadMetadataRejectsMalformedSnapshot(t *testing.T) {
 		t.Fatalf("expected malformed session.json validation error, got %v", err)
 	}
 
+	invalidCreatedAt := meta
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.writeJSONFile(sessionPath, invalidCreatedAt); err != nil {
+		t.Fatalf("write invalid created_at metadata: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err == nil || !strings.Contains(err.Error(), "validate session.json") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid session created_at validation error, got %v", err)
+	}
+
 	invalidMode := meta
 	invalidMode.Mode = "debug"
 	if err := store.SaveMetadata(meta.ID, invalidMode); err == nil || !strings.Contains(err.Error(), "invalid session mode") {
 		t.Fatalf("expected SaveMetadata to reject invalid mode, got %v", err)
+	}
+
+	invalidCreatedAt = meta
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.SaveMetadata(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected SaveMetadata to reject invalid created_at, got %v", err)
 	}
 }
 
@@ -731,6 +746,15 @@ func TestStoreLoadStateRejectsMalformedSnapshot(t *testing.T) {
 	}
 	if _, err := store.LoadState(meta.ID); err == nil || !strings.Contains(err.Error(), "validate state.json") {
 		t.Fatalf("expected malformed state.json validation error, got %v", err)
+	}
+
+	invalidUpdatedAt := state
+	invalidUpdatedAt.UpdatedAt = "not-a-time"
+	if err := store.writeJSONFile(statePath, invalidUpdatedAt); err != nil {
+		t.Fatalf("write invalid updated_at state: %v", err)
+	}
+	if _, err := store.LoadState(meta.ID); err == nil || !strings.Contains(err.Error(), "validate state.json") || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid state updated_at validation error, got %v", err)
 	}
 
 	invalidCounter := state

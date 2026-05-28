@@ -8040,6 +8040,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-308. That slice added generic parent coordination validation for parent identity, wait mode, IDs, duplicate IDs, and cross-set conflicts; this slice covers the remaining timestamp-shape gap where a non-empty non-RFC3339 `updated_at` value was accepted on load and save.
 - Confirmed the minimal fix belongs in `SessionStore` parent coordination validation: parse `ParentCoordination.UpdatedAt` as RFC3339Nano, preserving wait-all/wait-any compatibility, queue/child coordination semantics, Web projection boundaries, and model-led delegation behavior.
 
+### Review 326
+
+- Confirmed FCA-20260528-333 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/17-web-console.md`: `session.json` and `state.json` are core durable session facts for resume/continue, Web detail/list ordering, provider/model restoration, queue/child reconciliation, session summaries, and checkpoints.
+- Confirmed this is distinct from FCA-20260528-305. That slice added generic metadata/state semantic validation for identity, supported modes/statuses, linked IDs, and non-negative counters; this slice covers the remaining timestamp-shape gap where non-empty non-RFC3339 `session.created_at` and `state.updated_at` values were accepted on load/write paths.
+- Confirmed the minimal fix belongs in `SessionStore` metadata/state validation: parse `SessionMetadata.CreatedAt` and `State.UpdatedAt` as RFC3339Nano while preserving `Create` compatibility by filling a missing initial `state.updated_at` before validation, and without adding phase-specific workflow restrictions.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10688,6 +10694,50 @@ Validation:
 
 - Pre-fix focused verification failed as expected: `TestLoadParentCoordinationRejectsMalformedSnapshot` loaded an invalid `updated_at` parent coordination snapshot without error, and `TestParentCoordinationWritesRejectMalformedFacts` saved an invalid `updated_at` snapshot without error.
 - `go test -timeout 120s ./internal/session -run 'TestLoadParentCoordinationRejectsMalformedSnapshot|TestParentCoordinationWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-333
+
+Slice: `fix(session): validate metadata and state timestamps`
+
+Finding:
+
+- FCA-20260528-305 added generic semantic validation for `session.json` and `state.json`, but `validateSessionMetadata()` only required `SessionMetadata.CreatedAt` to be non-empty.
+- `validateState()` did not validate `State.UpdatedAt`, so existing `state.json` records with `updated_at:"not-a-time"` could still be loaded and trusted.
+- `LoadMetadata()`, `SaveMetadata()`, `LoadState()`, `SaveState()`, and state claim/create paths could therefore accept malformed core session timestamps when the rest of the metadata/state facts were valid.
+
+Impact:
+
+- `session.json` and `state.json` are core durable facts for resume/continue, Web detail/list ordering, provider/model restoration, queue/child reconciliation, session summaries, and checkpoints.
+- Accepting arbitrary timestamp strings weakened session chronology and let recovery/UI paths treat malformed core session facts as normal persisted state.
+- This was a store-boundary validation gap only; it did not change runtime workflow phases, provider adapter behavior, Web projections, or queue scheduling.
+
+Changes:
+
+- Added RFC3339Nano parsing for session metadata `created_at`.
+- Added required RFC3339Nano validation for state `updated_at`.
+- Preserved existing `Create` compatibility by filling an omitted initial `state.updated_at` with the current UTC timestamp before validation; existing loaded/saved snapshots still require a parseable timestamp.
+- Extended metadata/state store regressions to cover invalid timestamp load and save paths while preserving existing invalid ID, mode, status, and counter coverage.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestStoreLoadMetadataRejectsMalformedSnapshot` loaded an invalid `session.created_at` without error, and `TestStoreLoadStateRejectsMalformedSnapshot` loaded an invalid `state.updated_at` without error.
+- `go test -timeout 120s ./internal/session -run 'TestStoreLoadMetadataRejectsMalformedSnapshot|TestStoreLoadStateRejectsMalformedSnapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestParentLinkedQueueBlockedDuringPendingPlanMode|TestApproveLinkedPlanModeMarksMissionPlanApproved|TestApproveLinkedMissionPlanReportsEventAppendError|TestApproveLinkedMissionPlanRetryAfterEventFailureDoesNotDuplicateHistory|TestApproveLinkedMissionPlanRetryReportsCorruptGoalHistory' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
 - `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.

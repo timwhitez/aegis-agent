@@ -101,6 +101,9 @@ func (s *Store) Create(meta SessionMetadata, state State) error {
 	if err := validateSessionMetadata(meta, meta.ID); err != nil {
 		return fmt.Errorf("validate session.json: %w", err)
 	}
+	if strings.TrimSpace(state.UpdatedAt) == "" {
+		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	if err := validateState(state); err != nil {
 		return fmt.Errorf("validate state.json: %w", err)
 	}
@@ -3071,6 +3074,9 @@ func validateSessionMetadata(meta SessionMetadata, expectedID string) error {
 	if strings.TrimSpace(meta.CreatedAt) == "" {
 		return errors.New("session created_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, meta.CreatedAt); err != nil {
+		return fmt.Errorf("session created_at must be RFC3339Nano: %w", err)
+	}
 	if strings.TrimSpace(meta.Workdir) == "" {
 		return errors.New("session workdir is required")
 	}
@@ -3140,6 +3146,12 @@ func validateState(state State) error {
 	}
 	if state.ProviderAutoResumeCount < 0 {
 		return errors.New("provider_auto_resume_count must be non-negative")
+	}
+	if strings.TrimSpace(state.UpdatedAt) == "" {
+		return errors.New("state updated_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, state.UpdatedAt); err != nil {
+		return fmt.Errorf("state updated_at must be RFC3339Nano: %w", err)
 	}
 	if state.LastCompactionInputChars < 0 {
 		return errors.New("last_compaction_input_chars must be non-negative")
