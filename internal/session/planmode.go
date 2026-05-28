@@ -492,6 +492,10 @@ func (s *Store) RestorePlanModeHistory(sessionID string, entries []PlanModeHisto
 }
 
 func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (PlanModeState, error) {
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		return PlanModeState{}, errors.New("title is required")
+	}
 	planMarkdown := strings.TrimSpace(input.PlanMarkdown)
 	if planMarkdown == "" {
 		return PlanModeState{}, errors.New("plan_markdown is required")
@@ -503,7 +507,8 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 	if summary == "" {
 		return PlanModeState{}, errors.New("summary is required")
 	}
-	if len(input.Verification) == 0 {
+	verification := cleanStringSlice(input.Verification)
+	if len(verification) == 0 {
 		return PlanModeState{}, errors.New("verification is required")
 	}
 	rollback, err := s.planModeRollbackSnapshot(sessionID)
@@ -528,7 +533,7 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 		state.Summary = summary
 		state.Assumptions = cleanStringSlice(input.Assumptions)
 		state.Risks = cleanStringSlice(input.Risks)
-		state.Verification = cleanStringSlice(input.Verification)
+		state.Verification = verification
 		return nil
 	})
 	if err != nil {
@@ -558,7 +563,7 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 		Status:      state.Status,
 		PlanVersion: state.PlanVersion,
 		Data: map[string]any{
-			"title":   strings.TrimSpace(input.Title),
+			"title":   title,
 			"summary": state.Summary,
 		},
 	}); err != nil {

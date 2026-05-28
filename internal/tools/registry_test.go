@@ -902,6 +902,92 @@ func TestSubmitPlanReportsRequiredEventErrorAndRestoresPlanMode(t *testing.T) {
 	}
 }
 
+func TestSubmitPlanRejectsBlankRequiredFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		wantErr string
+	}{
+		{
+			name: "blank title",
+			payload: `{
+				"title":"   ",
+				"summary":"Plan safely.",
+				"plan_markdown":"# Summary\n\nPlan safely.\n\n# Verification\n\nRun focused tests.",
+				"verification":["go test ./internal/tools"]
+			}`,
+			wantErr: "title is required",
+		},
+		{
+			name: "blank verification item",
+			payload: `{
+				"title":"Safe plan",
+				"summary":"Plan safely.",
+				"plan_markdown":"# Summary\n\nPlan safely.\n\n# Verification\n\nRun focused tests.",
+				"verification":["   "]
+			}`,
+			wantErr: "verification is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			root := t.TempDir()
+			store := session.NewStore(filepath.Join(root, "sessions"))
+			meta := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               session.NewSessionID(),
+				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+				Workdir:          root,
+				Mode:             session.ModeRun,
+				Provider:         "fake",
+				Model:            "fake",
+				CompletionPolicy: session.CompletionPolicyInteractive,
+			}
+			if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			if _, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Plan safely"}); err != nil {
+				t.Fatalf("create plan mode: %v", err)
+			}
+			registry, err := NewRegistry(cfg, nil, store, nil)
+			if err != nil {
+				t.Fatalf("new registry: %v", err)
+			}
+			execCtx := ExecContext{
+				SessionID: meta.ID,
+				Workdir:   root,
+				Store:     store,
+				Config:    cfg,
+				EmitRequired: func(eventType string, _ map[string]any) error {
+					t.Fatalf("invalid submit must not emit event %q", eventType)
+					return nil
+				},
+			}
+
+			result, err := registry.Execute(context.Background(), "submit_plan", execCtx, json.RawMessage(tt.payload))
+			if err != nil {
+				t.Fatalf("submit_plan execute: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tt.wantErr) {
+				t.Fatalf("expected %q error result, got %#v", tt.wantErr, result)
+			}
+			planMode, err := store.LoadPlanMode(meta.ID)
+			if err != nil {
+				t.Fatalf("load plan mode: %v", err)
+			}
+			if planMode.Status != session.PlanModeStatusPlanning || planMode.PlanVersion != 0 || planMode.PlanMarkdown != "" || len(planMode.Verification) != 0 {
+				t.Fatalf("invalid submit should not advance plan mode, got %#v", planMode)
+			}
+			planPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "planmode-plan.md")
+			if _, err := os.Stat(planPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid submit should not create plan markdown, err=%v", err)
+			}
+		})
+	}
+}
+
 func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

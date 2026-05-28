@@ -7830,6 +7830,12 @@ Evidence gates:
 - Confirmed this is distinct from prior Goal transaction/rollback slices. Those covered history/event/task/Plan Mode side-effect rollback after valid mutations; this slice covers malformed `success_criteria`, `validation_plan`, mission feature/milestone/requirement/validation/role data being accepted as current facts before any side-effect error.
 - Confirmed the minimal fix belongs in session-store Goal validation plus Web error classification: reject blank/duplicate item IDs, missing display text/title, invalid item statuses, and blank linked-fact strings before `SaveGoal` / `PatchGoal` writes, preserving read-only coverage reporting for absent legacy files and not adding workflow orchestration.
 
+### Review 291
+
+- Confirmed FCA-20260528-298 against `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `submit_plan` is the Plan Mode plan fact source and must save a usable title, summary, Markdown plan, and verification evidence before entering the approval gate.
+- Confirmed this is distinct from prior Plan Mode transaction and replay slices. Those covered history/event/artifact rollback, approval/revision/cancellation idempotency, and input-answer validation; this slice covers malformed required `submit_plan` content being accepted before the transition is otherwise durable.
+- Confirmed the minimal fix belongs in `Store.SubmitPlanMode`, not provider adapters, Web UI state, or runtime workflow guards: normalize required fields once at the session-store boundary, reject blank title or all-blank verification, and reuse the normalized verification/title for persisted Plan Mode facts.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7891,6 +7897,35 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-298
+
+Slice: `fix(session): reject blank submit_plan facts`
+
+Finding:
+
+- `Store.SubmitPlanMode` accepted whitespace-only `title` and still advanced `planmode.json` to `awaiting_approval`.
+- `Store.SubmitPlanMode` checked only the raw `len(input.Verification)` before trimming, so `verification:["   "]` passed the required-field check and persisted an approval-ready Plan Mode with an empty `verification` list.
+- The `submit_plan` tool schema marked `title`, `summary`, `plan_markdown`, and `verification` as required, but JSON schema presence checks did not enforce usable trimmed field contents.
+
+Impact:
+
+- Plan Mode approval could be gated on incomplete operator-readable facts even though `submit_plan` is the durable plan fact source.
+- Web Plan inspector, CLI/session summaries, recovery, and provider replay diagnostics could show an approval-ready plan with no title or no verification evidence.
+- A model or API caller could receive a successful submit result for a plan that lacked the required evidence list the user would rely on before approval.
+
+Changes:
+
+- Normalized `title` and `verification` at the `Store.SubmitPlanMode` boundary before mutating session facts.
+- Rejected blank/whitespace-only titles and all-blank verification lists before `planmode.json`, `artifacts/planmode-history.jsonl`, or `artifacts/planmode-plan.md` can advance.
+- Reused the normalized title in submitted-plan history and the normalized verification list in `planmode.json`.
+- Added focused store and tool regressions proving invalid `submit_plan` inputs return errors and leave Plan Mode in `planning` with no generated plan Markdown artifact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestSubmitPlanModeRejectsBlankRequiredFields -count=1`: failed before the fix because blank title and blank verification advanced Plan Mode to `awaiting_approval`.
+- `go test -timeout 120s ./internal/session -run 'TestSubmitPlanModeRejectsBlankRequiredFields|TestPlanModeSubmitApproveAndHistory|TestSubmitPlanModeReturnsHistoryAppendError|TestSubmitPlanModeRollsBackWhenMarkdownWriteFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestSubmitPlan(RejectsBlankRequiredFields|ReportsRequiredEventErrorAndRestoresPlanMode)' -count=1`: passed.
 
 ### FCA-20260528-297
 

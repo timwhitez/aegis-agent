@@ -146,6 +146,97 @@ func TestSubmitPlanModeReturnsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestSubmitPlanModeRejectsBlankRequiredFields(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      PlanModeSubmitInput
+		wantErr    string
+		wantVerify []string
+	}{
+		{
+			name: "blank title",
+			input: PlanModeSubmitInput{
+				Title:        "   ",
+				Summary:      "Submit a plan with a usable title.",
+				PlanMarkdown: "# Summary\n\nSubmit a plan with a usable title.\n",
+				Verification: []string{"go test ./internal/session"},
+				Source:       PlanModeSourceTool,
+			},
+			wantErr: "title is required",
+		},
+		{
+			name: "blank verification item",
+			input: PlanModeSubmitInput{
+				Title:        "Plan",
+				Summary:      "Submit a plan with usable verification.",
+				PlanMarkdown: "# Summary\n\nSubmit a plan with usable verification.\n",
+				Verification: []string{"   "},
+				Source:       PlanModeSourceTool,
+			},
+			wantErr: "verification is required",
+		},
+		{
+			name: "trimmed verification item",
+			input: PlanModeSubmitInput{
+				Title:        "  Plan  ",
+				Summary:      "Submit a plan with normalized verification.",
+				PlanMarkdown: "# Summary\n\nSubmit a plan with normalized verification.\n",
+				Verification: []string{"  go test ./internal/session  "},
+				Source:       PlanModeSourceTool,
+			},
+			wantVerify: []string{"go test ./internal/session"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, sessionID := newPlanModeTestStore(t)
+			if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+				Enabled:   true,
+				Objective: "Plan required fields",
+				Source:    PlanModeSourceCLI,
+			}); err != nil {
+				t.Fatalf("create plan mode: %v", err)
+			}
+			submitted, err := store.SubmitPlanMode(sessionID, tt.input)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected %q error, got state=%#v err=%v", tt.wantErr, submitted, err)
+				}
+				loaded, loadErr := store.LoadPlanMode(sessionID)
+				if loadErr != nil {
+					t.Fatalf("load plan mode: %v", loadErr)
+				}
+				if loaded.Status != PlanModeStatusPlanning || loaded.PlanVersion != 0 || loaded.PlanMarkdown != "" || len(loaded.Verification) != 0 {
+					t.Fatalf("failed submit should not advance plan mode snapshot, got %#v", loaded)
+				}
+				planPath := filepath.Join(store.SessionDir(sessionID), "artifacts", "planmode-plan.md")
+				if _, statErr := os.Stat(planPath); !os.IsNotExist(statErr) {
+					t.Fatalf("failed submit should not leave plan markdown artifact, got stat err=%v", statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("submit plan: %v", err)
+			}
+			if submitted.Status != PlanModeStatusAwaitingApproval || submitted.PlanVersion != 1 {
+				t.Fatalf("unexpected submitted plan: %#v", submitted)
+			}
+			if strings.TrimSpace(submitted.Summary) == "" || strings.TrimSpace(submitted.PlanMarkdown) == "" {
+				t.Fatalf("expected submitted summary and markdown, got %#v", submitted)
+			}
+			if len(submitted.Verification) != len(tt.wantVerify) {
+				t.Fatalf("expected verification %#v, got %#v", tt.wantVerify, submitted.Verification)
+			}
+			for i, want := range tt.wantVerify {
+				if submitted.Verification[i] != want {
+					t.Fatalf("expected verification %#v, got %#v", tt.wantVerify, submitted.Verification)
+				}
+			}
+		})
+	}
+}
+
 func TestSubmitPlanModeRollsBackWhenMarkdownWriteFails(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{
