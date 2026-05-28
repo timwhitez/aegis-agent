@@ -667,8 +667,13 @@ func (s *Store) LoadGoal(sessionID string) (SessionGoal, error) {
 	if err != nil {
 		return goal, err
 	}
-	err = readJSONFile(path, &goal)
-	return goal, err
+	if err := readJSONFile(path, &goal); err != nil {
+		return goal, err
+	}
+	if err := ValidateGoal(goal); err != nil {
+		return SessionGoal{}, fmt.Errorf("validate goal.json: %w", err)
+	}
+	return goal, nil
 }
 
 func (s *Store) SaveGoal(sessionID string, goal SessionGoal) error {
@@ -1372,8 +1377,13 @@ func (s *Store) loadGoalNoLock(sessionID string) (SessionGoal, error) {
 	if err != nil {
 		return goal, err
 	}
-	err = readJSONFile(path, &goal)
-	return goal, err
+	if err := readJSONFile(path, &goal); err != nil {
+		return goal, err
+	}
+	if err := ValidateGoal(goal); err != nil {
+		return SessionGoal{}, fmt.Errorf("validate goal.json: %w", err)
+	}
+	return goal, nil
 }
 
 func NewGoalID() string {

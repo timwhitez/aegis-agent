@@ -7848,6 +7848,12 @@ Evidence gates:
 - Confirmed this is a residual read-side gap after FCA-20260528-299. `SavePlanMode` / `MutatePlanMode` now reject impossible submitted states, but an already-corrupt or externally modified `planmode.json` could still be returned by `LoadPlanMode` and then trusted by Web, runtime, list summaries, rollback snapshots, and history append helpers.
 - Confirmed the minimal fix belongs in `LoadPlanMode` and the internal no-lock Plan Mode loader: apply `ValidatePlanMode` immediately after decoding `planmode.json`, while preserving `fs.ErrNotExist` behavior and existing JSON parse error propagation.
 
+### Review 294
+
+- Confirmed FCA-20260528-301 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/11-spec-audit-and-traceability.md`: `goal.json` is the durable Goal/Mission fact source for completion audit, mission coverage, progress, summaries, and Web Goal controls.
+- Confirmed this is the Goal-side counterpart to FCA-20260528-300, not a new Goal schema change. `SaveGoal` / `MutateGoal` reject malformed structured Goal/Mission facts after FCA-20260528-297, but already-present malformed `goal.json` could still be loaded and trusted.
+- Confirmed the minimal fix belongs in `LoadGoal` and the internal no-lock Goal loader: apply `ValidateGoal` after decoding `goal.json`, preserving missing-file and JSON parse semantics while reporting semantic corruption as `validate goal.json`.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7909,6 +7915,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-301
+
+Slice: `fix(session): validate loaded goal snapshots`
+
+Finding:
+
+- `LoadGoal` decoded `goal.json` and returned it without running `ValidateGoal`.
+- `loadGoalNoLock`, used while appending Goal history, had the same behavior.
+- After FCA-20260528-297, writes rejected malformed structured Goal/Mission facts, but stale, corrupt, or externally modified snapshots already on disk could still load as trusted current state.
+
+Impact:
+
+- Runtime completion gates, prompt/compaction context, Web Goal/Mission controls, mission coverage checks, session summaries, list pages, steer goal history, and Goal history append helpers could consume invalid `goal.json` facts.
+- Malformed criteria, validation, mission plan items, role hints, or linked fact lists could be treated as current facts after restart even though write paths now reject them.
+- History append helpers could attach new entries to a semantically invalid current Goal snapshot instead of reporting the corrupted fact source.
+
+Changes:
+
+- Routed `LoadGoal` through `ValidateGoal` after decoding `goal.json`.
+- Routed the internal no-lock Goal loader through the same validation so history append helpers do not trust invalid current snapshots.
+- Preserved missing-file behavior and existing JSON parse diagnostics while wrapping semantic validation errors with `validate goal.json`.
+- Added a focused store regression proving a malformed loaded structured Goal snapshot is rejected.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadGoalRejectsMalformedStructuredSnapshot -count=1`: failed before the fix because a loaded `goal.json` with a blank success-criteria ID was accepted.
+- `go test -timeout 120s ./internal/session -run 'TestLoadGoalRejectsMalformedStructuredSnapshot|TestPatchGoalRejectsMalformedStructuredItems|TestAppendGoalHistoryReportsCorruptCurrentGoalSnapshot|TestStoreListReportsCorruptSummarySnapshots' -count=1`: passed.
 
 ### FCA-20260528-300
 

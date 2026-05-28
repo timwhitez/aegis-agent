@@ -823,6 +823,50 @@ func TestStoreListReportsCorruptSummarySnapshots(t *testing.T) {
 	}
 }
 
+func TestLoadGoalRejectsMalformedStructuredSnapshot(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Reject malformed loaded goal",
+		Source:    GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.SuccessCriteria = []GoalCriterion{{
+		ID:       "   ",
+		Text:     "Loaded criteria must be well-formed.",
+		Status:   "pending",
+		Required: true,
+	}}
+	data, err := json.Marshal(goal)
+	if err != nil {
+		t.Fatalf("marshal malformed goal: %v", err)
+	}
+	goalPath := filepath.Join(store.SessionDir(meta.ID), "goal.json")
+	if err := os.WriteFile(goalPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed goal: %v", err)
+	}
+
+	loaded, err := store.LoadGoal(meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "success criteria id is required") {
+		t.Fatalf("expected malformed loaded goal error, got goal=%#v err=%v", loaded, err)
+	}
+}
+
 func TestStoreListReportsCorruptStateSnapshot(t *testing.T) {
 	store := NewStore(t.TempDir())
 	parentID := "state_snapshot_parent"
