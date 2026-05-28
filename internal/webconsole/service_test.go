@@ -8689,6 +8689,47 @@ func TestServiceMetaReportsDefaultWorkspaceSubdirOnly(t *testing.T) {
 	}
 }
 
+func TestServiceMetaReportsWorkspaceRootError(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.WriteFile(workspacePath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write workspace placeholder: %v", err)
+	}
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/meta")
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("unexpected status %d want %d body=%s", resp.StatusCode, http.StatusInternalServerError, string(body))
+	}
+	if !strings.Contains(string(body), "default workspace path is not a directory") {
+		t.Fatalf("expected workspace root error, got %s", string(body))
+	}
+}
+
 func TestServiceWebSocketResetSessionDoesNotEmitDurableEcho(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

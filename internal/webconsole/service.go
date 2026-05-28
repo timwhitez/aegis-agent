@@ -437,7 +437,10 @@ func (s *Service) meta() (MetaResponse, error) {
 		})
 	}
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Name < providers[j].Name })
-	workspaceRoot, _ := currentServerWorkspaceRoot()
+	workspaceRoot, err := currentServerWorkspaceRoot()
+	if err != nil {
+		return MetaResponse{}, err
+	}
 	return MetaResponse{
 		SessionRoot:              s.store.Root(),
 		WorkspaceRoot:            workspaceRoot,

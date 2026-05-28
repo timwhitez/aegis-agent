@@ -8424,7 +8424,59 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-147 and FCA-20260529-390. FCA-147 covered corrupt `state.json` / `messages.jsonl` after readable metadata matched the queue job, while FCA-390 covered corrupt explicit linked `session.json`. The residual issue was readable explicit linked metadata whose `queue_job_id` pointed at a different queue job.
 - Confirmed the minimal fix belongs in `internal/session/store.go` `findSessionForQueueJob`: when `QueueJob.SessionID` is explicit and readable, a `session.json` `queue_job_id` mismatch is a durable fact conflict that must be reported, not treated as "no linked session" for stale-orphan repair.
 
+### Review 380
+
+- Confirmed FCA-20260529-392 against `spec/17-web-console.md`'s local Workspace browser boundary and `spec/01-runtime-architecture.md`'s WebConsole file fact-source boundary: `/api/meta` must expose a usable default workspace root or report why it cannot.
+- Confirmed this is distinct from FCA-20260525-015 and FCA-20260527-232. FCA-015 made `/api/meta` stop advertising workspace root switching, and FCA-232 classified path errors after Workspace browser routes had already resolved their root. The residual issue was only the metadata endpoint: it swallowed `currentServerWorkspaceRoot()` errors and returned `200` with `workspace_root:""`.
+- Confirmed the minimal fix belongs in `internal/webconsole/service.go` `meta()`: propagate `currentServerWorkspaceRoot()` failures the same way `/api/files` and `/api/file/read` already do, instead of fabricating a partially successful metadata snapshot.
+
 ## Update Log
+
+### FCA-20260529-392
+
+Slice: `fix(webconsole): report workspace root meta errors`
+
+Finding:
+
+- `spec/17-web-console.md` defines the Workspace panel as the service process current cwd read-only browser, and `spec/01-runtime-architecture.md` requires WebConsole to project local file facts rather than maintain a second authority.
+- `internal/webconsole/service.go` `meta()` called `currentServerWorkspaceRoot()` but ignored the returned error.
+- When the default `workspace` path existed as a non-directory, `/api/files` correctly returned an error, but `/api/meta` returned `200` with `workspace_root:""`.
+- A focused WebConsole regression wrote a regular file at `<cwd>/workspace`. Before the fix, `GET /api/meta` succeeded with an empty workspace root instead of reporting `default workspace path is not a directory`.
+
+Impact:
+
+- The frontend could treat the Web console as initialized while the Workspace root was unusable.
+- Operators would see an empty metadata field instead of the concrete local filesystem error needed to repair the checkout or service cwd.
+- `/api/meta` and the Workspace browser routes disagreed about the same file fact, weakening the Web-first local control surface.
+
+Changes:
+
+- Updated `meta()` to return `currentServerWorkspaceRoot()` errors to the API layer.
+- Preserved the existing successful metadata response shape and the current `workspace_switch_supported:false` contract.
+- Added `TestServiceMetaReportsWorkspaceRootError`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMetaReportsWorkspaceRootError -count=1`: failed before the fix because `/api/meta` returned `200` with `workspace_root:""`.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMetaReportsWorkspaceRootError -count=1`: passed after the fix.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceMetaReportsWorkspaceRootError|TestServiceMetaReportsDefaultWorkspaceSubdirOnly' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 60 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-391
 
