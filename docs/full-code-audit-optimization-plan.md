@@ -8094,6 +8094,12 @@ Evidence gates:
 - Confirmed this is distinct from earlier contract/artifact rollback and path validation slices. Existing tests rejected malformed required artifact paths and malformed contract history structure, but the store validator still accepted arbitrary non-empty timestamp strings for `SessionContract.CreatedAt`, `SessionContract.UpdatedAt`, and `RequiredArtifact.Status.UpdatedAt`.
 - Confirmed the minimal fix belongs at the `SessionStore` validation boundary: parse contract snapshot/history timestamps as required RFC3339Nano and parse artifact status `updated_at` only when present, preserving compatibility for artifact tracker entries that omit optional freshness timestamps and without changing contract extraction, completion-gate semantics, Web state authority, provider replay, or model-led workflow behavior.
 
+### Review 335
+
+- Confirmed FCA-20260528-342 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: WebConsole active-handle owner clues are persisted as `events.jsonl` facts and then displayed in Web session detail, `session.md`, and long-run checkpoints without making in-memory handles authoritative.
+- Confirmed this is distinct from FCA-20260528-336 and FCA-20260528-341. Those slices hardened checkpoint `created_at`, contract snapshots/history, and artifact tracker timestamps; this slice covers the remaining derived owner-clue timestamp fields `started_at`, `released_at`, and `last_event_at` copied from `webconsole.handle.*` events into `session.md` and `checkpoints/longrun-latest.json`.
+- Confirmed the minimal fix belongs at the owner-clue derivation and checkpoint validation boundaries: reject malformed derived owner timestamps before writing operator-readable summaries/checkpoints and reject malformed `recent_owner` timestamps on checkpoint load/save, without changing raw event storage, active handle ownership semantics, Web state authority, or runtime execution policy.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10924,6 +10930,51 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
 - `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-342
+
+Slice: `fix(checkpoint): validate owner clue timestamps`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/17-web-console.md` require WebConsole active-handle owner/process clues to be written as local session events and shown in `session.md` and long-run checkpoint facts. Those clues must support recovery diagnostics without turning in-memory Web handles into the authority.
+- `events.jsonl` already validates the top-level event `time`, but `latestProcessOwnerClue()` copied `webconsole.handle.acquired/released` data fields `started_at` and `released_at` directly into `session.md` and `LongRunCheckpoint.RecentOwner`, and checkpoint validation only checked negative PID.
+- A focused regression wrote a valid `events.jsonl` owner event whose data had `started_at:"not-a-time"` and `released_at:"also-not-a-time"`. Before the fix, `writeSessionSummary()` accepted the event and wrote a normal-looking owner clue with malformed timestamps.
+
+Impact:
+
+- Web detail, `session.md`, and `checkpoints/longrun-latest.json` could present malformed owner chronology as normal recovery evidence even though those derived views are used to diagnose whether a session is currently owned by this Web process, running elsewhere, or settled.
+- A corrupt or manually edited checkpoint could preserve malformed `recent_owner.started_at`, `recent_owner.released_at`, or `recent_owner.last_event_at` values through load/save paths.
+- This is a validation-boundary fix only; it does not change raw `events.jsonl` storage, active handle lifecycle, interrupt/stop availability, Web state authority, provider replay, or runtime execution policy.
+
+Changes:
+
+- `latestProcessOwnerClue()` now validates the derived owner clue before returning it to session summary and long-run checkpoint writers.
+- Derived owner clue validation rejects negative PIDs and parses non-empty `started_at`, `released_at`, and `last_event_at` as RFC3339Nano.
+- `validateLongRunCheckpoint()` now validates `RecentOwner` timestamp fields on checkpoint load/save, preserving compatibility for omitted optional owner timestamps.
+- Added focused runtime coverage for malformed owner event data before summary/checkpoint generation and store coverage for malformed `recent_owner` timestamps in checkpoint load/save paths.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestSessionSummaryAndCheckpointRejectMalformedRecentOwnerTimestamps` saw `writeSessionSummary()` accept malformed owner event `started_at` with nil error.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionSummaryAndCheckpoint(RejectMalformedRecentOwnerTimestamps|RecordRecentOwnerClue)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLongRunCheckpoint(RejectsMalformedSnapshot|WritesRejectMalformedSnapshots)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionSummary|TestLongRunCheckpoint|TestCheckpointResumeHint|TestContractRefresh|TestCompletionController.*Artifact' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go internal/runtime/session_summary.go internal/runtime/contract_controller_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

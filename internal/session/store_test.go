@@ -1403,6 +1403,20 @@ func TestLongRunCheckpointRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadLongRunCheckpoint(meta.ID); err == nil || !strings.Contains(err.Error(), "validate longrun-latest.json") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
 		t.Fatalf("expected malformed checkpoint created_at validation error, got %v", err)
 	}
+
+	malformed.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	malformed.RecentOwner = &ProcessOwnerClue{
+		PID:         123,
+		StartedAt:   "not-a-time",
+		ReleasedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		LastEventAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.writeJSONFile(path, malformed); err != nil {
+		t.Fatalf("write malformed checkpoint recent owner: %v", err)
+	}
+	if _, err := store.LoadLongRunCheckpoint(meta.ID); err == nil || !strings.Contains(err.Error(), "validate longrun-latest.json") || !strings.Contains(err.Error(), "recent_owner") || !strings.Contains(err.Error(), "started_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed checkpoint recent_owner started_at validation error, got %v", err)
+	}
 }
 
 func TestLongRunCheckpointWritesRejectMalformedSnapshots(t *testing.T) {
@@ -1452,6 +1466,16 @@ func TestLongRunCheckpointWritesRejectMalformedSnapshots(t *testing.T) {
 	invalidCreatedAt.CreatedAt = "not-a-time"
 	if err := store.SaveLongRunCheckpoint(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
 		t.Fatalf("expected save to reject malformed created_at, got %v", err)
+	}
+	invalidRecentOwner := valid
+	invalidRecentOwner.RecentOwner = &ProcessOwnerClue{
+		PID:         123,
+		StartedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		ReleasedAt:  "not-a-time",
+		LastEventAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.SaveLongRunCheckpoint(meta.ID, invalidRecentOwner); err == nil || !strings.Contains(err.Error(), "released_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject malformed recent_owner released_at, got %v", err)
 	}
 	loaded, err := store.LoadLongRunCheckpoint(meta.ID)
 	if err != nil {

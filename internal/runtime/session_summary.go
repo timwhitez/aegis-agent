@@ -35,7 +35,10 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	checkpoint, checkpointErr := store.LoadLongRunCheckpoint(sessionID)
 	messages, messagesErr := store.LoadMessages(sessionID)
 	eventsList, eventsErr := store.LoadEvents(sessionID)
-	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
+	ownerClue, hasOwnerClue, ownerClueErr := latestProcessOwnerClue(eventsList)
+	if ownerClueErr != nil {
+		return ownerClueErr
+	}
 
 	var b strings.Builder
 	b.WriteString("# Session Summary\n\n")
@@ -392,7 +395,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	if coordinationErr != nil && !errors.Is(coordinationErr, os.ErrNotExist) {
 		return fmt.Errorf("load parent-coordination.json for long-run checkpoint: %w", coordinationErr)
 	}
-	ownerClue, hasOwnerClue := latestProcessOwnerClue(eventsList)
+	ownerClue, hasOwnerClue, ownerClueErr := latestProcessOwnerClue(eventsList)
+	if ownerClueErr != nil {
+		return ownerClueErr
+	}
 
 	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, planMode, planModeErr, artifacts, tasks, children, jobs, state) {
 		return nil
@@ -498,7 +504,7 @@ func latestCompactionArtifact(store *session.Store, sessionID string) (string, e
 	return filepath.Join(store.SessionDir(sessionID), "artifacts", relativePath), nil
 }
 
-func latestProcessOwnerClue(eventsList []events.Event) (session.ProcessOwnerClue, bool) {
+func latestProcessOwnerClue(eventsList []events.Event) (session.ProcessOwnerClue, bool, error) {
 	for i := len(eventsList) - 1; i >= 0; i-- {
 		evt := eventsList[i]
 		if evt.Type != "webconsole.handle.acquired" && evt.Type != "webconsole.handle.released" {
@@ -508,7 +514,7 @@ func latestProcessOwnerClue(eventsList []events.Event) (session.ProcessOwnerClue
 		if evt.Type == "webconsole.handle.released" {
 			handleState = "released"
 		}
-		return session.ProcessOwnerClue{
+		owner := session.ProcessOwnerClue{
 			Source:         eventString(evt.Data, "source"),
 			HandleState:    handleState,
 			EventType:      evt.Type,
@@ -517,9 +523,35 @@ func latestProcessOwnerClue(eventsList []events.Event) (session.ProcessOwnerClue
 			StartedAt:      eventString(evt.Data, "started_at"),
 			ReleasedAt:     eventString(evt.Data, "released_at"),
 			LastEventAt:    evt.Time,
-		}, true
+		}
+		if err := validateProcessOwnerClue(owner); err != nil {
+			return session.ProcessOwnerClue{}, false, err
+		}
+		return owner, true, nil
 	}
-	return session.ProcessOwnerClue{}, false
+	return session.ProcessOwnerClue{}, false, nil
+}
+
+func validateProcessOwnerClue(owner session.ProcessOwnerClue) error {
+	if owner.PID < 0 {
+		return errors.New("recent owner pid must be non-negative")
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "started_at", value: owner.StartedAt},
+		{name: "released_at", value: owner.ReleasedAt},
+		{name: "last_event_at", value: owner.LastEventAt},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, field.value); err != nil {
+			return fmt.Errorf("recent owner %s must be RFC3339Nano: %w", field.name, err)
+		}
+	}
+	return nil
 }
 
 func eventString(data map[string]any, key string) string {

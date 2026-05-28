@@ -4033,6 +4033,28 @@ func validateLongRunCheckpoint(sessionID string, checkpoint LongRunCheckpoint) e
 		if checkpoint.RecentOwner.PID < 0 {
 			return errors.New("long-run checkpoint recent_owner pid must be non-negative")
 		}
+		if err := validateProcessOwnerClue(*checkpoint.RecentOwner); err != nil {
+			return fmt.Errorf("long-run checkpoint recent_owner: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateProcessOwnerClue(owner ProcessOwnerClue) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "started_at", value: owner.StartedAt},
+		{name: "released_at", value: owner.ReleasedAt},
+		{name: "last_event_at", value: owner.LastEventAt},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, field.value); err != nil {
+			return fmt.Errorf("%s must be RFC3339Nano: %w", field.name, err)
+		}
 	}
 	return nil
 }

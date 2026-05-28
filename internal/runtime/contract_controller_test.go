@@ -1210,6 +1210,30 @@ func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	}
 }
 
+func TestSessionSummaryAndCheckpointRejectMalformedRecentOwnerTimestamps(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	meta.ParentSessionID = "parent-session"
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := store.AppendEvent(meta.ID, events.New(meta.ID, "webconsole.handle.released", "webconsole", map[string]any{
+		"source":           "webconsole",
+		"process_start_id": "123:2026-05-08T00:00:00Z",
+		"pid":              123,
+		"started_at":       "not-a-time",
+		"released_at":      "also-not-a-time",
+	})); err != nil {
+		t.Fatalf("append owner event: %v", err)
+	}
+
+	if err := writeSessionSummary(store, meta.ID); err == nil || !strings.Contains(err.Error(), "started_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed owner started_at error from summary, got %v", err)
+	}
+	if err := writeLongRunCheckpoint(store, meta.ID); err == nil || !strings.Contains(err.Error(), "started_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed owner started_at error from checkpoint, got %v", err)
+	}
+}
+
 func TestCheckpointResumeHintWarnsOnIsolationAndTrustDrift(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.Isolation = &session.IsolationInfo{
