@@ -8160,6 +8160,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-350 and FCA-20260528-351. Those covered doctor semantic validation for `session.json` / `state.json` / `messages.jsonl` and queue job snapshots; this slice covers the remaining doctor core-file gap where malformed `events.jsonl` was not checked at all.
 - Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: include `events.jsonl` in the doctor core file set and validate it through `SessionStore.LoadEvents`, without duplicating event validation rules or changing runtime/Web/TUI event semantics.
 
+### Review 346
+
+- Confirmed FCA-20260528-353 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: session directories and their core facts are local file authority, and doctor must surface unsafe filesystem shapes that the shared store readers reject.
+- Confirmed this is distinct from FCA-20260528-323, FCA-20260528-350, and FCA-20260528-352. Those covered unsafe core files and semantic core/event fact validation; this slice covers the parent directory entry itself, where a symlinked session directory was skipped before any core file validation ran.
+- Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: detect symlink entries directly under the session root, report them as `unsafe_session_dirs`, and include that count in `session.partial_state`, without following the symlink or changing store/list/Web/TUI behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11481,6 +11487,48 @@ Validation:
 - `go test -timeout 120s ./internal/app -run TestDoctorReportsInvalidSessionEventFacts -count=1`: failed before the fix because `session.partial_state` returned `ok` for invalid `events.jsonl`.
 - `go test -timeout 120s ./internal/app -run 'TestDoctorReportsInvalidSessionEventFacts|TestDoctorReportsInvalidSessionCoreFacts|TestDoctorReportsUnsafeSessionCoreFiles|TestDoctorReportsMissingSessionState' -count=1`: passed.
 - `go test -timeout 120s ./internal/app -run 'TestDoctorReports(InvalidSessionEventFacts|InvalidSessionCoreFacts|InvalidQueueJobFacts|UnsafeSessionCoreFiles|MissingSessionState|QueueJobMissingParentSessionRef|QueueLeaseAndMissingSessionRef|BlockedQueueJobMissingSessionRef|DuplicateQueueJobStatus)' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/webconsole ./internal/tui -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/app/doctor_helpers.go internal/app/app_test.go`: passed with no output.
+- `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-353
+
+Slice: `fix(app): report unsafe doctor session dirs`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines session directories and their local files as the authority for session state, and `spec/09-phase-plan.md` includes `doctor` in the Web-first v1 diagnostic validation surface.
+- Shared store file readers reject symlink ancestors, and direct store loads reject symlinked session directories; however, `doctorSessionCoreFileIssues()` iterated `os.ReadDir()` entries and skipped any entry whose `DirEntry.IsDir()` was false.
+- A focused regression created a symlink under the session root pointing at an otherwise valid session directory. Before the fix, `checkSessionPartialState()` returned `Status:"ok"` and no details because the symlink entry was ignored before core file validation.
+
+Impact:
+
+- `go-cli-agent doctor` could report the session root as healthy while direct store reads rejected the same session path as unsafe.
+- Operators using doctor for recovery could miss a symlink escape candidate in the session root and misdiagnose missing sessions or unreadable state as normal absence.
+- This is a read-only diagnostics fix only; it does not follow symlinked session directories, change store/list behavior, add repair semantics, alter Web/TUI state authority, or affect runtime workflow policy.
+
+Changes:
+
+- Added `unsafe_session_dirs` to `session.partial_state` details and counts.
+- Reported symlink entries directly under the session root before checking `DirEntry.IsDir()`.
+- Added focused doctor coverage for a symlinked session directory.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestDoctorReportsUnsafeSessionDirectory -count=1`: failed before the fix because `session.partial_state` returned `ok` for a symlinked session directory.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReportsUnsafeSessionDirectory|TestDoctorReportsUnsafeSessionCoreFiles|TestDoctorReportsInvalidSessionEventFacts|TestDoctorReportsInvalidSessionCoreFacts|TestDoctorReportsMissingSessionState' -count=1`: passed.
 - `go test -timeout 120s ./internal/app -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/webconsole ./internal/tui -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.

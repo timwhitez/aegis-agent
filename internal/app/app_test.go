@@ -1828,6 +1828,44 @@ func TestDoctorReportsUnsafeSessionCoreFiles(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsUnsafeSessionDirectory(t *testing.T) {
+	root := t.TempDir()
+	outsideRoot := t.TempDir()
+	sessionID := "session_symlinked_dir"
+	outsideStore := session.NewStore(outsideRoot)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        "2026-05-28T00:00:00Z",
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := outsideStore.Create(meta, session.State{Status: session.StatusRunning}); err != nil {
+		t.Fatalf("create outside session: %v", err)
+	}
+	if err := os.Symlink(outsideStore.SessionDir(sessionID), filepath.Join(root, sessionID)); err != nil {
+		t.Fatalf("symlink session dir: %v", err)
+	}
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	unsafeDirs, ok := check.Details["unsafe_session_dirs"].([]map[string]any)
+	if !ok || len(unsafeDirs) != 1 {
+		t.Fatalf("expected unsafe session dir, got %#v", check.Details["unsafe_session_dirs"])
+	}
+	if unsafeDirs[0]["session_id"] != sessionID {
+		t.Fatalf("unexpected unsafe session dir detail: %#v", unsafeDirs[0])
+	}
+	if !strings.Contains(fmt.Sprint(unsafeDirs[0]["error"]), "symlink") {
+		t.Fatalf("expected symlink error detail, got %#v", unsafeDirs[0])
+	}
+}
+
 func TestDoctorReportsInvalidSessionCoreFacts(t *testing.T) {
 	root := t.TempDir()
 	sessionDir := filepath.Join(root, "session_invalid_core")
