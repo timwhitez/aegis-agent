@@ -514,6 +514,53 @@ func TestLoadContractAndArtifactTrackerRejectMalformedSnapshots(t *testing.T) {
 	}
 }
 
+func TestSnapshotContractRefreshRejectsMalformedHistory(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := SessionContract{
+		SchemaVersion: 1,
+		ContractID:    "contract_" + meta.ID,
+		Source:        "user_instruction",
+		TrustSource:   "explicit_user",
+		Profile:       "default",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.SaveContract(meta.ID, valid); err != nil {
+		t.Fatalf("save contract: %v", err)
+	}
+	if err := store.AppendContractHistory(meta.ID, valid); err != nil {
+		t.Fatalf("append contract history: %v", err)
+	}
+	malformed := valid
+	malformed.Profile = ""
+	data, err := json.Marshal(malformed)
+	if err != nil {
+		t.Fatalf("marshal malformed history: %v", err)
+	}
+	historyPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "contract-history.jsonl")
+	if err := os.WriteFile(historyPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write malformed history: %v", err)
+	}
+
+	if _, err := store.SnapshotContractRefresh(meta.ID); err == nil || !strings.Contains(err.Error(), "validate contract history snapshot") || !strings.Contains(err.Error(), "contract profile is required") {
+		t.Fatalf("expected malformed contract history snapshot error, got %v", err)
+	}
+}
+
 func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

@@ -481,6 +481,8 @@ func (s *Store) SnapshotContractRefresh(sessionID string) (ContractRefreshSnapsh
 		if !errors.Is(err, fs.ErrNotExist) {
 			return snapshot, fmt.Errorf("load contract history snapshot %s: %w", historyPath, err)
 		}
+	} else if err := validateContractHistory(snapshot.ContractHistory); err != nil {
+		return snapshot, fmt.Errorf("validate contract history snapshot %s: %w", historyPath, err)
 	} else {
 		snapshot.HasContractHistory = true
 	}
@@ -540,19 +542,15 @@ func (s *Store) LoadContractHistory(sessionID string) ([]SessionContract, error)
 	if err != nil {
 		return nil, err
 	}
-	for i, contract := range out {
-		if err := validateSessionContract(contract); err != nil {
-			return nil, fmt.Errorf("validate contract history entry %d: %w", i+1, err)
-		}
+	if err := validateContractHistory(out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
 func (s *Store) writeContractHistoryLocked(path string, contracts []SessionContract) error {
-	for i, contract := range contracts {
-		if err := validateSessionContract(contract); err != nil {
-			return fmt.Errorf("validate contract history entry %d: %w", i+1, err)
-		}
+	if err := validateContractHistory(contracts); err != nil {
+		return err
 	}
 	var data bytes.Buffer
 	enc := json.NewEncoder(&data)
@@ -3284,6 +3282,15 @@ func validateSessionContract(contract SessionContract) error {
 	}
 	if err := validateRequiredArtifacts(contract.RequiredArtifacts); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateContractHistory(contracts []SessionContract) error {
+	for i, contract := range contracts {
+		if err := validateSessionContract(contract); err != nil {
+			return fmt.Errorf("validate contract history entry %d: %w", i+1, err)
+		}
 	}
 	return nil
 }

@@ -7932,6 +7932,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-265. That prior raw-sidecar slice made raw sidecar write failures durably fail the runtime; this slice covers semantically malformed but syntactically valid sidecar snapshots and direct malformed sidecar writes at the store boundary.
 - Confirmed the minimal fix belongs in `SessionStore` provider raw sidecar read/write APIs: validate only the provider-agnostic envelope fields and path turn consistency while leaving provider-native raw item selection and replay policy owned by provider adapters, not Web, CLI, tools, or the store.
 
+### Review 308
+
+- Confirmed FCA-20260528-315 against `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`: `artifacts/contract-history.jsonl` is part of the contract refresh rollback snapshot alongside `contract.json` and `artifact-tracker.json`.
+- Confirmed this is distinct from FCA-20260528-304 and FCA-20260527-182. Those slices validated contract/tracker snapshots and made contract refresh rollback on write/event failures; this slice covers the remaining rollback-snapshot path where syntactically valid but semantically invalid contract history entries were accepted by `SnapshotContractRefresh`.
+- Confirmed the minimal fix belongs in `SessionStore` contract history snapshot validation: reuse the existing contract history entry validator before a refresh can use history as rollback state, without changing contract derivation, artifact tracking, Web state authority, or completion workflow behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -9877,6 +9883,53 @@ Validation:
 - `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
 - `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-315
+
+Slice: `fix(session): validate contract history refresh snapshots`
+
+Finding:
+
+- `SnapshotContractRefresh` reads `contract.json`, `artifact-tracker.json`, and `artifacts/contract-history.jsonl` before runtime contract refresh mutates those files, so failures can roll back to the previous durable facts.
+- The contract and artifact tracker parts of that snapshot were semantically validated, but the contract history part only used `readJSONL`; malformed but syntactically valid history entries could become rollback state.
+- `LoadContractHistory` and `writeContractHistoryLocked` already validated equivalent history entries, so this was a narrow snapshot-boundary drift.
+
+Impact:
+
+- Runtime contract refresh could continue over corrupt `artifacts/contract-history.jsonl`, appending new contract facts while treating the corrupt history as recoverable snapshot state.
+- If a later contract refresh write/event failed, rollback could restore malformed contract history even though ordinary history load paths reject the same entries.
+- This weakened the file-first contract evidence chain used by contract refresh, required-artifact tracking, Web detail, session summaries, checkpoints, and completion diagnostics.
+
+Changes:
+
+- Added a shared `validateContractHistory` helper and routed `LoadContractHistory`, `writeContractHistoryLocked`, and `SnapshotContractRefresh` through it.
+- `SnapshotContractRefresh` now rejects malformed history entries with `validate contract history snapshot` context before any refresh mutation begins.
+- Added focused regressions for the store snapshot boundary and the runtime contract refresh path with corrupt existing contract history.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestSnapshotContractRefreshRejectsMalformedHistory` returned nil for corrupt contract history, and `TestContractRefreshReportsMalformedHistorySnapshot` let runtime contract refresh continue over the same corrupt history.
+- `go test -timeout 120s ./internal/session -run 'TestSnapshotContractRefreshRejectsMalformedHistory|TestLoadContractAndArtifactTrackerRejectMalformedSnapshots' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestContractRefresh(ReportsMalformedHistorySnapshot|ReportsContractEventAppendErrorAndRestoresSnapshot|RestoresPreviousSnapshotOnContractUpdatedEventError|ReportsHistoryAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/runtime/contract_controller_test.go`: passed with no output.
 - `git diff --check`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.

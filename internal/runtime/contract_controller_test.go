@@ -200,6 +200,28 @@ func TestContractRefreshReportsHistoryAppendError(t *testing.T) {
 	}
 }
 
+func TestContractRefreshReportsMalformedHistorySnapshot(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {
+		t.Fatalf("append first message: %v", err)
+	}
+	if err := refreshContractForSession(store, nil, meta); err != nil {
+		t.Fatalf("refresh first contract: %v", err)
+	}
+	historyPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "contract-history.jsonl")
+	if err := os.WriteFile(historyPath, []byte(`{"schema_version":1,"contract_id":"bad","source":"user_instruction","trust_source":"explicit_user","profile":"","created_at":"2026-05-28T00:00:00Z","updated_at":"2026-05-28T00:00:00Z"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write malformed contract history: %v", err)
+	}
+	if err := store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/second.md with updated release notes.")); err != nil {
+		t.Fatalf("append second message: %v", err)
+	}
+
+	err := refreshContractForSession(store, nil, meta)
+	if err == nil || !strings.Contains(err.Error(), "contract history snapshot") || !strings.Contains(err.Error(), "contract profile is required") {
+		t.Fatalf("expected malformed contract history snapshot error, got %v", err)
+	}
+}
+
 func TestCompletionControllerRequiresSessionTouchedArtifact(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
