@@ -222,9 +222,9 @@ function createAppHarnessContext() {
     },
     clearInterval() {},
     renderCurrentSession() {},
-    requestJSON(url) {
+    requestJSON(url, payload) {
       return new Promise((resolve, reject) => {
-        pendingRequests.push({ url, resolve, reject });
+        pendingRequests.push({ url, payload, resolve, reject });
       });
     }
   };
@@ -1227,6 +1227,32 @@ test('start completion does not replace a session selected while launch is pendi
     launchInFlight: false,
     activityTitle: 'Loaded session B'
   });
+});
+
+test('new session start includes role-aware composer fields', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    selectedWorkspaceWorkdir = function() { return ''; };
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = false;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    state.sessionDetail = null;
+    nodes.chatInput.value = 'start an evaluator session';
+    nodes.agentNameInput.value = 'reviewer';
+    nodes.agentRoleSelect.value = 'evaluator';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/start');
+  assert.equal(appContext.pendingRequests[0].payload.payload.agentName, 'reviewer');
+  assert.equal(appContext.pendingRequests[0].payload.payload.agentRole, 'evaluator');
+  appContext.pendingRequests[0].resolve({ session_id: 'session_role_start', status: 'accepted' });
+  await send;
 });
 
 test('start completion does not clear a newer pending launch', async () => {

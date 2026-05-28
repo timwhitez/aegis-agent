@@ -120,6 +120,8 @@ const nodes = {
   goalToggleBtn: document.getElementById('goal-toggle-btn'),
   planToggleBtn: document.getElementById('plan-toggle-btn'),
   goalComposerPanel: document.getElementById('goal-composer-panel'),
+  agentNameInput: document.getElementById('agent-name-input'),
+  agentRoleSelect: document.getElementById('agent-role-select'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
   skillUploadBtn: document.getElementById('skill-upload-btn'),
@@ -1048,6 +1050,7 @@ async function sendMessage() {
       renderCurrentSession();
       return;
     }
+    const agentDraft = collectAgentDraft();
     const launchClientSessionID = state.sessionId;
     try {
       state.launchInFlight = true;
@@ -1059,6 +1062,8 @@ async function sendMessage() {
       queueOverviewRefresh(220);
       const resp = await startSession({
         prompt: text,
+        agentName: agentDraft.agentName || undefined,
+        agentRole: agentDraft.agentRole || undefined,
         workdir: selectedWorkspaceWorkdir(),
         goal: goalDraft || undefined,
         planMode: planDraft || undefined
@@ -1532,6 +1537,13 @@ function collectPlanModeDraft(promptText) {
   return {
     enabled: true,
     objective
+  };
+}
+
+function collectAgentDraft() {
+  return {
+    agentName: String(nodes.agentNameInput?.value || '').trim(),
+    agentRole: String(nodes.agentRoleSelect?.value || '').trim()
   };
 }
 

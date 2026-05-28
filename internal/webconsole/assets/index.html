@@ -93,6 +93,13 @@
                 <i data-lucide="clipboard-list"></i>
                 <span>Plan</span>
               </button>
+              <input class="agent-name-input" id="agent-name-input" type="text" autocomplete="off" placeholder="Agent name" aria-label="Agent name">
+              <select class="agent-role-select" id="agent-role-select" aria-label="Agent role">
+                <option value="">No role</option>
+                <option value="planner">Planner</option>
+                <option value="generator">Generator</option>
+                <option value="evaluator">Evaluator</option>
+              </select>
               <div class="goal-composer-panel" id="goal-composer-panel" hidden></div>
             </div>
             <div class="input-actions">

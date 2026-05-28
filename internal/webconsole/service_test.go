@@ -5298,6 +5298,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "plan-toggle-btn") || !strings.Contains(indexBody, "<span>Plan</span>") {
 		t.Fatalf("expected shell to expose Plan Mode toggle beside Goal, got shell body: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, `id="agent-name-input"`) || !strings.Contains(indexBody, `id="agent-role-select"`) || !strings.Contains(indexBody, `<option value="evaluator">Evaluator</option>`) {
+		t.Fatalf("expected role-aware start form to expose agent_name and agent_role controls, got shell body: %s", indexBody)
+	}
 	if strings.Contains(indexBody, "provider-override-panel") || strings.Contains(indexBody, "session-provider-override") || strings.Contains(indexBody, "session-model-override") || strings.Contains(indexBody, "Advanced provider") {
 		t.Fatalf("expected shell composer to omit per-session provider/model override controls, got shell body: %s", indexBody)
 	}
@@ -5393,6 +5396,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "togglePlanMode") || !strings.Contains(jsBody, "collectPlanModeDraft") || !strings.Contains(jsBody, "handlePlanModeAction") || !strings.Contains(jsBody, "handlePlanInputAction") {
 		t.Fatalf("expected app.js to wire Plan Mode toggle and controls, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "collectAgentDraft") || !strings.Contains(jsBody, "agentName: agentDraft.agentName || undefined") || !strings.Contains(jsBody, "agentRole: agentDraft.agentRole || undefined") {
+		t.Fatalf("expected app.js to pass role-aware start form fields through startSession, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "collectProviderOverride") || strings.Contains(jsBody, "renderProviderOverrideControls") || strings.Contains(jsBody, "provider: providerOverride.provider || undefined") || strings.Contains(jsBody, "model: providerOverride.model || undefined") {
 		t.Fatalf("expected app.js to rely on Settings provider/model instead of composer overrides, got app.js body: %s", jsBody)

@@ -8178,6 +8178,12 @@ Evidence gates:
 - Confirmed this is distinct from the existing role-provider override coverage. Earlier tests covered omitted provider/model using the role override and explicit provider+model fully winning; this slice covers the remaining partial-override gap where a caller supplied only `model` and unintentionally lost the role provider, API provider, and base URL defaults.
 - Confirmed the minimal fix belongs in shared runtime provider/model resolution, because Web mission role plans, direct delegation, and queue jobs all converge on `resolveProviderAndModel`; Web Settings remains only the local config control surface and should not duplicate runtime provider selection logic.
 
+### Review 349
+
+- Confirmed FCA-20260528-356 against `spec/17-web-console.md`: Web-first v1 requires a role-aware start form that can explicitly pass `agent_name` / `agent_role`, while keeping provider/model overrides out of the default composer and leaving provider/model selection to Settings or advanced REST/CLI payloads.
+- Confirmed this is distinct from FCA-20260528-355 and existing backend start coverage. FCA-355 fixed runtime role-provider default selection after a role already reached runtime, and backend tests already proved `/api/sessions/start` can persist agent identity; this slice covers the remaining browser surface where the embedded Session composer had no controls and `sendMessage()` never supplied the already-supported fields.
+- Confirmed the minimal fix belongs in embedded WebConsole assets: add compact `agent_name` / `agent_role` controls to the Session composer and pass them through the existing `api.js` `startSession` wrapper, without adding provider/model advanced controls, queue orchestration, or a separate role workflow.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11640,6 +11646,48 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/runtime/runner.go internal/runtime/delegation_test.go`: passed with no output.
 - `git diff --check -- internal/runtime/runner.go internal/runtime/delegation_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-356
+
+Slice: `fix(webconsole): expose role-aware start controls`
+
+Finding:
+
+- `spec/17-web-console.md` requires the new-session user path to optionally fill `agent_name` / `agent_role`, and its automated test requirements include a role-aware start form that explicitly passes those fields.
+- The backend DTO, `api.js` wrapper, and service tests already supported `agent_name` / `agent_role`, but the embedded Session composer only rendered Goal / Plan controls. `sendMessage()` called `startSession()` with prompt, workdir, goal, and Plan Mode only.
+- A focused embedded-asset regression failed before the fix because `index.html` had no `agent-name-input` / `agent-role-select` controls and `app.js` did not collect or pass role-aware start fields.
+
+Impact:
+
+- Browser users could not start a planner/generator/evaluator session from the default Web-first surface even though the backend and runtime supported explicit role identity.
+- Role provider overrides configured in Settings were effectively inaccessible from the default start path, weakening the role-hint traceability promised by the Web-first console.
+- This is a Web composer wiring fix only; it does not add provider/model advanced controls to the default composer, infer roles from `agent_name`, submit queue jobs, or introduce fixed orchestration.
+
+Changes:
+
+- Added compact optional `Agent name` and `Agent role` controls to the Session composer with planner/generator/evaluator choices.
+- Added `collectAgentDraft()` and passed `agentName` / `agentRole` through the existing `startSession()` wrapper for new-session launches only.
+- Kept provider/model overrides out of the default composer, preserving the Settings-first provider selection constraint.
+- Added renderer coverage proving the new-session start payload includes the role-aware composer fields.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: failed before the fix because the embedded shell had no role-aware start controls and app.js did not pass the fields.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(ServesEmbeddedShellAndAssets|StartSessionPersistsAgentIdentity|StartSessionRejectsUnsupportedAgentRole)' -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 51 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/session ./internal/config -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools ./internal/provider ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `git diff --check -- internal/webconsole/assets/index.html internal/webconsole/assets/app.js internal/webconsole/assets/styles.css internal/webconsole/service_test.go validation/scripts/webconsole_utils_test.mjs docs/full-code-audit-optimization-plan.md`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-339
