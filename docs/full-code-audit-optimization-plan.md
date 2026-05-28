@@ -8352,7 +8352,55 @@ Evidence gates:
 - Confirmed this is a residual command-family gap after FCA-20260529-378. That slice made multi-target `tee` classification complete, but common non-redirect writes such as `cp token.txt .env.local`, `mv token.txt .ssh/id_rsa`, `touch .aws/credentials`, `mkdir -p .kube`, and `install -m 600 token.txt .config/gcloud/...` still returned no `secret_path_write` violation.
 - Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: add a bounded target extractor for common write commands and reuse the existing secret-path helper, without changing shell execution semantics, direct workspace write policy, Web rendering, provider replay, or runtime workflow behavior.
 
+### Review 368
+
+- Confirmed FCA-20260529-380 against the same shell exec-policy boundary as FCA-20260529-379: wrapping a common write command in `env` must not bypass secret-path classification.
+- Confirmed this is a residual wrapper gap after FCA-20260529-379. That slice detects direct `cp` / `mv` / `install` / `touch` / `mkdir` secret writes, but `env cp token.txt .env.local` and `env FOO=bar /bin/cp token.txt .env.local` still returned no `secret_path_write` violation because the command extractor stopped at `env`.
+- Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: peel a bounded `env` wrapper, including assignment arguments and common value-taking options, then reuse the existing common-write target extractor without changing shell execution semantics, direct workspace write policy, Web rendering, provider replay, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260529-380
+
+Slice: `fix(tools): inspect env-wrapped write commands`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` requires shell exec-policy to classify secret path writes, warning by default and blocking when `runtime.exec_policy.mode=deny`.
+- FCA-20260529-379 added common write command detection for direct `cp`, `mv`, `install`, `touch`, and `mkdir` invocations.
+- Focused regressions added `env cp token.txt .env.local` and `env FOO=bar /bin/cp token.txt .env.local`. Before the fix, both returned no `secret_path_write` violation because the detector treated `env` as the command and never inspected the wrapped write command.
+
+Impact:
+
+- A model-visible shell command could use `env` to execute the same secret-path write that deny mode blocks when invoked directly.
+- The issue is limited to shell exec-policy classification. It does not change direct `write_file` / `edit_file` checks, workspace reads, Web Workspace rendering, provider replay, session/report content, or runtime workflow decisions.
+
+Changes:
+
+- Added bounded `env` wrapper peeling before common-write command target extraction.
+- Skips environment assignments and common `env` options with values, then classifies the wrapped command through the existing common-write target parser.
+- Added focused coverage for `env`-wrapped `cp` writes to env secret paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestExecPolicyDetectsSecretPathWriteCommands -count=1`: failed before the fix because `env`-wrapped `cp` writes returned no `secret_path_write` violation.
+- `go test -timeout 120s ./internal/tools -run 'TestExecPolicyDetectsSecretPathWriteCommands|TestExecPolicyAllowsEnvTemplateWriteCommands|TestShellDenyPolicyBlocksSecretPathWriteCommand' -count=1`: passed.
+- `gofmt -l internal/tools/exec_policy.go internal/tools/exec_policy_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-379
 

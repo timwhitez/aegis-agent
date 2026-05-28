@@ -68,6 +68,8 @@ func TestExecPolicyDetectsSecretPathWriteCommands(t *testing.T) {
 		"install -m 600 token.txt .config/gcloud/application_default_credentials.json",
 		"cp --target-directory=.ssh token.txt",
 		"install -d .config/gcloud",
+		"env cp token.txt .env.local",
+		"env FOO=bar /bin/cp token.txt .env.local",
 	} {
 		t.Run(command, func(t *testing.T) {
 			violations := DetectExecPolicyViolations(command)

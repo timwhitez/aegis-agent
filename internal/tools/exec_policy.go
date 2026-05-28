@@ -94,8 +94,10 @@ func execPolicyCommonWriteTargetsSecretPath(command string) bool {
 		if commandIndex >= len(fields) {
 			continue
 		}
-		commandName := filepath.Base(strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`))
-		args := fields[commandIndex+1:]
+		commandName, args := execPolicyCommandAfterEnv(fields[commandIndex:])
+		if commandName == "" {
+			continue
+		}
 		targets := execPolicyCommonWriteTargets(commandName, args)
 		for _, target := range targets {
 			if execPolicyTargetSecretPath(target) {
@@ -104,6 +106,56 @@ func execPolicyCommonWriteTargetsSecretPath(command string) bool {
 		}
 	}
 	return false
+}
+
+func execPolicyCommandAfterEnv(fields []string) (string, []string) {
+	if len(fields) == 0 {
+		return "", nil
+	}
+	commandIndex := 0
+	commandName := filepath.Base(strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`))
+	if commandName != "env" {
+		return commandName, fields[commandIndex+1:]
+	}
+	commandIndex++
+	for commandIndex < len(fields) {
+		field := strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`)
+		if field == "" {
+			commandIndex++
+			continue
+		}
+		if field == "--" {
+			commandIndex++
+			break
+		}
+		if execPolicyLooksLikeEnvAssignment(field) {
+			commandIndex++
+			continue
+		}
+		if strings.HasPrefix(field, "-") && field != "-" {
+			if execPolicyEnvOptionTakesValue(field) && !strings.Contains(field, "=") && commandIndex+1 < len(fields) {
+				commandIndex += 2
+				continue
+			}
+			commandIndex++
+			continue
+		}
+		break
+	}
+	if commandIndex >= len(fields) {
+		return "", nil
+	}
+	commandName = filepath.Base(strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`))
+	return commandName, fields[commandIndex+1:]
+}
+
+func execPolicyEnvOptionTakesValue(option string) bool {
+	switch option {
+	case "-u", "--unset", "-C", "--chdir", "-S", "--split-string":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitExecPolicyCommandSegments(command string) []string {
