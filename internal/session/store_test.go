@@ -1027,6 +1027,15 @@ func TestLoadMessagesRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "arguments must be valid JSON object") {
 		t.Fatalf("expected malformed messages validation error, got %v", err)
 	}
+
+	malformed = NewMessage("user", "bad time")
+	malformed.CreatedAt = "not-a-time"
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write invalid-time messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid message created_at validation error, got %v", err)
+	}
 }
 
 func TestMessageWritesRejectMalformedFacts(t *testing.T) {
@@ -1054,6 +1063,11 @@ func TestMessageWritesRejectMalformedFacts(t *testing.T) {
 	invalidRole := NewMessage("developer", "not a supported role")
 	if err := store.AppendMessage(meta.ID, invalidRole); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "invalid message role") {
 		t.Fatalf("expected invalid role append rejection, got %v", err)
+	}
+	invalidCreatedAt := NewMessage("user", "bad time")
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.AppendMessage(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid created_at append rejection, got %v", err)
 	}
 	emptyTool := NewToolMessage(nil)
 	if err := store.AppendMessage(meta.ID, emptyTool); err == nil || !strings.Contains(err.Error(), "tool message must contain tool_results") {

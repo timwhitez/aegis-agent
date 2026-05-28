@@ -8010,6 +8010,12 @@ Evidence gates:
 - Confirmed this is a document-accuracy follow-up to FCA-20260528-312. That slice documented semantic event-log validation including nonblank timestamps, but the code still accepted non-empty non-RFC3339 `time` strings; this slice narrows the remaining timestamp-shape gap without changing event-type-specific workflow policy.
 - Confirmed the minimal fix belongs in `SessionStore` event validation: parse `Event.Time` as RFC3339Nano on load and append, preserving generic event validation and leaving runtime event production, Web rendering, provider adapters, and tool behavior unchanged.
 
+### Review 321
+
+- Confirmed FCA-20260528-328 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/17-web-console.md`: `messages.jsonl` is the durable provider replay and Web timeline fact source used by runtime continuation, queue/child handoff, session summaries, checkpoints, and Web session detail.
+- Confirmed this is distinct from FCA-20260528-327. That slice hardened `events.jsonl` timestamps; this slice covers the remaining message-log timestamp gap where non-empty non-RFC3339 `created_at` values were accepted on load and append.
+- Confirmed the minimal fix belongs in `SessionStore` message validation: parse `Message.CreatedAt` as RFC3339Nano in the existing generic message validator, without changing provider adapters, runtime message production, Web rendering, or role/tool-call workflow rules.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10467,6 +10473,47 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
 - `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-328
+
+Slice: `fix(session): validate message timestamps`
+
+Finding:
+
+- `validateMessage()` required `Message.CreatedAt` to be non-empty but did not parse it.
+- `LoadMessages()` therefore accepted an existing `messages.jsonl` record with `created_at:"not-a-time"`.
+- `AppendMessage()` could also persist a malformed message timestamp as long as the role-specific message shape and tool-call/tool-result fields were otherwise valid.
+
+Impact:
+
+- `messages.jsonl` is the durable provider replay and conversation fact source for runtime continuation, Web session detail, timeline/message paging, queue/child handoff, session summaries, and long-run checkpoints.
+- Accepting arbitrary timestamp strings let derived views and recovery paths treat malformed chronological message facts as valid message history.
+- This was a store-boundary validation gap only; it did not change provider adapter replay logic, runtime message production, Web rendering, or message role/tool-call workflow rules.
+
+Changes:
+
+- Added RFC3339Nano parsing for message `created_at` during message-log load, append, transcript, and rollback validation paths through the existing generic message validator.
+- Extended message-log store regressions to cover invalid timestamp load and append paths while preserving existing role, tool-message, and tool-call argument validation.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLoadMessagesRejectsMalformedSnapshot` loaded an invalid message timestamp without error, and `TestMessageWritesRejectMalformedFacts` appended one without error.
+- `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-265
 

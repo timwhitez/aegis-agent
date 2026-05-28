@@ -3723,6 +3723,9 @@ func validateMessage(message Message) error {
 	if strings.TrimSpace(message.CreatedAt) == "" {
 		return errors.New("message created_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, message.CreatedAt); err != nil {
+		return fmt.Errorf("message created_at must be RFC3339Nano: %w", err)
+	}
 	switch message.Role {
 	case "user", "system":
 		if strings.TrimSpace(message.Text) == "" {
