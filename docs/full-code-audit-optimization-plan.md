@@ -8130,6 +8130,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-346. That slice required the provider owner to be present; this slice covers the remaining unsupported-owner gap where a nonblank but unknown or whitespace-padded provider owner passed store validation while every adapter replay helper skipped it.
 - Confirmed the minimal fix belongs in shared message validation: require the provider-content owner to be exactly one known adapter family (`openai`, `anthropic`, or `google`), without validating provider-specific block types, signatures, encrypted reasoning payloads, profile/API/model scope policy, Web display behavior, or runtime workflow.
 
+### Review 341
+
+- Confirmed FCA-20260528-348 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/16-terminal-tui.md`, and `spec/17-web-console.md`: the terminal TUI is only an extension/fallback observer, but its snapshot still reads `session.json`, `state.json`, `messages.jsonl`, `events.jsonl`, child sessions, and queue jobs as local file facts.
+- Confirmed this is distinct from the earlier WebConsole and session-summary corrupt snapshot slices. Those fixes made Web detail and list summaries report unreadable optional facts; this slice covers the remaining `experimental tui --once` fallback observer that silently omitted selected-session facts when their source files were corrupt.
+- Confirmed the minimal fix belongs in `internal/tui.BuildSnapshot`: return selected-session fact load errors to the CLI/TUI caller, without creating a second authority, changing store validation, adding workflow orchestration, or making TUI part of the default Web-first surface.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11247,6 +11253,51 @@ Validation:
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-348
+
+Slice: `fix(tui): report selected snapshot load errors`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines `TerminalDashboard` as a file-fact observer, and `spec/16-terminal-tui.md` says the TUI reads `session.json`, `state.json`, `messages.jsonl`, `events.jsonl`, and `_queue/` without introducing another state source.
+- `internal/tui/tui.go` `BuildSnapshot` loaded the selected session's metadata, state, messages, events, children, and parent queue jobs with `if ..., err := ...; err == nil` and silently omitted each panel on any non-nil error.
+- Focused regressions corrupted the selected session's `messages.jsonl`, `events.jsonl`, and parent `_queue/queued/job_1.json`. Before the fix, `BuildSnapshot` returned nil errors and rendered a normal-looking partial snapshot.
+
+Impact:
+
+- `go-cli-agent experimental tui --once` could hide corrupt durable session or queue facts from the CLI fallback observer.
+- Operators using TUI for CI/log sampling or recovery could see missing messages, events, children, or queue rows as an empty/quiet session rather than a local fact-store problem.
+- This is a fallback observability fix only; it does not promote TUI to the default Web-first surface, change store ownership, interpret provider-native replay facts, or add runtime workflow behavior.
+
+Changes:
+
+- Changed `BuildSnapshot` to propagate selected-session `session.json`, `state.json`, `messages.jsonl`, `events.jsonl`, child-session, and queue-job load errors with panel-specific context.
+- Preserved empty-store behavior and normal no-children/no-jobs rendering through the existing store list semantics.
+- Added focused TUI regressions for corrupt selected message/event ledgers and corrupt selected parent queue job facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tui -run 'TestBuildSnapshotReportsSelected(Session|Queue)FactErrors' -count=1`: failed before the fix because corrupt selected messages, events, and queue jobs returned nil errors.
+- `go test -timeout 120s ./internal/tui -run 'TestBuildSnapshotReportsSelected(Session|Queue)FactErrors|TestHandleKeyRefreshKeepsCurrentSelection|TestRunRejectsNonTTY' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestTUISnapshotRendersPanels|TestChildrenCommandReadsChildSessionsAndJobs' -count=1`: passed.
+- `go test -timeout 120s ./internal/tui -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(ClaimNextQueuedJobReportsCorruptQueuedJob|ListJobsReportsCorruptQueueJob|StoreLoadMessages|StoreAppendEventsAppendsBatchAtomically)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/provider ./internal/skills ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/tui/tui.go internal/tui/tui_test.go`: passed with no output.
+- `git diff --check -- internal/tui/tui.go internal/tui/tui_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-339
 

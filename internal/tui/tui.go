@@ -45,24 +45,36 @@ func BuildSnapshot(store *session.Store, selectedID string, limit int) (Snapshot
 	}
 	snapshot.SelectedIndex = index
 	selected := sessions[index]
-	if meta, err := store.LoadMetadata(selected.ID); err == nil {
-		snapshot.Meta = meta
+	meta, err := store.LoadMetadata(selected.ID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("load selected session session.json: %w", err)
 	}
-	if state, err := store.LoadState(selected.ID); err == nil {
-		snapshot.State = state
+	snapshot.Meta = meta
+	state, err := store.LoadState(selected.ID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("load selected session state.json: %w", err)
 	}
-	if messages, err := store.LoadMessages(selected.ID); err == nil {
-		snapshot.Messages = tailMessages(messages, 6)
+	snapshot.State = state
+	messages, err := store.LoadMessages(selected.ID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("load selected session messages.jsonl: %w", err)
 	}
-	if eventsList, err := store.LoadEvents(selected.ID); err == nil {
-		snapshot.Events = tailEvents(eventsList, 8)
+	snapshot.Messages = tailMessages(messages, 6)
+	eventsList, err := store.LoadEvents(selected.ID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("load selected session events.jsonl: %w", err)
 	}
-	if children, err := store.ListChildren(selected.ID, limit); err == nil {
-		snapshot.Children = children
+	snapshot.Events = tailEvents(eventsList, 8)
+	children, err := store.ListChildren(selected.ID, limit)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("load selected session children: %w", err)
 	}
-	if jobs, err := store.ListJobsByParent(selected.ID, limit); err == nil {
-		snapshot.Jobs = jobs
+	snapshot.Children = children
+	jobs, err := store.ListJobsByParent(selected.ID, limit)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("load selected session queue jobs: %w", err)
 	}
+	snapshot.Jobs = jobs
 	return snapshot, nil
 }
 
