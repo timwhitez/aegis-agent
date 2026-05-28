@@ -68,7 +68,6 @@ const state = {
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
-  messagePageRequestSeq: 0,
   loadedAllEarlierMessages: false,
   messageGapAnchorId: '',
   preserveScrollAfterRender: null,
@@ -100,6 +99,10 @@ const overviewViewState = {
 };
 
 const historyViewState = {
+  requestSeq: 0
+};
+
+const messagePagingViewState = {
   requestSeq: 0
 };
 
@@ -2313,14 +2316,13 @@ async function loadEarlierMessages() {
   const sessionID = state.sessionId;
   const fillingGap = Boolean(state.messageGapAnchorId);
   const beforeID = state.messageGapAnchorId || state.oldestMessageId;
-  const requestSeq = state.messagePageRequestSeq + 1;
-  state.messagePageRequestSeq = requestSeq;
+  const requestSeq = ++messagePagingViewState.requestSeq;
   state.loadingEarlier = true;
   renderCurrentSession();
   try {
     const beforeScrollHeight = nodes.chatContainer.scrollHeight;
     const resp = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/messages?before_id=${encodeURIComponent(beforeID)}&limit=40`);
-    if (state.sessionId !== sessionID || state.messagePageRequestSeq !== requestSeq) {
+    if (state.sessionId !== sessionID || messagePagingViewState.requestSeq !== requestSeq) {
       return;
     }
     const olderMessages = maybeArray(resp?.messages);
@@ -2348,7 +2350,7 @@ async function loadEarlierMessages() {
     state.loadingEarlier = false;
     renderCurrentSession();
   } catch (err) {
-    if (state.sessionId !== sessionID || state.messagePageRequestSeq !== requestSeq) {
+    if (state.sessionId !== sessionID || messagePagingViewState.requestSeq !== requestSeq) {
       return;
     }
     console.error('load earlier messages error', err);
@@ -2357,7 +2359,7 @@ async function loadEarlierMessages() {
     showToast(message, 'error');
     renderCurrentSession();
   } finally {
-    if (state.messagePageRequestSeq === requestSeq) {
+    if (messagePagingViewState.requestSeq === requestSeq) {
       state.loadingEarlier = false;
       state.preserveScrollAfterRender = null;
     }

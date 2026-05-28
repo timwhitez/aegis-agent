@@ -19,7 +19,7 @@ Current resource size:
 | --- | ---: |
 | `internal/webconsole/assets/index.html` | 180 |
 | `internal/webconsole/assets/styles.css` | 4,355 |
-| `internal/webconsole/assets/app.js` | 3,048 |
+| `internal/webconsole/assets/app.js` | 3,050 |
 | `internal/webconsole/assets/session-view.js` | 2,297 |
 | `internal/webconsole/assets/utils.js` | 673 |
 | `internal/webconsole/assets/events.js` | 454 |
@@ -27,12 +27,12 @@ Current resource size:
 | `internal/webconsole/assets/api.js` | 193 |
 | `internal/webconsole/assets/workspace-view.js` | 410 |
 | `internal/webconsole/assets/icons.js` | 56 |
-| Total | 12,098 |
+| Total | 12,100 |
 
 Current implemented facts:
 
 - Script loading is still ordered global-script loading in `index.html`; no ES module graph exists yet.
-- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, and History page request sequencing lives in `historyViewState`; selected workspace tree path and the remaining message paging request sequence guard remains in `state`.
+- `app.js` still owns a large global `state` object, but render-only chat diff cache has been moved into `renderState.chatCache`, transient WebSocket / polling / queued-refresh / layout observer handles live in `runtimeHandles`, Settings config request sequencing lives in `settingsViewState`, Workspace navigation/read request sequencing lives in `workspaceViewState`, Skills catalog request sequencing lives in `skillsViewState`, Overview request sequencing lives in `overviewViewState`, History page request sequencing lives in `historyViewState`, and earlier-message paging request sequencing lives in `messagePagingViewState`; selected workspace tree path and durable message paging facts remain in `state`.
 - WebSocket reconnect has exponential backoff with jitter, visibility-state handling, and fallback polling coordination.
 - Polling defaults to 5 seconds and uses a 1.6 second active interval while disconnected, generating, or tracking active descendants.
 - Embedded assets now use ETag validation and gzip negotiation; long immutable hashed asset URLs are not implemented.
@@ -62,6 +62,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Skills catalog request sequencing no longer lives on the main global `state`; it is isolated in `skillsViewState` while preserving stale catalog response suppression.
 - Overview request sequencing no longer lives on the main global `state`; it is isolated in `overviewViewState` while preserving stale and queued overview refresh suppression.
 - History page request sequencing no longer lives on the main global `state`; it is isolated in `historyViewState` while preserving stale and queued history page suppression.
+- Earlier-message paging request sequencing no longer lives on the main global `state`; it is isolated in `messagePagingViewState` while preserving stale page suppression after session switches.
 
 ## Remaining Optimization Backlog
 
@@ -114,7 +115,7 @@ Validation:
 
 ### P1: Render State Isolation
 
-The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and the message paging request sequence guard. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, and History page request sequencing into `historyViewState`.
+The large global `state` object still mixes durable UI state, selected queue job details, workspace selection facts, and durable message paging facts. The render-state isolation slices have moved the chat stream diff cache out of `state` into `renderState.chatCache`, transient WebSocket / polling / refresh / observer handles into `runtimeHandles`, Settings config request sequencing into `settingsViewState`, Workspace request sequencing into `workspaceViewState`, Skills catalog request sequencing into `skillsViewState`, Overview request sequencing into `overviewViewState`, History page request sequencing into `historyViewState`, and earlier-message paging request sequencing into `messagePagingViewState`.
 
 Plan:
 
@@ -131,6 +132,7 @@ Validation:
 - `validation/scripts/webconsole_utils_test.mjs` should assert that Skills catalog request sequencing is not stored on the main `state`, and that stale Skills catalog responses remain ignored.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that Overview request sequencing is not stored on the main `state`, and that stale queued Overview responses remain ignored.
 - `validation/scripts/webconsole_utils_test.mjs` should assert that History page request sequencing is not stored on the main `state`, and that stale queued History page responses remain ignored.
+- `validation/scripts/webconsole_utils_test.mjs` should assert that earlier-message page request sequencing is not stored on the main `state`, and that stale message page responses remain ignored after session switches.
 - Existing stale response tests must continue to pass.
 
 ### P2: Message And Timeline Rendering Scale

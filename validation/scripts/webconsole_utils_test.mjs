@@ -1407,6 +1407,7 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
   await slowLoad;
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasMessagePageRequestSeq: Object.prototype.hasOwnProperty.call(state, 'messagePageRequestSeq'),
     selected: state.sessionId,
     detailID: state.sessionDetail?.metadata?.id,
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id),
@@ -1414,6 +1415,7 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
     oldest: state.oldestMessageId,
     loadingEarlier: state.loadingEarlier
   })`, appContext)), {
+    stateHasMessagePageRequestSeq: false,
     selected: 'session_fast_b',
     detailID: 'session_fast_b',
     messageIDs: ['b1'],

@@ -22396,6 +22396,45 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-115
+
+Slice: `fix(webconsole): isolate message page request guard`
+
+Finding:
+
+- `loadEarlierMessages()` used the main WebConsole `state.messagePageRequestSeq` field as its stale `GET /api/sessions/{id}/messages?before_id=...&limit=40` page response guard.
+- The request sequence is browser request coordination for earlier-message paging, not a durable session message fact, provider replay fact, backend pagination fact, or WebConsole file fact authority. Keeping it on the main `state` contradicted the P1 Render State Isolation plan while leaving the final request-sequence guard coupled to the default app state object.
+- A focused frontend regression strengthened the existing stale earlier-message page test to require that `state` does not acquire `messagePageRequestSeq`. Before the fix, stale page suppression worked, but the assertion failed because `loadEarlierMessages()` stored `messagePageRequestSeq` on `state`.
+
+Changes:
+
+- Added a tiny `messagePagingViewState` object in `app.js` to own earlier-message page request sequencing.
+- Updated `loadEarlierMessages()` success, error, and final loading-state checks to compare against `messagePagingViewState.requestSeq`.
+- Removed `messagePageRequestSeq` from the main `state` object while keeping user-visible paging facts such as `state.loadingEarlier`, `state.hasMoreMessages`, `state.oldestMessageId`, `state.loadedAllEarlierMessages`, `state.messageGapAnchorId`, and `state.preserveScrollAfterRender` unchanged.
+- Extended the stale earlier-message page regression so it proves request sequencing stays out of the main app state while stale page responses remain ignored after session switches.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this message-paging-local guard slice and narrows the remaining request-guard backlog.
+
+Validation:
+
+- `node --test --test-name-pattern "loadEarlierMessages ignores stale page responses after session changes" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `messagePageRequestSeq`.
+- `node --test --test-name-pattern "loadEarlierMessages ignores stale page responses after session changes" validation/scripts/webconsole_utils_test.mjs`: passed after moving the guard into `messagePagingViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-114
 
 Slice: `fix(webconsole): isolate history request guard`
