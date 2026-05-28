@@ -107,7 +107,7 @@ func CheckWorkspaceWriteAllowed(workdir, resolvedPath string) error {
 		return err
 	}
 	displayPath := filepath.ToSlash(rel)
-	if err := checkWorkspaceWriteDisplayPath(displayPath, filepath.Base(resolvedPath)); err != nil {
+	if err := checkWorkspaceWriteDisplayPath(displayPath); err != nil {
 		return err
 	}
 	return checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath)
@@ -125,10 +125,10 @@ func CheckWorkspaceWriteInputAllowed(workdir, inputPath string) error {
 		}
 	}
 	displayPath = filepath.ToSlash(displayPath)
-	return checkWorkspaceWriteDisplayPath(displayPath, pathBaseFromSlash(displayPath))
+	return checkWorkspaceWriteDisplayPath(displayPath)
 }
 
-func checkWorkspaceWriteDisplayPath(displayPath, baseName string) error {
+func checkWorkspaceWriteDisplayPath(displayPath string) error {
 	parts := strings.Split(displayPath, "/")
 	for _, part := range parts {
 		for _, denied := range deniedWorkspaceWriteDirs {
@@ -142,15 +142,21 @@ func checkWorkspaceWriteDisplayPath(displayPath, baseName string) error {
 			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s/'", displayPath, denied)
 		}
 	}
-	for _, denied := range deniedWorkspaceWriteFiles {
-		if strings.EqualFold(baseName, denied) {
-			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, denied)
+	for _, part := range parts {
+		if pattern := deniedWorkspaceWritePathComponentPattern(part); pattern != "" {
+			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, pattern)
 		}
 	}
-	if pattern := deniedWorkspaceWriteFilePattern(baseName); pattern != "" {
-		return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, pattern)
-	}
 	return nil
+}
+
+func deniedWorkspaceWritePathComponentPattern(name string) string {
+	for _, denied := range deniedWorkspaceWriteFiles {
+		if strings.EqualFold(name, denied) {
+			return denied
+		}
+	}
+	return deniedWorkspaceWriteFilePattern(name)
 }
 
 func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) error {
@@ -214,6 +220,10 @@ func deniedWorkspaceWriteFilePattern(name string) string {
 		return ""
 	}
 	switch {
+	case allowedEnvTemplateName(name):
+		return ""
+	case strings.HasPrefix(name, ".env."):
+		return ".env.*"
 	case name == "identity":
 		return "identity"
 	case strings.HasPrefix(name, "id_"):
@@ -240,6 +250,15 @@ func deniedWorkspaceWriteFilePattern(name string) string {
 		return "*.credentials"
 	default:
 		return ""
+	}
+}
+
+func allowedEnvTemplateName(name string) bool {
+	switch name {
+	case ".env.example", ".env.sample", ".env.template":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -286,12 +305,4 @@ func resolveExistingWorkspacePolicyPath(base, rel string) (string, bool, error) 
 
 func sameCleanPath(left, right string) bool {
 	return filepath.Clean(left) == filepath.Clean(right)
-}
-
-func pathBaseFromSlash(path string) string {
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 {
-		return path
-	}
-	return parts[len(parts)-1]
 }

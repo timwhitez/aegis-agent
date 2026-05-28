@@ -39,6 +39,8 @@ func TestExecPolicyDetectsAbsoluteCommandPaths(t *testing.T) {
 func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 	for _, command := range []string{
 		"echo token > .env",
+		"echo token > .env.local",
+		"echo token > .env/token",
 		"printf key > id_ecdsa",
 		"printf key > deploy.pem",
 		"printf key > service_private_key.json",
@@ -52,6 +54,21 @@ func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 			violations := DetectExecPolicyViolations(command)
 			if !hasExecPolicyCategory(violations, "secret_path_write") {
 				t.Fatalf("expected secret path write violation for %q, got %#v", command, violations)
+			}
+		})
+	}
+}
+
+func TestExecPolicyAllowsEnvTemplateWrites(t *testing.T) {
+	for _, command := range []string{
+		"echo token > .env.example",
+		"echo token > .env.sample",
+		"echo token > .env.template",
+	} {
+		t.Run(command, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(command)
+			if hasExecPolicyCategory(violations, "secret_path_write") {
+				t.Fatalf("expected env template write to be allowed for %q, got %#v", command, violations)
 			}
 		})
 	}

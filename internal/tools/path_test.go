@@ -49,6 +49,37 @@ func TestWriteDeniedDotEnv(t *testing.T) {
 	assertWriteDenied(t, ".env", ".env")
 }
 
+func TestWriteDeniedEnvVariantsAndSensitivePathComponents(t *testing.T) {
+	tests := []struct {
+		path    string
+		pattern string
+	}{
+		{path: ".env.local", pattern: ".env.*"},
+		{path: ".env/token", pattern: ".env"},
+		{path: "configs/.env.production/token", pattern: ".env.*"},
+		{path: "credentials/token", pattern: "credentials"},
+		{path: "nested/deploy.pem/token", pattern: "*.pem"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			assertWriteDenied(t, tt.path, tt.pattern)
+		})
+	}
+}
+
+func TestWriteAllowsEnvTemplateFiles(t *testing.T) {
+	for _, path := range []string{
+		".env.example",
+		".env.sample",
+		".env.template",
+		"docs/.env.example",
+	} {
+		t.Run(path, func(t *testing.T) {
+			assertWriteAllowed(t, path)
+		})
+	}
+}
+
 func TestWriteDeniedPrivateKeyAndCredentialFiles(t *testing.T) {
 	tests := []struct {
 		path    string
@@ -243,5 +274,20 @@ func assertWriteDenied(t *testing.T, inputPath, pattern string) {
 	want := "write denied: path '" + filepath.ToSlash(inputPath) + "' matches deny pattern '" + pattern + "'"
 	if err.Error() != want {
 		t.Fatalf("unexpected denial error:\n got: %s\nwant: %s", err.Error(), want)
+	}
+}
+
+func assertWriteAllowed(t *testing.T, inputPath string) {
+	t.Helper()
+	root := t.TempDir()
+	path, err := ResolveWorkspacePath(root, inputPath)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := CheckWorkspaceWriteInputAllowed(root, inputPath); err != nil {
+		t.Fatalf("expected lexical path %s to be allowed: %v", inputPath, err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, path); err != nil {
+		t.Fatalf("expected resolved path %s to be allowed: %v", inputPath, err)
 	}
 }

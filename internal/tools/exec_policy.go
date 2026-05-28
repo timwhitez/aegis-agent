@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -18,6 +19,7 @@ var (
 	privilegeEscalationPattern = regexp.MustCompile(commandNamePrefix + `(sudo|doas|pkexec)(?:"|')?(\s|$)`)
 	rmRfRootPattern            = regexp.MustCompile(commandNamePrefix + `rm(?:"|')?\s+(?:-[^\s;&|]*[rR][^\s;&|]*[fF][^\s;&|]*|-[^\s;&|]*[fF][^\s;&|]*[rR][^\s;&|]*)\s+(?:/|/\*)($|[\s;&|])`)
 	secretPathWritePattern     = regexp.MustCompile(`(?i)(?:^|[\s;&|])(?:\d*>>?|\d*>\|?|tee(?:\s+-a)?)\s*[^\n;&|]*(\.env|\.ssh/[^\s;&|]*|\.aws/credentials|\.azure/[^\s;&|]*|\.oci/[^\s;&|]*|\.config/gcloud/[^\s;&|]*|\.gnupg/[^\s;&|]*|\.kube/config|\.docker/config\.json|identity|id_[^\s;&|]*|[^\s;&|]*private[_-]key[^\s;&|]*|[^\s;&|]*\.(?:pem|key|p12|pfx)|credentials(?:\.[^\s;&|]*)?|[^\s;&|]*(?:_credentials|-credentials)\.json|[^\s;&|]*\.credentials)(?:$|[\s;&|])`)
+	shellWriteTargetPattern    = regexp.MustCompile(`(?i)(?:^|[\s;&|])(?:\d*>>?|\d*>\|?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)|(?:^|[\s;&|])tee(?:\s+-a)?\s+("[^"]+"|'[^']+'|[^\s;&|]+)`)
 	networkEgressPattern       = regexp.MustCompile(commandNamePrefix + `(curl|wget|nc|ncat|telnet|ssh|scp|sftp)(?:"|')?(\s|$)`)
 )
 
@@ -41,7 +43,7 @@ func DetectExecPolicyViolations(command string) []ExecPolicyViolation {
 			Message:  "command appears to recursively delete a root path",
 		})
 	}
-	if secretPathWritePattern.MatchString(trimmed) {
+	if detectSecretPathWrite(trimmed) {
 		violations = append(violations, ExecPolicyViolation{
 			Category: "secret_path_write",
 			Pattern:  "redirect-or-tee secret path",
@@ -56,6 +58,49 @@ func DetectExecPolicyViolations(command string) []ExecPolicyViolation {
 		})
 	}
 	return violations
+}
+
+func detectSecretPathWrite(command string) bool {
+	if secretPathWritePattern.MatchString(command) {
+		return true
+	}
+	for _, match := range shellWriteTargetPattern.FindAllStringSubmatch(command, -1) {
+		for _, target := range match[1:] {
+			if execPolicyTargetSecretPath(target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func execPolicyTargetSecretPath(target string) bool {
+	target = strings.TrimSpace(target)
+	target = strings.Trim(target, `"'`)
+	if target == "" {
+		return false
+	}
+	displayPath := filepath.ToSlash(filepath.Clean(target))
+	parts := strings.Split(displayPath, "/")
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		for _, denied := range deniedWorkspaceWriteDirs {
+			if strings.EqualFold(part, denied) {
+				return true
+			}
+		}
+		if deniedWorkspaceWritePathComponentPattern(part) != "" {
+			return true
+		}
+	}
+	for _, denied := range deniedWorkspaceWriteDirPaths {
+		if displayPathContainsDirPath(parts, denied) {
+			return true
+		}
+	}
+	return false
 }
 
 func effectiveExecPolicyMode(cfg *config.Config) string {

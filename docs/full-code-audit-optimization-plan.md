@@ -8328,7 +8328,57 @@ Evidence gates:
 - Confirmed this is a residual symlink-alias gap after FCA-20260528-374. Direct lexical writes to `deploy.pem` or `credentials.json` were denied, but `checkWorkspaceWriteResolvedAlias` still only rechecked exact root aliases such as `.env`, `id_rsa`, `id_ed25519`, and `credentials`.
 - Confirmed the minimal fix belongs in `internal/tools/path.go`: extend the existing resolved-alias write-policy check to root entries whose names match the already-established private-key / credential-like pattern helper. This avoids changing read access, Web Workspace rendering, shell exec-policy metadata, provider replay, or runtime workflow behavior.
 
+### Review 364
+
+- Confirmed FCA-20260528-376 against the Phase 2 tool path-safety boundary in `spec/09-phase-plan.md`, the tool contract in `spec/04-tools-and-skills.md`, and the repo `AGENTS.md` hard guard for workspace/path safety.
+- Confirmed this is a residual local-tool gap after FCA-20260528-374 and FCA-20260528-375. Direct private-key and credential-like basenames were denied, but `.env.*` secrets other than exact `.env` were not denied, and sensitive file-like names were only checked at the final basename instead of each path component.
+- Confirmed the minimal fix belongs in `internal/tools/path.go` and `internal/tools/exec_policy.go`: reuse the existing deny-name helper for every path component, add `.env.*` with template exceptions, and make shell exec-policy classify redirect/tee writes to those env secret paths without changing read access, Web Workspace rendering, provider replay, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260528-376
+
+Slice: `fix(tools): deny env variant path writes`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines `write_file` / `edit_file` as workspace writes that must pass path-safety checks, and the repo `AGENTS.md` treats workspace/path safety as a hard guard.
+- `internal/tools/path.go` denied only exact `.env` and applied private-key / credential-like filename patterns only to the final basename.
+- Focused regressions proved model-facing writes to `.env.local`, `.env/token`, `configs/.env.production/token`, `credentials/token`, and `nested/deploy.pem/token` were allowed before the fix.
+- `internal/tools/exec_policy.go` also failed to classify shell redirect writes to `.env.local` and `.env/token` as `secret_path_write`.
+
+Impact:
+
+- A model or shell command running inside the workspace could create or overwrite common env secret variants and sensitive path components even though the adjacent WebConsole Workspace browser already treats `.env.*` and credential-like path parts as sensitive.
+- This weakened the consistency of the local write safety boundary. The issue is limited to workspace writes and shell exec-policy metadata; it does not change workspace reads, Web rendering, session/report content, provider replay, or runtime workflow decisions.
+
+Changes:
+
+- Applied exact sensitive names and private-key / credential-like patterns to every path component, not only the final basename.
+- Added `.env.*` deny handling while preserving `.env.example`, `.env.sample`, and `.env.template` as writable template files.
+- Added shell exec-policy target inspection for redirect/tee paths so `.env.local` and `.env/token` are classified as `secret_path_write`.
+- Added focused regression coverage for denied env variants, denied sensitive path components, allowed env templates, and shell exec-policy env secret detection.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedEnvVariantsAndSensitivePathComponents|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyAllowsEnvTemplateWrites' -count=1`: failed before the fix because env variants and sensitive path components were allowed or not classified.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedEnvVariantsAndSensitivePathComponents|TestWriteAllowsEnvTemplateFiles|TestWriteDeniedPrivateKeyAndCredentialFiles|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyAllowsEnvTemplateWrites' -count=1`: passed.
+- `gofmt -l internal/tools/path.go internal/tools/path_test.go internal/tools/exec_policy.go internal/tools/exec_policy_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-375
 
