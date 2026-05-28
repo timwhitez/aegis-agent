@@ -58,9 +58,6 @@ const state = {
   lastInputWasEmpty: true,
   showHelp: false,
   needsOverviewRefresh: false,
-  todoFloatExpanded: true,
-  fileChangesExpanded: true,
-  subAgentExpanded: true,
   planInputSelections: {},
   hasMoreMessages: false,
   oldestMessageId: '',
@@ -114,6 +111,22 @@ const toastViewState = {
 const stopActionViewState = {
   sessionIds: new Set()
 };
+
+const floatingPanelViewState = {
+  todo: true,
+  files: true,
+  subAgents: true
+};
+
+function isFloatingPanelExpanded(panel) {
+  return floatingPanelViewState[panel] !== false;
+}
+
+function setFloatingPanelExpanded(panel, expanded) {
+  if (Object.prototype.hasOwnProperty.call(floatingPanelViewState, panel)) {
+    floatingPanelViewState[panel] = expanded !== false;
+  }
+}
 
 function createEmptyChatRenderCache() {
   return {
@@ -766,7 +779,7 @@ function setupEventListeners() {
 
     const todoFloatToggle = event.target.closest('[data-todo-float-toggle]');
     if (todoFloatToggle) {
-      state.todoFloatExpanded = !state.todoFloatExpanded;
+      setFloatingPanelExpanded('todo', !isFloatingPanelExpanded('todo'));
       persistUIState();
       invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
@@ -775,7 +788,7 @@ function setupEventListeners() {
 
     const filesFloatToggle = event.target.closest('[data-files-float-toggle]');
     if (filesFloatToggle) {
-      state.fileChangesExpanded = !state.fileChangesExpanded;
+      setFloatingPanelExpanded('files', !isFloatingPanelExpanded('files'));
       persistUIState();
       invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
@@ -784,7 +797,7 @@ function setupEventListeners() {
 
     const subAgentToggle = event.target.closest('[data-sub-agent-toggle]');
     if (subAgentToggle) {
-      state.subAgentExpanded = !state.subAgentExpanded;
+      setFloatingPanelExpanded('subAgents', !isFloatingPanelExpanded('subAgents'));
       persistUIState();
       invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
@@ -2806,9 +2819,9 @@ function persistUIState() {
       currentView: state.currentView,
       historyPage: state.historyPage,
       selectedSessionId,
-      todoFloatExpanded: state.todoFloatExpanded,
-      fileChangesExpanded: state.fileChangesExpanded,
-      subAgentExpanded: state.subAgentExpanded
+      todoFloatExpanded: isFloatingPanelExpanded('todo'),
+      fileChangesExpanded: isFloatingPanelExpanded('files'),
+      subAgentExpanded: isFloatingPanelExpanded('subAgents')
     }));
   } catch {
     // Ignore storage failures and continue with in-memory state.
@@ -2830,13 +2843,13 @@ function restoreUIState() {
     state.sessionBacked = true;
   }
   if (typeof persisted.todoFloatExpanded === 'boolean') {
-    state.todoFloatExpanded = persisted.todoFloatExpanded;
+    setFloatingPanelExpanded('todo', persisted.todoFloatExpanded);
   }
   if (typeof persisted.fileChangesExpanded === 'boolean') {
-    state.fileChangesExpanded = persisted.fileChangesExpanded;
+    setFloatingPanelExpanded('files', persisted.fileChangesExpanded);
   }
   if (typeof persisted.subAgentExpanded === 'boolean') {
-    state.subAgentExpanded = persisted.subAgentExpanded;
+    setFloatingPanelExpanded('subAgents', persisted.subAgentExpanded);
   }
   applyViewVisibility(state.currentView);
 }

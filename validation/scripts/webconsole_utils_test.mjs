@@ -96,6 +96,9 @@ vm.runInContext(`
   function isStoppingSession(sessionID) {
     return stopActionViewState.sessionIds.has(sessionID);
   }
+  function isFloatingPanelExpanded() {
+    return true;
+  }
   function collectRecentToolEntries() {
     return [];
   }
@@ -542,6 +545,81 @@ test('history parent expansion is isolated from durable app state', () => {
   assert.equal(result.stateHasExpandedHistoryParents, false);
   assert.equal(result.isExpanded, true);
   assert.equal(result.childVisible, true);
+});
+
+test('floating panel expansion preferences are isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(`
+    window.localStorage = {
+      stored: '',
+      key: '',
+      getItem(key) {
+        return this.stored || null;
+      },
+      setItem(key, value) {
+        this.key = key;
+        this.stored = value;
+      },
+      removeItem() {
+        this.stored = '';
+      }
+    };
+  `, appContext);
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    const stateKeys = [
+      'todoFloatExpanded',
+      'fileChangesExpanded',
+      'subAgentExpanded'
+    ];
+    setFloatingPanelExpanded('todo', false);
+    setFloatingPanelExpanded('files', false);
+    setFloatingPanelExpanded('subAgents', true);
+    persistUIState();
+    const stored = JSON.parse(window.localStorage.stored);
+    window.localStorage.stored = JSON.stringify({
+      currentView: 'chat',
+      historyPage: 2,
+      todoFloatExpanded: true,
+      fileChangesExpanded: false,
+      subAgentExpanded: false
+    });
+    restoreUIState();
+    const restored = {
+      todo: isFloatingPanelExpanded('todo'),
+      files: isFloatingPanelExpanded('files'),
+      subAgents: isFloatingPanelExpanded('subAgents')
+    };
+    state.sessionDetail = {
+      task_board: {
+        todo: [{ content: 'Review docs', status: 'pending' }],
+        tasks: []
+      }
+    };
+    const expandedTodo = renderTodoFloat();
+    setFloatingPanelExpanded('todo', false);
+    const collapsedTodo = renderTodoFloat();
+    return {
+      stateOwnedKeys: stateKeys.filter((key) => Object.prototype.hasOwnProperty.call(state, key)),
+      stored,
+      restored,
+      expandedTodoHasBody: expandedTodo.includes('tf-body'),
+      collapsedTodoHasBody: collapsedTodo.includes('tf-body')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result.stateOwnedKeys), []);
+  assert.equal(result.stored.todoFloatExpanded, false);
+  assert.equal(result.stored.fileChangesExpanded, false);
+  assert.equal(result.stored.subAgentExpanded, true);
+  assert.deepEqual(sameRealm(result.restored), {
+    todo: true,
+    files: false,
+    subAgents: false
+  });
+  assert.equal(result.expandedTodoHasBody, true);
+  assert.equal(result.collapsedTodoHasBody, false);
 });
 
 test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {

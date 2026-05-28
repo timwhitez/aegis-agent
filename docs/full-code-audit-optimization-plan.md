@@ -8490,7 +8490,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-114. That slice moved History API request sequencing into `historyViewState`; this residual issue was only the parent-row expansion set used by `renderHistory()` and the `[data-history-toggle-children]` click handler.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move parent-row expansion ids into a tiny `historyExpansionViewState`, keep history data/page facts in `state`, and preserve expanded parent/child rendering without changing `/api/history`, pagination, deletion, or session open behavior.
 
+### Review 391
+
+- Confirmed FCA-20260529-119 against `spec/17-web-console.md`'s local WebConsole tracker surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: todo/task, file-change, and sub-agent floating panel expansion flags are browser display preferences, not durable task state, message facts, queue facts, provider replay facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-108 and FCA-20260529-118. Those slices moved chat render diff cache and Sessions parent-row expansion ids; this residual issue was only the three tracker floating panel expanded/collapsed preferences that `renderTodoFloat()`, `renderFileChangesFloat()`, and `renderSubAgentFloat()` read through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move the panel preferences into a tiny `floatingPanelViewState`, expose helper reads for renderers, keep existing localStorage key names for compatibility, and preserve expanded/collapsed rendering without changing todo/task, file-change, child, or queue source facts.
+
 ## Update Log
+
+### FCA-20260529-119
+
+Slice: `fix(webconsole): isolate floating panel preferences`
+
+Finding:
+
+- The WebConsole's main `state` object still stored `todoFloatExpanded`, `fileChangesExpanded`, and `subAgentExpanded`.
+- These booleans only control whether already-rendered local tracker panels are expanded in the current browser view. They are not durable todo/task graph facts, file-change facts, child/queue facts, provider replay facts, or WebConsole file-fact authority.
+- Source evidence showed `renderTodoFloat()`, `renderFileChangesFloat()`, and `renderSubAgentFloat()` reading those browser preferences through the main app state while `persistUIState()` wrote them to localStorage. That kept local view preferences coupled to the state object that also carries real session/detail/history facts.
+
+Changes:
+
+- Added a tiny `floatingPanelViewState` with `isFloatingPanelExpanded()` / `setFloatingPanelExpanded()` helpers.
+- Updated floating panel toggle handlers to mutate `floatingPanelViewState` and preserve existing render invalidation and localStorage persistence.
+- Updated `persistUIState()` / `restoreUIState()` to keep the existing `todoFloatExpanded`, `fileChangesExpanded`, and `subAgentExpanded` localStorage keys while no longer storing those booleans on the main `state`.
+- Updated `renderTodoFloat()`, `renderFileChangesFloat()`, and `renderSubAgentFloat()` to read expansion state through `isFloatingPanelExpanded()`.
+- Added a frontend regression proving the three preferences are absent from `state`, localStorage save/restore remains compatible, and expanded/collapsed todo rendering still works.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this floating-panel-local preference slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "floating panel expansion preferences are isolated" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 72/72 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-118
 
