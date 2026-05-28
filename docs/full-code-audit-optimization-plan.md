@@ -7866,6 +7866,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-302. Todo/task facts now reject invalid snapshots on read, but feature-list reads still trusted malformed existing `feature_list.json` files even though `SaveFeatureList` and `feature_list_create` rejected equivalent malformed data.
 - Confirmed the minimal fix belongs in `LoadFeatureList`: reuse the existing `validateFeatureList` helper after decode and report semantic corruption as `validate feature_list.json`, preserving missing-file, symlink, and JSON parse behavior.
 
+### Review 297
+
+- Confirmed FCA-20260528-304 against `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`: `contract.json` and `artifact-tracker.json` are durable completion-control facts for explicit required artifacts.
+- Confirmed this is a new fact-source validation gap, distinct from JSON corruption tests. Existing tests covered unreadable or non-JSON contract/tracker files, but semantically malformed snapshots with relative required-artifact paths could still load and drive artifact status refresh, Web detail, summaries, checkpoints, and completion gates.
+- Confirmed the minimal fix belongs in the session store: validate contract identity/source/trust/profile and validate required artifact paths on load/save/history/snapshot paths, while preserving generated absolute-path contracts and not adding workflow orchestration.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7927,6 +7933,51 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-304
+
+Slice: `fix(session): validate contract artifact facts`
+
+Finding:
+
+- `LoadContract` and `LoadArtifactTracker` decoded `contract.json` and `artifact-tracker.json` without semantic validation.
+- `SaveContract`, `AppendContractHistory`, `SaveArtifactTracker`, and contract refresh snapshots likewise accepted malformed contract/tracker facts.
+- Semantically malformed required artifacts, including relative or duplicate paths, could become durable completion-control state even though runtime-generated contracts use resolved absolute workspace paths.
+
+Impact:
+
+- Required-artifact completion gates, artifact status refresh, Web session detail, session summaries, long-run checkpoints, checkpoint resume hints, and contract refresh rollback snapshots could consume invalid contract/tracker facts after restart or external modification.
+- Malformed artifact paths could make completion decisions operate on ambiguous paths instead of the explicit workspace-resolved artifacts requested by the user.
+
+Changes:
+
+- Added session-store validation for contract ID/source/trust/profile and required artifact path shape.
+- Required artifact paths must be nonblank, whitespace-normalized, absolute, clean, and unique within a snapshot.
+- Routed `LoadContract`, `SaveContract`, `AppendContractHistory`, contract refresh snapshots, contract history restore/write, `LoadArtifactTracker`, and `SaveArtifactTracker` through the validators.
+- Added a focused store regression proving malformed loaded `contract.json` and `artifact-tracker.json` snapshots are rejected.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadContractAndArtifactTrackerRejectMalformedSnapshots -count=1`: failed before the fix because relative required-artifact paths loaded successfully from both snapshots.
+- `go test -timeout 120s ./internal/session -run 'TestLoadContractAndArtifactTrackerRejectMalformedSnapshots|TestStoreFeatureListRejectsSymlink|TestStoreRejectsPathLikeRecordIDs' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-303
 

@@ -385,6 +385,65 @@ func TestLoadFeatureListRejectsMalformedSnapshot(t *testing.T) {
 	}
 }
 
+func TestLoadContractAndArtifactTrackerRejectMalformedSnapshots(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	contractPath := filepath.Join(store.SessionDir(meta.ID), "contract.json")
+	contract := SessionContract{
+		SchemaVersion: 1,
+		ContractID:    "contract_" + meta.ID,
+		Source:        "user_instruction",
+		TrustSource:   "explicit_user",
+		Profile:       "default",
+		RequiredArtifacts: []RequiredArtifact{{
+			Path:     "reports/final.md",
+			Required: true,
+		}},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatalf("marshal contract: %v", err)
+	}
+	if err := os.WriteFile(contractPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed contract: %v", err)
+	}
+
+	if _, err := store.LoadContract(meta.ID); err == nil || !strings.Contains(err.Error(), "validate contract.json") || !strings.Contains(err.Error(), "absolute path") {
+		t.Fatalf("expected malformed contract error, got %v", err)
+	}
+
+	artifactTrackerPath := filepath.Join(store.SessionDir(meta.ID), "artifact-tracker.json")
+	tracker := []RequiredArtifact{{
+		Path:     "reports/final.md",
+		Required: true,
+	}}
+	data, err = json.Marshal(tracker)
+	if err != nil {
+		t.Fatalf("marshal artifact tracker: %v", err)
+	}
+	if err := os.WriteFile(artifactTrackerPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed artifact tracker: %v", err)
+	}
+	if _, err := store.LoadArtifactTracker(meta.ID); err == nil || !strings.Contains(err.Error(), "validate artifact-tracker.json") || !strings.Contains(err.Error(), "absolute path") {
+		t.Fatalf("expected malformed artifact tracker error, got %v", err)
+	}
+}
+
 func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

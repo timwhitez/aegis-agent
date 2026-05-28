@@ -345,11 +345,19 @@ func (s *Store) LoadContract(sessionID string) (SessionContract, error) {
 	if err != nil {
 		return contract, err
 	}
-	err = readJSONFile(path, &contract)
-	return contract, err
+	if err := readJSONFile(path, &contract); err != nil {
+		return contract, err
+	}
+	if err := validateSessionContract(contract); err != nil {
+		return contract, fmt.Errorf("validate contract.json: %w", err)
+	}
+	return contract, nil
 }
 
 func (s *Store) SaveContract(sessionID string, contract SessionContract) error {
+	if err := validateSessionContract(contract); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "contract.json")
@@ -360,6 +368,9 @@ func (s *Store) SaveContract(sessionID string, contract SessionContract) error {
 }
 
 func (s *Store) AppendContractHistory(sessionID string, contract SessionContract) error {
+	if err := validateSessionContract(contract); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "artifacts", "contract-history.jsonl")
@@ -402,6 +413,8 @@ func (s *Store) SnapshotContractRefresh(sessionID string) (ContractRefreshSnapsh
 		if !errors.Is(err, fs.ErrNotExist) {
 			return snapshot, fmt.Errorf("load contract snapshot %s: %w", contractPath, err)
 		}
+	} else if err := validateSessionContract(snapshot.Contract); err != nil {
+		return snapshot, fmt.Errorf("validate contract snapshot %s: %w", contractPath, err)
 	} else {
 		snapshot.HasContract = true
 	}
@@ -409,6 +422,8 @@ func (s *Store) SnapshotContractRefresh(sessionID string) (ContractRefreshSnapsh
 		if !errors.Is(err, fs.ErrNotExist) {
 			return snapshot, fmt.Errorf("load artifact tracker snapshot %s: %w", trackerPath, err)
 		}
+	} else if err := validateRequiredArtifacts(snapshot.ArtifactTracker); err != nil {
+		return snapshot, fmt.Errorf("validate artifact tracker snapshot %s: %w", trackerPath, err)
 	} else {
 		snapshot.HasArtifactTracker = true
 	}
@@ -472,10 +487,23 @@ func (s *Store) LoadContractHistory(sessionID string) ([]SessionContract, error)
 	if errors.Is(err, os.ErrNotExist) {
 		return []SessionContract{}, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	for i, contract := range out {
+		if err := validateSessionContract(contract); err != nil {
+			return nil, fmt.Errorf("validate contract history entry %d: %w", i+1, err)
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) writeContractHistoryLocked(path string, contracts []SessionContract) error {
+	for i, contract := range contracts {
+		if err := validateSessionContract(contract); err != nil {
+			return fmt.Errorf("validate contract history entry %d: %w", i+1, err)
+		}
+	}
 	var data bytes.Buffer
 	enc := json.NewEncoder(&data)
 	for _, contract := range contracts {
@@ -499,10 +527,19 @@ func (s *Store) LoadArtifactTracker(sessionID string) ([]RequiredArtifact, error
 	if errors.Is(err, os.ErrNotExist) {
 		return []RequiredArtifact{}, nil
 	}
-	return artifacts, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRequiredArtifacts(artifacts); err != nil {
+		return nil, fmt.Errorf("validate artifact-tracker.json: %w", err)
+	}
+	return artifacts, nil
 }
 
 func (s *Store) SaveArtifactTracker(sessionID string, artifacts []RequiredArtifact) error {
+	if err := validateRequiredArtifacts(artifacts); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "artifact-tracker.json")
@@ -2854,6 +2891,54 @@ func validateFeatureList(featureList FeatureList) error {
 		if feature.Passes < 0 {
 			return fmt.Errorf("feature %d passes must be non-negative", position)
 		}
+	}
+	return nil
+}
+
+func validateSessionContract(contract SessionContract) error {
+	if contract.ContractID == "" {
+		return errors.New("contract id is required")
+	}
+	if strings.TrimSpace(contract.ContractID) != contract.ContractID {
+		return fmt.Errorf("invalid contract id %q: leading or trailing whitespace is not allowed", contract.ContractID)
+	}
+	if strings.TrimSpace(contract.Source) == "" {
+		return errors.New("contract source is required")
+	}
+	if strings.TrimSpace(contract.TrustSource) == "" {
+		return errors.New("contract trust_source is required")
+	}
+	if strings.TrimSpace(contract.Profile) == "" {
+		return errors.New("contract profile is required")
+	}
+	if err := validateRequiredArtifacts(contract.RequiredArtifacts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRequiredArtifacts(artifacts []RequiredArtifact) error {
+	seen := map[string]struct{}{}
+	for i, artifact := range artifacts {
+		position := i + 1
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			return fmt.Errorf("required artifact %d path is required", position)
+		}
+		if path != artifact.Path {
+			return fmt.Errorf("invalid required artifact %d path %q: leading or trailing whitespace is not allowed", position, artifact.Path)
+		}
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("invalid required artifact %d path %q: absolute path is required", position, artifact.Path)
+		}
+		cleaned := filepath.Clean(path)
+		if cleaned != path {
+			return fmt.Errorf("invalid required artifact %d path %q: path must be clean", position, artifact.Path)
+		}
+		if _, exists := seen[cleaned]; exists {
+			return fmt.Errorf("duplicate required artifact path: %s", cleaned)
+		}
+		seen[cleaned] = struct{}{}
 	}
 	return nil
 }
