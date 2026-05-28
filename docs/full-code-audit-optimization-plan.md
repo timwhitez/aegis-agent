@@ -8448,7 +8448,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-392, FCA-20260529-393, and FCA-20260529-394. Those slices covered WebConsole API metadata, Skills discovery, and worker-count validation after the service path was otherwise viable. The residual issue was the CLI startup path itself: `webCommand` ignored `os.Getwd()` failures before config load and WebConsole construction.
 - Confirmed the minimal fix belongs in `internal/app/web_cmd.go`: return the `os.Getwd()` error before loading config or creating the service, matching the existing `run` / `exec` command behavior and preserving all successful startup behavior.
 
+### Review 384
+
+- Confirmed FCA-20260529-396 against `spec/09-phase-plan.md` Phase 10 and `AGENTS.md`'s default `init/run/exec/...` CLI fallback path: `go-cli-agent init` is a repo-writing bootstrap command, so it must not write partial config/assets when the invocation cwd cannot be resolved.
+- Confirmed this is distinct from FCA-20260529-395. That slice covered the default WebConsole service startup path before config load; this residual issue is the init bootstrap path, where an absolute `--config` could still be written before later cwd-derived `.env.example`, `workspace`, skill, or hook writes failed.
+- Confirmed the minimal fix belongs in `internal/app/app.go` `runInit`: return `os.Getwd()` errors immediately after flag parsing, before any config serialization or filesystem writes.
+
 ## Update Log
+
+### FCA-20260529-396
+
+Slice: `fix(init): fail fast without cwd`
+
+Finding:
+
+- `spec/09-phase-plan.md` keeps `init` in the Phase 10 CLI fallback surface, and `AGENTS.md` lists `init` in the current default main path.
+- `internal/app/app.go` `runInit()` used `cwd, _ := os.Getwd()` and then used `cwd` to derive the default config path, `.env.example`, `workspace`, local skill example, and hook asset paths.
+- With an unresolvable current directory and an absolute `--config`, `runInit()` could write the config file first and only fail later while writing cwd-derived assets.
+- A focused CLI regression deleted the invocation cwd and ran `go-cli-agent init --force --config <absolute path> --example-hook=false`. Before the fix, the command failed but left the config file behind.
+
+Impact:
+
+- Operators could be left with a partially initialized checkout/config state even though the init command failed.
+- The generated config could point at relative session/skill defaults that were computed from an invalid cwd context.
+- This weakened bootstrap recovery diagnostics and violated the expectation that local setup commands either complete their file set or fail before writing.
+
+Changes:
+
+- Updated `runInit()` to return `os.Getwd()` errors before building the config or writing any files.
+- Added `TestInitReportsMissingCurrentDirectoryBeforeWritingConfig` to prove the command reports the missing cwd and leaves the explicit config path untouched.
+- Preserved existing successful init behavior and mounted-workspace session-dir fallback logic.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestInitReportsMissingCurrentDirectoryBeforeWritingConfig -count=1`: failed before the fix because the explicit config file was written.
+- `go test -timeout 120s ./internal/app -run 'TestInitReportsMissingCurrentDirectoryBeforeWritingConfig|TestInitGeneratesConfigSkillAndHookAssets|TestDefaultInitSessionDir' -count=1`: passed after the fix.
 
 ### FCA-20260529-395
 

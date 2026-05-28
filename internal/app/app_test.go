@@ -2209,6 +2209,35 @@ func TestInitGeneratesConfigSkillAndHookAssets(t *testing.T) {
 	}
 }
 
+func TestInitReportsMissingCurrentDirectoryBeforeWritingConfig(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	missingWD := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.Chdir(missingWD); err != nil {
+		t.Fatalf("chdir missing cwd seed: %v", err)
+	}
+	if err := os.Remove(missingWD); err != nil {
+		_ = os.Chdir(originalWD)
+		t.Fatalf("remove cwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run(context.Background(), []string{"init", "--force", "--config", configPath, "--example-hook=false"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "getwd") {
+		t.Fatalf("expected missing current directory error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if _, statErr := os.Stat(configPath); !os.IsNotExist(statErr) {
+		t.Fatalf("init must not write config after missing cwd, stat err=%v stdout=%s stderr=%s", statErr, stdout.String(), stderr.String())
+	}
+}
+
 func TestDefaultInitSessionDirUsesHomeFallbackForMountedWorkspace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

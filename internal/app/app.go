@@ -1858,7 +1858,10 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	cfg := config.Default()
 	reader := bufio.NewReader(os.Stdin)
 	if term.IsTerminal(int(os.Stdin.Fd())) {
