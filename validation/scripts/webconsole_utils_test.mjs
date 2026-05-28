@@ -737,6 +737,25 @@ test('flow lane renders the latest compact timeline events from newest-first det
   }
 });
 
+test('timeline inspector renders detail timeline entries chronologically', () => {
+  const previousRenderTimelineItem = context.renderTimelineItem;
+  context.renderTimelineItem = (item) => `<span data-event="${item.event_id}">${item.event_id}</span>`;
+  try {
+    const html = vm.runInContext(`(() => renderTimelinePanel({
+      timeline: [
+        { kind: 'event', event_type: 'tool.after', event_id: 'evt_newest', time: '2026-05-29T00:00:03Z' },
+        { kind: 'event', event_type: 'provider.call', event_id: 'evt_middle', time: '2026-05-29T00:00:02Z' },
+        { kind: 'event', event_type: 'session.started', event_id: 'evt_oldest', time: '2026-05-29T00:00:01Z' }
+      ]
+    }))()`, context);
+
+    assert.ok(html.indexOf('evt_oldest') < html.indexOf('evt_middle'));
+    assert.ok(html.indexOf('evt_middle') < html.indexOf('evt_newest'));
+  } finally {
+    context.renderTimelineItem = previousRenderTimelineItem;
+  }
+});
+
 test('refreshCurrentSession ignores stale session detail responses after selection changes', async () => {
   const appContext = createAppHarnessContext();
   const slowRefresh = vm.runInContext(`

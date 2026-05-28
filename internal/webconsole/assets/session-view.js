@@ -1164,7 +1164,7 @@ function providerAttemptTone(outcome) {
 }
 
 function renderTimelinePanel(detail) {
-  const items = maybeArray(detail.timeline);
+  const items = maybeArray(detail.timeline).slice().reverse();
   if (!items.length) {
     return '<div class="empty-panel">No timeline entries yet.</div>';
   }
