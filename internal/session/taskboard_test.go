@@ -297,6 +297,36 @@ func TestSaveTodoRejectsInvalidItems(t *testing.T) {
 	}
 }
 
+func TestLoadTodoRejectsMalformedSnapshot(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	todoPath := filepath.Join(store.SessionDir(meta.ID), "todo.json")
+	body := []byte(`[
+  {"content":"first","status":"in_progress","priority":"high"},
+  {"content":"second","status":"in_progress","priority":"medium"}
+]`)
+	if err := os.WriteFile(todoPath, body, 0o600); err != nil {
+		t.Fatalf("write malformed todo: %v", err)
+	}
+
+	if _, err := store.LoadTodo(meta.ID); err == nil || !strings.Contains(err.Error(), "validate todo.json") || !strings.Contains(err.Error(), "only one todo") {
+		t.Fatalf("expected malformed todo snapshot error, got %v", err)
+	}
+}
+
 func TestTaskUpdateRemovesReverseEdges(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -454,6 +484,93 @@ func TestTaskListAndMutationReportCorruptTaskFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(corruptPath); err != nil {
 		t.Fatalf("corrupt task file should remain for recovery, got %v", err)
+	}
+}
+
+func TestListTasksRejectsMalformedTaskSnapshot(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "existing"}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	taskPath := filepath.Join(store.SessionDir(meta.ID), "tasks", "task_0001.json")
+	body := []byte(`{
+  "id":"task_0001",
+  "subject":"existing",
+  "status":"paused",
+  "priority":"medium",
+  "created_at":"2026-05-28T00:00:00Z",
+  "updated_at":"2026-05-28T00:00:00Z"
+}`)
+	if err := os.WriteFile(taskPath, body, 0o600); err != nil {
+		t.Fatalf("write malformed task: %v", err)
+	}
+
+	if _, err := store.ListTasks(meta.ID); err == nil || !strings.Contains(err.Error(), "tasks/task_0001.json") || !strings.Contains(err.Error(), "invalid task status") {
+		t.Fatalf("expected malformed task file error, got %v", err)
+	}
+	if _, err := store.GetTask(meta.ID, "task_0001"); err == nil || !strings.Contains(err.Error(), "validate task") || !strings.Contains(err.Error(), "invalid task status") {
+		t.Fatalf("expected malformed task get error, got %v", err)
+	}
+}
+
+func TestListTasksRejectsInconsistentGraphSnapshot(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	first, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "first"})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if _, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "second", BlockedBy: []string{first.ID}}); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	firstPath := filepath.Join(store.SessionDir(meta.ID), "tasks", first.ID+".json")
+	body := []byte(`{
+  "id":"task_0001",
+  "subject":"first",
+  "status":"pending",
+  "priority":"medium",
+  "created_at":"2026-05-28T00:00:00Z",
+  "updated_at":"2026-05-28T00:00:00Z"
+}`)
+	if err := os.WriteFile(firstPath, body, 0o600); err != nil {
+		t.Fatalf("write inconsistent task: %v", err)
+	}
+
+	if _, err := store.ListTasks(meta.ID); err == nil || !strings.Contains(err.Error(), "validate task graph") || !strings.Contains(err.Error(), "does not include") {
+		t.Fatalf("expected inconsistent task graph error, got %v", err)
+	}
+	if err := store.SaveTasks(meta.ID, []Task{
+		{ID: "task_0001", Subject: "first", Status: "pending", Priority: "medium"},
+		{ID: "task_0002", Subject: "second", Status: "pending", Priority: "medium", BlockedBy: []string{"task_0001"}},
+	}); err == nil || !strings.Contains(err.Error(), "does not include") {
+		t.Fatalf("expected SaveTasks to reject inconsistent graph, got %v", err)
 	}
 }
 

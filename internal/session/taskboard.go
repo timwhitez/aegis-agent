@@ -201,6 +201,55 @@ func findTask(tasks []Task, taskID string) (Task, error) {
 	return Task{}, fmt.Errorf("task not found: %s", taskID)
 }
 
+func validateTask(task Task) error {
+	if err := validateStoreID("task", task.ID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(task.Subject) == "" {
+		return errors.New("task subject is required")
+	}
+	switch task.Status {
+	case "pending", "in_progress", "completed", "cancelled":
+	default:
+		if strings.TrimSpace(task.Status) == "" {
+			return errors.New("task status is required")
+		}
+		return fmt.Errorf("invalid task status %q", task.Status)
+	}
+	switch task.Priority {
+	case "high", "medium", "low":
+	default:
+		if strings.TrimSpace(task.Priority) == "" {
+			return errors.New("task priority is required")
+		}
+		return fmt.Errorf("invalid task priority %q", task.Priority)
+	}
+	return nil
+}
+
+func validateTaskGraph(tasks []Task) error {
+	seen := map[string]struct{}{}
+	for i, task := range tasks {
+		if err := validateTask(task); err != nil {
+			return fmt.Errorf("task %d: %w", i+1, err)
+		}
+		if _, ok := seen[task.ID]; ok {
+			return fmt.Errorf("duplicate task id: %s", task.ID)
+		}
+		seen[task.ID] = struct{}{}
+	}
+	if err := ensureTaskReferences(tasks); err != nil {
+		return err
+	}
+	if err := ensureBidirectionalTaskEdges(tasks); err != nil {
+		return err
+	}
+	if err := ensureAcyclic(tasks); err != nil {
+		return err
+	}
+	return nil
+}
+
 func nextTaskID(tasks []Task) string {
 	maxID := 0
 	for _, task := range tasks {
@@ -259,6 +308,34 @@ func ensureTaskReferences(tasks []Task) error {
 		for _, dependency := range append([]string{}, append(task.BlockedBy, task.Blocks...)...) {
 			if _, ok := index[dependency]; !ok {
 				return fmt.Errorf("unknown task reference: %s", dependency)
+			}
+		}
+	}
+	return nil
+}
+
+func ensureBidirectionalTaskEdges(tasks []Task) error {
+	index := map[string]Task{}
+	for _, task := range tasks {
+		index[task.ID] = task
+	}
+	for _, task := range tasks {
+		for _, dependency := range task.BlockedBy {
+			dependent, ok := index[dependency]
+			if !ok {
+				continue
+			}
+			if !taskStringListContains(dependent.Blocks, task.ID) {
+				return fmt.Errorf("task graph inconsistent: %s.blocked_by includes %s but %s.blocks does not include %s", task.ID, dependency, dependency, task.ID)
+			}
+		}
+		for _, dependentID := range task.Blocks {
+			dependent, ok := index[dependentID]
+			if !ok {
+				continue
+			}
+			if !taskStringListContains(dependent.BlockedBy, task.ID) {
+				return fmt.Errorf("task graph inconsistent: %s.blocks includes %s but %s.blocked_by does not include %s", task.ID, dependentID, dependentID, task.ID)
 			}
 		}
 	}
@@ -336,6 +413,15 @@ func removeStrings(input []string, remove ...string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func taskStringListContains(input []string, target string) bool {
+	for _, item := range input {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueStrings(input []string) []string {

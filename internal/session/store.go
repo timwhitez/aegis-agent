@@ -734,7 +734,13 @@ func (s *Store) LoadTodo(sessionID string) ([]TodoItem, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return []TodoItem{}, nil
 	}
-	return todo, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTodo(todo); err != nil {
+		return nil, fmt.Errorf("validate todo.json: %w", err)
+	}
+	return todo, nil
 }
 
 func (s *Store) SaveTodo(sessionID string, todo []TodoItem) error {
@@ -1273,14 +1279,25 @@ func (s *Store) NextTaskID(sessionID string) (string, error) {
 func (s *Store) SaveTask(sessionID string, task Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := validateStoreID("task", task.ID); err != nil {
+	if err := validateTask(task); err != nil {
 		return err
 	}
-	path, err := s.sessionPath(sessionID, "tasks", task.ID+".json")
+	tasks, err := s.readTasks(sessionID)
 	if err != nil {
 		return err
 	}
-	return s.writeJSONFile(path, task)
+	replaced := false
+	for i := range tasks {
+		if tasks[i].ID == task.ID {
+			tasks[i] = task
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		tasks = append(tasks, task)
+	}
+	return s.saveTasksLocked(sessionID, normalizeTaskGraph(tasks))
 }
 
 func (s *Store) GetTask(sessionID, taskID string) (Task, error) {
@@ -1292,8 +1309,16 @@ func (s *Store) GetTask(sessionID, taskID string) (Task, error) {
 	if err != nil {
 		return task, err
 	}
-	err = readJSONFile(path, &task)
-	return task, err
+	if err := readJSONFile(path, &task); err != nil {
+		return task, err
+	}
+	if task.ID != taskID {
+		return task, fmt.Errorf("validate task: task id mismatch: requested %q, file contains %q", taskID, task.ID)
+	}
+	if err := validateTask(task); err != nil {
+		return task, fmt.Errorf("validate task: %w", err)
+	}
+	return task, nil
 }
 
 func (s *Store) ListTasks(sessionID string) ([]Task, error) {
@@ -1326,10 +1351,7 @@ func (s *Store) MutateTasks(sessionID string, mutate func([]Task) ([]Task, error
 			return err
 		}
 		tasks = normalizeTaskGraph(tasks)
-		if err := ensureTaskReferences(tasks); err != nil {
-			return err
-		}
-		if err := ensureAcyclic(tasks); err != nil {
+		if err := validateTaskGraph(tasks); err != nil {
 			return err
 		}
 		return s.saveTasksLocked(sessionID, tasks)
@@ -1361,15 +1383,24 @@ func (s *Store) readTasks(sessionID string) ([]Task, error) {
 		if err := readJSONFile(filepath.Join(dir, entry.Name()), &task); err != nil {
 			return nil, fmt.Errorf("tasks/%s: %w", entry.Name(), err)
 		}
+		if err := validateTask(task); err != nil {
+			return nil, fmt.Errorf("tasks/%s: validate task: %w", entry.Name(), err)
+		}
 		tasks = append(tasks, task)
 	}
 	sort.Slice(tasks, func(i, j int) bool {
 		return tasks[i].ID < tasks[j].ID
 	})
+	if err := validateTaskGraph(tasks); err != nil {
+		return nil, fmt.Errorf("validate task graph: %w", err)
+	}
 	return tasks, nil
 }
 
 func (s *Store) saveTasksLocked(sessionID string, tasks []Task) error {
+	if err := validateTaskGraph(tasks); err != nil {
+		return err
+	}
 	dir, err := s.sessionPath(sessionID, "tasks")
 	if err != nil {
 		return err

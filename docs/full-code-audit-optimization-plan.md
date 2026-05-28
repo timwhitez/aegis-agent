@@ -7854,6 +7854,12 @@ Evidence gates:
 - Confirmed this is the Goal-side counterpart to FCA-20260528-300, not a new Goal schema change. `SaveGoal` / `MutateGoal` reject malformed structured Goal/Mission facts after FCA-20260528-297, but already-present malformed `goal.json` could still be loaded and trusted.
 - Confirmed the minimal fix belongs in `LoadGoal` and the internal no-lock Goal loader: apply `ValidateGoal` after decoding `goal.json`, preserving missing-file and JSON parse semantics while reporting semantic corruption as `validate goal.json`.
 
+### Review 295
+
+- Confirmed FCA-20260528-302 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, and `spec/12-task-system.md`: `todo.json` and `tasks/` are durable session facts, and PlanningStore is responsible for todo reads/writes, task graph CRUD, dependency validation, and ready-state derivation.
+- Confirmed this is the todo/task counterpart to the Plan Mode and Goal read-side validation slices. `SaveTodo` and task mutation helpers rejected common malformed writes, but already-present malformed snapshots and direct task snapshot saves could still become trusted facts.
+- Confirmed the minimal fix belongs in the session store and task graph validators: validate `todo.json` after decode, validate task files on `GetTask` / `ListTasks`, and enforce task subject/status/priority plus duplicate ID, reference, bidirectional edge, and cycle invariants on task graph writes.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7915,6 +7921,52 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-302
+
+Slice: `fix(session): validate todo and task snapshots`
+
+Finding:
+
+- `LoadTodo` decoded `todo.json` and returned it without running the same todo validation used by `SaveTodo`.
+- `GetTask` and `ListTasks` decoded `tasks/*.json` files without validating task subject/status/priority facts before returning them to tools, runtime summaries, Web task boards, and compaction context.
+- Direct task snapshot writes through `SaveTask` / `SaveTasks` did not centrally enforce complete task graph invariants, including bidirectional `blocked_by` / `blocks` consistency.
+
+Impact:
+
+- Stale, corrupt, or externally modified todo/task facts could be trusted after restart even though tool-level mutations would reject equivalent malformed inputs.
+- WebConsole task views, runtime session summaries, long-run checkpoint context, compaction summaries, task tools, and rollback snapshots could consume invalid task graph state.
+- A persisted one-way dependency edge could make ready/blocked derivation disagree with the durable graph and prevent later task mutations from starting from a coherent fact source.
+
+Changes:
+
+- Routed `LoadTodo` through `validateTodo` after decoding and wrapped semantic errors as `validate todo.json`.
+- Added centralized task and task graph validation for ID, subject, status, priority, duplicate IDs, unknown references, bidirectional dependency edges, and cycles.
+- Routed `GetTask`, `ListTasks`, `SaveTask`, `SaveTasks`, and `MutateTasks` through the centralized task validation path while preserving missing-file/missing-directory behavior and JSON parse diagnostics.
+- Added focused regressions proving malformed loaded todo snapshots, malformed task files, and inconsistent persisted task graph edges are rejected; the inconsistent graph regression also proves direct `SaveTasks` rejects the same bad graph.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadTodoRejectsMalformedSnapshot|TestListTasksRejectsMalformedTaskSnapshot|TestListTasksRejectsInconsistentGraphSnapshot' -count=1`: failed before the fix because malformed todo/task facts and one-way graph edges loaded successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLoadTodoRejectsMalformedSnapshot|TestListTasksRejectsMalformedTaskSnapshot|TestListTasksRejectsInconsistentGraphSnapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/taskboard.go internal/session/taskboard_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-301
 
