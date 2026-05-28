@@ -1569,6 +1569,75 @@ func TestLoadGoalRejectsMalformedStructuredSnapshot(t *testing.T) {
 	}
 }
 
+func TestGoalSnapshotsRejectMalformedTimestamps(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, GoalDraft{
+		Enabled:   true,
+		Objective: "Reject malformed goal timestamps",
+		Source:    GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goalPath := filepath.Join(store.SessionDir(meta.ID), "goal.json")
+
+	invalidCreatedAt := goal
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	data, err := json.Marshal(invalidCreatedAt)
+	if err != nil {
+		t.Fatalf("marshal invalid created_at goal: %v", err)
+	}
+	if err := os.WriteFile(goalPath, data, 0o600); err != nil {
+		t.Fatalf("write invalid created_at goal: %v", err)
+	}
+	if _, err := store.LoadGoal(meta.ID); err == nil || !strings.Contains(err.Error(), "validate goal.json") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed goal created_at load error, got %v", err)
+	}
+
+	invalidUpdatedAt := goal
+	invalidUpdatedAt.UpdatedAt = "not-a-time"
+	data, err = json.Marshal(invalidUpdatedAt)
+	if err != nil {
+		t.Fatalf("marshal invalid updated_at goal: %v", err)
+	}
+	if err := os.WriteFile(goalPath, data, 0o600); err != nil {
+		t.Fatalf("write invalid updated_at goal: %v", err)
+	}
+	if _, err := store.LoadGoal(meta.ID); err == nil || !strings.Contains(err.Error(), "validate goal.json") || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed goal updated_at load error, got %v", err)
+	}
+
+	invalidBudgetAt := goal
+	invalidBudgetAt.BudgetLimitedAt = "not-a-time"
+	data, err = json.Marshal(invalidBudgetAt)
+	if err != nil {
+		t.Fatalf("marshal invalid budget timestamp goal: %v", err)
+	}
+	if err := os.WriteFile(goalPath, data, 0o600); err != nil {
+		t.Fatalf("write invalid budget timestamp goal: %v", err)
+	}
+	if _, err := store.LoadGoal(meta.ID); err == nil || !strings.Contains(err.Error(), "validate goal.json") || !strings.Contains(err.Error(), "budget_limited_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed goal budget timestamp load error, got %v", err)
+	}
+
+	if err := store.SaveGoal(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected SaveGoal to reject invalid created_at, got %v", err)
+	}
+}
+
 func TestStoreListReportsCorruptStateSnapshot(t *testing.T) {
 	store := NewStore(t.TempDir())
 	parentID := "state_snapshot_parent"

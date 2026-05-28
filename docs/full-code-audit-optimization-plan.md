@@ -8064,6 +8064,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-302, FCA-20260528-316, FCA-20260528-317, and FCA-20260528-318. Those slices added generic long-run checkpoint semantic validation and hardened corrupt/unusable compaction artifact inputs; this slice covers the remaining checkpoint timestamp-shape gap where non-empty non-RFC3339 `created_at` values were accepted on load and save.
 - Confirmed the minimal fix belongs in `validateLongRunCheckpoint`: parse `LongRunCheckpoint.CreatedAt` as RFC3339Nano while preserving `SaveLongRunCheckpoint` compatibility for omitted `created_at` through the existing normalize-before-validate path.
 
+### Review 330
+
+- Confirmed FCA-20260528-337 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/11-spec-audit-and-traceability.md`: `goal.json` is the durable current Goal fact source for completion audit, budget wrap-up, runtime prompts, summaries, checkpoints, Web/CLI controls, and recovery.
+- Confirmed this is distinct from FCA-20260528-301 and the goal-history rollback/error slices. Those slices routed loaded Goal snapshots through semantic validation and made history failures visible/atomic; this slice covers the remaining top-level Goal timestamp-shape gap where non-empty non-RFC3339 `created_at`, `updated_at`, `completed_at`, or budget timestamp values were accepted by current Goal snapshot load/save paths.
+- Confirmed the minimal fix belongs in `ValidateGoal`: parse required `SessionGoal.CreatedAt` / `UpdatedAt` and optional top-level completion/budget timestamps as RFC3339Nano while preserving `SaveGoal` compatibility for omitted `created_at` and existing automatic `updated_at` refresh.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10811,6 +10817,43 @@ Validation:
 - `node --check internal/webconsole/assets/settings-view.js`: passed.
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-337
+
+Slice: `fix(goal): validate goal timestamps`
+
+Finding:
+
+- FCA-20260528-301 routed `LoadGoal()` through `ValidateGoal()`, but `ValidateGoal()` still accepted arbitrary non-empty top-level Goal timestamp strings.
+- A focused regression wrote `goal.json` with `created_at:"not-a-time"`, `updated_at:"not-a-time"`, and `budget_limited_at:"not-a-time"` variants; before the fix, `LoadGoal()` returned nil error for those malformed current Goal facts.
+- The same focused regression passed `CreatedAt:"not-a-time"` to `SaveGoal()`; before the fix, the malformed created timestamp was accepted because `prepareGoalForSave()` preserves non-empty `created_at`.
+
+Impact:
+
+- `goal.json` is the durable current Goal fact source for completion audit, budget wrap-up, runtime prompts, compaction, `session.md`, long-run checkpoints, Web Goal controls, CLI fallback, and recovery.
+- Accepting arbitrary top-level Goal timestamp strings weakened Goal chronology and allowed malformed budget/completion recovery facts to appear as normal current Goal state.
+- This was a validation-boundary fix only; it does not change Goal completion gates, mission planning, budget wrap-up policy, Goal history ordering, or Plan Mode linkage.
+
+Changes:
+
+- Added required RFC3339Nano validation for `SessionGoal.CreatedAt` and `SessionGoal.UpdatedAt`.
+- Added optional RFC3339Nano validation for top-level `completed_at`, `budget_limited_at`, `budget_wrapup_requested_at`, `budget_wrapup_turn_started_at`, and `budget_wrapup_recorded_at`.
+- Preserved `SaveGoal()` compatibility for omitted `created_at` through existing defaulting and for `updated_at` through the existing automatic refresh.
+- Added focused load/save regressions for malformed top-level Goal timestamps.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestGoalSnapshotsRejectMalformedTimestamps` saw `LoadGoal()` accept `created_at:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run TestGoalSnapshotsRejectMalformedTimestamps -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestGoalSnapshotsRejectMalformedTimestamps|TestLoadGoalRejectsMalformedStructuredSnapshot|TestPatchGoalRejectsMalformedStructuredItems|TestStoreRecordGoalProgressUpdatesMissionValidationAndBudgetWrapUp|TestStoreCompleteGoalPersistsAuditAndItemEvidence' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestGoal|TestCompletion|TestBudget|TestApproveLinkedPlanMode|TestApproveLinkedMissionPlan|TestEngineBudgetWrapUp|TestEngineSteerAcceptanceReportsGoalHistoryError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l internal/session/goal.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/goal.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
 - `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
 

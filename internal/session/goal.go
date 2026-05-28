@@ -403,6 +403,27 @@ func ValidateGoal(goal SessionGoal) error {
 	if goal.TimeBudgetSeconds != nil && *goal.TimeBudgetSeconds <= 0 {
 		return errors.New("goal time budget must be positive")
 	}
+	if err := validateGoalRequiredTimestamp("goal created_at", goal.CreatedAt); err != nil {
+		return err
+	}
+	if err := validateGoalRequiredTimestamp("goal updated_at", goal.UpdatedAt); err != nil {
+		return err
+	}
+	if err := validateGoalOptionalTimestamp("goal completed_at", goal.CompletedAt); err != nil {
+		return err
+	}
+	if err := validateGoalOptionalTimestamp("goal budget_limited_at", goal.BudgetLimitedAt); err != nil {
+		return err
+	}
+	if err := validateGoalOptionalTimestamp("goal budget_wrapup_requested_at", goal.BudgetWrapUpRequestedAt); err != nil {
+		return err
+	}
+	if err := validateGoalOptionalTimestamp("goal budget_wrapup_turn_started_at", goal.BudgetWrapUpTurnStartedAt); err != nil {
+		return err
+	}
+	if err := validateGoalOptionalTimestamp("goal budget_wrapup_recorded_at", goal.BudgetWrapUpRecordedAt); err != nil {
+		return err
+	}
 	if err := validateGoalCriteria(goal.SuccessCriteria); err != nil {
 		return err
 	}
@@ -416,6 +437,23 @@ func ValidateGoal(goal SessionGoal) error {
 		if err := validateMissionPlan(*goal.Mission); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateGoalRequiredTimestamp(kind, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", kind)
+	}
+	return validateGoalOptionalTimestamp(kind, value)
+}
+
+func validateGoalOptionalTimestamp(kind, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+		return fmt.Errorf("%s must be RFC3339Nano: %w", kind, err)
 	}
 	return nil
 }
