@@ -49,6 +49,27 @@ func TestWriteDeniedDotEnv(t *testing.T) {
 	assertWriteDenied(t, ".env", ".env")
 }
 
+func TestWriteDeniedPrivateKeyAndCredentialFiles(t *testing.T) {
+	tests := []struct {
+		path    string
+		pattern string
+	}{
+		{path: "id_ecdsa", pattern: "id_*"},
+		{path: "identity", pattern: "identity"},
+		{path: "deploy.pem", pattern: "*.pem"},
+		{path: "private-key.txt", pattern: "*private-key*"},
+		{path: "service_private_key.json", pattern: "*private_key*"},
+		{path: "credentials.json", pattern: "credentials.*"},
+		{path: "service-account_credentials.json", pattern: "*_credentials.json"},
+		{path: "prod.credentials", pattern: "*.credentials"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			assertWriteDenied(t, tt.path, tt.pattern)
+		})
+	}
+}
+
 func TestWriteDeniedSecretDirs(t *testing.T) {
 	tests := []struct {
 		path    string

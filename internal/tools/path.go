@@ -147,6 +147,9 @@ func checkWorkspaceWriteDisplayPath(displayPath, baseName string) error {
 			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, denied)
 		}
 	}
+	if pattern := deniedWorkspaceWriteFilePattern(baseName); pattern != "" {
+		return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, pattern)
+	}
 	return nil
 }
 
@@ -179,6 +182,41 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 		}
 	}
 	return nil
+}
+
+func deniedWorkspaceWriteFilePattern(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return ""
+	}
+	switch {
+	case name == "identity":
+		return "identity"
+	case strings.HasPrefix(name, "id_"):
+		return "id_*"
+	case strings.Contains(name, "private_key"):
+		return "*private_key*"
+	case strings.Contains(name, "private-key"):
+		return "*private-key*"
+	case strings.HasSuffix(name, ".pem"):
+		return "*.pem"
+	case strings.HasSuffix(name, ".key"):
+		return "*.key"
+	case strings.HasSuffix(name, ".p12"):
+		return "*.p12"
+	case strings.HasSuffix(name, ".pfx"):
+		return "*.pfx"
+	case strings.HasPrefix(name, "credentials."):
+		return "credentials.*"
+	case strings.HasSuffix(name, "_credentials.json"):
+		return "*_credentials.json"
+	case strings.HasSuffix(name, "-credentials.json"):
+		return "*-credentials.json"
+	case strings.HasSuffix(name, ".credentials"):
+		return "*.credentials"
+	default:
+		return ""
+	}
 }
 
 func displayPathContainsDirPath(parts []string, pattern string) bool {

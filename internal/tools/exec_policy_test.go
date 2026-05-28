@@ -39,6 +39,11 @@ func TestExecPolicyDetectsAbsoluteCommandPaths(t *testing.T) {
 func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 	for _, command := range []string{
 		"echo token > .env",
+		"printf key > id_ecdsa",
+		"printf key > deploy.pem",
+		"printf key > service_private_key.json",
+		"printf token > credentials.json",
+		"printf token > service-account_credentials.json",
 		"printf token > .azure/accessTokens.json",
 		"printf token > .oci/config",
 		"printf token > .config/gcloud/configurations/config_default",

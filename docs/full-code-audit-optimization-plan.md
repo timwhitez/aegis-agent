@@ -8316,7 +8316,58 @@ Evidence gates:
 - Confirmed this is a residual local-tool boundary after FCA-20260528-371 and FCA-20260528-372. Those WebConsole slices established `.azure`, `.oci`, and `.config/gcloud` as cloud credential paths for the read-only browser, but the model-facing `write_file` / `edit_file` policy and shell secret-path warning/deny policy still allowed writes to those same credential locations.
 - Confirmed the minimal fix belongs in `internal/tools/path.go` and `internal/tools/exec_policy.go`: extend the existing secret-path write policy for these cloud credential paths, including symlink-alias resolution for `.config/gcloud`, without changing read access, provider replay, Web Workspace rendering, or runtime workflow behavior.
 
+### Review 362
+
+- Confirmed FCA-20260528-374 against the same tool safety boundary as FCA-20260528-373: `write_file` / `edit_file` must pass write-policy checks, and shell exec-policy must at least classify redirect/tee writes to secret or credential paths.
+- Confirmed this is a residual file-name policy gap after FCA-20260526-042 and FCA-20260528-373. The Web Workspace browser already treats `id_*`, `identity`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `private_key`, `private-key`, and credential-like JSON names as sensitive, but the model-facing write policy still only denied exact `id_rsa`, `id_ed25519`, and `credentials`.
+- Confirmed the minimal fix belongs in the local tool write-policy helpers and shell exec-policy detection. This keeps the change limited to workspace writes / shell warning metadata, without changing workspace read access, Web rendering, session/report content, provider replay, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260528-374
+
+Slice: `fix(tools): deny private key path writes`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines `write_file` / `edit_file` as workspace writes that must pass write-policy checks, and the repo `AGENTS.md` classifies file-tool safety as a hard guard for workspace/path safety.
+- FCA-20260526-042 already broadened Web Workspace filtering for private-key and credential-like filenames, but `internal/tools/path.go` still denied only exact `id_rsa`, exact `id_ed25519`, and exact `credentials`.
+- A focused regression proved model-facing writes to `id_ecdsa`, `identity`, `deploy.pem`, `private-key.txt`, `service_private_key.json`, `credentials.json`, `service-account_credentials.json`, and `prod.credentials` were allowed before the fix.
+- `internal/tools/exec_policy.go` also missed shell redirect/tee writes to those same private-key and credential-like filenames; the focused exec-policy regression returned no `secret_path_write` violation for `id_ecdsa`, `deploy.pem`, `service_private_key.json`, `credentials.json`, or `service-account_credentials.json`.
+
+Impact:
+
+- A model or shell command running inside the workspace could create or overwrite common private-key material and credential-like files even though the adjacent WebConsole safety boundary treats those filenames as sensitive.
+- This weakens the local safety policy consistency for model-facing writes. The issue is limited to workspace write tools and shell exec-policy metadata; it does not change runtime file reads, report content, provider replay, or Web Workspace browsing.
+
+Changes:
+
+- Added private-key filename pattern denies for `identity`, `id_*`, `*private_key*`, `*private-key*`, `*.pem`, `*.key`, `*.p12`, and `*.pfx`.
+- Added credential-like filename pattern denies for `credentials.*`, `*_credentials.json`, `*-credentials.json`, and `*.credentials`.
+- Extended shell exec-policy secret-path detection for the same private-key and credential-like filename shapes.
+- Added focused coverage for both workspace write-policy rejection and shell redirect detection.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestWriteDeniedPrivateKeyAndCredentialFiles -count=1`: failed before the fix because all new private-key / credential-like file cases were allowed.
+- `go test -timeout 120s ./internal/tools -run TestExecPolicyDetectsSecretPathWrite -count=1`: failed before the fix because the new private-key / credential-like shell redirect cases produced no `secret_path_write` violation.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedPrivateKeyAndCredentialFiles|TestExecPolicyDetectsSecretPathWrite' -count=1`: passed.
+- `gofmt -l internal/tools/path.go internal/tools/path_test.go internal/tools/exec_policy.go internal/tools/exec_policy_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-373
 
