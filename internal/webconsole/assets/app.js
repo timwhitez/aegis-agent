@@ -62,7 +62,6 @@ const state = {
   fileChangesExpanded: true,
   subAgentExpanded: true,
   expandedHistoryParents: new Set(),
-  stoppingSessionIds: new Set(),
   planInputSelections: {},
   hasMoreMessages: false,
   oldestMessageId: '',
@@ -107,6 +106,10 @@ const messagePagingViewState = {
 
 const toastViewState = {
   counter: 0
+};
+
+const stopActionViewState = {
+  sessionIds: new Set()
 };
 
 function createEmptyChatRenderCache() {
@@ -1206,7 +1209,7 @@ async function requestStopSession(sessionID, options = {}) {
     selectedSessionID !== sessionID &&
     currentSessionReferencesSession(sessionID);
   const selectedContextStillCurrent = () => state.sessionId === selectedSessionID && hasDurableSession();
-  state.stoppingSessionIds.add(sessionID);
+  stopActionViewState.sessionIds.add(sessionID);
   const button = options.button || null;
   if (button) {
     button.disabled = true;
@@ -1239,7 +1242,7 @@ async function requestStopSession(sessionID, options = {}) {
       showToast(err.message || 'Failed to stop the session.', 'error');
     }
   } finally {
-    state.stoppingSessionIds.delete(sessionID);
+    stopActionViewState.sessionIds.delete(sessionID);
     if (button && document.body.contains(button)) {
       button.disabled = false;
     }
@@ -2103,7 +2106,7 @@ async function refreshSelectedQueueJobDetail(jobs = queueJobItems(), options = {
 }
 
 function isStoppingSession(sessionID) {
-  return state.stoppingSessionIds.has(sessionID);
+  return stopActionViewState.sessionIds.has(sessionID);
 }
 
 function currentSessionReferencesSession(sessionID) {

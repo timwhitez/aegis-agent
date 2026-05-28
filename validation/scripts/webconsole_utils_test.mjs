@@ -57,7 +57,8 @@ const context = {
 vm.createContext(context);
 vm.runInContext(utilsSource, context, { filename: 'utils.js' });
 vm.runInContext(`
-  const state = { selectedQueueJobId: '', stoppingSessionIds: new Set() };
+  const state = { selectedQueueJobId: '' };
+  const stopActionViewState = { sessionIds: new Set() };
   function agentLabel(name, role) {
     if (name && role) return name + ' · ' + role;
     return name || role || '';
@@ -93,7 +94,7 @@ vm.runInContext(`
     return normalized === 'running' || normalized === 'awaiting_input' || normalized === 'paused';
   }
   function isStoppingSession(sessionID) {
-    return state.stoppingSessionIds.has(sessionID);
+    return stopActionViewState.sessionIds.has(sessionID);
   }
   function collectRecentToolEntries() {
     return [];
@@ -461,6 +462,45 @@ test('toast id counter is isolated from durable app state', () => {
   assert.deepEqual(sameRealm(result.toastIDs), ['toast-1', 'toast-2']);
   assert.deepEqual(sameRealm(result.toastClasses), ['toast toast-info', 'toast toast-error']);
   assert.deepEqual(sameRealm(result.toastTexts), ['First toast', 'Second toast']);
+});
+
+test('stop action pending sessions are isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const stop = vm.runInContext(`
+    state.currentView = 'chat';
+    state.sessionId = 'session_stop_pending';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_stop_pending' },
+      state: { status: 'running' },
+      messages: []
+    };
+    requestStopSession('session_stop_pending');
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  vm.runInContext(`requestStopSession('session_stop_pending');`, appContext);
+  assert.equal(appContext.pendingRequests.length, 1);
+
+  const pendingState = vm.runInContext(`({
+    stateHasStoppingSessionIds: Object.prototype.hasOwnProperty.call(state, 'stoppingSessionIds'),
+    isStopping: isStoppingSession('session_stop_pending')
+  })`, appContext);
+  assert.equal(pendingState.stateHasStoppingSessionIds, false);
+  assert.equal(pendingState.isStopping, true);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await stop;
+
+  const finalState = vm.runInContext(`({
+    stateHasStoppingSessionIds: Object.prototype.hasOwnProperty.call(state, 'stoppingSessionIds'),
+    isStopping: isStoppingSession('session_stop_pending')
+  })`, appContext);
+  assert.equal(finalState.stateHasStoppingSessionIds, false);
+  assert.equal(finalState.isStopping, false);
 });
 
 test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {
@@ -2266,7 +2306,7 @@ test('stop completion does not update a newly selected session', async () => {
     selected: state.sessionId,
     generating: state.isGenerating,
     activityTitle: state.liveActivity.title,
-    stoppingA: state.stoppingSessionIds.has('session_stop_slow_a')
+    stoppingA: isStoppingSession('session_stop_slow_a')
   })`, appContext)), {
     selected: 'session_fast_b',
     generating: false,
@@ -2373,7 +2413,7 @@ test('child stop completion refreshes selected parent session', async () => {
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     activityTitle: state.liveActivity.title,
-    stoppingChild: state.stoppingSessionIds.has('child_session_stop'),
+    stoppingChild: isStoppingSession('child_session_stop'),
     refreshCalls,
     toastCalls
   })`, appContext)), {

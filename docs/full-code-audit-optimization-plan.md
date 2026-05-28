@@ -8478,7 +8478,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-108 through FCA-20260529-115. Those slices moved chat render cache, runtime handles, and request-sequence guards out of the main `state`; the residual issue was only `showToast()` using `state.toastCounter` for transient DOM ids.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: add a tiny `toastViewState.counter`, update `showToast()` to use it, and keep toast rendering, tone classes, timeout removal, and all backend API/error behavior unchanged.
 
+### Review 389
+
+- Confirmed FCA-20260529-117 against `spec/17-web-console.md`'s local WebConsole action boundary and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: stop-action pending ids are browser request/button coordination, not durable session status, queue facts, provider replay facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from the earlier stop/interrupt stale-selection slices. Those preserved target-session correctness and parent refresh behavior after async stop completion; this residual issue was only the pending duplicate-stop guard living on the main `state` object.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the per-session pending stop id set into a tiny `stopActionViewState`, keep `isStoppingSession()` as the renderer-facing helper, and preserve duplicate stop suppression, button disable/re-enable, fallback steer, selected parent refresh, and backend stop API behavior.
+
 ## Update Log
+
+### FCA-20260529-117
+
+Slice: `fix(webconsole): isolate stop action pending state`
+
+Finding:
+
+- `requestStopSession()` stored pending stop request ids in the main WebConsole `state.stoppingSessionIds` set.
+- The set is browser action coordination for duplicate stop suppression and button disabled state while an async stop request is in flight. It is not durable session status, backend active-handle ownership, queue metadata, provider replay state, or WebConsole file-fact authority.
+- A focused frontend regression required that pending stop ids stay out of the main `state` object while duplicate stop suppression and cleanup still work. Before the fix, the regression failed because `state` still owned `stoppingSessionIds`.
+
+Changes:
+
+- Added a tiny `stopActionViewState.sessionIds` set in `app.js` to own pending stop action ids.
+- Updated `requestStopSession()` to add/delete ids through `stopActionViewState.sessionIds`.
+- Kept `isStoppingSession()` as the single renderer-facing helper so `session-view.js` can continue to render busy stop controls without knowing where pending browser action state lives.
+- Updated frontend tests to assert that `state.stoppingSessionIds` is absent while duplicate stop suppression, pending status reporting, and finally cleanup are preserved.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this stop-action-local state slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "stop action pending sessions are isolated" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `stoppingSessionIds`.
+- `node --test --test-name-pattern "stop action pending sessions are isolated" validation/scripts/webconsole_utils_test.mjs`: passed after moving the set into `stopActionViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-116
 
