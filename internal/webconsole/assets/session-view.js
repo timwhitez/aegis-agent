@@ -1547,16 +1547,17 @@ function renderSubAgentFloat() {
 }
 
 function renderSubAgentSessionRow(sess, job) {
-  const statusTone = toneForStatus(sess.status);
+  const status = subAgentDisplayStatus(sess, job);
+  const statusTone = toneForStatus(status);
   const label = agentLabel(sess.agent_name, sess.agent_role) || shortId(sess.id);
   const jobMeta = job ? ` · ${escapeHTML(job.mode || '')}` : '';
   return `
     <div class="sa-tree-row parent" data-sub-agent-open="${escapeAttr(sess.id)}" title="Click to open child session">
       <span class="sa-tree-dot ${statusTone}"></span>
       <span class="sa-tree-label">${escapeHTML(label)}</span>
-      <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(sess.status))}</span>
+      <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(status))}</span>
       <span class="sa-tree-meta">${escapeHTML(sess.model || sess.provider || 'n/a')}${jobMeta} · ${escapeHTML(shortId(sess.id))}</span>
-      ${renderSessionStopButton(sess.id, sess.status, '')}
+      ${renderSessionStopButton(sess.id, status, '')}
     </div>
   `;
 }
@@ -2147,8 +2148,7 @@ function renderTimelineItem(item, options = {}) {
 function renderSubAgentCard(row) {
   const sessionItem = row.session || null;
   const job = row.job || null;
-  const jobStatus = job ? queueJobDisplayStatus(job) : '';
-  const status = jobStatus && (isTerminalStatus(jobStatus) || jobStatus === 'blocked') ? jobStatus : (sessionItem?.status || jobStatus || 'unknown');
+  const status = subAgentDisplayStatus(sessionItem, job);
   const label = agentLabel(sessionItem?.agent_name || job?.agent_name, sessionItem?.agent_role || job?.agent_role) || shortId(sessionItem?.id || job?.id || '');
   const model = sessionItem?.model || job?.model || sessionItem?.provider || job?.provider || 'n/a';
   const phase = sessionItem?.phase ? phaseHeadline(sessionItem.phase) : (job?.mode || 'exec');
@@ -2175,6 +2175,14 @@ function renderSubAgentCard(row) {
       </div>
     </div>
   `;
+}
+
+function subAgentDisplayStatus(sessionItem, job) {
+  const jobStatus = job ? queueJobDisplayStatus(job) : '';
+  if (jobStatus && (isTerminalStatus(jobStatus) || jobStatus === 'blocked')) {
+    return jobStatus;
+  }
+  return sessionItem?.status || jobStatus || 'unknown';
 }
 
 function isTerminalStatus(status) {

@@ -8400,7 +8400,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-385 and FCA-20260529-386. FCA-385 made selected job/orphan job renderers prefer terminal queue status and `blocked`; FCA-386 exposed completed queue `final_text` in paired Sub agents cards. The remaining gap was only paired child+queue rows in `renderSubAgentCard`, which still preferred child `status=awaiting_input` over queue `status=blocked`.
 - Confirmed the minimal fix belongs in the same renderer status selection: reuse `queueJobDisplayStatus(job)` and prefer its terminal/blocked queue status before falling back to linked child status, without changing queue reconciliation, child session state, backend API shape, notification semantics, or provider replay.
 
+### Review 376
+
+- Confirmed FCA-20260529-388 against `spec/17-web-console.md`'s Session workspace / Background inspector contract: the current session activity surfaces should project durable child session and child queue facts consistently, including blocked background jobs.
+- Confirmed this is distinct from FCA-20260529-387. That slice fixed the main paired Sub agents card, while the residual issue was only the floating Sub Agents tree row rendered by `renderSubAgentSessionRow`, which still read the linked child session status directly.
+- Confirmed the minimal fix is to share the paired sub-agent display-status selection between `renderSubAgentCard` and `renderSubAgentSessionRow`, preferring terminal or `blocked` queue job status before falling back to child session status, without changing queue reconciliation, notification delivery, backend API shape, or runtime facts.
+
 ## Update Log
+
+### FCA-20260529-388
+
+Slice: `fix(webconsole): sync sub-agent float status`
+
+Finding:
+
+- `spec/17-web-console.md` requires the current session Background inspector and activity surfaces to show child sessions, child queue jobs, and recovery/failure state from durable queue/session facts.
+- `renderSubAgentCard` already preferred terminal and `blocked` queue job statuses for paired child+queue rows after FCA-20260529-387.
+- The floating Sub Agents tree still rendered paired child rows through `renderSubAgentSessionRow`, which used `sess.status` directly.
+- A focused frontend regression created `job.status=blocked` with `session.status=awaiting_input`; before the fix, the floating tree row rendered `Awaiting input` instead of the durable queue fact `Blocked`.
+
+Impact:
+
+- Operators scanning the floating activity panel could miss that a background queue job itself was blocked and resumable, even though the main Sub agents card showed the correct status.
+- The mismatch weakened the WebConsole invariant that user-visible Background surfaces are projections of the same durable queue/session facts.
+
+Changes:
+
+- Added `subAgentDisplayStatus(sessionItem, job)` to centralize paired child+queue status selection.
+- Updated both `renderSubAgentCard` and `renderSubAgentSessionRow` to use the shared helper.
+- Added a focused Node renderer regression for blocked paired rows in the floating Sub Agents tree.
+
+Validation:
+
+- `node --test --test-name-pattern "sub-agent float session rows prefer blocked queue status" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the floating row rendered `Awaiting input`.
+- `node --test --test-name-pattern "sub-agent float session rows prefer blocked queue status" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 60 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-387
 
