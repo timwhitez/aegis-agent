@@ -3225,6 +3225,12 @@ func validateTodo(todo []TodoItem) error {
 		default:
 			return fmt.Errorf("invalid todo priority %q", item.Priority)
 		}
+		if strings.TrimSpace(item.UpdatedAt) == "" {
+			return fmt.Errorf("todo item %d updated_at is required", i+1)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, item.UpdatedAt); err != nil {
+			return fmt.Errorf("todo item %d updated_at must be RFC3339Nano: %w", i+1, err)
+		}
 		if item.Status == "in_progress" {
 			inProgress++
 		}

@@ -4189,7 +4189,9 @@ func TestTodoWriteNoopDoesNotLookLikeProgress(t *testing.T) {
 		t.Fatalf("new registry: %v", err)
 	}
 	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}
-	first, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high","updated_at":"original"}]}`))
+	originalUpdatedAt := "2026-05-28T00:00:00Z"
+	firstPayload := fmt.Sprintf(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high","updated_at":%q}]}`, originalUpdatedAt)
+	first, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(firstPayload))
 	if err != nil || first.IsError {
 		t.Fatalf("first todo_write err=%v result=%#v", err, first)
 	}
@@ -4204,7 +4206,7 @@ func TestTodoWriteNoopDoesNotLookLikeProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load todo: %v", err)
 	}
-	if len(todo) != 1 || todo[0].UpdatedAt != "original" {
+	if len(todo) != 1 || todo[0].UpdatedAt != originalUpdatedAt {
 		t.Fatalf("expected no-op write to preserve original timestamp, got %#v", todo)
 	}
 }
@@ -4250,6 +4252,11 @@ func TestTodoWriteRejectsInvalidItems(t *testing.T) {
 			name:    "invalid priority",
 			payload: `{"todos":[{"content":"Do work","status":"pending","priority":"urgent"}]}`,
 			want:    `invalid todo priority: urgent`,
+		},
+		{
+			name:    "invalid updated_at",
+			payload: `{"todos":[{"content":"Do work","status":"pending","priority":"high","updated_at":"not-a-time"}]}`,
+			want:    "updated_at must be RFC3339Nano",
 		},
 	}
 	for _, tc := range cases {
@@ -4327,7 +4334,8 @@ func TestTodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot(t *testin
 	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	initial := []session.TodoItem{{Content: "Keep original", Status: "in_progress", Priority: "high", UpdatedAt: "original"}}
+	originalUpdatedAt := "2026-05-28T00:00:00Z"
+	initial := []session.TodoItem{{Content: "Keep original", Status: "in_progress", Priority: "high", UpdatedAt: originalUpdatedAt}}
 	if err := store.SaveTodo(meta.ID, initial); err != nil {
 		t.Fatalf("save initial todo: %v", err)
 	}
@@ -4360,7 +4368,7 @@ func TestTodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot(t *testin
 	if err != nil {
 		t.Fatalf("load todo: %v", err)
 	}
-	if !normalizedTodosEqual(todo, initial) || todo[0].UpdatedAt != "original" {
+	if !normalizedTodosEqual(todo, initial) || todo[0].UpdatedAt != originalUpdatedAt {
 		t.Fatalf("expected failed event append to restore initial todo, got %#v", todo)
 	}
 }
@@ -4382,7 +4390,8 @@ func TestTodoWriteNoopReportsRequiredEventError(t *testing.T) {
 	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	initial := []session.TodoItem{{Content: "Do work", Status: "in_progress", Priority: "high", UpdatedAt: "original"}}
+	originalUpdatedAt := "2026-05-28T00:00:00Z"
+	initial := []session.TodoItem{{Content: "Do work", Status: "in_progress", Priority: "high", UpdatedAt: originalUpdatedAt}}
 	if err := store.SaveTodo(meta.ID, initial); err != nil {
 		t.Fatalf("save initial todo: %v", err)
 	}
@@ -4411,7 +4420,7 @@ func TestTodoWriteNoopReportsRequiredEventError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load todo: %v", err)
 	}
-	if !normalizedTodosEqual(todo, initial) || todo[0].UpdatedAt != "original" {
+	if !normalizedTodosEqual(todo, initial) || todo[0].UpdatedAt != originalUpdatedAt {
 		t.Fatalf("expected no-op event failure to preserve initial todo, got %#v", todo)
 	}
 }

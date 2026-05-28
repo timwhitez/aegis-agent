@@ -280,6 +280,11 @@ func TestSaveTodoRejectsInvalidItems(t *testing.T) {
 			todo: []TodoItem{{Content: "Do work", Status: "pending", Priority: "urgent"}},
 			want: `invalid todo priority "urgent"`,
 		},
+		{
+			name: "missing updated_at",
+			todo: []TodoItem{{Content: "Do work", Status: "pending", Priority: "high"}},
+			want: "updated_at is required",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -315,8 +320,8 @@ func TestLoadTodoRejectsMalformedSnapshot(t *testing.T) {
 	}
 	todoPath := filepath.Join(store.SessionDir(meta.ID), "todo.json")
 	body := []byte(`[
-  {"content":"first","status":"in_progress","priority":"high"},
-  {"content":"second","status":"in_progress","priority":"medium"}
+  {"content":"first","status":"in_progress","priority":"high","updated_at":"2026-05-28T00:00:00Z"},
+  {"content":"second","status":"in_progress","priority":"medium","updated_at":"2026-05-28T00:00:00Z"}
 ]`)
 	if err := os.WriteFile(todoPath, body, 0o600); err != nil {
 		t.Fatalf("write malformed todo: %v", err)
@@ -324,6 +329,40 @@ func TestLoadTodoRejectsMalformedSnapshot(t *testing.T) {
 
 	if _, err := store.LoadTodo(meta.ID); err == nil || !strings.Contains(err.Error(), "validate todo.json") || !strings.Contains(err.Error(), "only one todo") {
 		t.Fatalf("expected malformed todo snapshot error, got %v", err)
+	}
+}
+
+func TestTodoSnapshotsRejectMalformedTimestamps(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	todoPath := filepath.Join(store.SessionDir(meta.ID), "todo.json")
+	body := []byte(`[
+  {"content":"first","status":"in_progress","priority":"high","updated_at":"not-a-time"}
+]`)
+	if err := os.WriteFile(todoPath, body, 0o600); err != nil {
+		t.Fatalf("write malformed todo: %v", err)
+	}
+
+	if _, err := store.LoadTodo(meta.ID); err == nil || !strings.Contains(err.Error(), "validate todo.json") || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed todo updated_at load error, got %v", err)
+	}
+
+	invalidWrite := []TodoItem{{Content: "first", Status: "in_progress", Priority: "high", UpdatedAt: "not-a-time"}}
+	if err := store.SaveTodo(meta.ID, invalidWrite); err == nil || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected SaveTodo to reject invalid updated_at, got %v", err)
 	}
 }
 

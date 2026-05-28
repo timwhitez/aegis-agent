@@ -8052,6 +8052,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-135. That slice made corrupt task files visible and added generic task graph validation for subject/status/priority, duplicate IDs, references, bidirectional edges, and cycles; this slice covers the remaining timestamp-shape gap where non-empty non-RFC3339 `created_at` / `updated_at` task values were accepted on load and save.
 - Confirmed the minimal fix belongs in the task validator boundary: parse `Task.CreatedAt` and `Task.UpdatedAt` as RFC3339Nano so `GetTask`, `ListTasks`, `SaveTask`, `SaveTasks`, and `MutateTasks` share the same durable task timestamp contract without adding workflow ordering or task orchestration behavior.
 
+### Review 328
+
+- Confirmed FCA-20260528-335 against `spec/01-runtime-architecture.md`, `spec/12-task-system.md`, and `spec/17-web-console.md`: `todo.json` is the session todo snapshot fact used by runtime context loading, compaction summaries, Web task panels, session summaries, and long-run checkpoints.
+- Confirmed this is distinct from FCA-20260528-306 and FCA-20260528-334. Those slices routed todo load/save through semantic validation and hardened durable task file timestamps; this slice covers the remaining todo timestamp-shape gap where non-empty non-RFC3339 `updated_at` values were accepted on load/write and by `todo_write` before no-op comparison.
+- Confirmed the minimal fix belongs in the shared todo validators: parse `TodoItem.UpdatedAt` as RFC3339Nano in the store and tool snapshot validator, while preserving tool compatibility by continuing to fill omitted `updated_at` values before validation and preserving valid timestamps on no-op writes.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10792,6 +10798,51 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go`: passed with no output.
 - `git diff --check -- internal/session/taskboard.go internal/session/taskboard_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-335
+
+Slice: `fix(todo): validate todo timestamps`
+
+Finding:
+
+- FCA-20260528-306 routed `LoadTodo()` / `SaveTodo()` through semantic validation, but `validateTodo()` still accepted any non-empty `TodoItem.UpdatedAt` string.
+- `todo_write` also validated only content/status/priority before loading the existing snapshot and comparing normalized todo items, so an explicit malformed `updated_at` in tool input could be accepted or hidden by the no-op comparison path.
+- A focused regression wrote `todo.json` with `updated_at:"not-a-time"`; before the fix, `LoadTodo()` returned nil error and trusted the malformed todo fact.
+
+Impact:
+
+- `todo.json` is a durable session todo snapshot used by runtime context loading, compaction summaries, Web task panels, session summaries, long-run checkpoints, and task/progress recovery views.
+- Accepting arbitrary todo timestamp strings weakened short-cycle execution chronology and let malformed recovery facts appear as normal todo state.
+- This was a validation-boundary fix only; it does not change todo/task workflow reminders, progress semantics, or task graph orchestration.
+
+Changes:
+
+- Added required RFC3339Nano validation for `TodoItem.UpdatedAt` in the session store validator.
+- Added the same timestamp validation to the `todo_write` tool snapshot validator so explicit malformed tool input is rejected before no-op comparison.
+- Kept `todo_write` compatibility for omitted `updated_at` because it still fills missing values with the current UTC time before validation.
+- Updated no-op/event-rollback fixtures to use valid RFC3339Nano timestamps while preserving the existing no-op timestamp-preservation assertions.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestTodoSnapshotsRejectMalformedTimestamps` saw `LoadTodo()` accept `updated_at:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run 'TestTodoSnapshotsRejectMalformedTimestamps|TestSaveTodoRejectsInvalidItems|TestLoadTodoRejectsMalformedSnapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestTodoWrite(NoopDoesNotLookLikeProgress|RejectsInvalidItems|ReportsRequiredEventErrorAndRestoresPreviousSnapshot|NoopReportsRequiredEventError|ReportsLoadErrorBeforeNoop)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerAutoQueueWorkerProcessesQueuedJobs -count=1`: passed on rerun after a prior broad-validation observation failed in this runtime queue-worker test with a missing linked-session `state.json`.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/taskboard_test.go internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/taskboard_test.go internal/tools/registry.go internal/tools/registry_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
