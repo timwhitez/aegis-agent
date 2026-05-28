@@ -8220,6 +8220,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-068 and FCA-20260526-085. Those slices made `goal.budget_wrapup_turn_started` history failures visible and rolled back `goal.json` on history append failure; this slice covers the remaining later boundary where the history append had succeeded but the matching `events.jsonl` append was still best-effort.
 - Confirmed the minimal fix belongs in `Engine.Run`: require `goal.budget_wrapup_turn_started` before provider execution and roll back the just-started budget wrap-up turn facts when that event cannot be persisted, so retry can still deliver the one allowed wrap-up turn.
 
+### Review 356
+
+- Confirmed FCA-20260528-363 against `spec/01-runtime-architecture.md` and `spec/17-web-console.md`: WebConsole may write Goal and Plan Mode facts only through the local session store, and `events.jsonl` remains the durable session timeline for linked Plan Mode gate creation/linking.
+- Confirmed this is distinct from FCA-20260526-100 and FCA-20260526-102. Those slices rolled back goal/task/planmode facts when linked Plan Mode creation, relink event append, or goal event append failed; this slice covers the later window where `planmode.created` / `planmode.linked_goal` had already been appended to `events.jsonl`, but the following Goal mutation history/event append failed and the Plan Mode/Goal snapshots were restored.
+- Confirmed the minimal fix belongs in WebConsole rollback paths plus a store-level event restore helper: snapshot `events.jsonl` before appending linked Plan Mode events in rollback-capable Goal/Mission mutations, restore it when the later mutation fails, and validate restored event facts through the same session event validator.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11962,6 +11968,44 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
 - `go test -timeout 120s ./internal/runtime ./internal/session -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-363
+
+Slice: `fix(webconsole): roll back linked plan mode events`
+
+Finding:
+
+- WebConsole Goal/Mission mutation paths can create or link a required Plan Mode gate, append `planmode.created` / `planmode.linked_goal` into `events.jsonl`, and then continue into a required Goal mutation history/event append.
+- If that later Goal mutation append failed, the existing rollback restored `goal.json`, `planmode.json`, `artifacts/planmode-history.jsonl`, and task facts, but did not restore `events.jsonl`.
+- A focused regression forced a deterministic failure after the linked Plan Mode event append and before the Goal mutation append completed. Before the fix, the failed HTTP 500 left a durable `planmode.created` event in `events.jsonl` even though the Plan Mode snapshot had been removed.
+
+Impact:
+
+- The Web session timeline could claim that a linked Plan Mode gate existed while the authoritative `planmode.json` / Plan Mode history facts had been rolled back.
+- Recovery, session detail, and operator audit views could see a durable event that contradicted the local file facts WebConsole is required to project.
+- This did not require provider, frontend, or orchestration changes; the bug was a store-fact rollback gap in WebConsole mutation handlers.
+
+Changes:
+
+- Added `Store.RestoreEvents`, validating restored event facts with the same `events.jsonl` validator used by load/append paths.
+- WebConsole now snapshots `events.jsonl` before appending linked Plan Mode events in goal create, generic goal patch, mission plan patch, and mission validation patch paths.
+- When a later Goal mutation append fails and the Plan Mode/Goal snapshots are restored, WebConsole restores the previous event stream as part of the same rollback.
+- Preserved existing linked Plan Mode event append failure behavior, including explicit `planmode.created` / `planmode.linked_goal` context when the event log cannot be read before appending.
+- Added focused coverage for event-log restore semantics and for failed mission plan mutation after linked Plan Mode event append.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanPatchRollsBackLinkedPlanModeEventWhenGoalMutationFails -count=1`: failed before the fix because the failed patch left `planmode.created` in `events.jsonl`.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceMissionPlanPatchRollsBackLinkedPlanModeEventWhenGoalMutationFails -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run TestRestoreEventsReplacesDurableLogAndRejectsMalformedFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(MissionPlanPatchRollsBackLinkedPlanModeEventWhenGoalMutationFails|GoalPatchRollsBackLinkedPlanModeWhenEventAppendFails|MissionPlanPatchReportsLinkedPlanModeRelinkEventErrorAndRollsBack|MissionValidationContractPatchReportsHistoryAppendError|GoalCreateReportsEventAppendErrorAndRollsBack)' -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go internal/webconsole/service.go internal/webconsole/service_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/api.js internal/webconsole/assets/session-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/workspace-view.js`: passed with no output.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./internal/session ./internal/webconsole ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 

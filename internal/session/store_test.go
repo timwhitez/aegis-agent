@@ -215,6 +215,52 @@ func TestEventWritesRejectMalformedFacts(t *testing.T) {
 	}
 }
 
+func TestRestoreEventsReplacesDurableLogAndRejectsMalformedFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	first := events.New(meta.ID, "first.event", "test", nil)
+	second := events.New(meta.ID, "second.event", "test", nil)
+	if err := store.AppendEvents(meta.ID, []events.Event{first, second}); err != nil {
+		t.Fatalf("append events: %v", err)
+	}
+	if err := store.RestoreEvents(meta.ID, []events.Event{first}); err != nil {
+		t.Fatalf("restore events: %v", err)
+	}
+	loaded, err := store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load restored events: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != first.ID {
+		t.Fatalf("unexpected restored events: %#v", loaded)
+	}
+	malformed := events.New(meta.ID, "bad.event", "test", nil)
+	malformed.SessionID = NewSessionID()
+	if err := store.RestoreEvents(meta.ID, []events.Event{malformed}); err == nil || !strings.Contains(err.Error(), "does not match session") {
+		t.Fatalf("expected malformed restore rejection, got %v", err)
+	}
+	loaded, err = store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events after rejected restore: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != first.ID {
+		t.Fatalf("rejected restore changed durable log: %#v", loaded)
+	}
+}
+
 func TestStoreAppendMessageRejectsSymlinkJSONL(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

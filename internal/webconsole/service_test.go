@@ -77,6 +77,16 @@ func TestServiceSteerWritesWebSource(t *testing.T) {
 	}
 }
 
+func countWebEventType(items []events.Event, target string) int {
+	var count int
+	for _, item := range items {
+		if item.Type == target {
+			count++
+		}
+	}
+	return count
+}
+
 func TestServiceSteerReportsStoreAppendFailureAsServerError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -1394,6 +1404,60 @@ func TestServiceMissionPlanPatchPlanModeReportsHistoryAppendError(t *testing.T) 
 	}
 	if planMode, planErr := svc.store.LoadPlanMode(meta.ID); !errors.Is(planErr, fs.ErrNotExist) {
 		t.Fatalf("failed plan-mode mission patch should not create plan mode, got planMode=%#v err=%v", planMode, planErr)
+	}
+}
+
+func TestServiceMissionPlanPatchRollsBackLinkedPlanModeEventWhenGoalMutationFails(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	svc.beforeAppendGoalMutation = func(sessionID string, goal session.SessionGoal, eventType string) error {
+		if eventType != "mission.plan.updated" {
+			t.Fatalf("unexpected goal mutation event type: %s", eventType)
+		}
+		return errors.New("forced goal mutation append failure")
+	}
+	meta := testSessionMetadata(t, "session_mission_plan_planmode_event_rollback")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeMission,
+		Objective: "Patch mission plan mode and roll back event",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	beforeEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events before patch: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"plan_status": session.MissionPlanStatusNeedsApproval,
+		"features":    []map[string]any{{"id": "feature_web", "title": "Web feature", "status": "pending"}},
+	}, http.StatusInternalServerError, &apiErr)
+	if !strings.Contains(apiErr.Error, "forced goal mutation append failure") {
+		t.Fatalf("expected forced mutation append error, got %#v", apiErr)
+	}
+	afterEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events after failed patch: %v", err)
+	}
+	if len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("failed patch should roll back linked plan mode events, before=%#v after=%#v", beforeEvents, afterEvents)
+	}
+	if countWebEventType(afterEvents, "planmode.created") != countWebEventType(beforeEvents, "planmode.created") ||
+		countWebEventType(afterEvents, "planmode.linked_goal") != countWebEventType(beforeEvents, "planmode.linked_goal") {
+		t.Fatalf("failed patch left linked plan mode event behind, before=%#v after=%#v", beforeEvents, afterEvents)
 	}
 }
 

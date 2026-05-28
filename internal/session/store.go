@@ -876,6 +876,22 @@ func (s *Store) AppendEvents(sessionID string, items []events.Event) error {
 	return nil
 }
 
+func (s *Store) RestoreEvents(sessionID string, items []events.Event) error {
+	if err := validateEvents(sessionID, items); err != nil {
+		return fmt.Errorf("validate events.jsonl: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "events.jsonl")
+	if err != nil {
+		return err
+	}
+	if err := s.writeEventsJSONL(path, items); err != nil {
+		return fmt.Errorf("restore events %s: %w", path, err)
+	}
+	return nil
+}
+
 func (s *Store) LoadTodo(sessionID string) ([]TodoItem, error) {
 	var todo []TodoItem
 	path, err := s.sessionPath(sessionID, "todo.json")
