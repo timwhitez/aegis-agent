@@ -1150,6 +1150,29 @@ func TestLongRunCheckpointReportsCorruptOptionalFacts(t *testing.T) {
 	}
 }
 
+func TestLongRunCheckpointReportsUnreadableCompactionArtifactDirectory(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	meta.ParentSessionID = "parent-session"
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	dir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions")
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove compactions dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-compactions"), dir); err != nil {
+		t.Fatalf("create broken compactions symlink: %v", err)
+	}
+
+	err := writeLongRunCheckpoint(store, meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "compaction summary artifacts") || !strings.Contains(err.Error(), "artifacts") {
+		t.Fatalf("expected unreadable compaction artifact directory error, got %v", err)
+	}
+	if _, loadErr := store.LoadLongRunCheckpoint(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("expected no misleading checkpoint after unreadable compaction artifact directory, got %v", loadErr)
+	}
+}
+
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	meta.ParentSessionID = "parent-session"

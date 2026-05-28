@@ -397,6 +397,10 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, planMode, planModeErr, artifacts, tasks, children, jobs, state) {
 		return nil
 	}
+	latestCompaction, err := latestCompactionArtifact(store, sessionID)
+	if err != nil {
+		return fmt.Errorf("load compaction artifacts for long-run checkpoint: %w", err)
+	}
 	rootSessionID := meta.RootSessionID
 	if rootSessionID == "" {
 		rootSessionID = meta.ID
@@ -409,7 +413,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		TodoSummary:              todo,
 		TaskSummary:              map[string]int{"ready": taskSummary.Ready, "blocked": taskSummary.Blocked, "completed": taskSummary.Completed, "cancelled": taskSummary.Cancelled, "done": taskSummary.Done, "total": len(tasks)},
 		RequiredArtifactStatus:   artifacts,
-		LatestCompactionArtifact: latestCompactionArtifact(store, sessionID),
+		LatestCompactionArtifact: latestCompaction,
 		Provider:                 meta.Provider,
 		Model:                    meta.Model,
 		EffectiveProviderOptions: meta.ProviderOptions,
@@ -483,25 +487,15 @@ func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session
 	return state.LastCompactionInputChars > 0
 }
 
-func latestCompactionArtifact(store *session.Store, sessionID string) string {
-	dir := filepath.Join(store.SessionDir(sessionID), "artifacts", "compactions")
-	entries, err := os.ReadDir(dir)
+func latestCompactionArtifact(store *session.Store, sessionID string) (string, error) {
+	relativePath, err := latestCompactionArtifactRelativePath(store, sessionID)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	var latest os.DirEntry
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if latest == nil || entry.Name() > latest.Name() {
-			latest = entry
-		}
+	if relativePath == "" {
+		return "", nil
 	}
-	if latest == nil {
-		return ""
-	}
-	return filepath.Join(dir, latest.Name())
+	return filepath.Join(store.SessionDir(sessionID), "artifacts", relativePath), nil
 }
 
 func latestProcessOwnerClue(eventsList []events.Event) (session.ProcessOwnerClue, bool) {

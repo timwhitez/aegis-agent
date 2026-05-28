@@ -7950,6 +7950,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-316. That slice covered a latest summary file that was found but unreadable or empty; this slice covers the earlier directory discovery boundary where an existing unusable compaction directory was collapsed into "no reusable summary exists."
 - Confirmed the minimal fix belongs in `latestCompactionArtifactRelativePath`: preserve missing-directory-as-empty compatibility, but reject symlinked, non-directory, or unreadable existing compaction artifact directories before reuse can synthesize a provider-view summary.
 
+### Review 311
+
+- Confirmed FCA-20260528-318 against `spec/18-durable-contract-and-completion.md`: `checkpoints/longrun-latest.json` records `latest_compaction_artifact` as a resume index fact for compacted sessions, while source logs and compaction artifacts remain authoritative.
+- Confirmed this is distinct from FCA-20260528-317. That slice fixed provider-view compaction hysteresis reuse; this slice covers the long-run checkpoint writer's separate derived latest-compaction-artifact field.
+- Confirmed the minimal fix belongs in `writeLongRunCheckpoint` / `latestCompactionArtifact`: only checkpoint-eligible sessions should inspect compaction artifacts, but once writing a checkpoint, existing unusable compaction artifact directories must stop the checkpoint instead of recording an empty latest artifact.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10030,6 +10036,53 @@ Validation:
 - Pre-fix focused verification failed as expected: `TestCompactorReportsUnreadableCompactionArtifactDirectory` returned a derived summary with `err=<nil>` over a broken `artifacts/compactions` symlink.
 - `go test -timeout 120s ./internal/runtime -run 'TestCompactor(ReusesSummaryWithinHysteresisWindow|ReportsCorruptReusableSummaryArtifact|ReportsUnreadableCompactionArtifactDirectory)' -count=1`: passed.
 - `gofmt -l internal/runtime/compaction.go internal/runtime/compaction_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-318
+
+Slice: `fix(runtime): report unusable checkpoint compaction artifacts`
+
+Finding:
+
+- `writeLongRunCheckpoint` populated `LatestCompactionArtifact` through `latestCompactionArtifact`.
+- That helper raw-read `artifacts/compactions/` and returned an empty string for every `os.ReadDir` error.
+- In checkpoint-worthy sessions, an existing but unusable compaction artifact directory therefore produced a successful `checkpoints/longrun-latest.json` with no latest compaction artifact recorded.
+
+Impact:
+
+- A long-running compacted or parent-linked session could write a checkpoint that implied no latest compaction artifact existed while the actual compaction artifact namespace was broken.
+- Resume diagnostics and Web/session detail consumers could lose the clue that compaction recovery context was unavailable because of an artifact-directory problem.
+- This was a derived-view checkpoint issue: source logs remained authoritative, but the checkpoint resume index became misleading.
+
+Changes:
+
+- Reused the runtime compaction artifact discovery helper for `latestCompactionArtifact`.
+- Propagated unusable compaction artifact directory errors from `writeLongRunCheckpoint` as `load compaction artifacts for long-run checkpoint`.
+- Preserved normal no-artifact and non-checkpoint behavior by checking compaction artifacts only after `shouldWriteLongRunCheckpoint` decides a checkpoint should be written.
+- Added a focused regression proving unreadable compaction artifact directories stop checkpoint writing and do not leave a misleading `longrun-latest.json`.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLongRunCheckpointReportsUnreadableCompactionArtifactDirectory` returned nil and wrote a checkpoint over a broken `artifacts/compactions` symlink.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointReportsUnreadableCompactionArtifactDirectory|TestLongRunCheckpointReportsCorrupt(OptionalFacts|LogFacts|TaskGraph|TodoState|ArtifactTracker)' -count=1`: passed.
+- `gofmt -l internal/runtime/session_summary.go internal/runtime/contract_controller_test.go`: passed with no output.
 - `git diff --check`: passed.
 - `go test -timeout 120s ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/session -count=1`: passed.
