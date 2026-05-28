@@ -7926,6 +7926,12 @@ Evidence gates:
 - Confirmed this is distinct from prior corrupt queue JSON reporting, queue status canonicalization, lifecycle event rollback, and background notification validation slices. Those covered unreadable files, duplicate status-file selection, event/notification ordering, or parent notification records; this slice covers syntactically valid but semantically malformed queue job snapshots and direct malformed job writes.
 - Confirmed the minimal fix belongs in the session store queue job boundary: validate job IDs, required prompt/mode/timestamps, supported statuses, linked IDs, role/status fields, provider option counters, wait/isolation modes, visible paths, and terminal job/session status consistency while preserving model-led queue/delegation semantics and not adding workflow orchestration.
 
+### Review 307
+
+- Confirmed FCA-20260528-314 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/18-durable-contract-and-completion.md`: `provider-raw/<turn>.json` is an optional diagnostic provider envelope used for replay diagnostics and audit, but it is still a local session file fact when enabled.
+- Confirmed this is distinct from FCA-20260528-265. That prior raw-sidecar slice made raw sidecar write failures durably fail the runtime; this slice covers semantically malformed but syntactically valid sidecar snapshots and direct malformed sidecar writes at the store boundary.
+- Confirmed the minimal fix belongs in `SessionStore` provider raw sidecar read/write APIs: validate only the provider-agnostic envelope fields and path turn consistency while leaving provider-native raw item selection and replay policy owned by provider adapters, not Web, CLI, tools, or the store.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -9823,6 +9829,55 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-314
+
+Slice: `fix(session): validate provider raw sidecar facts`
+
+Finding:
+
+- `SaveProviderRawSidecar` filled default schema/timestamp values and then wrote the envelope without validating provider/model, positive turn values, timestamp syntax, or internal stop reason values.
+- `LoadProviderRawSidecar` returned syntactically valid JSON without checking that the file content's `turn` matched the requested `provider-raw/<turn>.json` path.
+- `provider-raw/<turn>.json` is diagnostic-only and not a replay authority, but it is still a session-local fact used to inspect provider turns and correlate audit evidence when `provider_options.raw_sidecar=true`.
+
+Impact:
+
+- A malformed sidecar could claim to describe a different turn than its filename, making provider diagnostics disagree with provider attempts, state turn accounting, and runtime events.
+- Blank provider/model envelopes or unsupported stop reasons could be displayed or inspected as if they were valid normalized provider diagnostics.
+- Direct malformed writes could overwrite an existing valid raw sidecar, weakening the file-first evidence chain around provider turns.
+
+Changes:
+
+- Added provider raw sidecar normalization and validation at the session store boundary.
+- `SaveProviderRawSidecar` now rejects invalid envelopes before writing and still fills schema version and timestamp defaults for valid runtime callers.
+- `LoadProviderRawSidecar` now rejects non-positive requested turns and validates loaded sidecars against the requested turn path.
+- Validation is intentionally limited to provider-agnostic envelope fields: schema version, positive turn, requested turn consistency, provider/model, RFC3339Nano timestamp, and supported internal stop reasons. `selected_raw_items` remains adapter-selected diagnostic JSON and is not parsed or used as replay authority.
+- Added focused regressions for malformed loaded snapshots, malformed write rejection with durable fact preservation, and invalid requested turn rejection.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestProviderRawSidecarRejectsMalformedSnapshot` loaded a turn-mismatched sidecar, `TestProviderRawSidecarWritesRejectMalformedFacts` saved a blank-provider sidecar, and `TestProviderRawSidecarRejectsInvalidRequestedTurn` treated turn `0` as a missing file instead of an invalid request.
+- `go test -timeout 120s ./internal/session -run 'TestProviderRawSidecarRejectsMalformedSnapshot|TestProviderRawSidecarWritesRejectMalformedFacts|TestProviderRawSidecarRejectsInvalidRequestedTurn|TestStoreProviderRawSidecarRoundTrip' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestProviderRawSidecar(WriteErrorFailsSessionDurably|WritesEnvelopeWhenEnabled|DisabledByDefault)|TestRunnerContinuePreservesMonotonicTurnForProviderAttemptsAndRawSidecar' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

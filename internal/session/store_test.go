@@ -1036,6 +1036,109 @@ func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	}
 }
 
+func TestProviderRawSidecarRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	malformed := ProviderRawSidecar{
+		SchemaVersion: 1,
+		Provider:      "openai",
+		Model:         "gpt-test",
+		Turn:          99,
+		Timestamp:     time.Now().UTC().Format(time.RFC3339Nano),
+		StopReason:    "definitely_not_a_runtime_stop_reason",
+	}
+	path := store.ProviderRawSidecarPath(meta.ID, 2)
+	if err := store.writeJSONFile(path, malformed); err != nil {
+		t.Fatalf("write malformed sidecar: %v", err)
+	}
+	if _, err := store.LoadProviderRawSidecar(meta.ID, 2); err == nil || !strings.Contains(err.Error(), "validate provider-raw/2.json") || !strings.Contains(err.Error(), "does not match requested turn") {
+		t.Fatalf("expected malformed provider raw sidecar validation error, got %v", err)
+	}
+}
+
+func TestProviderRawSidecarWritesRejectMalformedFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := ProviderRawSidecar{
+		Provider:   "openai",
+		Model:      "gpt-test",
+		Turn:       2,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		StopReason: "done_candidate",
+		SelectedRawItems: map[string]any{
+			"status": "completed",
+		},
+	}
+	if err := store.SaveProviderRawSidecar(meta.ID, valid); err != nil {
+		t.Fatalf("save valid sidecar: %v", err)
+	}
+
+	invalid := valid
+	invalid.Provider = " "
+	invalid.Timestamp = time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano)
+	if err := store.SaveProviderRawSidecar(meta.ID, invalid); err == nil || !strings.Contains(err.Error(), "provider raw sidecar provider is required") {
+		t.Fatalf("expected provider raw sidecar write validation rejection, got %v", err)
+	}
+
+	loaded, err := store.LoadProviderRawSidecar(meta.ID, 2)
+	if err != nil {
+		t.Fatalf("load preserved sidecar: %v", err)
+	}
+	if loaded.Provider != "openai" || loaded.Model != "gpt-test" || loaded.StopReason != "done_candidate" {
+		t.Fatalf("malformed provider raw sidecar write changed durable fact: %#v", loaded)
+	}
+}
+
+func TestProviderRawSidecarRejectsInvalidRequestedTurn(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.LoadProviderRawSidecar(meta.ID, 0); err == nil || !strings.Contains(err.Error(), "provider raw sidecar turn must be positive") {
+		t.Fatalf("expected requested turn validation error, got %v", err)
+	}
+}
+
 func TestLongRunCheckpointRejectsMalformedSnapshot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

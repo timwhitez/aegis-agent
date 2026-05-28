@@ -647,29 +647,34 @@ func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error
 }
 
 func (s *Store) SaveProviderRawSidecar(sessionID string, sidecar ProviderRawSidecar) error {
+	if err := normalizeAndValidateProviderRawSidecar(&sidecar); err != nil {
+		return fmt.Errorf("validate provider-raw/%d.json: %w", sidecar.Turn, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "provider-raw", fmt.Sprintf("%d.json", sidecar.Turn))
 	if err != nil {
 		return err
 	}
-	if sidecar.SchemaVersion == 0 {
-		sidecar.SchemaVersion = 1
-	}
-	if strings.TrimSpace(sidecar.Timestamp) == "" {
-		sidecar.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
-	}
 	return s.writeJSONFile(path, sidecar)
 }
 
 func (s *Store) LoadProviderRawSidecar(sessionID string, turn int) (ProviderRawSidecar, error) {
 	var sidecar ProviderRawSidecar
+	if turn <= 0 {
+		return sidecar, errors.New("provider raw sidecar turn must be positive")
+	}
 	path, err := s.sessionPath(sessionID, "provider-raw", fmt.Sprintf("%d.json", turn))
 	if err != nil {
 		return sidecar, err
 	}
-	err = readJSONFile(path, &sidecar)
-	return sidecar, err
+	if err := readJSONFile(path, &sidecar); err != nil {
+		return sidecar, err
+	}
+	if err := validateProviderRawSidecar(sidecar, turn); err != nil {
+		return ProviderRawSidecar{}, fmt.Errorf("validate provider-raw/%d.json: %w", turn, err)
+	}
+	return sidecar, nil
 }
 
 func (s *Store) ProviderRawSidecarPath(sessionID string, turn int) string {
@@ -3637,6 +3642,49 @@ func validateProviderAttempt(attempt ProviderAttempt) error {
 	}
 	if strings.TrimSpace(attempt.CreatedAt) == "" {
 		return errors.New("provider attempt created_at is required")
+	}
+	return nil
+}
+
+func normalizeAndValidateProviderRawSidecar(sidecar *ProviderRawSidecar) error {
+	if sidecar == nil {
+		return errors.New("provider raw sidecar is required")
+	}
+	if sidecar.SchemaVersion == 0 {
+		sidecar.SchemaVersion = 1
+	}
+	if strings.TrimSpace(sidecar.Timestamp) == "" {
+		sidecar.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return validateProviderRawSidecar(*sidecar, sidecar.Turn)
+}
+
+func validateProviderRawSidecar(sidecar ProviderRawSidecar, expectedTurn int) error {
+	if sidecar.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported provider raw sidecar schema_version %d", sidecar.SchemaVersion)
+	}
+	if sidecar.Turn <= 0 {
+		return errors.New("provider raw sidecar turn must be positive")
+	}
+	if expectedTurn > 0 && sidecar.Turn != expectedTurn {
+		return fmt.Errorf("provider raw sidecar turn %d does not match requested turn %d", sidecar.Turn, expectedTurn)
+	}
+	if strings.TrimSpace(sidecar.Provider) == "" {
+		return errors.New("provider raw sidecar provider is required")
+	}
+	if strings.TrimSpace(sidecar.Model) == "" {
+		return errors.New("provider raw sidecar model is required")
+	}
+	if strings.TrimSpace(sidecar.Timestamp) == "" {
+		return errors.New("provider raw sidecar timestamp is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, sidecar.Timestamp); err != nil {
+		return fmt.Errorf("provider raw sidecar timestamp must be RFC3339Nano: %w", err)
+	}
+	switch sidecar.StopReason {
+	case "", "tool_use", "done_candidate", "completed", "max_tokens", "blocked", "cancelled", "error":
+	default:
+		return fmt.Errorf("invalid provider raw sidecar stop_reason %q", sidecar.StopReason)
 	}
 	return nil
 }
