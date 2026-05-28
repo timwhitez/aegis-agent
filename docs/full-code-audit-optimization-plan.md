@@ -7920,6 +7920,12 @@ Evidence gates:
 - Confirmed this is distinct from prior event append atomicity and append-error propagation slices. Those made event writes fail coherently; this slice covers syntactically valid but semantically invalid event records and malformed append batches.
 - Confirmed the minimal fix belongs in `SessionStore` event read/write APIs: validate event IDs, session identity, type, time, phase, duplicate IDs, and append-batch consistency while preserving existing runtime event names and not adding event-type-specific workflow policy.
 
+### Review 306
+
+- Confirmed FCA-20260528-313 against `spec/01-runtime-architecture.md`, `spec/15-background-queue.md`, and `spec/18-durable-contract-and-completion.md`: `_queue/<status>/job_*.json` files are durable queue/child execution facts consumed by workers, parent coordination, Web detail/list routes, session summaries, and long-run checkpoints.
+- Confirmed this is distinct from prior corrupt queue JSON reporting, queue status canonicalization, lifecycle event rollback, and background notification validation slices. Those covered unreadable files, duplicate status-file selection, event/notification ordering, or parent notification records; this slice covers syntactically valid but semantically malformed queue job snapshots and direct malformed job writes.
+- Confirmed the minimal fix belongs in the session store queue job boundary: validate job IDs, required prompt/mode/timestamps, supported statuses, linked IDs, role/status fields, provider option counters, wait/isolation modes, visible paths, and terminal job/session status consistency while preserving model-led queue/delegation semantics and not adding workflow orchestration.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7981,6 +7987,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-313
+
+Slice: `fix(session): validate queue job facts`
+
+Finding:
+
+- `SaveJob`, `LoadJob`, `ListJobs`, and `ClaimNextQueuedJob` trusted syntactically valid queue job JSON with missing prompts, unsupported child session statuses, invalid visible paths, invalid role/wait/isolation values, or negative counters.
+- `_queue/<status>/job_*.json` is the durable background execution fact source used by queue workers, Web queue/detail routes, parent coordination, session summaries, long-run checkpoints, and queue-linked child reconciliation.
+
+Impact:
+
+- A malformed queued job with an empty prompt could be claimed and moved to `running`, creating a durable leased job that cannot represent the requested child work.
+- Web detail/list and session summaries could display invalid queue facts, while parent coordination and reconciliation used the same invalid records to derive child/queue completion state.
+- Invalid visible paths or linked IDs could make queue handoff evidence point outside the expected artifact namespace or to impossible session/job references.
+
+Changes:
+
+- Added queue job validation for required job IDs, status, `created_at`, `updated_at`, prompt, supported run mode, linked parent/root/session IDs, supported child session status, supported agent roles, provider option counters, non-negative worker PID, supported wait/isolation modes, terminal job/session status consistency, and store-relative visible paths.
+- Routed `SaveJob`, `LoadJob`, `ListJobs`, `ClaimNextQueuedJob`, and heartbeat refresh through the validator while preserving existing mismatched filename skip behavior and recovery compatibility for older running-job fixtures that do not carry a full worker lease.
+- Kept validation at the store fact boundary only: no queue workflow, child scheduling, Web UI, or provider adapter behavior was added.
+- Added focused regressions for malformed loaded queue job snapshots, rejected malformed queue job writes, and malformed queued jobs not being moved to `running`.
+
+Validation:
+
+- Pre-fix focused verification in `/tmp/go-cli-agent-queuejob-pre` with only the new tests applied failed as expected: `TestLoadJobsRejectMalformedQueueJobSnapshot` loaded a blank-prompt job, `TestQueueJobWritesRejectMalformedFacts` saved a blank-prompt job, and `TestClaimNextQueuedJobRejectsMalformedQueuedJob` claimed a blank-prompt queued job into `running`.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobsRejectMalformedQueueJobSnapshot|TestQueueJobWritesRejectMalformedFacts|TestClaimNextQueuedJobRejectsMalformedQueuedJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobsRejectMalformedQueueJobSnapshot|TestQueueJobWritesRejectMalformedFacts|TestClaimNextQueuedJobRejectsMalformedQueuedJob|TestStoreClaimNextQueuedJobIsAtomicAcrossStores|TestClaimNextQueuedJobReportsCorruptQueuedJob|TestListJobsReportsCorruptQueueJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 45 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-312
 

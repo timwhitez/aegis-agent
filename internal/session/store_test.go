@@ -3403,6 +3403,125 @@ func TestClaimNextQueuedJobReportsCorruptQueuedJob(t *testing.T) {
 	}
 }
 
+func TestLoadJobsRejectMalformedQueueJobSnapshot(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	valid := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_valid_after_bad",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Status:        QueueStatusQueued,
+		Prompt:        "do valid work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.SaveJob(valid); err != nil {
+		t.Fatalf("save valid queue job: %v", err)
+	}
+	malformed := valid
+	malformed.ID = "job_bad_snapshot"
+	malformed.Prompt = ""
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusQueued, malformed.ID), malformed); err != nil {
+		t.Fatalf("write malformed queue job: %v", err)
+	}
+
+	if _, err := store.LoadJob(malformed.ID); err == nil || !strings.Contains(err.Error(), "queue job prompt is required") {
+		t.Fatalf("expected malformed queue job load error, got %v", err)
+	}
+	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "job_bad_snapshot.json") || !strings.Contains(err.Error(), "queue job prompt is required") {
+		t.Fatalf("expected malformed queue job list error, got %v", err)
+	}
+
+	loaded, err := store.LoadJob(valid.ID)
+	if err != nil {
+		t.Fatalf("valid queue job should remain loadable: %v", err)
+	}
+	if loaded.ID != valid.ID || loaded.Prompt != valid.Prompt {
+		t.Fatalf("unexpected valid queue job after malformed snapshot: %#v", loaded)
+	}
+}
+
+func TestQueueJobWritesRejectMalformedFacts(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	valid := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_valid_write",
+		Status:        QueueStatusQueued,
+		Prompt:        "do valid work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.SaveJob(valid); err != nil {
+		t.Fatalf("save valid queue job: %v", err)
+	}
+
+	invalidPrompt := valid
+	invalidPrompt.ID = "job_invalid_prompt"
+	invalidPrompt.Prompt = " "
+	if err := store.SaveJob(invalidPrompt); err == nil || !strings.Contains(err.Error(), "queue job prompt is required") {
+		t.Fatalf("expected save to reject blank prompt, got %v", err)
+	}
+	invalidSessionStatus := valid
+	invalidSessionStatus.ID = "job_invalid_session_status"
+	invalidSessionStatus.SessionID = "child_invalid_status"
+	invalidSessionStatus.SessionStatus = "done"
+	if err := store.SaveJob(invalidSessionStatus); err == nil || !strings.Contains(err.Error(), "invalid queue job session_status") {
+		t.Fatalf("expected save to reject invalid session status, got %v", err)
+	}
+	invalidVisiblePath := valid
+	invalidVisiblePath.ID = "job_invalid_visible_path"
+	invalidVisiblePath.VisiblePaths = []string{"../escape.md"}
+	if err := store.SaveJob(invalidVisiblePath); err == nil || !strings.Contains(err.Error(), "queue job visible_paths") {
+		t.Fatalf("expected save to reject invalid visible path, got %v", err)
+	}
+
+	loaded, err := store.LoadJob(valid.ID)
+	if err != nil {
+		t.Fatalf("load valid queue job: %v", err)
+	}
+	if loaded.ID != valid.ID || loaded.Prompt != valid.Prompt {
+		t.Fatalf("malformed queue job write changed durable valid job: %#v", loaded)
+	}
+	for _, id := range []string{invalidPrompt.ID, invalidSessionStatus.ID, invalidVisiblePath.ID} {
+		if _, err := store.LoadJob(id); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("malformed queue job %s should not be persisted, got %v", id, err)
+		}
+	}
+}
+
+func TestClaimNextQueuedJobRejectsMalformedQueuedJob(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_bad_claim_shape",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Status:        QueueStatusQueued,
+		Prompt:        "",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusQueued, job.ID), job); err != nil {
+		t.Fatalf("write malformed queued job: %v", err)
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err == nil || !strings.Contains(err.Error(), "job_bad_claim_shape.json") || !strings.Contains(err.Error(), "queue job prompt is required") {
+		t.Fatalf("expected malformed queued job claim error, got job=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); err != nil {
+		t.Fatalf("expected malformed queued job to remain queued for diagnostics, got %v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected malformed queued job not to move to running, got %v", err)
+	}
+}
+
 func TestReconcileStaleRunningJobWithoutSessionFailsJob(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)

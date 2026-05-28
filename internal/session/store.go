@@ -1716,17 +1716,8 @@ func (s *Store) DeleteJob(jobID string) error {
 }
 
 func (s *Store) saveJobLocked(job QueueJob) error {
-	if err := validateStoreID("queue job", job.ID); err != nil {
-		return err
-	}
 	if strings.TrimSpace(job.Status) == "" {
 		job.Status = QueueStatusQueued
-	}
-	if !isQueueStatus(job.Status) {
-		return fmt.Errorf("invalid queue job status: %s", job.Status)
-	}
-	if err := s.ensureQueueDirs(); err != nil {
-		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if job.SchemaVersion == 0 {
@@ -1736,6 +1727,12 @@ func (s *Store) saveJobLocked(job QueueJob) error {
 		job.CreatedAt = now
 	}
 	job.UpdatedAt = now
+	if err := validateQueueJob(job); err != nil {
+		return err
+	}
+	if err := s.ensureQueueDirs(); err != nil {
+		return err
+	}
 	target := s.queueJobPath(job.Status, job.ID)
 	if err := s.writeJSONFile(target, job); err != nil {
 		return err
@@ -1866,8 +1863,11 @@ func (s *Store) loadQueueJobCopies(jobID string) ([]queueJobCopy, error) {
 		if err != nil {
 			return nil, err
 		}
-		if job.ID != jobID || !isQueueStatus(job.Status) {
+		if job.ID != jobID {
 			continue
+		}
+		if err := validateQueueJob(job); err != nil {
+			return nil, fmt.Errorf("queue job %s: %w", filepath.Base(path), err)
 		}
 		copies = append(copies, queueJobCopy{status: status, path: path, job: job})
 	}
@@ -1900,8 +1900,12 @@ func (s *Store) listQueueJobCopies() ([]queueJobCopy, error) {
 				}
 				return nil, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 			}
-			if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" || !isQueueStatus(job.Status) {
+			jobID := strings.TrimSuffix(entry.Name(), ".json")
+			if job.ID != jobID {
 				continue
+			}
+			if err := validateQueueJob(job); err != nil {
+				return nil, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 			}
 			out = append(out, queueJobCopy{status: status, path: path, job: job})
 		}
@@ -2148,7 +2152,14 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 			}
 			return QueueJob{}, false, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 		}
-		if err := validateStoreID("queue job", job.ID); err != nil || entry.Name() != job.ID+".json" {
+		jobID := strings.TrimSuffix(entry.Name(), ".json")
+		if job.ID != jobID {
+			continue
+		}
+		if err := validateQueueJob(job); err != nil {
+			return QueueJob{}, false, fmt.Errorf("queue job %s: %w", entry.Name(), err)
+		}
+		if job.Status != QueueStatusQueued {
 			continue
 		}
 		candidates = append(candidates, candidate{name: entry.Name(), job: job})
@@ -2194,6 +2205,9 @@ func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 	var job QueueJob
 	if err := readJSONFile(path, &job); err != nil {
 		return QueueJob{}, err
+	}
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
 	}
 	if job.Status != QueueStatusRunning {
 		return QueueJob{}, fmt.Errorf("queue job %s is not running", jobID)
@@ -3378,6 +3392,101 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 	}
 	for _, visiblePath := range notification.VisiblePaths {
 		if _, err := validateStoreRelativePath("background notification visible_paths", visiblePath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateQueueJob(job QueueJob) error {
+	if err := validateStoreID("queue job", job.ID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(job.Status) == "" {
+		return errors.New("queue job status is required")
+	}
+	if !isQueueStatus(job.Status) {
+		return fmt.Errorf("invalid queue job status %q", job.Status)
+	}
+	if strings.TrimSpace(job.CreatedAt) == "" {
+		return errors.New("queue job created_at is required")
+	}
+	if strings.TrimSpace(job.UpdatedAt) == "" {
+		return errors.New("queue job updated_at is required")
+	}
+	if strings.TrimSpace(job.Prompt) == "" {
+		return errors.New("queue job prompt is required")
+	}
+	switch job.Mode {
+	case ModeRun, ModeExec, ModeInit:
+	default:
+		if strings.TrimSpace(job.Mode) == "" {
+			return errors.New("queue job mode is required")
+		}
+		return fmt.Errorf("invalid queue job mode %q", job.Mode)
+	}
+	if strings.TrimSpace(job.ParentSessionID) != "" {
+		if err := validateStoreID("queue job parent session", job.ParentSessionID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(job.RootSessionID) != "" {
+		if err := validateStoreID("queue job root session", job.RootSessionID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(job.SessionID) != "" {
+		if err := validateStoreID("queue job session", job.SessionID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(job.SessionStatus) != "" {
+		switch job.SessionStatus {
+		case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusFailed:
+		default:
+			return fmt.Errorf("invalid queue job session_status %q", job.SessionStatus)
+		}
+	}
+	if strings.TrimSpace(job.AgentRole) != "" {
+		switch job.AgentRole {
+		case "planner", "generator", "evaluator":
+		default:
+			return fmt.Errorf("invalid queue job agent_role %q", job.AgentRole)
+		}
+	}
+	if err := validateProviderOptions(job.ProviderOptions); err != nil {
+		return err
+	}
+	if job.WorkerPID < 0 {
+		return errors.New("queue job worker_pid must be non-negative")
+	}
+	if strings.TrimSpace(job.WaitMode) != "" {
+		switch job.WaitMode {
+		case "wait-all", "wait-any":
+		default:
+			return fmt.Errorf("invalid queue job wait_mode %q", job.WaitMode)
+		}
+	}
+	if strings.TrimSpace(job.IsolationMode) != "" {
+		switch job.IsolationMode {
+		case "off", "auto", "copy", "git":
+		default:
+			return fmt.Errorf("invalid queue job isolation_mode %q", job.IsolationMode)
+		}
+	}
+	if isTerminalQueueStatus(job.Status) && strings.TrimSpace(job.LastError) == "" && strings.TrimSpace(job.SessionID) != "" && strings.TrimSpace(job.SessionStatus) != "" {
+		if job.Status == QueueStatusCompleted && job.SessionStatus != StatusCompleted {
+			return fmt.Errorf("completed queue job session_status must be completed, got %q", job.SessionStatus)
+		}
+		if job.Status == QueueStatusFailed && job.SessionStatus != StatusFailed {
+			return fmt.Errorf("failed queue job session_status must be failed, got %q", job.SessionStatus)
+		}
+	}
+	if err := validateStringList("queue job visible_paths", job.VisiblePaths); err != nil {
+		return err
+	}
+	for _, visiblePath := range job.VisiblePaths {
+		if _, err := validateStoreRelativePath("queue job visible_paths", visiblePath); err != nil {
 			return err
 		}
 	}
