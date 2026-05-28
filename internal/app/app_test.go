@@ -2492,6 +2492,33 @@ func TestWebCommandRejectsUnsupportedWorkerCountBeforeServing(t *testing.T) {
 	}
 }
 
+func TestWebCommandReportsMissingCurrentDirectoryBeforeServing(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	missingWD := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "missing-config.yaml")
+	t.Setenv("GO_CLI_AGENT_ENV_FILE", filepath.Join(t.TempDir(), "missing.env"))
+	if err := os.Chdir(missingWD); err != nil {
+		t.Fatalf("chdir missing cwd seed: %v", err)
+	}
+	if err := os.Remove(missingWD); err != nil {
+		_ = os.Chdir(originalWD)
+		t.Fatalf("remove cwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = Run(ctx, []string{"web", "--workers", "0", "--config", configPath}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "getwd") {
+		t.Fatalf("expected missing current directory error, got %v", err)
+	}
+}
+
 func testAppSessionMetadata(t *testing.T, id string) session.SessionMetadata {
 	t.Helper()
 	workdir := t.TempDir()

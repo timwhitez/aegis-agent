@@ -36,7 +36,10 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if *workers > maxWebWorkerCount {
 		return fmt.Errorf("workers must be <= %d", maxWebWorkerCount)
 	}
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	cfg, err := loadConfig(*configPath, cwd)
 	if err != nil {
 		return err

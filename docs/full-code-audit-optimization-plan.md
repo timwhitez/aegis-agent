@@ -8442,7 +8442,41 @@ Evidence gates:
 - Confirmed this is distinct from the existing `/api/workers` validation coverage. The Web API already rejects `desired_count` values above the worker maximum with HTTP 400, while the CLI startup path passed `--workers` directly to `webconsole.New`, where `newWorkerPool` clamped excessive counts to `maxWorkerCount`.
 - Confirmed the minimal fix belongs in `internal/app/web_cmd.go`: validate `--workers` before loading config or creating the WebConsole service, preserving the documented `0` through `8` range, existing worker pool clamping as an internal safety net, and the advanced `/api/workers` behavior.
 
+### Review 383
+
+- Confirmed FCA-20260529-395 against `spec/17-web-console.md`'s default Web-first startup contract and `spec/01-runtime-architecture.md`'s app adapter boundary: `go-cli-agent web` derives its config path, `.env` path, session store, and skill roots from the service process current working directory, so an unresolvable cwd must be a startup error.
+- Confirmed this is distinct from FCA-20260529-392, FCA-20260529-393, and FCA-20260529-394. Those slices covered WebConsole API metadata, Skills discovery, and worker-count validation after the service path was otherwise viable. The residual issue was the CLI startup path itself: `webCommand` ignored `os.Getwd()` failures before config load and WebConsole construction.
+- Confirmed the minimal fix belongs in `internal/app/web_cmd.go`: return the `os.Getwd()` error before loading config or creating the service, matching the existing `run` / `exec` command behavior and preserving all successful startup behavior.
+
 ## Update Log
+
+### FCA-20260529-395
+
+Slice: `fix(web): fail fast when cwd is unavailable`
+
+Finding:
+
+- `spec/17-web-console.md` makes `go-cli-agent web` the default local operator surface, and `spec/01-runtime-architecture.md` keeps Web app startup behind the app adapter while it reuses local session/config facts.
+- `internal/app/web_cmd.go` used `cwd, _ := os.Getwd()` and then passed that value into `loadConfig()` and `config.PersistPath()`.
+- `loadConfig()` uses the cwd to resolve the default `.env`, workspace config, session directory, and skill directories.
+- A focused CLI regression deleted the process cwd before invoking `go-cli-agent web --workers 0 --config <absolute missing path>` under a cancelled context. Before the fix, the command returned nil because the missing cwd error was swallowed and startup proceeded with an empty cwd-derived configuration.
+
+Impact:
+
+- The default Web-first startup path could silently normalize an invalid service cwd into relative config/session/skill paths instead of telling the operator why startup was unsafe.
+- This made `web` less strict than `run` / `exec`, which already return `os.Getwd()` errors before creating a runner.
+- Local-console diagnostics were weaker exactly when filesystem facts were unreliable.
+
+Changes:
+
+- Updated `webCommand` to return `os.Getwd()` errors before loading config or constructing `WebConsoleService`.
+- Added `TestWebCommandReportsMissingCurrentDirectoryBeforeServing`, which reproduces the missing-cwd startup condition without opening a listener.
+- Preserved existing `--workers` validation, cancelled-context shutdown behavior, config loading, and successful service startup semantics.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestWebCommandReportsMissingCurrentDirectoryBeforeServing -count=1`: failed before the fix because `web` returned nil.
+- `go test -timeout 120s ./internal/app -run 'TestWebCommandReportsMissingCurrentDirectoryBeforeServing|TestWebCommandRejectsUnsupportedWorkerCountBeforeServing|TestTopLevelWebCommandDispatches' -count=1`: passed after the fix.
 
 ### FCA-20260529-394
 
