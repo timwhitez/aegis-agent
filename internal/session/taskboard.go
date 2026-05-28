@@ -224,6 +224,18 @@ func validateTask(task Task) error {
 		}
 		return fmt.Errorf("invalid task priority %q", task.Priority)
 	}
+	if strings.TrimSpace(task.CreatedAt) == "" {
+		return errors.New("task created_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, task.CreatedAt); err != nil {
+		return fmt.Errorf("task created_at must be RFC3339Nano: %w", err)
+	}
+	if strings.TrimSpace(task.UpdatedAt) == "" {
+		return errors.New("task updated_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, task.UpdatedAt); err != nil {
+		return fmt.Errorf("task updated_at must be RFC3339Nano: %w", err)
+	}
 	return nil
 }
 

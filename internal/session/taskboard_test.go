@@ -527,6 +527,53 @@ func TestListTasksRejectsMalformedTaskSnapshot(t *testing.T) {
 	}
 }
 
+func TestTaskSnapshotsRejectMalformedTimestamps(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	created, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "existing"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	taskPath := filepath.Join(store.SessionDir(meta.ID), "tasks", created.ID+".json")
+	body := []byte(`{
+  "id":"task_0001",
+  "subject":"existing",
+  "status":"pending",
+  "priority":"medium",
+  "created_at":"not-a-time",
+  "updated_at":"2026-05-28T00:00:00Z"
+}`)
+	if err := os.WriteFile(taskPath, body, 0o600); err != nil {
+		t.Fatalf("write malformed task: %v", err)
+	}
+
+	if _, err := store.ListTasks(meta.ID); err == nil || !strings.Contains(err.Error(), "tasks/task_0001.json") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed task created_at list error, got %v", err)
+	}
+	if _, err := store.GetTask(meta.ID, created.ID); err == nil || !strings.Contains(err.Error(), "validate task") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed task created_at get error, got %v", err)
+	}
+
+	invalidWrite := created
+	invalidWrite.UpdatedAt = "not-a-time"
+	if err := store.SaveTask(meta.ID, invalidWrite); err == nil || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected SaveTask to reject invalid updated_at, got %v", err)
+	}
+}
+
 func TestListTasksRejectsInconsistentGraphSnapshot(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
@@ -566,9 +613,10 @@ func TestListTasksRejectsInconsistentGraphSnapshot(t *testing.T) {
 	if _, err := store.ListTasks(meta.ID); err == nil || !strings.Contains(err.Error(), "validate task graph") || !strings.Contains(err.Error(), "does not include") {
 		t.Fatalf("expected inconsistent task graph error, got %v", err)
 	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if err := store.SaveTasks(meta.ID, []Task{
-		{ID: "task_0001", Subject: "first", Status: "pending", Priority: "medium"},
-		{ID: "task_0002", Subject: "second", Status: "pending", Priority: "medium", BlockedBy: []string{"task_0001"}},
+		{ID: "task_0001", Subject: "first", Status: "pending", Priority: "medium", CreatedAt: now, UpdatedAt: now},
+		{ID: "task_0002", Subject: "second", Status: "pending", Priority: "medium", BlockedBy: []string{"task_0001"}, CreatedAt: now, UpdatedAt: now},
 	}); err == nil || !strings.Contains(err.Error(), "does not include") {
 		t.Fatalf("expected SaveTasks to reject inconsistent graph, got %v", err)
 	}

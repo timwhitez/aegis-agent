@@ -8046,6 +8046,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-305. That slice added generic metadata/state semantic validation for identity, supported modes/statuses, linked IDs, and non-negative counters; this slice covers the remaining timestamp-shape gap where non-empty non-RFC3339 `session.created_at` and `state.updated_at` values were accepted on load/write paths.
 - Confirmed the minimal fix belongs in `SessionStore` metadata/state validation: parse `SessionMetadata.CreatedAt` and `State.UpdatedAt` as RFC3339Nano while preserving `Create` compatibility by filling a missing initial `state.updated_at` before validation, and without adding phase-specific workflow restrictions.
 
+### Review 327
+
+- Confirmed FCA-20260528-334 against `spec/01-runtime-architecture.md`, `spec/12-task-system.md`, and `spec/17-web-console.md`: `tasks/task_*.json` files are durable task graph facts used by runtime context loading, Web task board, session summaries, long-run checkpoints, and rollback paths.
+- Confirmed this is distinct from FCA-20260526-135. That slice made corrupt task files visible and added generic task graph validation for subject/status/priority, duplicate IDs, references, bidirectional edges, and cycles; this slice covers the remaining timestamp-shape gap where non-empty non-RFC3339 `created_at` / `updated_at` task values were accepted on load and save.
+- Confirmed the minimal fix belongs in the task validator boundary: parse `Task.CreatedAt` and `Task.UpdatedAt` as RFC3339Nano so `GetTask`, `ListTasks`, `SaveTask`, `SaveTasks`, and `MutateTasks` share the same durable task timestamp contract without adding workflow ordering or task orchestration behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10751,6 +10757,48 @@ Validation:
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-334
+
+Slice: `fix(tasks): validate task timestamps`
+
+Finding:
+
+- FCA-20260526-135 made corrupt `tasks/task_*.json` files visible and added semantic task graph validation, but `validateTask()` still did not require parseable task timestamps.
+- `Task.CreatedAt` and `Task.UpdatedAt` are durable task graph chronology fields, yet `GetTask()`, `ListTasks()`, `SaveTask()`, `SaveTasks()`, and `MutateTasks()` could accept otherwise-valid tasks with `created_at:"not-a-time"` or `updated_at:"not-a-time"`.
+- A focused regression wrote `tasks/task_0001.json` with an invalid `created_at`; before the fix, `ListTasks()` returned nil error and trusted the malformed task fact.
+
+Impact:
+
+- `tasks/task_*.json` files are persistent task graph facts used by runtime context loading, Web task board projections, session summaries, long-run checkpoints, Goal mission task sync, and rollback paths.
+- Accepting arbitrary task timestamp strings weakened durable task chronology and let malformed recovery facts appear as normal task state in Web/runtime derived views.
+- This was a store/validator boundary gap only; the fix does not introduce task ordering semantics, DAG orchestration, or new runtime workflow behavior.
+
+Changes:
+
+- Added required RFC3339Nano validation for `Task.CreatedAt`.
+- Added required RFC3339Nano validation for `Task.UpdatedAt`.
+- Added focused task snapshot coverage for invalid timestamp load and save paths.
+- Updated an older inconsistent-graph fixture to include valid timestamps so it still reaches the intended graph-edge assertion.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestTaskSnapshotsRejectMalformedTimestamps` saw `ListTasks()` accept `created_at:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run 'TestTaskSnapshotsRejectMalformedTimestamps|TestListTasksRejectsMalformedTaskSnapshot|TestListTasksRejectsInconsistentGraphSnapshot|TestStoreSaveTasksRemovesStaleTaskFiles' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go`: passed with no output.
+- `git diff --check -- internal/session/taskboard.go internal/session/taskboard_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
 - `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
 
