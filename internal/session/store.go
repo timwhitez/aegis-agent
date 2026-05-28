@@ -3881,12 +3881,27 @@ func validateProviderContentBlocks(blocks []ProviderContentBlock) error {
 				return fmt.Errorf("provider_content_block %d summary contains blank value", position)
 			}
 		}
-		if len(bytes.TrimSpace(block.Input)) > 0 && !json.Valid(block.Input) {
-			return fmt.Errorf("provider_content_block %d input must be valid JSON", position)
+		if len(bytes.TrimSpace(block.Input)) > 0 {
+			if err := validateJSONObject(block.Input); err != nil {
+				return fmt.Errorf("provider_content_block %d input must be valid JSON object: %w", position, err)
+			}
 		}
-		if len(bytes.TrimSpace(block.Args)) > 0 && !json.Valid(block.Args) {
-			return fmt.Errorf("provider_content_block %d args must be valid JSON", position)
+		if len(bytes.TrimSpace(block.Args)) > 0 {
+			if err := validateJSONObject(block.Args); err != nil {
+				return fmt.Errorf("provider_content_block %d args must be valid JSON object: %w", position, err)
+			}
 		}
+	}
+	return nil
+}
+
+func validateJSONObject(raw json.RawMessage) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return errors.New("value is not a JSON object")
 	}
 	return nil
 }

@@ -1189,6 +1189,36 @@ func TestLoadMessagesRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
 		t.Fatalf("expected invalid message created_at validation error, got %v", err)
 	}
+
+	malformed = NewMessage("assistant", "provider replay")
+	malformed.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: "anthropic",
+		Type:     "tool_use",
+		ID:       "toolu_1",
+		Name:     "shell",
+		Input:    json.RawMessage(`[]`),
+	}}
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write invalid provider input messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "input must be valid JSON object") {
+		t.Fatalf("expected invalid provider content input validation error, got %v", err)
+	}
+
+	malformed = NewMessage("assistant", "provider replay")
+	malformed.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: "google",
+		Type:     "function_call",
+		ID:       "call_shell",
+		Name:     "shell",
+		Args:     json.RawMessage(`[]`),
+	}}
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write invalid provider args messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "args must be valid JSON object") {
+		t.Fatalf("expected invalid provider content args validation error, got %v", err)
+	}
 }
 
 func TestMessageWritesRejectMalformedFacts(t *testing.T) {
@@ -1225,6 +1255,28 @@ func TestMessageWritesRejectMalformedFacts(t *testing.T) {
 	emptyTool := NewToolMessage(nil)
 	if err := store.AppendMessage(meta.ID, emptyTool); err == nil || !strings.Contains(err.Error(), "tool message must contain tool_results") {
 		t.Fatalf("expected empty tool message append rejection, got %v", err)
+	}
+	invalidProviderInput := NewMessage("assistant", "provider replay")
+	invalidProviderInput.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: "anthropic",
+		Type:     "tool_use",
+		ID:       "toolu_1",
+		Name:     "shell",
+		Input:    json.RawMessage(`[]`),
+	}}
+	if err := store.AppendMessage(meta.ID, invalidProviderInput); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "input must be valid JSON object") {
+		t.Fatalf("expected invalid provider input append rejection, got %v", err)
+	}
+	invalidProviderArgs := NewMessage("assistant", "provider replay")
+	invalidProviderArgs.ProviderContentBlocks = []ProviderContentBlock{{
+		Provider: "google",
+		Type:     "function_call",
+		ID:       "call_shell",
+		Name:     "shell",
+		Args:     json.RawMessage(`[]`),
+	}}
+	if err := store.AppendMessage(meta.ID, invalidProviderArgs); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "args must be valid JSON object") {
+		t.Fatalf("expected invalid provider args append rejection, got %v", err)
 	}
 	if _, err := store.WriteTranscript(meta.ID, "bad.jsonl", []Message{invalidRole}); err == nil || !strings.Contains(err.Error(), "validate transcript messages") {
 		t.Fatalf("expected transcript validation rejection, got %v", err)
