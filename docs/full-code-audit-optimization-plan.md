@@ -8088,6 +8088,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-339. That slice hardened the append-only Plan Mode transition ledger; this slice covers the remaining current snapshot timestamp-shape gap where non-empty non-RFC3339 `PlanModeState.CreatedAt` / `UpdatedAt`, pending input request timestamps, and approval timestamps were accepted on load/save paths.
 - Confirmed the minimal fix belongs in `ValidatePlanMode` and `ValidatePlanModeInputRequest`: parse required snapshot and pending-request timestamps plus optional answered/cancelled timestamps and approval timestamps as RFC3339Nano, while preserving existing create/save compatibility through normalize-before-validate defaulting and without changing Plan Mode gate semantics, approval policy, provider replay, or Web state authority.
 
+### Review 334
+
+- Confirmed FCA-20260528-341 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `contract.json`, `artifacts/contract-history.jsonl`, and `artifact-tracker.json` are durable session facts for external instruction contracts, required-artifact completion gates, Web session detail, summaries, checkpoints, and contract refresh rollback.
+- Confirmed this is distinct from earlier contract/artifact rollback and path validation slices. Existing tests rejected malformed required artifact paths and malformed contract history structure, but the store validator still accepted arbitrary non-empty timestamp strings for `SessionContract.CreatedAt`, `SessionContract.UpdatedAt`, and `RequiredArtifact.Status.UpdatedAt`.
+- Confirmed the minimal fix belongs at the `SessionStore` validation boundary: parse contract snapshot/history timestamps as required RFC3339Nano and parse artifact status `updated_at` only when present, preserving compatibility for artifact tracker entries that omit optional freshness timestamps and without changing contract extraction, completion-gate semantics, Web state authority, provider replay, or model-led workflow behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10873,6 +10879,51 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/session/planmode.go internal/session/planmode_test.go`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-341
+
+Slice: `fix(contract): validate contract artifact timestamps`
+
+Finding:
+
+- `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` define `contract.json`, `artifacts/contract-history.jsonl`, and `artifact-tracker.json` as durable session facts for explicit instruction contracts, required-artifact tracking, completion gates, Web inspection, session summaries, checkpoints, and contract refresh rollback.
+- Existing contract/artifact validation rejected malformed required artifact paths and malformed history structure, but `validateSessionContract()` did not parse `SessionContract.CreatedAt` / `UpdatedAt`, and `validateRequiredArtifacts()` did not parse optional `RequiredArtifact.Status.UpdatedAt`.
+- A focused regression wrote malformed contract snapshots/history and artifact tracker entries with `not-a-time` timestamp values. Before the fix, the old implementation accepted `contract.json` with `created_at:"not-a-time"` through `LoadContract()` with nil error.
+
+Impact:
+
+- Contract and artifact chronology could carry arbitrary timestamp strings while runtime completion gates, Web detail, summaries, checkpoints, and recovery/rollback paths treated those files as normal durable facts.
+- `contract-history.jsonl` could preserve malformed contract timestamps even though it is the transition ledger used to audit contract refreshes after accepted user instructions or steer input.
+- `artifact-tracker.json` could preserve malformed freshness timestamps on required artifacts, weakening corrupt-state classification for artifact gate refreshes and checkpoint/session-summary derived views.
+- This is a validation-boundary fix only; it does not change contract extraction, required-artifact gate semantics, artifact freshness computation, provider replay, Web state authority, or model-led workflow behavior.
+
+Changes:
+
+- `validateSessionContract()` now requires and parses `SessionContract.CreatedAt` and `SessionContract.UpdatedAt` as RFC3339Nano.
+- `validateRequiredArtifacts()` now parses `RequiredArtifact.Status.UpdatedAt` as RFC3339Nano when present.
+- Existing compatibility is preserved for artifact tracker entries that omit optional `status.updated_at`.
+- Added focused coverage for malformed contract load/save, contract refresh snapshot load, contract history load/append, and artifact tracker load/save paths.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestContractArtifactsRejectMalformedTimestamps` saw `LoadContract()` accept `created_at:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run 'TestContractArtifactsRejectMalformedTimestamps|TestLoadContractAndArtifactTrackerRejectMalformedSnapshots|TestSnapshotContractRefreshRejectsMalformedHistory' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestSessionContract|TestContractRefresh|TestCompletionController.*Artifact|TestRequiredArtifact|TestLongRunCheckpointReportsCorruptArtifactTracker|TestCheckpointResumeHintReportsCorruptContractSnapshot|TestSessionSummary' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.

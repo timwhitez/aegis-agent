@@ -3298,6 +3298,18 @@ func validateSessionContract(contract SessionContract) error {
 	if strings.TrimSpace(contract.Profile) == "" {
 		return errors.New("contract profile is required")
 	}
+	if strings.TrimSpace(contract.CreatedAt) == "" {
+		return errors.New("contract created_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, contract.CreatedAt); err != nil {
+		return fmt.Errorf("contract created_at must be RFC3339Nano: %w", err)
+	}
+	if strings.TrimSpace(contract.UpdatedAt) == "" {
+		return errors.New("contract updated_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, contract.UpdatedAt); err != nil {
+		return fmt.Errorf("contract updated_at must be RFC3339Nano: %w", err)
+	}
 	if err := validateRequiredArtifacts(contract.RequiredArtifacts); err != nil {
 		return err
 	}
@@ -4055,6 +4067,11 @@ func validateRequiredArtifacts(artifacts []RequiredArtifact) error {
 			return fmt.Errorf("duplicate required artifact path: %s", cleaned)
 		}
 		seen[cleaned] = struct{}{}
+		if strings.TrimSpace(artifact.Status.UpdatedAt) != "" {
+			if _, err := time.Parse(time.RFC3339Nano, artifact.Status.UpdatedAt); err != nil {
+				return fmt.Errorf("required artifact %d status.updated_at must be RFC3339Nano: %w", position, err)
+			}
+		}
 	}
 	return nil
 }

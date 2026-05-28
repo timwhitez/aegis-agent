@@ -575,6 +575,105 @@ func TestSnapshotContractRefreshRejectsMalformedHistory(t *testing.T) {
 	}
 }
 
+func TestContractArtifactsRejectMalformedTimestamps(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	artifactPath := filepath.Join(meta.Workdir, "reports", "final.md")
+	validArtifact := RequiredArtifact{
+		Path:     artifactPath,
+		Required: true,
+		Status: ArtifactStatus{
+			UpdatedAt: now,
+		},
+	}
+	validContract := SessionContract{
+		SchemaVersion:     1,
+		ContractID:        "contract_" + meta.ID,
+		Source:            "user_instruction",
+		TrustSource:       "explicit_user",
+		Profile:           "default",
+		RequiredArtifacts: []RequiredArtifact{validArtifact},
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	contractPath := filepath.Join(store.SessionDir(meta.ID), "contract.json")
+	artifactTrackerPath := filepath.Join(store.SessionDir(meta.ID), "artifact-tracker.json")
+	historyPath := filepath.Join(store.SessionDir(meta.ID), "artifacts", "contract-history.jsonl")
+
+	malformedCreatedAt := validContract
+	malformedCreatedAt.CreatedAt = "not-a-time"
+	data, err := json.Marshal(malformedCreatedAt)
+	if err != nil {
+		t.Fatalf("marshal contract: %v", err)
+	}
+	if err := os.WriteFile(contractPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed contract: %v", err)
+	}
+	if _, err := store.LoadContract(meta.ID); err == nil || !strings.Contains(err.Error(), "validate contract.json") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid contract created_at error, got %v", err)
+	}
+	if err := store.SaveContract(meta.ID, malformedCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject invalid contract created_at, got %v", err)
+	}
+
+	malformedUpdatedAt := validContract
+	malformedUpdatedAt.UpdatedAt = "not-a-time"
+	data, err = json.Marshal(malformedUpdatedAt)
+	if err != nil {
+		t.Fatalf("marshal contract: %v", err)
+	}
+	if err := os.WriteFile(contractPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed contract: %v", err)
+	}
+	if _, err := store.SnapshotContractRefresh(meta.ID); err == nil || !strings.Contains(err.Error(), "validate contract snapshot") || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid contract snapshot updated_at error, got %v", err)
+	}
+
+	data, err = json.Marshal(malformedUpdatedAt)
+	if err != nil {
+		t.Fatalf("marshal contract history: %v", err)
+	}
+	if err := os.WriteFile(historyPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write malformed contract history: %v", err)
+	}
+	if _, err := store.LoadContractHistory(meta.ID); err == nil || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid contract history updated_at error, got %v", err)
+	}
+	if err := store.AppendContractHistory(meta.ID, malformedUpdatedAt); err == nil || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected append to reject invalid contract history timestamp, got %v", err)
+	}
+
+	malformedArtifact := validArtifact
+	malformedArtifact.Status.UpdatedAt = "not-a-time"
+	data, err = json.Marshal([]RequiredArtifact{malformedArtifact})
+	if err != nil {
+		t.Fatalf("marshal artifact tracker: %v", err)
+	}
+	if err := os.WriteFile(artifactTrackerPath, data, 0o600); err != nil {
+		t.Fatalf("write malformed artifact tracker: %v", err)
+	}
+	if _, err := store.LoadArtifactTracker(meta.ID); err == nil || !strings.Contains(err.Error(), "validate artifact-tracker.json") || !strings.Contains(err.Error(), "status.updated_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid artifact status updated_at error, got %v", err)
+	}
+	if err := store.SaveArtifactTracker(meta.ID, []RequiredArtifact{malformedArtifact}); err == nil || !strings.Contains(err.Error(), "status.updated_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject invalid artifact status updated_at, got %v", err)
+	}
+}
+
 func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
