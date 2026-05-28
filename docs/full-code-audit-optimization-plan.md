@@ -8322,7 +8322,55 @@ Evidence gates:
 - Confirmed this is a residual file-name policy gap after FCA-20260526-042 and FCA-20260528-373. The Web Workspace browser already treats `id_*`, `identity`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `private_key`, `private-key`, and credential-like JSON names as sensitive, but the model-facing write policy still only denied exact `id_rsa`, `id_ed25519`, and `credentials`.
 - Confirmed the minimal fix belongs in the local tool write-policy helpers and shell exec-policy detection. This keeps the change limited to workspace writes / shell warning metadata, without changing workspace read access, Web rendering, session/report content, provider replay, or runtime workflow behavior.
 
+### Review 363
+
+- Confirmed FCA-20260528-375 against the same local tool safety boundary as FCA-20260528-374: pattern-denied private-key and credential-like names must not be writable through model-facing `write_file` / `edit_file`, including when the model targets the resolved real path behind a sensitive alias.
+- Confirmed this is a residual symlink-alias gap after FCA-20260528-374. Direct lexical writes to `deploy.pem` or `credentials.json` were denied, but `checkWorkspaceWriteResolvedAlias` still only rechecked exact root aliases such as `.env`, `id_rsa`, `id_ed25519`, and `credentials`.
+- Confirmed the minimal fix belongs in `internal/tools/path.go`: extend the existing resolved-alias write-policy check to root entries whose names match the already-established private-key / credential-like pattern helper. This avoids changing read access, Web Workspace rendering, shell exec-policy metadata, provider replay, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260528-375
+
+Slice: `fix(tools): deny private key alias writes`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines `write_file` / `edit_file` as workspace writes that must pass write-policy checks, and the repo `AGENTS.md` classifies workspace/path safety as a hard guard.
+- FCA-20260528-374 added pattern denies for direct private-key and credential-like filenames, but `internal/tools/path.go` `checkWorkspaceWriteResolvedAlias` still only checked root aliases in `deniedWorkspaceWriteFiles`.
+- A focused regression created `deploy.pem -> secrets/key-real` and `credentials.json -> secrets/creds-real`, then wrote the resolved real targets. Before the fix, both `CheckWorkspaceWriteAllowed` calls returned nil because the real basenames were not sensitive and the sensitive aliases were pattern-based rather than exact entries.
+
+Impact:
+
+- A model could overwrite a non-sensitive-looking real target that is exposed in the workspace through a sensitive private-key or credential-like symlink alias.
+- This weakened the write-policy consistency added by FCA-20260528-374. The issue is limited to model-facing workspace writes; it does not change read access, Web Workspace browsing, session/report content, provider replay, or shell exec-policy metadata.
+
+Changes:
+
+- Added a resolved pattern-alias check that scans existing direct workspace-root entries whose names match the established private-key / credential-like deny helper.
+- If such an alias resolves to the same real path as the requested write target, `CheckWorkspaceWriteAllowed` now rejects the write with the matching deny pattern.
+- Added focused coverage for `deploy.pem` and `credentials.json` symlink aliases pointing at non-sensitive real target names.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestWriteDeniedPrivateKeyPatternSymlinkFileTargets -count=1`: failed before the fix because both alias-target writes were allowed.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedPrivateKeyPatternSymlinkFileTargets|TestWriteDeniedSensitiveSymlinkFileTarget|TestWriteDeniedCloudCredentialPathSymlinkAlias' -count=1`: passed.
+- `gofmt -l internal/tools/path.go internal/tools/path_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-374
 

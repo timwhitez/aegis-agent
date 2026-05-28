@@ -181,6 +181,30 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s'", displayPath, denied)
 		}
 	}
+	if err := checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath string) error {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		pattern := deniedWorkspaceWriteFilePattern(entry.Name())
+		if pattern == "" {
+			continue
+		}
+		deniedPath, ok, err := resolveExistingWorkspacePolicyPath(base, entry.Name())
+		if err != nil {
+			return err
+		}
+		if ok && sameCleanPath(deniedPath, resolvedPath) {
+			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s'", displayPath, pattern)
+		}
+	}
 	return nil
 }
 
