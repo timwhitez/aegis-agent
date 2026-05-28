@@ -2710,6 +2710,112 @@ func TestRestorePendingBackgroundNotificationsPreservesOtherFacts(t *testing.T) 
 	}
 }
 
+func TestLoadBackgroundNotificationsRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	malformed := NewBackgroundNotification(QueueJob{
+		ID:            "../bad",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_malformed",
+		SessionStatus: StatusCompleted,
+	})
+	backgroundPath := filepath.Join(store.SessionDir(meta.ID), "control", "background.jsonl")
+	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{malformed}); err != nil {
+		t.Fatalf("write malformed background queue: %v", err)
+	}
+
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "path separators") {
+		t.Fatalf("expected malformed background.jsonl validation error, got %v", err)
+	}
+	if _, err := store.PendingBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") {
+		t.Fatalf("expected pending background load to reject malformed background.jsonl, got %v", err)
+	}
+}
+
+func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	blankQueueJob := NewBackgroundNotification(QueueJob{
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_blank_job",
+		SessionStatus: StatusCompleted,
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, blankQueueJob); err == nil || !strings.Contains(err.Error(), "background notification queue_job_id is required") {
+		t.Fatalf("expected append to reject missing queue job id, got %v", err)
+	}
+
+	valid := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_valid",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_valid",
+		SessionStatus: StatusCompleted,
+		VisiblePaths:  []string{"reports/result.md"},
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, valid); err != nil {
+		t.Fatalf("append valid background notification: %v", err)
+	}
+	invalidStatus := valid
+	invalidStatus.DeliveryStatus = "done"
+	if err := store.UpdateBackgroundNotifications(meta.ID, []BackgroundNotification{invalidStatus}); err == nil || !strings.Contains(err.Error(), "invalid background notification delivery_status") {
+		t.Fatalf("expected update to reject invalid delivery status, got %v", err)
+	}
+	invalidVisiblePath := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_bad_visible_path",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_bad_visible_path",
+		SessionStatus: StatusCompleted,
+		VisiblePaths:  []string{"../secrets.txt"},
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, invalidVisiblePath); err == nil || !strings.Contains(err.Error(), "visible_paths") {
+		t.Fatalf("expected append to reject invalid visible path, got %v", err)
+	}
+	duplicate := NewBackgroundNotification(QueueJob{
+		ID:            valid.QueueJobID,
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_duplicate",
+		SessionStatus: StatusCompleted,
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, duplicate); err == nil || !strings.Contains(err.Error(), "duplicate background notification queue_job_id") {
+		t.Fatalf("expected append to reject duplicate queue job id, got %v", err)
+	}
+	loaded, err := store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].QueueJobID != valid.QueueJobID || loaded[0].DeliveryStatus != BackgroundNotificationPending {
+		t.Fatalf("malformed background notification write changed durable queue: %#v", loaded)
+	}
+}
+
 func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)

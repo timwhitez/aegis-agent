@@ -7884,6 +7884,12 @@ Evidence gates:
 - Confirmed this is distinct from prior accepted-steer atomicity and state-counter slices. Those covered event/status/pending-count ordering for otherwise valid steer records; this slice covers malformed or externally modified steer queue records being trusted at the session-store fact boundary.
 - Confirmed the minimal fix belongs in `SessionStore` steer queue read/write APIs: reject malformed steer IDs, duplicate IDs, blank timestamps, unsupported `source`, blank text, and unsupported `status` before read results or writes become durable, while keeping runtime-owned message length checks and live-input scheduling unchanged.
 
+### Review 300
+
+- Confirmed FCA-20260528-307 against `spec/01-runtime-architecture.md`, `spec/15-background-queue.md`, and `spec/18-durable-contract-and-completion.md`: `control/background.jsonl` is the durable queue/child-result notification fact source used by background drain, parent completion coordination, Web detail, session summaries, and long-run checkpoints.
+- Confirmed this is distinct from prior background atomicity, merge, rollback, and corrupt-file reporting slices. Those protected valid notification acceptance and concurrent refresh behavior; this slice covers semantically malformed notification records being accepted on read/write/merge/restore paths.
+- Confirmed the minimal fix belongs in `SessionStore` background notification APIs: reject malformed notification IDs, missing or invalid queue job IDs, duplicate queue job IDs, blank timestamps, unsupported source/status/session-status/delivery-status values, and invalid visible paths while preserving queue scheduling, background drain, Web adapters, and model-led delegation semantics.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7945,6 +7951,53 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-307
+
+Slice: `fix(session): validate background control facts`
+
+Finding:
+
+- `LoadBackgroundNotifications` decoded `control/background.jsonl` without semantic validation.
+- `AppendBackgroundNotification`, `EnsureBackgroundNotification`, `UpdateBackgroundNotifications`, `RestoreBackgroundNotification`, and `RestorePendingBackgroundNotifications` could persist malformed notifications or preserve malformed existing records during merge/restore paths.
+- `PendingBackgroundNotifications`, background drain, parent completion gates, Web detail, session summaries, and checkpoints all trust the loaded notification facts.
+
+Impact:
+
+- Invalid or duplicate `queue_job_id` values could make queue-result delivery, merge, rollback, and parent completion gating target the wrong durable child/job fact.
+- Unsupported queue statuses, child session statuses, delivery statuses, blank timestamps/source fields, or invalid visible paths could corrupt the background drain provider transcript, Web Background inspector, session summaries, checkpoints, and completion gate diagnostics.
+- A malformed existing `control/background.jsonl` could keep being merged or rewritten by otherwise valid queue updates, making later corruption harder to diagnose.
+
+Changes:
+
+- Added background notification validation for valid store-shaped notification IDs, nonblank `created_at`, `source=queue`, required valid `queue_job_id`, optional valid linked child session ID, supported queue status, supported child session status, supported delivery status, and store-relative `visible_paths`.
+- Added snapshot-level validation to reject duplicate queue job IDs.
+- Routed `LoadBackgroundNotifications`, `PendingBackgroundNotifications`, `AppendBackgroundNotification`, `EnsureBackgroundNotification`, `UpdateBackgroundNotifications`, `SnapshotBackgroundNotification`, `RestoreBackgroundNotification`, and `RestorePendingBackgroundNotifications` through the validator.
+- Kept workdir fields diagnostic-only because queue notifications may legitimately record absolute requested/effective host workdirs, and kept queue scheduling/runtime/Web adapter behavior unchanged.
+- Added focused regressions for malformed loaded `background.jsonl`, pending-background reads over malformed facts, malformed append/update writes, invalid visible paths, duplicate queue job IDs, and durable queue preservation after rejected writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadBackgroundNotificationsRejectsMalformedSnapshot|TestBackgroundNotificationWritesRejectMalformedFacts' -count=1`: failed before the fix because malformed `background.jsonl` loaded successfully and a missing queue job ID appended successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLoadBackgroundNotificationsRejectsMalformedSnapshot|TestBackgroundNotificationWritesRejectMalformedFacts|TestUpdateBackgroundNotificationsMergesConcurrentAppend|TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh|TestRestorePendingBackgroundNotificationsPreservesOtherFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-306
 

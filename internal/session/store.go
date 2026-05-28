@@ -983,6 +983,9 @@ func (s *Store) RefreshPendingSteerCount(sessionID string) (State, error) {
 func (s *Store) AppendBackgroundNotification(sessionID string, notification BackgroundNotification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := validateBackgroundNotification(notification); err != nil {
+		return fmt.Errorf("validate background.jsonl: %w", err)
+	}
 	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
 	if err != nil {
 		return err
@@ -992,6 +995,15 @@ func (s *Store) AppendBackgroundNotification(sessionID string, notification Back
 		return err
 	}
 	return s.withFileLock(lockPath, func() error {
+		var current []BackgroundNotification
+		err := readJSONL(path, &current)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		current = append(current, notification)
+		if err := validateBackgroundNotifications(current); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
+		}
 		return s.appendJSONL(path, notification)
 	})
 }
@@ -999,6 +1011,9 @@ func (s *Store) AppendBackgroundNotification(sessionID string, notification Back
 func (s *Store) EnsureBackgroundNotification(sessionID string, notification BackgroundNotification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := validateBackgroundNotification(notification); err != nil {
+		return fmt.Errorf("validate background.jsonl: %w", err)
+	}
 	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
 	if err != nil {
 		return err
@@ -1013,13 +1028,23 @@ func (s *Store) EnsureBackgroundNotification(sessionID string, notification Back
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if err := validateBackgroundNotifications(existing); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
+		}
 		if strings.TrimSpace(notification.QueueJobID) != "" {
 			for index, item := range existing {
 				if item.QueueJobID == notification.QueueJobID {
 					existing[index] = mergeBackgroundNotification(item, notification)
+					if err := validateBackgroundNotifications(existing); err != nil {
+						return fmt.Errorf("validate background.jsonl: %w", err)
+					}
 					return s.writeJSONL(path, existing)
 				}
 			}
+		}
+		existing = append(existing, notification)
+		if err := validateBackgroundNotifications(existing); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
 		}
 		return s.appendJSONL(path, notification)
 	})
@@ -1029,6 +1054,9 @@ func (s *Store) SnapshotBackgroundNotification(sessionID, queueJobID string) (Ba
 	snapshot := BackgroundNotificationSnapshot{QueueJobID: strings.TrimSpace(queueJobID)}
 	if snapshot.QueueJobID == "" {
 		return snapshot, nil
+	}
+	if err := validateStoreID("queue job", snapshot.QueueJobID); err != nil {
+		return snapshot, err
 	}
 	notifications, err := s.LoadBackgroundNotifications(sessionID)
 	if err != nil {
@@ -1050,6 +1078,14 @@ func (s *Store) RestoreBackgroundNotification(sessionID string, snapshot Backgro
 	if queueJobID == "" {
 		return nil
 	}
+	if err := validateStoreID("queue job", queueJobID); err != nil {
+		return err
+	}
+	if snapshot.HasNotification {
+		if err := validateBackgroundNotification(snapshot.Notification); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
@@ -1065,6 +1101,9 @@ func (s *Store) RestoreBackgroundNotification(sessionID string, snapshot Backgro
 		err := readJSONL(path, &current)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+		if err := validateBackgroundNotifications(current); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
 		}
 		restored := false
 		out := make([]BackgroundNotification, 0, len(current)+1)
@@ -1087,6 +1126,9 @@ func (s *Store) RestoreBackgroundNotification(sessionID string, snapshot Backgro
 			}
 			return nil
 		}
+		if err := validateBackgroundNotifications(out); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
+		}
 		return s.writeJSONL(path, out)
 	})
 }
@@ -1101,7 +1143,13 @@ func (s *Store) LoadBackgroundNotifications(sessionID string) ([]BackgroundNotif
 	if errors.Is(err, os.ErrNotExist) {
 		return []BackgroundNotification{}, nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validateBackgroundNotifications(out); err != nil {
+		return nil, fmt.Errorf("validate background.jsonl: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Store) UpdateBackgroundNotifications(sessionID string, notifications []BackgroundNotification) error {
@@ -1116,13 +1164,22 @@ func (s *Store) UpdateBackgroundNotifications(sessionID string, notifications []
 		return err
 	}
 	return s.withFileLock(lockPath, func() error {
+		if err := validateBackgroundNotifications(notifications); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
+		}
 		var current []BackgroundNotification
 		err := readJSONL(path, &current)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if err := validateBackgroundNotifications(current); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
+		}
 		if len(current) > 0 {
 			notifications = mergeBackgroundNotifications(notifications, current)
+		}
+		if err := validateBackgroundNotifications(notifications); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
 		}
 		return s.writeJSONL(path, notifications)
 	})
@@ -1140,16 +1197,25 @@ func (s *Store) RestorePendingBackgroundNotifications(sessionID string, notifica
 		return err
 	}
 	return s.withFileLock(lockPath, func() error {
+		if err := validateBackgroundNotifications(notifications); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
+		}
 		var current []BackgroundNotification
 		err := readJSONL(path, &current)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+		if err := validateBackgroundNotifications(current); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
 		}
 		for i := range notifications {
 			notifications[i].DeliveryStatus = BackgroundNotificationPending
 		}
 		if len(current) > 0 {
 			notifications = restorePendingBackgroundNotifications(notifications, current)
+		}
+		if err := validateBackgroundNotifications(notifications); err != nil {
+			return fmt.Errorf("validate background.jsonl: %w", err)
 		}
 		return s.writeJSONL(path, notifications)
 	})
@@ -3162,6 +3228,78 @@ func validateSteerRequest(request SteerRequest) error {
 			return errors.New("steer request status is required")
 		}
 		return fmt.Errorf("invalid steer request status %q", request.Status)
+	}
+	return nil
+}
+
+func validateBackgroundNotifications(notifications []BackgroundNotification) error {
+	seenQueueJobs := map[string]struct{}{}
+	for i, notification := range notifications {
+		if err := validateBackgroundNotification(notification); err != nil {
+			return fmt.Errorf("background notification %d: %w", i+1, err)
+		}
+		if _, exists := seenQueueJobs[notification.QueueJobID]; exists {
+			return fmt.Errorf("duplicate background notification queue_job_id: %s", notification.QueueJobID)
+		}
+		seenQueueJobs[notification.QueueJobID] = struct{}{}
+	}
+	return nil
+}
+
+func validateBackgroundNotification(notification BackgroundNotification) error {
+	if err := validateStoreID("background notification", notification.ID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(notification.CreatedAt) == "" {
+		return errors.New("background notification created_at is required")
+	}
+	switch notification.Source {
+	case "queue":
+	default:
+		if strings.TrimSpace(notification.Source) == "" {
+			return errors.New("background notification source is required")
+		}
+		return fmt.Errorf("invalid background notification source %q", notification.Source)
+	}
+	if strings.TrimSpace(notification.QueueJobID) == "" {
+		return errors.New("background notification queue_job_id is required")
+	}
+	if err := validateStoreID("queue job", notification.QueueJobID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(notification.SessionID) != "" {
+		if err := validateStoreID("background notification session", notification.SessionID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(notification.Status) == "" {
+		return errors.New("background notification status is required")
+	}
+	if !isQueueStatus(notification.Status) {
+		return fmt.Errorf("invalid background notification status %q", notification.Status)
+	}
+	if strings.TrimSpace(notification.SessionStatus) != "" {
+		switch notification.SessionStatus {
+		case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusFailed:
+		default:
+			return fmt.Errorf("invalid background notification session_status %q", notification.SessionStatus)
+		}
+	}
+	switch notification.DeliveryStatus {
+	case BackgroundNotificationPending, BackgroundNotificationAccepted:
+	default:
+		if strings.TrimSpace(notification.DeliveryStatus) == "" {
+			return errors.New("background notification delivery_status is required")
+		}
+		return fmt.Errorf("invalid background notification delivery_status %q", notification.DeliveryStatus)
+	}
+	if err := validateStringList("background notification visible_paths", notification.VisiblePaths); err != nil {
+		return err
+	}
+	for _, visiblePath := range notification.VisiblePaths {
+		if _, err := validateStoreRelativePath("background notification visible_paths", visiblePath); err != nil {
+			return err
+		}
 	}
 	return nil
 }
