@@ -8388,7 +8388,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-384. That slice fixed notification copy priority when a failed notification carried stale `final_text`; this residual issue was the queue job status badge itself. `internal/session/store.go` intentionally allows a terminal failed queue job with `last_error` to retain a linked child `session_status=completed`, because the child can complete before queue handoff fails.
 - Confirmed the minimal fix belongs in the Web renderer status selection only: prefer terminal queue `status` and `blocked` over `session_status`, while preserving linked session status for nonterminal queued/running jobs. This avoids changing queue reconciliation, store validation, backend API shape, provider replay, or child session state.
 
+### Review 374
+
+- Confirmed FCA-20260529-386 against `spec/17-web-console.md`'s Sub agents / Background inspector contract: child session and queue rows should expose `final text / last error` summaries from durable child / queue facts.
+- Confirmed this is distinct from FCA-20260529-384 and FCA-20260529-385. The notification cards already prefer `last_error`, and queue job badges now prefer terminal queue status. The remaining gap was only the main Sub agents card for a completed child+queue pair: it rendered model and phase, error text when present, links, and IDs, but omitted the successful queue `final_text`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/session-view.js` `renderSubAgentCard`: render a bounded success summary from queue `final_text` when no error is present, without changing durable queue/session facts, backend API shape, notification merge semantics, provider replay, or runtime queue reconciliation.
+
 ## Update Log
+
+### FCA-20260529-386
+
+Slice: `fix(webconsole): show sub-agent final text`
+
+Finding:
+
+- `spec/17-web-console.md` requires the Session workspace Children/Sub agents view to show child sessions, child queue jobs, agent role, and `final text / last error` summaries.
+- `internal/runtime/delegation.go` persists child queue `FinalText` when a child completes, and `internal/session/types.go` exposes `QueueJob.FinalText` as a durable queue fact.
+- `internal/webconsole/assets/session-view.js` `renderSubAgentCard` displayed model / phase, IDs, visible paths, links, and `last_error` when present, but did not render queue `final_text` for successful completed jobs.
+- A focused renderer regression created a completed child session paired with a completed queue job carrying `final_text`. Before the fix, the Sub agents card omitted `child completed final summary for parent handoff`.
+
+Impact:
+
+- Operators scanning the current session Background/Sub agents inspector could see that a child completed but not the child handoff summary, forcing an extra click into the selected queue job, child session, notification card, or raw queue file.
+- The queue job file, child session state, background notification, backend `sessionDetail` response, provider replay, and runtime reconciliation behavior were unchanged; the issue was limited to frontend Sub agents card projection.
+
+Changes:
+
+- Updated `renderSubAgentCard` to render a bounded success summary from queue `final_text` when no error summary is present.
+- Preserved error priority so failed child/queue facts continue to show `last_error` instead of stale success text.
+- Added a Node renderer regression proving completed sub-agent cards expose queue `final_text`.
+
+Validation:
+
+- `node --test --test-name-pattern "sub-agent cards show queue final text" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the Sub agents card omitted queue `final_text`.
+- `node --test --test-name-pattern "sub-agent cards show queue final text" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 58 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
 
 ### FCA-20260529-385
 

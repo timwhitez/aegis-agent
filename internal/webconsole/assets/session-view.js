@@ -2154,6 +2154,7 @@ function renderSubAgentCard(row) {
   const sessionId = sessionItem?.id || job?.session_id || '';
   const jobId = job?.id || sessionItem?.queue_job_id || '';
   const error = sessionItem?.last_error || job?.last_error || '';
+  const finalText = job?.final_text || sessionItem?.final_text || sessionItem?.last_assistant_excerpt || '';
   return `
     <div class="agent-card">
       <div class="agent-card-top">
@@ -2162,6 +2163,7 @@ function renderSubAgentCard(row) {
       </div>
       <div class="agent-card-copy">${escapeHTML(model)} · ${escapeHTML(phase)}</div>
       ${error ? `<div class="notification-copy danger">${escapeHTML(truncateText(error, 180))}</div>` : ''}
+      ${!error && finalText ? `<div class="agent-card-copy">${escapeHTML(truncateText(finalText, 180))}</div>` : ''}
       <div class="agent-card-meta">${sessionId ? escapeHTML(shortId(sessionId)) : ''}${jobId ? `${sessionId ? ' · ' : ''}job ${escapeHTML(shortId(jobId))}` : ''}</div>
       ${renderVisiblePaths(sessionItem?.visible_paths || job?.visible_paths)}
       <div class="card-actions">

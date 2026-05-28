@@ -644,6 +644,33 @@ test('queue job renderers prefer queue failure over completed child status', () 
   }
 });
 
+test('sub-agent cards show queue final text for completed jobs', () => {
+  const row = {
+    session: {
+      id: 'child_completed_with_final',
+      status: 'completed',
+      provider: 'openai',
+      model: 'gpt-test',
+      phase: 'complete',
+      queue_job_id: 'job_completed_with_final',
+      agent_name: 'reviewer',
+      agent_role: 'evaluator'
+    },
+    job: {
+      id: 'job_completed_with_final',
+      session_id: 'child_completed_with_final',
+      status: 'completed',
+      session_status: 'completed',
+      mode: 'exec',
+      final_text: 'child completed final summary for parent handoff'
+    }
+  };
+
+  const html = context.renderSubAgentCard(row);
+
+  assert.match(html, /child completed final summary for parent handoff/);
+});
+
 test('refreshSelectedQueueJobDetail ignores stale async responses after selection changes', async () => {
   const appContext = createAppHarnessContext();
   const slowRefresh = vm.runInContext(`
