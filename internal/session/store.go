@@ -3429,8 +3429,24 @@ func validateQueueJob(job QueueJob) error {
 	if strings.TrimSpace(job.CreatedAt) == "" {
 		return errors.New("queue job created_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, job.CreatedAt); err != nil {
+		return fmt.Errorf("queue job created_at must be RFC3339Nano: %w", err)
+	}
 	if strings.TrimSpace(job.UpdatedAt) == "" {
 		return errors.New("queue job updated_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, job.UpdatedAt); err != nil {
+		return fmt.Errorf("queue job updated_at must be RFC3339Nano: %w", err)
+	}
+	if strings.TrimSpace(job.ClaimedAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, job.ClaimedAt); err != nil {
+			return fmt.Errorf("queue job claimed_at must be RFC3339Nano: %w", err)
+		}
+	}
+	if strings.TrimSpace(job.HeartbeatAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, job.HeartbeatAt); err != nil {
+			return fmt.Errorf("queue job heartbeat_at must be RFC3339Nano: %w", err)
+		}
 	}
 	if strings.TrimSpace(job.Prompt) == "" {
 		return errors.New("queue job prompt is required")

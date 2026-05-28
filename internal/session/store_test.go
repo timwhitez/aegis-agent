@@ -3670,6 +3670,25 @@ func TestLoadJobsRejectMalformedQueueJobSnapshot(t *testing.T) {
 		t.Fatalf("expected malformed queue job list error, got %v", err)
 	}
 
+	malformed.Prompt = "do malformed work"
+	malformed.CreatedAt = "not-a-time"
+	malformed.UpdatedAt = now
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusQueued, malformed.ID), malformed); err != nil {
+		t.Fatalf("write invalid-time queue job: %v", err)
+	}
+	if _, err := store.LoadJob(malformed.ID); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid created_at queue job load error, got %v", err)
+	}
+
+	malformed.CreatedAt = now
+	malformed.UpdatedAt = "not-a-time"
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusQueued, malformed.ID), malformed); err != nil {
+		t.Fatalf("write invalid-updated queue job: %v", err)
+	}
+	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "job_bad_snapshot.json") || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid updated_at queue job list error, got %v", err)
+	}
+
 	loaded, err := store.LoadJob(valid.ID)
 	if err != nil {
 		t.Fatalf("valid queue job should remain loadable: %v", err)
@@ -3712,6 +3731,24 @@ func TestQueueJobWritesRejectMalformedFacts(t *testing.T) {
 	if err := store.SaveJob(invalidVisiblePath); err == nil || !strings.Contains(err.Error(), "queue job visible_paths") {
 		t.Fatalf("expected save to reject invalid visible path, got %v", err)
 	}
+	invalidCreatedAt := valid
+	invalidCreatedAt.ID = "job_invalid_created_at"
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.SaveJob(invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject invalid created_at, got %v", err)
+	}
+	invalidClaimedAt := valid
+	invalidClaimedAt.ID = "job_invalid_claimed_at"
+	invalidClaimedAt.ClaimedAt = "not-a-time"
+	if err := store.SaveJob(invalidClaimedAt); err == nil || !strings.Contains(err.Error(), "claimed_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject invalid claimed_at, got %v", err)
+	}
+	invalidHeartbeatAt := valid
+	invalidHeartbeatAt.ID = "job_invalid_heartbeat_at"
+	invalidHeartbeatAt.HeartbeatAt = "not-a-time"
+	if err := store.SaveJob(invalidHeartbeatAt); err == nil || !strings.Contains(err.Error(), "heartbeat_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject invalid heartbeat_at, got %v", err)
+	}
 
 	loaded, err := store.LoadJob(valid.ID)
 	if err != nil {
@@ -3720,7 +3757,7 @@ func TestQueueJobWritesRejectMalformedFacts(t *testing.T) {
 	if loaded.ID != valid.ID || loaded.Prompt != valid.Prompt {
 		t.Fatalf("malformed queue job write changed durable valid job: %#v", loaded)
 	}
-	for _, id := range []string{invalidPrompt.ID, invalidSessionStatus.ID, invalidVisiblePath.ID} {
+	for _, id := range []string{invalidPrompt.ID, invalidSessionStatus.ID, invalidVisiblePath.ID, invalidCreatedAt.ID, invalidClaimedAt.ID, invalidHeartbeatAt.ID} {
 		if _, err := store.LoadJob(id); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("malformed queue job %s should not be persisted, got %v", id, err)
 		}
@@ -3750,6 +3787,38 @@ func TestClaimNextQueuedJobRejectsMalformedQueuedJob(t *testing.T) {
 	claimed, ok, err := store.ClaimNextQueuedJob()
 	if err == nil || !strings.Contains(err.Error(), "job_bad_claim_shape.json") || !strings.Contains(err.Error(), "queue job prompt is required") {
 		t.Fatalf("expected malformed queued job claim error, got job=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); err != nil {
+		t.Fatalf("expected malformed queued job to remain queued for diagnostics, got %v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected malformed queued job not to move to running, got %v", err)
+	}
+}
+
+func TestClaimNextQueuedJobRejectsMalformedQueuedJobTimestamps(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_bad_claim_time",
+		CreatedAt:     "not-a-time",
+		UpdatedAt:     now,
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusQueued, job.ID), job); err != nil {
+		t.Fatalf("write malformed queued job: %v", err)
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err == nil || !strings.Contains(err.Error(), "job_bad_claim_time.json") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed queued job timestamp error, got job=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); err != nil {
 		t.Fatalf("expected malformed queued job to remain queued for diagnostics, got %v", err)
