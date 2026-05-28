@@ -1451,6 +1451,42 @@ func TestMessageWritesRejectMalformedFacts(t *testing.T) {
 	}
 }
 
+func TestAppendMessageRejectsMalformedExistingLog(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := NewMessage("user", "hello")
+	if err := store.AppendMessage(meta.ID, valid); err != nil {
+		t.Fatalf("append valid message: %v", err)
+	}
+	malformed := NewMessage("developer", "not a supported role")
+	path := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write malformed messages: %v", err)
+	}
+
+	if err := store.AppendMessage(meta.ID, NewMessage("user", "later")); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "invalid message role") {
+		t.Fatalf("expected malformed existing message log append error, got %v", err)
+	}
+	loaded, err := store.LoadMessages(meta.ID)
+	if err == nil || !strings.Contains(err.Error(), "invalid message role") {
+		t.Fatalf("expected preserved malformed message load error, got messages=%#v err=%v", loaded, err)
+	}
+}
+
 func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

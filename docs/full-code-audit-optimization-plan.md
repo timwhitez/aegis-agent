@@ -8288,6 +8288,51 @@ Evidence gates:
 
 ## Update Log
 
+### FCA-20260528-365
+
+Slice: `fix(session): validate existing message log before append`
+
+Finding:
+
+- `AppendMessage` validated the new `Message` but did not read and validate existing `messages.jsonl` before appending.
+- `messages.jsonl` is the durable provider replay and conversation fact source used by runtime continuation, contract refresh, compaction, Web detail, session summaries, queue/child handoff, long-run checkpoints, and doctor diagnostics.
+
+Impact:
+
+- A syntactically valid but semantically corrupt existing message log could keep being extended by later valid runtime messages.
+- That makes the local replay ledger inconsistent: `LoadMessages` and downstream readers reject the same corrupt history, while append callers previously saw success and could add more durable state on top of the bad log.
+
+Changes:
+
+- `AppendMessage` now loads the current `messages.jsonl` under the existing store mutex, appends the candidate message in memory, and validates the whole resulting message ledger before writing the new JSONL record.
+- Missing message logs remain append-compatible for existing recovery paths that temporarily block and then remove `messages.jsonl`; present malformed logs are rejected before extension.
+- The fix is scoped to the session store fact boundary and does not change runtime message production, provider replay adapters, Web rendering, or message role/tool-call workflow semantics.
+- Added a focused store regression that writes malformed existing message history and proves a later valid append is rejected without repairing or extending the corrupt ledger.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestAppendMessageRejectsMalformedExistingLog -count=1`: failed before the fix with nil error.
+- `go test -timeout 120s ./internal/session -run 'TestAppendMessageRejectsMalformedExistingLog|TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestAppendMessageRejectsMalformedExistingLog|TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts|TestStoreAppendMessageReappliesParentAndFileModes|TestStoreAppendMessageRejectsSymlinkJSONL' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineAssistantMessageReportsEventAppendErrorBeforeToolExecution|TestRunnerAppendUserMessageReportsEventAppendErrorAndRollsBackMessage|TestEngineAppendHarnessReminderReportsEventAppendErrorAndRollsBackMessage|TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails|TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage|TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
 ### FCA-20260528-364
 
 Slice: `fix(session): validate existing contract history before append`

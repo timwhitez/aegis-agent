@@ -334,6 +334,14 @@ func (s *Store) AppendMessage(sessionID string, message Message) error {
 	if err != nil {
 		return err
 	}
+	var current []Message
+	if err := readJSONL(path, &current); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load messages %s: %w", path, err)
+	}
+	current = append(current, message)
+	if err := validateMessages(current); err != nil {
+		return fmt.Errorf("validate messages.jsonl: %w", err)
+	}
 	return s.appendJSONL(path, message)
 }
 
