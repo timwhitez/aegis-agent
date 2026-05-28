@@ -8402,6 +8402,18 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err := os.Symlink("ssh-real", filepath.Join(workspaceRoot, ".ssh")); err != nil {
 		t.Fatalf("symlink workspace ssh alias: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, ".azure"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace azure credential dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, ".azure", "accessTokens.json"), []byte(`{"token":"azure"}`), 0o600); err != nil {
+		t.Fatalf("write workspace azure credential file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, ".config", "gcloud", "configurations"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace gcloud credential dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, ".config", "gcloud", "configurations", "config_default"), []byte("[core]\naccount = operator@example.com\n"), 0o600); err != nil {
+		t.Fatalf("write workspace gcloud config file: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("server cwd file"), 0o644); err != nil {
 		t.Fatalf("write root-only file: %v", err)
 	}
@@ -8440,6 +8452,9 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		}
 		if item["name"] == "id_ecdsa" || item["name"] == "credentials.json" {
 			t.Fatalf("workspace listing leaked credential-like file: %#v", tree)
+		}
+		if item["name"] == ".azure" {
+			t.Fatalf("workspace listing leaked cloud credential directory: %#v", tree)
 		}
 	}
 	if firstType, _ := tree[0]["type"].(string); firstType != "directory" {
@@ -8514,7 +8529,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 			t.Fatalf("expected forbidden for workspace credential read %s, got %d body=%s", deniedPath, resp.StatusCode, string(body))
 		}
 	}
-	for _, deniedAlias := range []string{".env.local", ".ssh/config"} {
+	for _, deniedAlias := range []string{".env.local", ".ssh/config", ".azure/accessTokens.json", ".config/gcloud/configurations/config_default"} {
 		resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(deniedAlias))
 		if err != nil {
 			t.Fatalf("workspace sensitive symlink read request %s: %v", deniedAlias, err)
@@ -8533,6 +8548,17 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected forbidden for workspace sensitive symlink list, got %d body=%s", resp.StatusCode, string(body))
+	}
+	for _, deniedDir := range []string{".azure", ".config/gcloud"} {
+		resp, err = http.Get(ts.URL + "/api/files?path=" + url.QueryEscape(deniedDir))
+		if err != nil {
+			t.Fatalf("workspace cloud credential list request %s: %v", deniedDir, err)
+		}
+		body, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected forbidden for workspace cloud credential list %s, got %d body=%s", deniedDir, resp.StatusCode, string(body))
+		}
 	}
 
 	resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape("../.env"))

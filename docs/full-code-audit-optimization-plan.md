@@ -8232,6 +8232,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-338, FCA-20260528-339, FCA-20260528-364, and FCA-20260528-365. The timestamp slices validated individual Goal/Plan Mode history entries on load/append/restore, while the latest message/contract slices validated existing ledgers before append. This slice covers the remaining Goal/Plan Mode history append boundary where an already malformed but syntactically readable ledger could still be extended by a later valid entry.
 - Confirmed the minimal fix belongs in `AppendGoalHistory` and `AppendPlanModeHistory`: read the current history under the store mutex, append the candidate in memory, validate the resulting ledger, and only then append the new JSONL record. No Goal/Plan Mode state-machine semantics, Web controls, runtime gates, or provider adapter behavior need to change.
 
+### Review 359
+
+- Confirmed FCA-20260528-371 against `spec/17-web-console.md`'s Workspace browser boundary: the read-only local browser must hide and reject cloud credential directories, not only single credential-like filenames.
+- Confirmed this is distinct from FCA-20260526-042 and FCA-20260527-226. Those slices covered private-key / credential-like filenames and sensitive symlink aliases; this slice covers cloud credential directory families that remained lexically non-denied, including `.azure` and `.config/gcloud`.
+- Confirmed the minimal fix belongs in the WebConsole Workspace browser deny helper: deny `.azure` as a credential directory and deny the `.config/gcloud` path pair while preserving unrelated `.config` browsing.
+
 ### Review 358
 
 - Confirmed FCA-20260528-367 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `events.jsonl` is the durable session timeline/audit fact source used by runtime transitions, Web detail, session summaries, owner clues, queue reconciliation, checkpoints, and recovery diagnostics.
@@ -8299,6 +8305,50 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-371
+
+Slice: `fix(webconsole): hide cloud credential workspace dirs`
+
+Finding:
+
+- `spec/17-web-console.md` requires the Workspace read-only browser to hide and reject SSH, cloud, kube, docker credential directories, private-key filenames, and credential-like paths.
+- Earlier Workspace browser hardening covered `.env`, `.ssh`, `.aws`, `.kube`, `.docker`, private-key names, credential-like filenames, and symlink aliases.
+- The remaining cloud-credential boundary still allowed `.azure` to appear in `/api/files` and allowed direct reads under `.azure/accessTokens.json`.
+- The same browser path filter also allowed `.config/gcloud/...` paths, which are a common local Google Cloud credential/config directory shape.
+
+Impact:
+
+- A local WebConsole opened over a workspace or parent directory containing Azure or Google Cloud CLI credentials could expose those files through the read-only Workspace browser.
+- That violates the browser-specific leakage guard while leaving runtime file-tool behavior unchanged; the issue is limited to the local console browser surface.
+
+Changes:
+
+- Added `.azure` to the Workspace browser denied directory names.
+- Added a path-level deny check for `.config/gcloud` so unrelated `.config` content is not hidden wholesale.
+- Extended the existing Workspace route regression to prove `.azure` is hidden from listings and that `.azure/accessTokens.json` and `.config/gcloud/configurations/config_default` are rejected by read/list requests.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: failed before the fix because `.azure` appeared in the Workspace listing.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspaceRoutesListReadAndRejectEscape|TestServiceWorkspaceRootIncludesParentNavigationWhenEmpty|TestServiceWorkspaceRoutesUseFirstNonBlankManagedSkillDir' -count=1`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/config ./internal/session ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-370
 

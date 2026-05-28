@@ -4930,10 +4930,14 @@ func webFileBrowserPathDenied(root, target string) bool {
 	if rel == "." || rel == "" {
 		return false
 	}
-	for _, part := range strings.Split(rel, "/") {
+	parts := strings.Split(rel, "/")
+	for _, part := range parts {
 		if webFileBrowserNameDenied(part) {
 			return true
 		}
+	}
+	if webFileBrowserCloudCredentialPathDenied(parts) {
+		return true
 	}
 	return false
 }
@@ -4944,7 +4948,7 @@ func webFileBrowserNameDenied(name string) bool {
 		return false
 	}
 	switch name {
-	case ".git", ".go-cli-agent", ".ssh", ".aws", ".gnupg", ".kube", ".docker",
+	case ".git", ".go-cli-agent", ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker",
 		"credentials":
 		return true
 	case ".env":
@@ -4956,6 +4960,16 @@ func webFileBrowserNameDenied(name string) bool {
 			webFileBrowserPrivateKeyNameDenied(name) ||
 			webFileBrowserCredentialNameDenied(name)
 	}
+}
+
+func webFileBrowserCloudCredentialPathDenied(parts []string) bool {
+	for i := 0; i+1 < len(parts); i++ {
+		if strings.EqualFold(strings.TrimSpace(parts[i]), ".config") &&
+			strings.EqualFold(strings.TrimSpace(parts[i+1]), "gcloud") {
+			return true
+		}
+	}
+	return false
 }
 
 func webFileBrowserPrivateKeyNameDenied(name string) bool {
