@@ -322,6 +322,9 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 }
 
 func (s *Store) AppendMessage(sessionID string, message Message) error {
+	if err := validateMessages([]Message{message}); err != nil {
+		return fmt.Errorf("validate messages.jsonl: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "messages.jsonl")
@@ -342,6 +345,9 @@ func (s *Store) RemoveLastMessageIfID(sessionID, messageID string) error {
 	if err := readJSONL(path, &messages); err != nil {
 		return err
 	}
+	if err := validateMessages(messages); err != nil {
+		return fmt.Errorf("validate messages.jsonl: %w", err)
+	}
 	if len(messages) == 0 || messages[len(messages)-1].ID != messageID {
 		return fmt.Errorf("cannot roll back message %s: last message changed", messageID)
 	}
@@ -355,7 +361,13 @@ func (s *Store) LoadMessages(sessionID string) ([]Message, error) {
 	}
 	var out []Message
 	err = readJSONL(path, &out)
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMessages(out); err != nil {
+		return nil, fmt.Errorf("validate messages.jsonl: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
@@ -2210,6 +2222,9 @@ func (s *Store) ReadArtifact(sessionID, relativePath string, target any) error {
 }
 
 func (s *Store) WriteTranscript(sessionID, name string, messages []Message) (string, error) {
+	if err := validateMessages(messages); err != nil {
+		return "", fmt.Errorf("validate transcript messages: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	transcriptPath, err := validateStoreRelativePath("transcript", name)
@@ -3498,6 +3513,140 @@ func validateProviderAttempt(attempt ProviderAttempt) error {
 	}
 	if strings.TrimSpace(attempt.CreatedAt) == "" {
 		return errors.New("provider attempt created_at is required")
+	}
+	return nil
+}
+
+func validateMessages(messages []Message) error {
+	for i, message := range messages {
+		if err := validateMessage(message); err != nil {
+			return fmt.Errorf("message %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func validateMessage(message Message) error {
+	if err := validateStoreID("message", message.ID); err != nil {
+		return err
+	}
+	switch message.Role {
+	case "user", "assistant", "tool", "system":
+	default:
+		if strings.TrimSpace(message.Role) == "" {
+			return errors.New("message role is required")
+		}
+		return fmt.Errorf("invalid message role %q", message.Role)
+	}
+	if strings.TrimSpace(message.CreatedAt) == "" {
+		return errors.New("message created_at is required")
+	}
+	switch message.Role {
+	case "user", "system":
+		if strings.TrimSpace(message.Text) == "" {
+			return fmt.Errorf("%s message text is required", message.Role)
+		}
+		if len(message.ToolCalls) > 0 {
+			return fmt.Errorf("%s message cannot contain tool_calls", message.Role)
+		}
+		if len(message.ToolResults) > 0 {
+			return fmt.Errorf("%s message cannot contain tool_results", message.Role)
+		}
+	case "assistant":
+		if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.Thinking) == "" && len(message.ToolCalls) == 0 && len(message.ProviderContentBlocks) == 0 {
+			return errors.New("assistant message must contain text, thinking, tool_calls, or provider_content_blocks")
+		}
+		if len(message.ToolResults) > 0 {
+			return errors.New("assistant message cannot contain tool_results")
+		}
+	case "tool":
+		if len(message.ToolResults) == 0 {
+			return errors.New("tool message must contain tool_results")
+		}
+		if strings.TrimSpace(message.Text) != "" || strings.TrimSpace(message.Thinking) != "" || len(message.ToolCalls) > 0 || len(message.ProviderContentBlocks) > 0 {
+			return errors.New("tool message can only contain tool_results")
+		}
+	}
+	if err := validateToolCalls(message.ToolCalls); err != nil {
+		return err
+	}
+	if err := validateToolResults(message.ToolResults); err != nil {
+		return err
+	}
+	if err := validateProviderContentBlocks(message.ProviderContentBlocks); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateToolCalls(calls []ToolCall) error {
+	seen := map[string]struct{}{}
+	for i, call := range calls {
+		position := i + 1
+		if err := validateStoreID("tool_call", call.ID); err != nil {
+			return fmt.Errorf("tool_call %d: %w", position, err)
+		}
+		if _, exists := seen[call.ID]; exists {
+			return fmt.Errorf("duplicate tool_call id: %s", call.ID)
+		}
+		seen[call.ID] = struct{}{}
+		if strings.TrimSpace(call.Name) == "" {
+			return fmt.Errorf("tool_call %d name is required", position)
+		}
+		if len(bytes.TrimSpace(call.Arguments)) == 0 {
+			return fmt.Errorf("tool_call %d arguments are required", position)
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(call.Arguments, &object); err != nil {
+			return fmt.Errorf("tool_call %d arguments must be valid JSON object: %w", position, err)
+		}
+		if object == nil {
+			return fmt.Errorf("tool_call %d arguments must be valid JSON object", position)
+		}
+		if strings.TrimSpace(call.ProviderCallID) != "" {
+			if err := validateStoreID("tool_call provider_call", call.ProviderCallID); err != nil {
+				return fmt.Errorf("tool_call %d: %w", position, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateToolResults(results []ToolResult) error {
+	for i, result := range results {
+		position := i + 1
+		if strings.TrimSpace(result.ToolCallID) != "" {
+			if err := validateStoreID("tool_result tool_call", result.ToolCallID); err != nil {
+				return fmt.Errorf("tool_result %d: %w", position, err)
+			}
+		}
+		if strings.TrimSpace(result.Name) == "" {
+			return fmt.Errorf("tool_result %d name is required", position)
+		}
+	}
+	return nil
+}
+
+func validateProviderContentBlocks(blocks []ProviderContentBlock) error {
+	for i, block := range blocks {
+		position := i + 1
+		if strings.TrimSpace(block.Type) == "" {
+			return fmt.Errorf("provider_content_block %d type is required", position)
+		}
+		if block.Sequence < 0 {
+			return fmt.Errorf("provider_content_block %d sequence must be non-negative", position)
+		}
+		for _, summary := range block.Summary {
+			if strings.TrimSpace(summary) == "" {
+				return fmt.Errorf("provider_content_block %d summary contains blank value", position)
+			}
+		}
+		if len(bytes.TrimSpace(block.Input)) > 0 && !json.Valid(block.Input) {
+			return fmt.Errorf("provider_content_block %d input must be valid JSON", position)
+		}
+		if len(bytes.TrimSpace(block.Args)) > 0 && !json.Valid(block.Args) {
+			return fmt.Errorf("provider_content_block %d args must be valid JSON", position)
+		}
 	}
 	return nil
 }

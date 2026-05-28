@@ -7908,6 +7908,12 @@ Evidence gates:
 - Confirmed this is distinct from prior checkpoint writer corrupt-input propagation slices. Those prevented checkpoint generation from silently ignoring corrupt source facts; this slice covers an already-present or directly saved checkpoint snapshot being syntactically valid but semantically impossible.
 - Confirmed the minimal fix belongs in `SessionStore` checkpoint read/write APIs: validate session identity, required provider/model/workdir/timestamp fields, non-negative counts, task summary counters, unresolved child/job IDs, required artifact snapshots, provider options, and embedded Goal/Plan/Contract snapshots while preserving checkpoint's derived-view status and not turning it into a second authority.
 
+### Review 304
+
+- Confirmed FCA-20260528-311 against `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/18-durable-contract-and-completion.md`: `messages.jsonl` is the durable provider replay and conversation fact source, and `session.md`, Web detail, compaction, contract refresh, queue reconciliation, and long-run checkpoints all derive from it.
+- Confirmed this is distinct from prior corrupt/oversized/symlink JSONL hardening. Those rejected unreadable or unsafe files; this slice covers semantically malformed but syntactically valid message records and direct malformed append/transcript writes.
+- Confirmed the minimal fix belongs in `SessionStore` message read/write APIs: validate message IDs, roles, timestamps, role-specific payload shape, assistant tool calls, tool result names, and provider-content block basics without adding provider-specific replay policy to Web, CLI, or tool layers.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7969,6 +7975,55 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-311
+
+Slice: `fix(session): validate message log facts`
+
+Finding:
+
+- `LoadMessages` decoded `messages.jsonl` without semantic validation.
+- `AppendMessage`, `RemoveLastMessageIfID`, and `WriteTranscript` could read or write malformed message facts with unsupported roles, empty tool messages, malformed tool-call argument payloads, or invalid provider-content blocks.
+- Provider replay, contract refresh, compaction, Web detail, session summaries, queue reconciliation, and long-run checkpoints all consume `messages.jsonl` as the durable conversation fact source.
+
+Impact:
+
+- A syntactically valid assistant message with malformed tool-call arguments could survive until provider replay, where the adapter would fail later with less local context.
+- Unsupported roles or empty tool messages could confuse Web timeline rendering, prompt construction, contract extraction, and queue/result reconciliation.
+- Transcript artifacts could persist malformed message records even when the canonical message log would be expected to remain replayable.
+
+Changes:
+
+- Added generic message validation for required message IDs, supported roles, required timestamps, role-specific payload shape, valid assistant tool call IDs/names/object arguments, tool result names, and basic provider-content block shape.
+- Routed `AppendMessage`, `LoadMessages`, `RemoveLastMessageIfID`, and `WriteTranscript` through message validation.
+- Preserved existing lightweight tool-result compatibility: historical tool-name-only result records remain valid for repetition and harness-reminder logic, while empty tool messages and blank tool result names are rejected.
+- Added focused regressions for malformed loaded message snapshots, invalid append roles, empty tool messages, transcript validation, and durable log preservation after rejected writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: failed before the fix because malformed message facts loaded/appended successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLoadMessagesRejectsMalformedSnapshot|TestMessageWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineAppendsRetrievalTailHarnessReminderBeforeProviderCall|TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall|TestEngineInterruptSteerAllowsCurrentEvidenceArtifactDelivery' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 45 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-310
 

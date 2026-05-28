@@ -842,6 +842,82 @@ func TestStoreLoadMessagesRejectsOversizedJSONLRecord(t *testing.T) {
 	}
 }
 
+func TestLoadMessagesRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	malformed := NewMessage("assistant", "I will use a tool.")
+	malformed.ToolCalls = []ToolCall{{
+		ID:        "call_1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`[]`),
+	}}
+	path := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	if err := store.writeJSONL(path, []Message{malformed}); err != nil {
+		t.Fatalf("write malformed messages: %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "arguments must be valid JSON object") {
+		t.Fatalf("expected malformed messages validation error, got %v", err)
+	}
+}
+
+func TestMessageWritesRejectMalformedFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := NewMessage("user", "hello")
+	if err := store.AppendMessage(meta.ID, valid); err != nil {
+		t.Fatalf("append valid message: %v", err)
+	}
+
+	invalidRole := NewMessage("developer", "not a supported role")
+	if err := store.AppendMessage(meta.ID, invalidRole); err == nil || !strings.Contains(err.Error(), "validate messages.jsonl") || !strings.Contains(err.Error(), "invalid message role") {
+		t.Fatalf("expected invalid role append rejection, got %v", err)
+	}
+	emptyTool := NewToolMessage(nil)
+	if err := store.AppendMessage(meta.ID, emptyTool); err == nil || !strings.Contains(err.Error(), "tool message must contain tool_results") {
+		t.Fatalf("expected empty tool message append rejection, got %v", err)
+	}
+	if _, err := store.WriteTranscript(meta.ID, "bad.jsonl", []Message{invalidRole}); err == nil || !strings.Contains(err.Error(), "validate transcript messages") {
+		t.Fatalf("expected transcript validation rejection, got %v", err)
+	}
+
+	loaded, err := store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != valid.ID {
+		t.Fatalf("malformed message writes changed durable log: %#v", loaded)
+	}
+}
+
 func TestStoreProviderRawSidecarRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
