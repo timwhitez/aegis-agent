@@ -37,9 +37,18 @@ func TestExecPolicyDetectsAbsoluteCommandPaths(t *testing.T) {
 }
 
 func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
-	violations := DetectExecPolicyViolations("echo token > .env")
-	if !hasExecPolicyCategory(violations, "secret_path_write") {
-		t.Fatalf("expected secret path write violation, got %#v", violations)
+	for _, command := range []string{
+		"echo token > .env",
+		"printf token > .azure/accessTokens.json",
+		"printf token > .oci/config",
+		"printf token > .config/gcloud/configurations/config_default",
+	} {
+		t.Run(command, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(command)
+			if !hasExecPolicyCategory(violations, "secret_path_write") {
+				t.Fatalf("expected secret path write violation for %q, got %#v", command, violations)
+			}
+		})
 	}
 }
 

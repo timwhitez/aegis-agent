@@ -8310,7 +8310,59 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-371. That slice added `.azure` and `.config/gcloud`; this slice covers the remaining `.oci` directory family, where `.oci/config` could still be listed and read through the Web Workspace API.
 - Confirmed the minimal fix belongs in the same WebConsole Workspace browser deny helper: deny `.oci` as a cloud credential directory, without changing runtime file-tool access, report/session content, provider replay, or browser workspace root navigation.
 
+### Review 361
+
+- Confirmed FCA-20260528-373 against `spec/04-tools-and-skills.md` and the repo `AGENTS.md` safety boundary: workspace write tools already deny secret paths such as `.env`, `.ssh`, `.aws`, `.kube`, and `.docker`, and shell exec-policy already classifies redirect/tee writes to secret paths.
+- Confirmed this is a residual local-tool boundary after FCA-20260528-371 and FCA-20260528-372. Those WebConsole slices established `.azure`, `.oci`, and `.config/gcloud` as cloud credential paths for the read-only browser, but the model-facing `write_file` / `edit_file` policy and shell secret-path warning/deny policy still allowed writes to those same credential locations.
+- Confirmed the minimal fix belongs in `internal/tools/path.go` and `internal/tools/exec_policy.go`: extend the existing secret-path write policy for these cloud credential paths, including symlink-alias resolution for `.config/gcloud`, without changing read access, provider replay, Web Workspace rendering, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260528-373
+
+Slice: `fix(tools): deny cloud credential path writes`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines `write_file` / `edit_file` as workspace writes that must pass write-policy checks, and the repo `AGENTS.md` classifies file-tool safety as a hard guard for workspace/path safety.
+- `internal/tools/path.go` denied writes to `.env`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`, `.git`, `.go-cli-agent`, and a few credential filenames, but still allowed model-facing writes to `.azure/accessTokens.json`, `.oci/config`, and `.config/gcloud/configurations/config_default`.
+- `internal/tools/exec_policy.go` likewise classified redirect/tee writes to existing secret paths, but did not warn or deny shell writes to `.azure/...`, `.oci/...`, or `.config/gcloud/...`.
+- Focused regressions proved the gap before the fix: `TestWriteDeniedSecretDirs` allowed those three workspace write paths, and `TestExecPolicyDetectsSecretPathWrite` returned no `secret_path_write` violation for matching shell redirects.
+
+Impact:
+
+- A model or shell command running inside the workspace could overwrite local cloud credential/config files for Azure, OCI, or Google Cloud even though adjacent WebConsole hardening now treats those paths as sensitive cloud credential locations.
+- This weakens the existing local safety policy consistency; the issue is limited to workspace writes and shell exec-policy metadata, not runtime file reads, report content, provider replay, or Web Workspace browsing.
+
+Changes:
+
+- Added `.azure` and `.oci` to the workspace write denied directory list.
+- Added a path-level write deny for `.config/gcloud` without blocking unrelated `.config` content.
+- Added resolved-alias enforcement for path-level denied directories, so writes to a real target reached through a `.config/gcloud` symlink are also denied.
+- Extended shell exec-policy secret-path detection to classify redirect/tee writes under `.azure/`, `.oci/`, and `.config/gcloud/`.
+- Added focused coverage for lexical cloud credential writes, `.config/gcloud` symlink aliases, and shell redirect detection.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestWriteDeniedSecretDirs -count=1`: failed before the fix because `.azure/accessTokens.json`, `.oci/config`, and `.config/gcloud/configurations/config_default` were allowed.
+- `go test -timeout 120s ./internal/tools -run TestExecPolicyDetectsSecretPathWrite -count=1`: failed before the fix because cloud credential shell redirects produced no `secret_path_write` violation.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDenied(SecretDirs|CloudCredentialPathSymlinkAlias)|TestExecPolicyDetectsSecretPathWrite' -count=1`: passed.
+- `gofmt -l internal/tools/path.go internal/tools/path_test.go internal/tools/exec_policy.go internal/tools/exec_policy_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-372
 

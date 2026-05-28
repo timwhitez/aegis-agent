@@ -50,9 +50,22 @@ func TestWriteDeniedDotEnv(t *testing.T) {
 }
 
 func TestWriteDeniedSecretDirs(t *testing.T) {
-	for _, path := range []string{".ssh/config", ".aws/credentials", ".gnupg/private-keys-v1.d/key", ".kube/config", ".docker/config.json"} {
-		t.Run(path, func(t *testing.T) {
-			assertWriteDenied(t, path, strings.Split(path, "/")[0]+"/")
+	tests := []struct {
+		path    string
+		pattern string
+	}{
+		{path: ".ssh/config", pattern: ".ssh/"},
+		{path: ".aws/credentials", pattern: ".aws/"},
+		{path: ".azure/accessTokens.json", pattern: ".azure/"},
+		{path: ".oci/config", pattern: ".oci/"},
+		{path: ".config/gcloud/configurations/config_default", pattern: ".config/gcloud/"},
+		{path: ".gnupg/private-keys-v1.d/key", pattern: ".gnupg/"},
+		{path: ".kube/config", pattern: ".kube/"},
+		{path: ".docker/config.json", pattern: ".docker/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			assertWriteDenied(t, tt.path, tt.pattern)
 		})
 	}
 }
@@ -110,6 +123,27 @@ func TestWriteDeniedSensitiveSymlinkFileTarget(t *testing.T) {
 	}
 	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.env'") {
 		t.Fatalf("expected resolved .env target to be denied, got %v", err)
+	}
+}
+
+func TestWriteDeniedCloudCredentialPathSymlinkAlias(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "cloud-real", "configurations")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatalf("mkdir cloud target: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".config"), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, "cloud-real"), filepath.Join(root, ".config", "gcloud")); err != nil {
+		t.Fatalf("symlink .config/gcloud: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "cloud-real/configurations/config_default")
+	if err != nil {
+		t.Fatalf("resolve cloud target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.config/gcloud/'") {
+		t.Fatalf("expected resolved .config/gcloud target to be denied, got %v", err)
 	}
 }
 

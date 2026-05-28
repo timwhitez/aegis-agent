@@ -72,9 +72,15 @@ var deniedWorkspaceWriteDirs = []string{
 	".go-cli-agent",
 	".ssh",
 	".aws",
+	".azure",
+	".oci",
 	".gnupg",
 	".kube",
 	".docker",
+}
+
+var deniedWorkspaceWriteDirPaths = []string{
+	".config/gcloud",
 }
 
 var deniedWorkspaceWriteFiles = []string{
@@ -131,6 +137,11 @@ func checkWorkspaceWriteDisplayPath(displayPath, baseName string) error {
 			}
 		}
 	}
+	for _, denied := range deniedWorkspaceWriteDirPaths {
+		if displayPathContainsDirPath(parts, denied) {
+			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s/'", displayPath, denied)
+		}
+	}
 	for _, denied := range deniedWorkspaceWriteFiles {
 		if strings.EqualFold(baseName, denied) {
 			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, denied)
@@ -149,6 +160,15 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s/'", displayPath, denied)
 		}
 	}
+	for _, denied := range deniedWorkspaceWriteDirPaths {
+		deniedPath, ok, err := resolveExistingWorkspacePolicyPath(base, denied)
+		if err != nil {
+			return err
+		}
+		if ok && isWithin(deniedPath, resolvedPath) {
+			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s/'", displayPath, denied)
+		}
+	}
 	for _, denied := range deniedWorkspaceWriteFiles {
 		deniedPath, ok, err := resolveExistingWorkspacePolicyPath(base, denied)
 		if err != nil {
@@ -159,6 +179,26 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 		}
 	}
 	return nil
+}
+
+func displayPathContainsDirPath(parts []string, pattern string) bool {
+	patternParts := strings.Split(filepath.ToSlash(pattern), "/")
+	if len(patternParts) == 0 || len(patternParts) > len(parts) {
+		return false
+	}
+	for i := 0; i+len(patternParts) <= len(parts); i++ {
+		matched := true
+		for j, patternPart := range patternParts {
+			if !strings.EqualFold(parts[i+j], patternPart) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveExistingWorkspacePolicyPath(base, rel string) (string, bool, error) {
