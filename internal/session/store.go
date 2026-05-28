@@ -3576,6 +3576,9 @@ func validateParentCoordination(sessionID string, coordination ParentCoordinatio
 	if strings.TrimSpace(coordination.UpdatedAt) == "" {
 		return errors.New("parent coordination updated_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, coordination.UpdatedAt); err != nil {
+		return fmt.Errorf("parent coordination updated_at must be RFC3339Nano: %w", err)
+	}
 	seenChildSessions := map[string]string{}
 	if err := validateParentCoordinationIDList("child session", "unresolved_child_sessions", coordination.UnresolvedChildSessions, seenChildSessions); err != nil {
 		return err

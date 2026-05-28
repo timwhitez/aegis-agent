@@ -8034,6 +8034,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-313. That slice added generic queue job semantic validation for IDs, status, prompt, mode, linked sessions, roles, provider counters, worker PID, wait/isolation modes, terminal session status, and visible paths; this slice covers the remaining timestamp-shape gap where non-empty non-RFC3339 `created_at`, `updated_at`, `claimed_at`, or `heartbeat_at` values were accepted by load/write/claim paths.
 - Confirmed the minimal fix belongs in `SessionStore` queue job validation: parse required `CreatedAt` / `UpdatedAt` and optional lease timestamps as RFC3339Nano, without changing worker lease generation, queue scheduling, reconciliation semantics, Web projections, or provider adapters.
 
+### Review 325
+
+- Confirmed FCA-20260528-332 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/17-web-console.md`: `parent-coordination.json` is a durable parent wait-state and completion-gate fact used by queue/child reconciliation, Web Background/Children projections, session summaries, and long-run checkpoints.
+- Confirmed this is distinct from FCA-20260528-308. That slice added generic parent coordination validation for parent identity, wait mode, IDs, duplicate IDs, and cross-set conflicts; this slice covers the remaining timestamp-shape gap where a non-empty non-RFC3339 `updated_at` value was accepted on load and save.
+- Confirmed the minimal fix belongs in `SessionStore` parent coordination validation: parse `ParentCoordination.UpdatedAt` as RFC3339Nano, preserving wait-all/wait-any compatibility, queue/child coordination semantics, Web projection boundaries, and model-led delegation behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10641,6 +10647,47 @@ Validation:
 
 - Pre-fix focused verification failed as expected: `TestLoadJobsRejectMalformedQueueJobSnapshot` loaded an invalid `created_at` queue job without error, `TestQueueJobWritesRejectMalformedFacts` saved invalid queue job timestamps without error, and `TestClaimNextQueuedJobRejectsMalformedQueuedJobTimestamps` claimed an invalid timestamp job into `running`.
 - `go test -timeout 120s ./internal/session -run 'TestLoadJobsRejectMalformedQueueJobSnapshot|TestQueueJobWritesRejectMalformedFacts|TestClaimNextQueuedJobRejectsMalformedQueuedJobTimestamps' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-332
+
+Slice: `fix(session): validate parent coordination timestamps`
+
+Finding:
+
+- `validateParentCoordination()` required `ParentCoordination.UpdatedAt` to be non-empty but did not parse it.
+- `LoadParentCoordination()` and `SnapshotParentCoordination()` therefore accepted an existing `parent-coordination.json` record with `updated_at:"not-a-time"` when the rest of the wait-state fields were valid.
+- `SaveParentCoordination()` could also persist a malformed parent coordination timestamp as long as parent identity, wait mode, and queue/child ID sets were otherwise valid.
+
+Impact:
+
+- `parent-coordination.json` is the durable parent wait-state and completion-gate fact used by queue/child reconciliation, Web Background/Children projections, session summaries, and long-run checkpoints.
+- Accepting arbitrary timestamp strings weakened parent wait-state chronology and let recovery/UI paths treat malformed coordination facts as valid child/queue coordination state.
+- This was a store-boundary validation gap only; it did not change queue scheduling, child delegation, parent completion gate semantics, Web projections, or provider adapters.
+
+Changes:
+
+- Added RFC3339Nano parsing for parent coordination `updated_at` through the existing generic parent coordination validator.
+- Extended parent coordination store regressions to cover invalid timestamp load and save paths while preserving existing invalid wait mode, malformed ID, duplicate ID, and cross-set conflict coverage.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestLoadParentCoordinationRejectsMalformedSnapshot` loaded an invalid `updated_at` parent coordination snapshot without error, and `TestParentCoordinationWritesRejectMalformedFacts` saved an invalid `updated_at` snapshot without error.
+- `go test -timeout 120s ./internal/session -run 'TestLoadParentCoordinationRejectsMalformedSnapshot|TestParentCoordinationWritesRejectMalformedFacts' -count=1`: passed.
 - `go test -timeout 120s ./internal/session -count=1`: passed.
 - `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/app -count=1`: passed.
 - `go test -timeout 120s ./internal/skills ./internal/tools ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.

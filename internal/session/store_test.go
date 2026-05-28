@@ -4038,6 +4038,15 @@ func TestLoadParentCoordinationRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.SnapshotParentCoordination(meta.ID); err == nil || !strings.Contains(err.Error(), "validate parent-coordination.json") {
 		t.Fatalf("expected snapshot to reject malformed parent-coordination.json, got %v", err)
 	}
+
+	malformed.UpdatedAt = "not-a-time"
+	malformed.UnresolvedChildSessions = []string{"child_parent_time"}
+	if err := store.writeJSONFile(filepath.Join(store.SessionDir(meta.ID), "parent-coordination.json"), malformed); err != nil {
+		t.Fatalf("write malformed parent coordination timestamp: %v", err)
+	}
+	if _, err := store.LoadParentCoordination(meta.ID); err == nil || !strings.Contains(err.Error(), "validate parent-coordination.json") || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed parent-coordination timestamp validation error, got %v", err)
+	}
 }
 
 func TestParentCoordinationWritesRejectMalformedFacts(t *testing.T) {
@@ -4066,6 +4075,17 @@ func TestParentCoordinationWritesRejectMalformedFacts(t *testing.T) {
 	}
 	if err := store.SaveParentCoordination(meta.ID, invalidWaitMode); err == nil || !strings.Contains(err.Error(), "invalid parent coordination wait_mode") {
 		t.Fatalf("expected save to reject invalid wait mode, got %v", err)
+	}
+
+	invalidUpdatedAt := ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     meta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{"job_parent_bad_time"},
+		UpdatedAt:           "not-a-time",
+	}
+	if err := store.SaveParentCoordination(meta.ID, invalidUpdatedAt); err == nil || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
+		t.Fatalf("expected save to reject invalid updated_at, got %v", err)
 	}
 
 	valid := ParentCoordination{
