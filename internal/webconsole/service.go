@@ -782,13 +782,31 @@ func firstEscapedPathSegment(r *http.Request, prefix string) (string, bool) {
 	}
 	escapedPath := r.URL.EscapedPath()
 	if !strings.HasPrefix(escapedPath, prefix) {
-		return "", false
+		return firstEscapedPathSegmentByDecodedPrefix(escapedPath, prefix)
 	}
 	rest := strings.TrimPrefix(escapedPath, prefix)
 	if i := strings.IndexByte(rest, '/'); i >= 0 {
 		return rest[:i], true
 	}
 	return rest, true
+}
+
+func firstEscapedPathSegmentByDecodedPrefix(escapedPath, prefix string) (string, bool) {
+	prefixParts := strings.Split(strings.Trim(prefix, "/"), "/")
+	if len(prefixParts) == 0 || prefixParts[0] == "" {
+		return "", false
+	}
+	escapedParts := strings.Split(strings.TrimPrefix(escapedPath, "/"), "/")
+	if len(escapedParts) <= len(prefixParts) {
+		return "", false
+	}
+	for i, expected := range prefixParts {
+		decoded, err := url.PathUnescape(escapedParts[i])
+		if err != nil || decoded != expected {
+			return "", false
+		}
+	}
+	return escapedParts[len(prefixParts)], true
 }
 
 func encodedPathSegmentHasSeparator(segment string) bool {

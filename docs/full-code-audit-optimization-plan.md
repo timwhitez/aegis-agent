@@ -7812,6 +7812,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-226 and FCA-20260528-293. Those slices covered workspace filesystem aliases and skill id mutability metadata; this slice covers Web API path dispatch for session ids and skill ids, including an encoded skill uninstall path that could execute the uninstall route.
 - Confirmed the minimal fix belongs in the WebConsole route adapter: reject `%2F` / `%5C` in the first escaped dynamic path segment before dispatching session subroutes or skill install/uninstall handlers, preserving normal runtime/store id validation and existing queue job detail behavior.
 
+### Review 288
+
+- Confirmed FCA-20260528-295 against the same WebConsole route-boundary contract as FCA-20260528-294: the escaped dynamic id guard must still run when fixed route prefix characters are percent-encoded, because Go routes on decoded `URL.Path`.
+- Confirmed this is a residual bypass of FCA-20260528-294, not a new route family. Plain `/api/sessions/<id>%2Fmessages` and `/api/skills/<id>%2Funinstall` were already blocked; this slice covers `/%61pi/sessions/<id>%2Fmessages` and `/%61pi/%73kills/<id>%2Funinstall`.
+- Confirmed the minimal fix belongs in the shared escaped-segment extractor: align the escaped path to the decoded static prefix before checking the first dynamic segment, preserving normal `URL.Path` dispatch, store id validation, and queue job detail behavior.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7873,6 +7879,42 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-295
+
+Slice: `fix(webconsole): guard encoded route prefixes`
+
+Finding:
+
+- FCA-20260528-294 added an escaped dynamic-id guard for session routes and skill install/uninstall routes, but the guard first required `URL.EscapedPath()` to start with the literal decoded prefix.
+- Go still routed requests by decoded `URL.Path`, so fixed route prefix characters could be percent-encoded while the dynamic id kept an encoded separator.
+- A request such as `/%61pi/sessions/<id>%2Fmessages` reached the session messages route and returned that session's message page.
+- A request such as `/%61pi/%73kills/demo-skill%2Funinstall` reached the skill uninstall route and removed the installed local skill.
+
+Impact:
+
+- Percent-encoding static route-prefix characters bypassed the escaped dynamic-id guard.
+- The bypass could expose session subresource data through a malformed id path and could turn a malformed skill id path into a real local mutation route.
+
+Changes:
+
+- Updated `firstEscapedPathSegment` to fall back to decoded-prefix alignment when `EscapedPath()` does not literally start with the route prefix.
+- The fallback unescapes only the fixed prefix path segments for comparison, then returns the still-escaped first dynamic segment for `%2F` / `%5C` checks.
+- Added regressions for encoded-prefix session messages and skill uninstall routes, including proof that the skill directory is not removed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(SessionRouteRejectsEncodedSeparatorWhenPrefixIsEncoded|SkillUninstallRejectsEncodedSeparatorWhenPrefixIsEncoded)' -count=1 -v`: failed before the fix because messages were returned and the skill uninstall succeeded.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(SessionRouteRejectsEncodedSeparatorInSessionID|SessionRouteRejectsEncodedSeparatorWhenPrefixIsEncoded|SkillUninstallRejectsEncodedSeparatorInSkillID|SkillUninstallRejectsEncodedSeparatorWhenPrefixIsEncoded|QueueJobDetailRejectsMalformedJobID)' -count=1 -v`: passed.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `events.js`, `workspace-view.js`, `settings-view.js`, `utils.js`, `api.js`, and `validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-294
 
