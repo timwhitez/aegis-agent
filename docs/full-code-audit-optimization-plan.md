@@ -16586,6 +16586,43 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-103
+
+Slice: `fix(cli): fail fast for missing cwd experimental commands`
+
+Finding:
+
+- The advanced large-project CLI surface `experimental delegate`, `experimental children`, and `experimental queue` resolved the current process directory with `os.Getwd()` but discarded the returned error before constructing the runner facade.
+- If the process current directory had been removed, these commands could continue with an empty or stale cwd string and move the failure into config/session/queue loading. That weakened the Web-first architecture boundary where CLI advanced controls should fail on their own adapter preconditions before touching runtime/session facts.
+- A focused regression removes the process cwd and asserts these commands return the `getwd` error without invoking the experimental or store runner loaders.
+
+Changes:
+
+- Propagated `os.Getwd()` errors from `delegateCommand`, `childrenCommand`, `queueSubmitCommand`, `queueListCommand`, `queueShowCommand`, and `queueWorkerCommand`.
+- Added CLI regression coverage for the experimental delegate/children/queue commands when the current working directory no longer exists.
+
+Validation:
+
+- `git diff --check`: passed.
+- `gofmt -l internal/app/orchestration.go internal/app/app_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/app -run TestExperimentalCommandsReportMissingCurrentDirectoryBeforeLoadingRunner -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260527-190
 
 Slice: `fix(tools): require plan input request events`

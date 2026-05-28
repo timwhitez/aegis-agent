@@ -2595,6 +2595,82 @@ func TestQueueWorkerCommandOncePrintsFailedJobWithoutError(t *testing.T) {
 	}
 }
 
+func TestExperimentalCommandsReportMissingCurrentDirectoryBeforeLoadingRunner(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parent := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_missing_cwd",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "parent_missing_cwd",
+	}
+	if err := store.Create(parent, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	missingWD := t.TempDir()
+	if err := os.Chdir(missingWD); err != nil {
+		t.Fatalf("chdir missing cwd seed: %v", err)
+	}
+	if err := os.Remove(missingWD); err != nil {
+		_ = os.Chdir(originalWD)
+		t.Fatalf("remove cwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	fake := newFakeRunner()
+	fake.store = store
+	fake.delegateResult = runtime.DelegateResult{SessionID: "child_missing_cwd", Status: session.StatusCompleted}
+	fake.queueJob = session.QueueJob{ID: "job_missing_cwd", Status: session.QueueStatusQueued}
+	fake.queueJobs = []session.QueueJob{{ID: "job_missing_cwd", Status: session.QueueStatusQueued}}
+	restoreExperimental := experimentalRunnerLoader
+	restoreStore := storeRunnerLoader
+	experimentalLoads := 0
+	storeLoads := 0
+	experimentalRunnerLoader = func(string, string) (experimentalRunner, *config.Config, error) {
+		experimentalLoads++
+		return fake, config.Default(), nil
+	}
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		storeLoads++
+		return fake, config.Default(), nil
+	}
+	defer func() {
+		experimentalRunnerLoader = restoreExperimental
+		storeRunnerLoader = restoreStore
+	}()
+
+	cases := [][]string{
+		{"experimental", "delegate", parent.ID, "review this"},
+		{"experimental", "children", parent.ID, "--json"},
+		{"experimental", "queue", "submit", "--parent", parent.ID, "review this"},
+		{"experimental", "queue", "list", "--json"},
+		{"experimental", "queue", "show", "job_missing_cwd", "--json"},
+		{"experimental", "queue", "worker", "--once", "--json"},
+	}
+	for _, args := range cases {
+		err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "getwd") {
+			t.Fatalf("expected missing current directory error for %v, got %v", args, err)
+		}
+	}
+	if experimentalLoads != 0 || storeLoads != 0 {
+		t.Fatalf("expected no runner loads after missing cwd, got experimental=%d store=%d", experimentalLoads, storeLoads)
+	}
+}
+
 func TestUsageShowsWebFirstSurfaceByDefault(t *testing.T) {
 	var stderr bytes.Buffer
 	err := Run(context.Background(), []string{"unknown"}, &bytes.Buffer{}, &stderr)
