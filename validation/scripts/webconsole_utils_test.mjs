@@ -627,6 +627,84 @@ test('refreshSelectedQueueJobDetail ignores stale async responses after selectio
   });
 });
 
+test('selected current-session queue job detail keeps chat polling active while job runs', () => {
+  const appContext = createAppHarnessContext();
+
+  const result = vm.runInContext(`(() => {
+    state.currentView = 'chat';
+    state.visibilityHidden = false;
+    state.isConnected = true;
+    state.isGenerating = false;
+    state.sessionId = 'parent_polling';
+    state.sessionBacked = true;
+    state.overview = { sessions: [] };
+    state.sessionDetail = {
+      metadata: { id: 'parent_polling' },
+      state: { status: 'awaiting_input' },
+      children: { sessions: [], jobs: [] },
+      messages: []
+    };
+    state.selectedQueueJobId = 'job_outside_window';
+    state.selectedQueueJobDetail = {
+      id: 'job_outside_window',
+      status: 'running',
+      parent_session_id: 'parent_polling'
+    };
+    return {
+      runLoop: shouldRunPollingLoop(),
+      overview: shouldPollChatOverview(),
+      current: shouldPollCurrentSession(),
+      interval: pollingIntervalForState()
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    runLoop: true,
+    overview: true,
+    current: true,
+    interval: 1600
+  });
+});
+
+test('selected queue job detail from another parent does not keep chat polling active', () => {
+  const appContext = createAppHarnessContext();
+
+  const result = vm.runInContext(`(() => {
+    state.currentView = 'chat';
+    state.visibilityHidden = false;
+    state.isConnected = true;
+    state.isGenerating = false;
+    state.sessionId = 'parent_current';
+    state.sessionBacked = true;
+    state.overview = { sessions: [] };
+    state.sessionDetail = {
+      metadata: { id: 'parent_current' },
+      state: { status: 'awaiting_input' },
+      children: { sessions: [], jobs: [] },
+      messages: []
+    };
+    state.selectedQueueJobId = 'job_other_parent';
+    state.selectedQueueJobDetail = {
+      id: 'job_other_parent',
+      status: 'running',
+      parent_session_id: 'parent_other'
+    };
+    return {
+      runLoop: shouldRunPollingLoop(),
+      overview: shouldPollChatOverview(),
+      current: shouldPollCurrentSession(),
+      interval: pollingIntervalForState()
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    runLoop: false,
+    overview: false,
+    current: false,
+    interval: 5000
+  });
+});
+
 test('refreshCurrentSession ignores stale session detail responses after selection changes', async () => {
   const appContext = createAppHarnessContext();
   const slowRefresh = vm.runInContext(`

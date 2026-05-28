@@ -1961,8 +1961,25 @@ function sessionDetailHasActiveDescendants(detail) {
   if (!detail) {
     return false;
   }
-  return maybeArray(detail.children?.sessions).some((item) => isActiveRuntimeStatus(item.status)) ||
+  return selectedQueueJobIsActiveForSession(detail) ||
+    maybeArray(detail.children?.sessions).some((item) => isActiveRuntimeStatus(item.status)) ||
     maybeArray(detail.children?.jobs).some((item) => isActiveRuntimeStatus(item.status) || isActiveRuntimeStatus(item.session_status));
+}
+
+function selectedQueueJobIsActiveForSession(detail) {
+  const job = state.selectedQueueJobDetail;
+  const selectedID = String(state.selectedQueueJobId || '');
+  const sessionID = String(detail?.metadata?.id || '');
+  if (!job || !selectedID || !sessionID) {
+    return false;
+  }
+  if (String(job.id || '') !== selectedID) {
+    return false;
+  }
+  if (String(job.parent_session_id || '') !== sessionID) {
+    return false;
+  }
+  return isActiveRuntimeStatus(job.status) || isActiveRuntimeStatus(job.session_status);
 }
 
 function isActiveRuntimeStatus(status) {

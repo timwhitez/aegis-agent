@@ -8202,6 +8202,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-076 and FCA-20260526-129. FCA-076 made queue reconciliation errors visible while explicitly preserving missing queue job files as metadata-only no-ops, and FCA-129 made Web detail report real linked queue reconciliation write failures; this slice covers the remaining over-strict Web/list path where `os.ErrNotExist` from `LoadJob(meta.QueueJobID)` was still propagated.
 - Confirmed the minimal fix belongs in shared session metadata reconciliation plus Web detail: ignore only missing queue job files, while preserving malformed queue IDs, corrupt queue job JSON, linked session repair errors, parent notification/event failures, and explicit `/api/queue/jobs/{id}` missing-job 404 behavior.
 
+### Review 353
+
+- Confirmed FCA-20260528-360 against `spec/17-web-console.md`: selected background job facts are a lightweight Background inspector projection of durable queue/session facts, and active child/queue work should keep the current Session workspace polling until the selected current-session queue job settles.
+- Confirmed this is distinct from FCA-20260528-269, FCA-20260528-270, FCA-20260528-322, and FCA-20260528-324. Those slices guarded stale selected-job/session async responses and same-session enrichment races; this slice covers the remaining active-polling predicate that ignored an already selected queue job when it was outside the current `children.jobs` window.
+- Confirmed the minimal fix belongs in the frontend polling predicate only: treat `state.selectedQueueJobDetail` as an active descendant only when its `id` matches the current selection, its `parent_session_id` matches the current session detail, and its queue/session status is active. This keeps WebConsole as a projection of durable queue facts and prevents stale selected jobs from another parent from driving current-session polling.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11835,6 +11841,41 @@ Validation:
 - `node --check internal/webconsole/assets/utils.js`: passed.
 - `node --check internal/webconsole/assets/workspace-view.js`: passed.
 - `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-360
+
+Slice: `fix(webconsole): poll selected active queue jobs`
+
+Finding:
+
+- `spec/17-web-console.md` defines the Background inspector selected job panel as a projection of durable queue/session facts and says Session detail can open selected queue job facts from background notifications.
+- `internal/webconsole/assets/app.js` `refreshSelectedQueueJobDetail()` can load a selected queue job from `/api/queue/jobs/{id}` even when that job is not present in the current `children.jobs` window.
+- The same file's polling predicates (`shouldRunPollingLoop`, `shouldPollChatOverview`, `shouldPollCurrentSession`, and `pollingIntervalForState`) depended on `sessionDetailHasActiveDescendants()`, which only checked `detail.children.sessions` and `detail.children.jobs`.
+- A focused VM regression set an awaiting-input parent session, an already selected `running` queue job with `parent_session_id` equal to the current session, and no jobs in `children.jobs`. Before the fix, the polling loop, overview polling, current-session polling, and active interval all went idle.
+
+Impact:
+
+- The Background inspector could display a running selected queue job while the Session workspace stopped polling because the job was outside the current child-job window.
+- That left selected job status, final text, and errors stale until a manual refresh or unrelated UI action, weakening the Web-first polling projection for active background work.
+- This did not mutate durable queue/session files; the bug was a frontend projection/polling gap over already durable queue facts.
+
+Changes:
+
+- Added `selectedQueueJobIsActiveForSession()` to treat the selected queue job detail as an active descendant only when its `id` matches `state.selectedQueueJobId`, its `parent_session_id` matches the current session detail, and either queue `status` or linked `session_status` is active.
+- Included that helper in `sessionDetailHasActiveDescendants()`.
+- Added a positive VM regression for a current-session running selected job outside `children.jobs`.
+- Added a negative VM regression proving a stale selected job from another parent does not keep the current session polling.
+
+Validation:
+
+- `node --test --test-name-pattern "selected current-session queue job detail keeps chat polling active while job runs" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `runLoop`, overview polling, and current-session polling were `false`, and interval was `5000`.
+- `node --test --test-name-pattern "selected current-session queue job detail keeps chat polling active while job runs" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `node --test --test-name-pattern "selected .*queue job detail .*chat polling active" validation/scripts/webconsole_utils_test.mjs`: passed, 2 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/api.js internal/webconsole/assets/session-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/workspace-view.js`: passed with no output.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
