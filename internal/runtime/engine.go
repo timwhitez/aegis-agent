@@ -167,7 +167,23 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}
 					return e.fail(ctx, meta, state, err, hookManager)
 				}
-				e.emit(meta.ID, "goal.budget_wrapup_turn_started", "prepare", goalEventData(goalCopy))
+				if err := e.appendEvent(meta.ID, "goal.budget_wrapup_turn_started", "prepare", goalEventData(goalCopy)); err != nil {
+					currentHistory, historyErr := e.store.LoadGoalHistory(meta.ID)
+					if historyErr != nil {
+						if rollbackErr := e.store.SaveGoal(meta.ID, *goal); rollbackErr != nil {
+							return RunResult{}, fmt.Errorf("restore goal after budget wrap-up turn event error %v and history load error %v: %w", err, historyErr, rollbackErr)
+						}
+						return RunResult{}, fmt.Errorf("load goal history after budget wrap-up turn event error %v: %w", err, historyErr)
+					}
+					previousHistory := currentHistory
+					if len(previousHistory) > 0 {
+						previousHistory = previousHistory[:len(previousHistory)-1]
+					}
+					if rollbackErr := e.restoreBudgetWrapUpTurnStartAfterEventError(meta.ID, *goal, previousHistory, err); rollbackErr != nil {
+						return RunResult{}, rollbackErr
+					}
+					return RunResult{}, fmt.Errorf("record goal.budget_wrapup_turn_started event: %w", err)
+				}
 				goal = &goalCopy
 				budgetWrapUpTurn = true
 			} else {
@@ -800,6 +816,16 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			return result, nil
 		}
 	}
+}
+
+func (e *Engine) restoreBudgetWrapUpTurnStartAfterEventError(sessionID string, previousGoal session.SessionGoal, previousHistory []session.GoalHistoryEntry, cause error) error {
+	if err := e.store.SaveGoal(sessionID, previousGoal); err != nil {
+		return fmt.Errorf("restore goal after budget wrap-up turn event error %v: %w", cause, err)
+	}
+	if err := e.store.RestoreGoalHistory(sessionID, previousHistory); err != nil {
+		return fmt.Errorf("restore goal history after budget wrap-up turn event error %v: %w", cause, err)
+	}
+	return nil
 }
 
 func (e *Engine) ephemeralArtifactPath(sessionID, toolName string, turn int) string {

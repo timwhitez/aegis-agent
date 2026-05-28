@@ -8214,6 +8214,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-178. That slice hardened `session.started` inside `runExisting`; this slice covers the earlier `session.created` event emitted immediately after `Store.Create` and after start-time Goal/Plan Mode initialization.
 - Confirmed the minimal fix belongs in `Runner.Start`: use checked `appendEvent` for `session.created` and stop before writing prompt/user-message or calling the provider when the created lifecycle event cannot be persisted.
 
+### Review 355
+
+- Confirmed FCA-20260528-362 against `spec/01-runtime-architecture.md`: Goal budget accounting and budget wrap-up state are session facts, and matching session events are part of the recovery/timeline evidence for budget-limited goals.
+- Confirmed this is distinct from FCA-20260526-068 and FCA-20260526-085. Those slices made `goal.budget_wrapup_turn_started` history failures visible and rolled back `goal.json` on history append failure; this slice covers the remaining later boundary where the history append had succeeded but the matching `events.jsonl` append was still best-effort.
+- Confirmed the minimal fix belongs in `Engine.Run`: require `goal.budget_wrapup_turn_started` before provider execution and roll back the just-started budget wrap-up turn facts when that event cannot be persisted, so retry can still deliver the one allowed wrap-up turn.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11917,6 +11923,45 @@ Validation:
 - `go test -timeout 120s ./internal/runtime -run 'TestRunnerStartReports(Created|Started)EventAppendError|TestRunnerStart(GoalCreatedEventAppendErrorRestoresGoal|LinkedPlanModeCreatedEventAppendErrorRestoresGoalAndPlanMode|ExplicitPlanModeCreatedEventAppendErrorRestoresPlanMode)' -count=1`: passed.
 - `node --check internal/webconsole/assets/app.js internal/webconsole/assets/api.js internal/webconsole/assets/session-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/workspace-view.js`: passed with no output.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-362
+
+Slice: `fix(runtime): require budget wrap-up turn events`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines Goal budget accounting, goal history, and session events as durable session facts used for recovery and operator timelines.
+- FCA-20260526-068 and FCA-20260526-085 already made `goal.budget_wrapup_turn_started` history append failures visible and prevented `goal.json` from advancing when that history fact was missing.
+- `Engine.Run` still emitted the matching `goal.budget_wrapup_turn_started` session event through best-effort `e.emit` after `goal.json` and `artifacts/goal-history.jsonl` had advanced.
+- A focused regression blocked `events.jsonl` at the budget wrap-up turn-start event boundary. Before the fix, the hook was never reached because `e.emit` ignored checked event hooks, the provider was called, and the budget wrap-up turn proceeded without the matching session event.
+
+Impact:
+
+- A budget-limited goal could record `budget_wrapup_turn_started_at` and the history row while omitting the session event that explains the one allowed wrap-up turn in the main session timeline.
+- If a later required event or provider step failed, retry/recovery could see the wrap-up turn as already started and skip the intended model wrap-up opportunity.
+- This weakened the Web-first recovery timeline for budget-limited goals without changing provider adapter behavior.
+
+Changes:
+
+- Switched `goal.budget_wrapup_turn_started` from best-effort `emit` to checked `appendEvent` before provider execution.
+- On event append failure, restore the previous `goal.json` and remove the just-appended budget wrap-up history row so retry can reattempt the wrap-up turn.
+- Preserved the earlier goal-history append failure behavior, including failing before provider execution and rolling back `goal.json` when the history fact itself cannot be persisted.
+- Added focused runtime coverage for blocked `events.jsonl` at the budget wrap-up turn-start event boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineBudgetWrapUpTurnStartReportsEventAppendErrorAndRollsBack -count=1`: failed before the fix because the provider was called after the missing event.
+- `go test -timeout 120s ./internal/runtime -run TestEngineBudgetWrapUpTurnStartReportsEventAppendErrorAndRollsBack -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUp(TurnStartReports(EventAppendErrorAndRollsBack|GoalHistoryError)|ThenFinishAwaitsInput|AwaitingReportsEventAppendError|AwaitsReportsCorruptGoalSnapshot)' -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check -- internal/runtime/engine.go internal/runtime/engine_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineBudgetWrapUp(TurnStartReports(EventAppendErrorAndRollsBack|GoalHistoryError)|ThenFinishAwaitsInput|AwaitingReportsEventAppendError|AwaitsReportsCorruptGoalSnapshot)|TestEngineReportsContextLoadedEventAppendError|TestEngineGoalAccountingReportsEventAppendError' -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/api.js internal/webconsole/assets/session-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/workspace-view.js`: passed with no output.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./internal/runtime ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
 

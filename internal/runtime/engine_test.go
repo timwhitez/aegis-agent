@@ -1460,6 +1460,60 @@ func TestEngineBudgetWrapUpTurnStartReportsGoalHistoryError(t *testing.T) {
 	}
 }
 
+func TestEngineBudgetWrapUpTurnStartReportsEventAppendErrorAndRollsBack(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	tokenBudget := int64(1)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Mode:         session.GoalModeGoal,
+		Objective:    "Stop when budget is exhausted.",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, limited, err := engine.store.UpdateGoalAccounting(meta.ID, session.GoalUsageDelta{TokensUsedDelta: 2, SourceTurn: 1}); err != nil || !limited {
+		t.Fatalf("expected budget limit, limited=%v err=%v", limited, err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Record budget wrap-up, then stop.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	previousHistory, err := engine.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load previous goal history: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "goal.budget_wrapup_turn_started" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		t.Fatalf("provider should not be called after budget wrap-up turn event append failure")
+		return provider.TurnResult{}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "goal.budget_wrapup_turn_started") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected budget wrap-up event append error, result=%#v err=%v", result, err)
+	}
+	goal, loadErr := engine.store.LoadGoal(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load goal: %v", loadErr)
+	}
+	if goal.BudgetWrapUpTurnStartedAt != "" {
+		t.Fatalf("failed budget wrap-up event should not advance goal snapshot, got %#v", goal)
+	}
+	currentHistory, err := engine.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load current goal history: %v", err)
+	}
+	if len(currentHistory) != len(previousHistory) {
+		t.Fatalf("failed budget wrap-up event should roll back goal history, before=%d after=%d", len(previousHistory), len(currentHistory))
+	}
+}
+
 func TestEngineYoloBypassesRetrievalGuards(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "yolo"
