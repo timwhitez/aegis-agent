@@ -39,7 +39,8 @@ Current implemented facts:
 - Markdown rendering now has an LRU cache, lazy image rendering through `.md-img`, protocol filtering, and `rel="noopener noreferrer"` on links.
 - Workspace file tree rendering uses delegated click and keyboard events, stores the selected path in `state.selectedTreePath`, and exposes tree/treeitem semantics for the current navigational file browser.
 - Workspace file preview now requests bounded pages from `/api/file/read?offset=...&limit=...` and shows a local `Load more` continuation affordance when the backend reports truncation.
-- Frontend unit coverage exists in `validation/scripts/webconsole_utils_test.mjs` for markdown, stale async responses, queue/job rendering, settings behavior, workspace selection races, workspace tree keyboard semantics, and stale paged file preview responses.
+- Risk confirmations now use a local promise-based dialog helper instead of native `window.confirm`, with danger styling for destructive or credential-writing actions.
+- Frontend unit coverage exists in `validation/scripts/webconsole_utils_test.mjs` for markdown, stale async responses, queue/job rendering, settings behavior, local confirmation behavior, workspace selection races, workspace tree keyboard semantics, and stale paged file preview responses.
 
 ## Completed Since The First Draft
 
@@ -53,6 +54,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - Workspace file tree click and keyboard handling are delegated instead of attaching one listener per node.
 - Workspace tree semantics now expose `role="tree"` and `role="treeitem"` with `aria-level` and directory `aria-expanded` facts.
 - Workspace file preview no longer reads the full file body in one request; the WebConsole requests 256 KiB pages, the backend caps page size, and large files can be continued with `Load more`.
+- Native browser confirmation dialogs have been replaced for coverage override, goal clear, skill uninstall, session delete / clear all, settings save, and child-session open confirmation.
 
 ## Remaining Optimization Backlog
 
@@ -73,24 +75,19 @@ Validation:
 
 ### P1: Replace `window.confirm` With Local Dialogs
 
-Risky actions still use native dialogs in `app.js` and `settings-view.js`:
+Status: implemented for current WebConsole confirmation paths.
 
-- coverage override
-- goal clear
-- skill uninstall
-- session delete / clear all
-- settings save when writing local API key or config
+Current target:
 
-Plan:
-
-- Add a small vanilla dialog helper based on `<dialog>` where available.
-- Preserve low-friction ordinary start / steer / continue behavior.
-- Use custom confirmation only for risk actions already identified by `spec/17-web-console.md`.
+- Keep `confirmLocalAction` as a local UI helper and do not reintroduce native `window.confirm` in production frontend assets.
+- Preserve low-friction ordinary start / steer / continue behavior; only risk actions and explicit navigation confirmation should prompt.
+- Keep destructive / credential-writing paths on the danger variant.
+- Add browser smoke or Playwright coverage if the project later adds a real DOM-based frontend test runner.
 
 Validation:
 
-- Node-level tests for confirmation promise behavior.
-- WebConsole smoke for one destructive action cancellation path.
+- `validation/scripts/webconsole_utils_test.mjs` should cover confirmation promise resolution, destructive cancellation, and settings-save cancellation without native `window.confirm`.
+- `rg -n "window\\.confirm|[^A-Za-z]confirm\\(" internal/webconsole/assets/{app,settings-view,utils}.js` should return no matches.
 
 ### P1: Large File Preview
 

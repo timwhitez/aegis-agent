@@ -22396,6 +22396,43 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-107
+
+Slice: `fix(webconsole): replace native confirm dialogs`
+
+Finding:
+
+- The WebConsole still used native `window.confirm` / bare `confirm` for several risk or interruption-prone actions: validation coverage override, goal clear, skill uninstall, session delete, clear all sessions, settings save, and child-session open confirmation.
+- `spec/17-web-console.md` says high-frequency start / steer / continue should remain low friction, while risky actions such as validation coverage override, deletion / cleanup, and local API key / config writes need explicit confirmation. Native browser dialogs are hard to style, hard to test, and inconsistent with the local Web-first console surface.
+
+Changes:
+
+- Added a shared `confirmLocalAction` helper in `utils.js` that renders an accessible local dialog with confirm / cancel controls, Escape and backdrop cancellation, focus return, and a danger variant for destructive or credential-writing actions.
+- Migrated coverage override, goal clear, skill uninstall, session delete, clear all sessions, settings save, and child-session open confirmation away from native `window.confirm`.
+- Added dialog styling that matches the current quiet operations-console visual system without changing ordinary start / steer / continue behavior.
+- Expanded the frontend Node harness to test local confirmation promise resolution, session-delete cancellation without a DELETE request, and settings-save cancellation without writing config.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so the `window.confirm` P1 item is recorded as implemented and remains guarded by a production-asset search.
+
+Validation:
+
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `rg -n "window\\.confirm|[^A-Za-z]confirm\\(" internal/webconsole/assets/{app,settings-view,utils}.js`: passed with no matches.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-106
 
 Slice: `fix(webconsole): page workspace file previews`

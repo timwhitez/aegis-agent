@@ -366,7 +366,7 @@ async function renderSettings() {
             throw new Error('Hard max turns must be a positive integer, or disable the hard limit.');
           }
         }
-        if (!confirmSettingsSave(apiKeyInput, maskedKey)) {
+        if (!await confirmSettingsSave(apiKeyInput, maskedKey)) {
           showToast('Settings save cancelled.', 'info');
           return;
         }
@@ -414,11 +414,16 @@ function settingsErrorMessage(err, fallback = 'Failed to load backend settings.'
   return err?.message || fallback;
 }
 
-function confirmSettingsSave(apiKeyInput, maskedKey) {
+async function confirmSettingsSave(apiKeyInput, maskedKey) {
   const value = String(apiKeyInput?.value || '').trim();
   const writesAPIKey = value !== '' && value !== maskedKey;
   const message = writesAPIKey
     ? 'Save settings and write the entered API key to the local env file?'
     : 'Save settings to the local configuration files?';
-  return window.confirm(message);
+  return confirmLocalAction({
+    title: 'Save settings',
+    message,
+    confirmLabel: 'Save',
+    tone: writesAPIKey ? 'danger' : 'default'
+  });
 }

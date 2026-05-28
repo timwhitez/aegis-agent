@@ -646,7 +646,11 @@ function setupEventListeners() {
       if (sessionID) {
         const label = (subAgentOpenButton.querySelector('.sa-tree-label')?.textContent || '').trim();
         const hint = label ? `Open child session "${label}"?` : 'Open child session?';
-        if (confirm(hint)) {
+        if (await confirmLocalAction({
+          title: 'Open child session',
+          message: hint,
+          confirmLabel: 'Open'
+        })) {
           await openSession(sessionID, { switchToChat: true });
         }
       }
@@ -1609,15 +1613,30 @@ function isCoverageApprovalBlock(err) {
 }
 
 async function confirmCoverageOverride() {
-  return window.confirm('Validation coverage blocks approval. Continue only if you accept the uncovered validation risk for this local session.');
+  return confirmLocalAction({
+    title: 'Override validation coverage',
+    message: 'Validation coverage blocks approval. Continue only if you accept the uncovered validation risk for this local session.',
+    confirmLabel: 'Override',
+    tone: 'danger'
+  });
 }
 
 async function confirmGoalClear() {
-  return window.confirm('Clear the durable goal for this local session? This removes goal state and history links from the current session view.');
+  return confirmLocalAction({
+    title: 'Clear goal',
+    message: 'Clear the durable goal for this local session? This removes goal state and history links from the current session view.',
+    confirmLabel: 'Clear',
+    tone: 'danger'
+  });
 }
 
 async function confirmSkillUninstall(id) {
-  return window.confirm(`Uninstall skill ${id} from the local catalog?`);
+  return confirmLocalAction({
+    title: 'Uninstall skill',
+    message: `Uninstall skill ${id} from the local catalog?`,
+    confirmLabel: 'Uninstall',
+    tone: 'danger'
+  });
 }
 
 async function handlePlanModeAction(button) {
@@ -2817,7 +2836,12 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
 }
 
 async function deleteHistorySession(sessionID) {
-  if (!window.confirm(`Delete session ${sessionID}?`)) {
+  if (!await confirmLocalAction({
+    title: 'Delete session',
+    message: `Delete session ${sessionID}?`,
+    confirmLabel: 'Delete',
+    tone: 'danger'
+  })) {
     return;
   }
   try {
@@ -2840,7 +2864,12 @@ async function deleteHistorySession(sessionID) {
 }
 
 async function clearHistory() {
-  if (!window.confirm('Clear all saved sessions? This will remove sessions and queue history.')) {
+  if (!await confirmLocalAction({
+    title: 'Clear saved sessions',
+    message: 'Clear all saved sessions? This will remove sessions and queue history.',
+    confirmLabel: 'Clear all',
+    tone: 'danger'
+  })) {
     return;
   }
   try {

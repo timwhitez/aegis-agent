@@ -61,6 +61,93 @@ function isAcceptedLaunchResponse(value) {
   return String(value?.status || '').toLowerCase() === 'accepted' && Boolean(value?.session_id);
 }
 
+function confirmLocalAction(options = {}) {
+  const title = String(options.title || 'Confirm action').trim();
+  const message = String(options.message || '').trim();
+  const confirmLabel = String(options.confirmLabel || 'Confirm').trim();
+  const cancelLabel = String(options.cancelLabel || 'Cancel').trim();
+  const tone = String(options.tone || 'default').trim() === 'danger' ? 'danger' : 'default';
+  if (!document?.body || typeof document.createElement !== 'function') {
+    return Promise.resolve(false);
+  }
+
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'confirm-dialog-backdrop';
+
+    const dialog = document.createElement('div');
+    dialog.className = `confirm-dialog confirm-dialog-${tone}`;
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'confirm-dialog-title');
+    dialog.setAttribute('aria-describedby', 'confirm-dialog-message');
+
+    const header = document.createElement('div');
+    header.className = 'confirm-dialog-header';
+    const heading = document.createElement('h2');
+    heading.className = 'confirm-dialog-title';
+    heading.id = 'confirm-dialog-title';
+    heading.textContent = title;
+    header.appendChild(heading);
+
+    const body = document.createElement('p');
+    body.className = 'confirm-dialog-message';
+    body.id = 'confirm-dialog-message';
+    body.textContent = message || title;
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-dialog-actions';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'confirm-dialog-cancel';
+    cancel.textContent = cancelLabel || 'Cancel';
+
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = `confirm-dialog-confirm ${tone === 'danger' ? 'danger' : ''}`;
+    confirm.textContent = confirmLabel || 'Confirm';
+
+    actions.appendChild(cancel);
+    actions.appendChild(confirm);
+    dialog.appendChild(header);
+    dialog.appendChild(body);
+    dialog.appendChild(actions);
+    backdrop.appendChild(dialog);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      document.removeEventListener?.('keydown', onKeydown);
+      backdrop.remove();
+      previousFocus?.focus?.();
+      resolve(Boolean(value));
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault?.();
+        finish(false);
+      }
+    };
+
+    cancel.addEventListener('click', () => finish(false));
+    confirm.addEventListener('click', () => finish(true));
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) {
+        finish(false);
+      }
+    });
+
+    document.body.appendChild(backdrop);
+    document.addEventListener?.('keydown', onKeydown);
+    confirm.focus?.();
+  });
+}
+
 function setSkillUploadPending(root, pending) {
   const doc = root || document;
   const uploadInput = doc.getElementById?.('skill-upload');

@@ -226,6 +226,23 @@ function fakeActionButton(attrs = {}) {
   };
 }
 
+function collectFakeElementsByClass(root, className) {
+  const results = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+    if (node.classList?.contains?.(className)) {
+      results.push(node);
+    }
+    for (const child of node.__children || []) {
+      walk(child);
+    }
+  };
+  walk(root);
+  return results;
+}
+
 function createAppHarnessContext() {
   const pendingRequests = [];
   const appContext = {
@@ -306,6 +323,83 @@ function createAppHarnessContext() {
   appContext.pendingRequests = pendingRequests;
   return appContext;
 }
+
+test('confirmLocalAction resolves from local dialog controls without native confirm', async () => {
+  const previousDocument = context.document;
+  const previousConfirm = context.window.confirm;
+  const appended = [];
+  let nativeConfirmCalls = 0;
+
+  context.window.confirm = () => {
+    nativeConfirmCalls += 1;
+    throw new Error('native confirm should not be used');
+  };
+  context.document = {
+    activeElement: null,
+    createElement() {
+      return fakeAppElement();
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    body: {
+      appendChild(node) {
+        appended.push(node);
+      }
+    }
+  };
+
+  try {
+    const cancelled = context.confirmLocalAction({
+      title: 'Delete session',
+      message: 'Delete this session?',
+      confirmLabel: 'Delete',
+      tone: 'danger'
+    });
+    assert.equal(appended.length, 1);
+    collectFakeElementsByClass(appended[0], 'confirm-dialog-cancel')[0].listeners.click();
+    assert.equal(await cancelled, false);
+
+    const confirmed = context.confirmLocalAction({
+      title: 'Open child session',
+      message: 'Open this child session?',
+      confirmLabel: 'Open'
+    });
+    assert.equal(appended.length, 2);
+    collectFakeElementsByClass(appended[1], 'confirm-dialog-confirm')[0].listeners.click();
+    assert.equal(await confirmed, true);
+    assert.equal(nativeConfirmCalls, 0);
+  } finally {
+    context.document = previousDocument;
+    context.window.confirm = previousConfirm;
+  }
+});
+
+test('deleteHistorySession cancellation uses local dialog and avoids delete request', async () => {
+  const appContext = createAppHarnessContext();
+  const action = vm.runInContext(`
+    confirmCalls = [];
+    confirmLocalAction = async function(options) {
+      confirmCalls.push(options);
+      return false;
+    };
+    window.confirm = function() {
+      throw new Error('native confirm should not be used');
+    };
+    deleteHistorySession('session_delete_local_dialog');
+  `, appContext);
+
+  await action;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`confirmCalls`, appContext)), [
+    {
+      title: 'Delete session',
+      message: 'Delete session session_delete_local_dialog?',
+      confirmLabel: 'Delete',
+      tone: 'danger'
+    }
+  ]);
+  assert.equal(appContext.pendingRequests.length, 0);
+});
 
 function installPlanModeAPITestWrappers(appContext) {
   vm.runInContext(`
@@ -2673,6 +2767,37 @@ test('settings save keeps existing API key mask when cleared field means unchang
   assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'true');
 });
 
+test('settings save cancellation uses local dialog and avoids config write', async () => {
+  const harness = await renderSettingsHarness({ hasKey: false });
+  const { elements, savedPayloads, confirmCalls, toasts, restore } = harness;
+  const previousConfirmLocalAction = context.confirmLocalAction;
+  context.confirmLocalAction = async (options) => {
+    confirmCalls.push(options);
+    return false;
+  };
+  try {
+    elements['settings-apikey'].value = 'sk-local-test';
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    context.confirmLocalAction = previousConfirmLocalAction;
+    restore();
+  }
+
+  assert.equal(savedPayloads.length, 0);
+  assert.deepEqual(sameRealm(confirmCalls), [
+    {
+      title: 'Save settings',
+      message: 'Save settings and write the entered API key to the local env file?',
+      confirmLabel: 'Save',
+      tone: 'danger'
+    }
+  ]);
+  assert.deepEqual(toasts.at(-1), {
+    message: 'Settings save cancelled.',
+    tone: 'info'
+  });
+});
+
 test('renderSettings ignores stale config responses', async () => {
   const previousNodes = context.nodes;
   const previousDocument = context.document;
@@ -2796,6 +2921,7 @@ async function renderSettingsHarness({ hasKey }) {
   const previousTestConfig = context.testConfig;
   const previousShowToast = context.showToast;
   const previousConfirm = context.window.confirm;
+  const previousConfirmLocalAction = context.confirmLocalAction;
 
   const container = fakeRendererElement();
   const elements = {
@@ -2833,7 +2959,14 @@ async function renderSettingsHarness({ hasKey }) {
   context.showToast = (message, tone) => {
     toasts.push({ message, tone });
   };
-  context.window.confirm = () => true;
+  const confirmCalls = [];
+  context.confirmLocalAction = async (options) => {
+    confirmCalls.push(options);
+    return true;
+  };
+  context.window.confirm = () => {
+    throw new Error('native confirm should not be used');
+  };
 
   await context.renderSettings();
 
@@ -2841,6 +2974,7 @@ async function renderSettingsHarness({ hasKey }) {
     elements,
     savedPayloads,
     toasts,
+    confirmCalls,
     restore() {
       context.nodes = previousNodes;
       context.document = previousDocument;
@@ -2849,6 +2983,7 @@ async function renderSettingsHarness({ hasKey }) {
       context.testConfig = previousTestConfig;
       context.showToast = previousShowToast;
       context.window.confirm = previousConfirm;
+      context.confirmLocalAction = previousConfirmLocalAction;
     }
   };
 }
