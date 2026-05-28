@@ -59,6 +59,40 @@ func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 	}
 }
 
+func TestExecPolicyDetectsSecretPathWriteCommands(t *testing.T) {
+	for _, command := range []string{
+		"cp token.txt .env.local",
+		"mv token.txt .ssh/id_rsa",
+		"touch .aws/credentials",
+		"mkdir -p .kube",
+		"install -m 600 token.txt .config/gcloud/application_default_credentials.json",
+		"cp --target-directory=.ssh token.txt",
+		"install -d .config/gcloud",
+	} {
+		t.Run(command, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(command)
+			if !hasExecPolicyCategory(violations, "secret_path_write") {
+				t.Fatalf("expected secret path write violation for %q, got %#v", command, violations)
+			}
+		})
+	}
+}
+
+func TestExecPolicyAllowsEnvTemplateWriteCommands(t *testing.T) {
+	for _, command := range []string{
+		"cp token.txt .env.example",
+		"mv token.txt .env.sample",
+		"touch .env.template",
+	} {
+		t.Run(command, func(t *testing.T) {
+			violations := DetectExecPolicyViolations(command)
+			if hasExecPolicyCategory(violations, "secret_path_write") {
+				t.Fatalf("expected env template write command to be allowed for %q, got %#v", command, violations)
+			}
+		})
+	}
+}
+
 func TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets(t *testing.T) {
 	for _, command := range []string{
 		"printf token | tee reports/out.txt .env.local",

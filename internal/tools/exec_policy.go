@@ -68,11 +68,181 @@ func detectSecretPathWrite(command string) bool {
 	if execPolicyTeeTargetsSecretPath(command) {
 		return true
 	}
+	if execPolicyCommonWriteTargetsSecretPath(command) {
+		return true
+	}
 	for _, match := range shellWriteTargetPattern.FindAllStringSubmatch(command, -1) {
 		for _, target := range match[1:] {
 			if execPolicyTargetSecretPath(target) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func execPolicyCommonWriteTargetsSecretPath(command string) bool {
+	for _, segment := range splitExecPolicyCommandSegments(command) {
+		fields := strings.Fields(segment)
+		if len(fields) == 0 {
+			continue
+		}
+		commandIndex := 0
+		for commandIndex < len(fields) && execPolicyLooksLikeEnvAssignment(fields[commandIndex]) {
+			commandIndex++
+		}
+		if commandIndex >= len(fields) {
+			continue
+		}
+		commandName := filepath.Base(strings.Trim(strings.TrimSpace(fields[commandIndex]), `"'`))
+		args := fields[commandIndex+1:]
+		targets := execPolicyCommonWriteTargets(commandName, args)
+		for _, target := range targets {
+			if execPolicyTargetSecretPath(target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func splitExecPolicyCommandSegments(command string) []string {
+	return strings.FieldsFunc(command, func(r rune) bool {
+		switch r {
+		case ';', '&', '|', '(', ')', '\n':
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func execPolicyLooksLikeEnvAssignment(field string) bool {
+	field = strings.Trim(field, `"'`)
+	if strings.HasPrefix(field, "-") || strings.ContainsAny(field, `/\`) {
+		return false
+	}
+	eq := strings.IndexByte(field, '=')
+	return eq > 0
+}
+
+func execPolicyCommonWriteTargets(commandName string, args []string) []string {
+	commandName = strings.ToLower(strings.TrimSpace(commandName))
+	switch commandName {
+	case "cp", "mv", "install":
+	case "touch", "mkdir":
+	default:
+		return nil
+	}
+	operands, explicitTargets := execPolicyCommandOperands(commandName, args)
+	targets := append([]string{}, explicitTargets...)
+	switch commandName {
+	case "touch", "mkdir":
+		targets = append(targets, operands...)
+	case "install":
+		if execPolicyInstallCreatesDirectories(args) {
+			targets = append(targets, operands...)
+		} else if len(operands) > 0 {
+			targets = append(targets, operands[len(operands)-1])
+		}
+	case "cp", "mv":
+		if len(operands) > 0 {
+			targets = append(targets, operands[len(operands)-1])
+		}
+	}
+	return targets
+}
+
+func execPolicyCommandOperands(commandName string, args []string) ([]string, []string) {
+	var operands []string
+	var explicitTargets []string
+	stopOptions := false
+	for i := 0; i < len(args); i++ {
+		arg := strings.Trim(strings.TrimSpace(args[i]), `"'`)
+		if arg == "" {
+			continue
+		}
+		if !stopOptions {
+			if arg == "--" {
+				stopOptions = true
+				continue
+			}
+			if target, ok := execPolicyInlineTargetDirectory(commandName, arg); ok {
+				if target != "" {
+					explicitTargets = append(explicitTargets, target)
+				}
+				continue
+			}
+			if strings.HasPrefix(arg, "-") && arg != "-" {
+				if execPolicyOptionTakesValue(commandName, arg) && execPolicyShortOptionNeedsNextArg(arg) && i+1 < len(args) {
+					value := strings.Trim(strings.TrimSpace(args[i+1]), `"'`)
+					if execPolicyIsTargetDirectoryOption(commandName, arg) && value != "" {
+						explicitTargets = append(explicitTargets, value)
+					}
+					i++
+				}
+				continue
+			}
+		}
+		operands = append(operands, arg)
+	}
+	return operands, explicitTargets
+}
+
+func execPolicyInlineTargetDirectory(commandName, option string) (string, bool) {
+	if strings.HasPrefix(option, "--target-directory=") {
+		return strings.TrimPrefix(option, "--target-directory="), true
+	}
+	if commandName == "cp" || commandName == "mv" || commandName == "install" {
+		if strings.HasPrefix(option, "-t=") {
+			return strings.TrimPrefix(option, "-t="), true
+		}
+		if strings.HasPrefix(option, "-t") && option != "-t" {
+			return strings.TrimPrefix(option, "-t"), true
+		}
+	}
+	return "", false
+}
+
+func execPolicyOptionTakesValue(commandName, option string) bool {
+	option = strings.TrimSpace(option)
+	if execPolicyIsTargetDirectoryOption(commandName, option) {
+		return true
+	}
+	switch option {
+	case "-m", "--mode":
+		return commandName == "install" || commandName == "mkdir"
+	case "-o", "--owner", "-g", "--group", "-S", "--suffix":
+		return commandName == "install" || commandName == "cp" || commandName == "mv"
+	case "-d", "--date", "-r", "--reference", "-t", "--time":
+		return commandName == "touch"
+	default:
+		return false
+	}
+}
+
+func execPolicyShortOptionNeedsNextArg(option string) bool {
+	if strings.HasPrefix(option, "--") {
+		return !strings.Contains(option, "=")
+	}
+	return len([]rune(option)) == 2
+}
+
+func execPolicyIsTargetDirectoryOption(commandName, option string) bool {
+	if commandName != "cp" && commandName != "mv" && commandName != "install" {
+		return false
+	}
+	return option == "-t" || option == "--target-directory"
+}
+
+func execPolicyInstallCreatesDirectories(args []string) bool {
+	for _, arg := range args {
+		arg = strings.Trim(strings.TrimSpace(arg), `"'`)
+		if arg == "--" {
+			return false
+		}
+		if arg == "-d" || arg == "--directory" {
+			return true
 		}
 	}
 	return false

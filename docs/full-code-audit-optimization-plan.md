@@ -8346,7 +8346,49 @@ Evidence gates:
 - Confirmed this is a residual `tee` target parsing gap after FCA-20260528-376. That slice made first-target redirect/tee writes to `.env.*` and `.env/...` paths visible to exec-policy, but `tee` can write to multiple targets and the fallback parser only inspected the first target.
 - Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: scan every non-option target in a matched `tee` command, reusing the existing path-component secret helper and `.env.example` / `.env.sample` / `.env.template` exceptions, without changing shell execution semantics, workspace write policy, Web rendering, provider replay, or runtime workflow behavior.
 
+### Review 367
+
+- Confirmed FCA-20260529-379 against the same `spec/04-tools-and-skills.md` shell exec-policy boundary: common shell write commands should be classified when their destination is a secret path, not only redirects or `tee`.
+- Confirmed this is a residual command-family gap after FCA-20260529-378. That slice made multi-target `tee` classification complete, but common non-redirect writes such as `cp token.txt .env.local`, `mv token.txt .ssh/id_rsa`, `touch .aws/credentials`, `mkdir -p .kube`, and `install -m 600 token.txt .config/gcloud/...` still returned no `secret_path_write` violation.
+- Confirmed the minimal fix belongs in `internal/tools/exec_policy.go`: add a bounded target extractor for common write commands and reuse the existing secret-path helper, without changing shell execution semantics, direct workspace write policy, Web rendering, provider replay, or runtime workflow behavior.
+
 ## Update Log
+
+### FCA-20260529-379
+
+Slice: `fix(tools): detect secret write commands`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` requires the lightweight shell exec-policy to classify secret path writes, with warning metadata by default and blocking when `runtime.exec_policy.mode=deny`.
+- The existing implementation detected redirect and `tee` secret writes, but did not classify common shell write commands whose destination was a secret path.
+- Focused regressions used `cp token.txt .env.local`, `mv token.txt .ssh/id_rsa`, `touch .aws/credentials`, `mkdir -p .kube`, and `install -m 600 token.txt .config/gcloud/application_default_credentials.json`. Before the fix, all returned no `secret_path_write` violation.
+
+Impact:
+
+- A model-visible shell command could create or overwrite env, SSH, cloud, kube, or other credential paths through common filesystem commands without warning metadata or deny-mode blocking.
+- This weakened the shell safety boundary relative to the direct `write_file` / `edit_file` path policy. The issue is limited to shell exec-policy classification; it does not change direct workspace write checks, workspace reads, Web Workspace rendering, provider replay, session/report content, or runtime workflow decisions.
+
+Changes:
+
+- Added a bounded common-write-command target extractor for `cp`, `mv`, `install`, `touch`, and `mkdir`.
+- Reused the existing `execPolicyTargetSecretPath` helper so env template exceptions and cloud/private-key/credential path components stay consistent with redirect and `tee` detection.
+- Added focused detector coverage for common secret-path write commands and allowed env template write commands.
+- Added shell registry coverage proving `deny` mode blocks `cp token.txt .env.local` before it creates `.env.local`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestExecPolicyDetectsSecretPathWriteCommands -count=1`: failed before the fix because common write commands returned no `secret_path_write` violation.
+- `go test -timeout 120s ./internal/tools -run 'TestExecPolicyDetectsSecretPathWriteCommands|TestExecPolicyAllowsEnvTemplateWriteCommands|TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyAllowsEnvTemplateWrites|TestExecPolicyAllowsEnvTemplateLaterTeeTargets|TestShellDenyPolicyBlocksSecretPathWriteCommand' -count=1`: passed.
+- `gofmt -l internal/tools/exec_policy.go internal/tools/exec_policy_test.go internal/tools/registry_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/{app,session-view,workspace-view,events,settings-view,utils,api,icons}.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-378
 
