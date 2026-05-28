@@ -3650,6 +3650,9 @@ func validateProviderAttempt(attempt ProviderAttempt) error {
 	if strings.TrimSpace(attempt.CreatedAt) == "" {
 		return errors.New("provider attempt created_at is required")
 	}
+	if _, err := time.Parse(time.RFC3339Nano, attempt.CreatedAt); err != nil {
+		return fmt.Errorf("provider attempt created_at must be RFC3339Nano: %w", err)
+	}
 	return nil
 }
 

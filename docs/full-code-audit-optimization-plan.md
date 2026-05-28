@@ -7998,6 +7998,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-037 and FCA-20260528-323. The blocked-queue doctor slice made `_queue/blocked` visible, and the unsafe-core-file slice reports malformed existing session facts; this slice covers parent-linked queue jobs that may have no child `session_id` yet but still point at missing `parent_session_id` / `root_session_id` facts.
 - Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: extend the queue missing-session reference scan across the queue job's durable session-link fields, merge duplicate same-session field hits into one diagnostic row, and leave queue scheduling, parent coordination repair, WebConsole projection, and runtime delegation semantics unchanged.
 
+### Review 319
+
+- Confirmed FCA-20260528-326 against `spec/01-runtime-architecture.md` and `spec/03-provider-contracts.md`: `provider-attempts.jsonl` is the durable provider retry / auto-resume / failure / success ledger used for recovery, diagnostics, Web detail, session summaries, and checkpoints.
+- Confirmed this is distinct from FCA-20260528-309. That slice made provider-attempt facts reject unknown outcomes, missing required fields, and negative counters; this slice covers the remaining timestamp-shape gap where a non-empty but non-RFC3339 `created_at` value was accepted as a diagnostic fact.
+- Confirmed the minimal fix belongs in `SessionStore` provider-attempt validation: parse `created_at` as RFC3339Nano on load and append, without moving retry policy out of provider/runtime code or adding provider-specific replay behavior to store, Web, CLI, or tools.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10392,6 +10398,37 @@ Validation:
 - `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
 - `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go docs/full-code-audit-optimization-plan.md`: passed.
 - `go vet ./cmd/... ./internal/app ./internal/session ./internal/runtime ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-326
+
+Slice: `fix(session): validate provider attempt timestamps`
+
+Finding:
+
+- `validateProviderAttempt()` required `CreatedAt` to be non-empty but did not parse it.
+- `LoadProviderAttempts()` therefore accepted a syntactically valid JSONL ledger entry with `created_at:"not-a-time"`.
+- `AppendProviderAttempt()` could also persist an invalid timestamp as long as the rest of the attempt fields were valid.
+
+Impact:
+
+- The provider-attempt ledger is used as a durable recovery and diagnostic fact source for retries, auto-resume, failures, successes, Web detail, session summaries, and long-run checkpoints.
+- Accepting arbitrary timestamp strings weakened the semantic validation added for this ledger and allowed derived views to present malformed chronological facts as normal provider-attempt history.
+- This did not change provider retry behavior directly; it was a store-boundary validation gap.
+
+Changes:
+
+- Added RFC3339Nano parsing for provider-attempt `created_at` during both load and append validation.
+- Extended `TestProviderAttemptsRejectMalformedFacts` to cover invalid timestamp load and append paths, while preserving the existing invalid outcome and negative counter checks.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestProviderAttemptsRejectMalformedFacts` loaded an invalid provider-attempt timestamp without error.
+- `go test -timeout 120s ./internal/session -run TestProviderAttemptsRejectMalformedFacts -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check -- internal/session/store.go internal/session/store_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-265
 

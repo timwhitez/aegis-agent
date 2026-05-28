@@ -768,6 +768,23 @@ func TestProviderAttemptsRejectMalformedFacts(t *testing.T) {
 	if err := os.Remove(attemptsPath); err != nil {
 		t.Fatalf("remove malformed provider attempts: %v", err)
 	}
+	invalidCreatedAt := malformed
+	invalidCreatedAt.Outcome = "retry"
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	data, err = json.Marshal(invalidCreatedAt)
+	if err != nil {
+		t.Fatalf("marshal invalid-time provider attempt: %v", err)
+	}
+	if err := os.WriteFile(attemptsPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write invalid-time provider attempt: %v", err)
+	}
+	if _, err := store.LoadProviderAttempts(meta.ID); err == nil || !strings.Contains(err.Error(), "validate provider-attempts.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected invalid provider-attempt timestamp validation error, got %v", err)
+	}
+
+	if err := os.Remove(attemptsPath); err != nil {
+		t.Fatalf("remove invalid-time provider attempts: %v", err)
+	}
 	valid := ProviderAttempt{
 		Turn:      1,
 		Attempt:   1,
@@ -779,6 +796,12 @@ func TestProviderAttemptsRejectMalformedFacts(t *testing.T) {
 	}
 	if err := store.AppendProviderAttempt(meta.ID, valid); err != nil {
 		t.Fatalf("append valid provider attempt: %v", err)
+	}
+	invalidCreatedAt = valid
+	invalidCreatedAt.Attempt = 2
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.AppendProviderAttempt(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected append to reject invalid provider-attempt timestamp, got %v", err)
 	}
 	invalidCounter := valid
 	invalidCounter.Outcome = "success"
