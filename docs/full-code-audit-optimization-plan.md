@@ -7956,6 +7956,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-317. That slice fixed provider-view compaction hysteresis reuse; this slice covers the long-run checkpoint writer's separate derived latest-compaction-artifact field.
 - Confirmed the minimal fix belongs in `writeLongRunCheckpoint` / `latestCompactionArtifact`: only checkpoint-eligible sessions should inspect compaction artifacts, but once writing a checkpoint, existing unusable compaction artifact directories must stop the checkpoint instead of recording an empty latest artifact.
 
+### Review 312
+
+- Confirmed FCA-20260528-319 against `spec/17-web-console.md`: the Workspace panel is a local read-only object view, and its selected file highlight must describe the same current file whose content is shown.
+- Confirmed this is distinct from FCA-20260528-270 / `fix(webconsole): ignore stale workspace responses`. That earlier slice guarded stale directory/file response bodies; this slice covers the remaining click-handler path that still updated `selectedTreePath` after a stale `loadFile()` returned without applying content.
+- Confirmed the minimal fix belongs in `workspace-view.js`: make `loadFile()` report whether its response/error belonged to the latest Workspace selection, and only update the active tree selection when that report is true. This keeps backend Workspace path policy, runtime file tools, and Web session state authority unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10099,6 +10105,45 @@ Validation:
 - `node --check internal/webconsole/assets/api.js`: passed.
 - `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
 - `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-319
+
+Slice: `fix(webconsole): ignore stale workspace file activation`
+
+Finding:
+
+- `workspace-view.js` guarded stale `loadFile()` responses before updating editor content, but `handleFileTreeClick()` still called `setActiveTreeNode(button, path)` after every awaited file load.
+- A slow click on `slow.txt` followed by a fast click on `fast.txt` therefore left the editor showing `fast.txt` while `state.selectedTreePath` and the active file highlight could be reset to `slow.txt`.
+- The stale response no longer overwrote file content, but it still made the Workspace tree selection disagree with the current displayed file.
+
+Impact:
+
+- The WebConsole Workspace panel could present two conflicting current-file facts: editor content/header from the latest file, and active tree selection from an older request.
+- This weakened the local read-only Workspace object view and could mislead an operator inspecting files during a long session.
+- This was a frontend state authority bug only; backend path resolution, sensitive-file filtering, and runtime file tools were not changed.
+
+Changes:
+
+- Changed `loadFile()` to return `true` only when its response or current-request error was still the latest Workspace selection.
+- Changed file-click handling to update the active tree node only when `loadFile()` returns `true`.
+- Added a focused frontend regression that proves a stale file click cannot reset `state.selectedTreePath` after a newer file click has already applied.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `workspace file click does not activate stale file selection` left `selectedTreePath: 'slow.txt'` while the editor still showed `fast.txt`.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 

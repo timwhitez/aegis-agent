@@ -170,8 +170,9 @@ async function handleFileTreeClick(event) {
   }
 
   if (type === 'file') {
-    await loadFile(path);
-    setActiveTreeNode(button, path);
+    if (await loadFile(path)) {
+      setActiveTreeNode(button, path);
+    }
     return;
   }
 
@@ -218,15 +219,17 @@ async function loadFile(path) {
   try {
     const data = await requestJSON(`/api/file/read?path=${encodeURIComponent(path)}`);
     if (state.workspaceRequestSeq !== requestSeq) {
-      return;
+      return false;
     }
     nodes.editorContent.innerText = data.content;
+    return true;
   } catch (err) {
     if (state.workspaceRequestSeq !== requestSeq) {
-      return;
+      return false;
     }
     const message = workspaceErrorMessage(err, `Failed to load file: ${path}`);
     nodes.editorContent.innerText = message;
     showToast(message, 'error');
+    return true;
   }
 }

@@ -1664,6 +1664,56 @@ test('loadFile ignores stale file responses after another file is selected', asy
   });
 });
 
+test('workspace file click does not activate stale file selection', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  vm.runInContext(`
+    nodes.fileTree.contains = function(node) {
+      return Boolean(node && node.isTreeButton);
+    };
+    nodes.fileTree.querySelector = function() {
+      return null;
+    };
+    function treeButton(path) {
+      return {
+        isTreeButton: true,
+        disabled: false,
+        dataset: { path, type: 'file', navigation: '' },
+        classList: {
+          add() {},
+          remove() {}
+        }
+      };
+    }
+    slowButton = treeButton('slow.txt');
+    fastButton = treeButton('fast.txt');
+  `, workspaceContext);
+
+  const slowClick = vm.runInContext(`handleFileTreeClick({ target: { closest() { return slowButton; } } })`, workspaceContext);
+  assert.equal(workspaceContext.pendingRequests.length, 1);
+  assert.match(workspaceContext.pendingRequests[0].url, /slow\.txt/);
+
+  const fastClick = vm.runInContext(`handleFileTreeClick({ target: { closest() { return fastButton; } } })`, workspaceContext);
+  assert.equal(workspaceContext.pendingRequests.length, 2);
+  assert.match(workspaceContext.pendingRequests[1].url, /fast\.txt/);
+
+  workspaceContext.pendingRequests[1].resolve({ content: 'current file' });
+  await fastClick;
+  assert.equal(vm.runInContext(`state.selectedTreePath`, workspaceContext), 'fast.txt');
+
+  workspaceContext.pendingRequests[0].resolve({ content: 'stale file' });
+  await slowClick;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selectedTreePath: state.selectedTreePath,
+    filename: nodes.editorFilename.innerText,
+    content: nodes.editorContent.innerText
+  })`, workspaceContext)), {
+    selectedTreePath: 'fast.txt',
+    filename: 'fast.txt',
+    content: 'current file'
+  });
+});
+
 test('workspace file responses do not overwrite later directory navigation', async () => {
   const workspaceContext = createWorkspaceHarnessContext();
   const fileLoad = vm.runInContext(`loadFile('old.txt')`, workspaceContext);
