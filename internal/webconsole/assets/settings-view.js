@@ -1,11 +1,14 @@
+const settingsViewState = {
+  requestSeq: 0
+};
+
 async function renderSettings() {
-  const requestSeq = (state.settingsRequestSeq || 0) + 1;
-  state.settingsRequestSeq = requestSeq;
+  const requestSeq = ++settingsViewState.requestSeq;
   const container = nodes.views.settings;
   container.innerHTML = '<div class="view-loading">Loading backend settings…</div>';
   try {
     const configData = await requestJSON('/api/config');
-    if (state.settingsRequestSeq !== requestSeq) {
+    if (settingsViewState.requestSeq !== requestSeq) {
       return;
     }
     const providers = configData.providers || {};
@@ -398,7 +401,7 @@ async function renderSettings() {
       }
     });
   } catch (err) {
-    if (state.settingsRequestSeq !== requestSeq) {
+    if (settingsViewState.requestSeq !== requestSeq) {
       return;
     }
     const message = settingsErrorMessage(err);

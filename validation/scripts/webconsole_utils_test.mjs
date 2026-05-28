@@ -2870,6 +2870,9 @@ test('renderSettings ignores stale config responses', async () => {
   const previousRequestJSON = context.requestJSON;
   const previousShowToast = context.showToast;
   const previousState = context.state;
+  const previousSettingsViewSeq = vm.runInContext(`settingsViewState.requestSeq`, context);
+  const hadStateSettingsSeq = vm.runInContext(`Object.prototype.hasOwnProperty.call(state, 'settingsRequestSeq')`, context);
+  const previousStateSettingsSeq = hadStateSettingsSeq ? vm.runInContext(`state.settingsRequestSeq`, context) : undefined;
   const pendingRequests = [];
   const container = fakeRendererElement();
   const elements = {
@@ -2903,7 +2906,7 @@ test('renderSettings ignores stale config responses', async () => {
       }
     }
   };
-  context.state = { ...previousState, settingsRequestSeq: 0 };
+  vm.runInContext(`delete state.settingsRequestSeq; settingsViewState.requestSeq = 0`, context);
   context.requestJSON = (url) => new Promise((resolve, reject) => {
     pendingRequests.push({ url, resolve, reject });
   });
@@ -2913,10 +2916,13 @@ test('renderSettings ignores stale config responses', async () => {
     const firstRender = context.renderSettings();
     assert.equal(pendingRequests.length, 1);
     assert.equal(pendingRequests[0].url, '/api/config');
+    assert.equal(vm.runInContext(`settingsViewState.requestSeq`, context), 1);
+    assert.equal(vm.runInContext(`Object.prototype.hasOwnProperty.call(state, 'settingsRequestSeq')`, context), false);
 
     const secondRender = context.renderSettings();
     assert.equal(pendingRequests.length, 2);
     assert.equal(pendingRequests[1].url, '/api/config');
+    assert.equal(vm.runInContext(`settingsViewState.requestSeq`, context), 2);
 
     pendingRequests[1].resolve(settingsConfig({ model: 'gpt-current', hasKey: true }));
     await secondRender;
@@ -2927,12 +2933,19 @@ test('renderSettings ignores stale config responses', async () => {
     await firstRender;
     assert.equal(elements['settings-model'].value, 'gpt-current');
     assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'true');
+    assert.equal(vm.runInContext(`Object.prototype.hasOwnProperty.call(state, 'settingsRequestSeq')`, context), false);
   } finally {
     context.nodes = previousNodes;
     context.document = previousDocument;
     context.requestJSON = previousRequestJSON;
     context.showToast = previousShowToast;
     context.state = previousState;
+    if (hadStateSettingsSeq) {
+      vm.runInContext(`state.settingsRequestSeq = ${JSON.stringify(previousStateSettingsSeq)}`, context);
+    } else {
+      vm.runInContext(`delete state.settingsRequestSeq`, context);
+    }
+    vm.runInContext(`settingsViewState.requestSeq = ${JSON.stringify(previousSettingsViewSeq)}`, context);
   }
 });
 

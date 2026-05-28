@@ -22396,6 +22396,45 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-110
+
+Slice: `fix(webconsole): isolate settings request guard`
+
+Finding:
+
+- `renderSettings()` used the main WebConsole `state.settingsRequestSeq` field as its stale `/api/config` response guard.
+- Settings config request sequencing is view-local browser render machinery, not a durable UI fact, session-store fact, provider option, or backend config state. Keeping it on the main `state` contradicted the P1 Render State Isolation plan and left another settings-only async guard coupled to the default session workspace state object.
+- A focused frontend regression strengthened the existing stale Settings response test to require that `state` does not acquire `settingsRequestSeq`. Before the fix, the stale guard worked but the assertion failed because `renderSettings()` wrote `settingsRequestSeq` onto `state`.
+
+Changes:
+
+- Added a tiny `settingsViewState` object in `settings-view.js` to own the Settings config request sequence.
+- Updated `renderSettings()` success and error stale-response checks to compare against `settingsViewState.requestSeq`.
+- Removed `settingsRequestSeq` from the main `state` object in `app.js`.
+- Extended the stale Settings config response regression so it proves stale responses remain ignored while request sequencing stays out of the main app state.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Settings-local guard slice and narrows the remaining request-guard backlog.
+
+Validation:
+
+- `node --test --test-name-pattern "renderSettings ignores stale config responses" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `settingsRequestSeq`.
+- `node --test --test-name-pattern "renderSettings ignores stale config responses" validation/scripts/webconsole_utils_test.mjs`: passed after moving the guard into `settingsViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 68/68 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-109
 
 Slice: `fix(webconsole): isolate runtime handles`
