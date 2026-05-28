@@ -3574,6 +3574,12 @@ func validateQueueJob(job QueueJob) error {
 	return nil
 }
 
+// ValidateQueueJobSnapshot validates a queue job loaded from durable storage
+// without reconciling linked sessions or mutating queue files.
+func ValidateQueueJobSnapshot(job QueueJob) error {
+	return validateQueueJob(job)
+}
+
 func normalizeAndValidateParentCoordination(sessionID string, coordination *ParentCoordination) error {
 	if coordination == nil {
 		return errors.New("parent coordination is required")

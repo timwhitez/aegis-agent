@@ -516,6 +516,10 @@ func doctorQueueJobRecords(sessionRoot string) ([]doctorQueueJobRecord, []map[st
 			if job.ID == "" {
 				job.ID = strings.TrimSuffix(entry.Name(), ".json")
 			}
+			if err := session.ValidateQueueJobSnapshot(job); err != nil {
+				unreadable = append(unreadable, map[string]any{"path": path, "error": err.Error()})
+				continue
+			}
 			info, _ := entry.Info()
 			var modTime time.Time
 			if info != nil {

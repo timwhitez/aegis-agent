@@ -79,6 +79,13 @@ func writeDoctorQueueJob(t *testing.T, root, status string, job session.QueueJob
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir queue dir: %v", err)
 	}
+	now := "2026-05-28T00:00:00Z"
+	if job.CreatedAt == "" {
+		job.CreatedAt = now
+	}
+	if job.UpdatedAt == "" {
+		job.UpdatedAt = now
+	}
 	data, err := json.Marshal(job)
 	if err != nil {
 		t.Fatalf("marshal queue job: %v", err)
@@ -1892,6 +1899,33 @@ func TestDoctorReportsDuplicateQueueJobStatus(t *testing.T) {
 	}
 	if duplicates[0]["job_id"] != "job_duplicate" {
 		t.Fatalf("unexpected duplicate detail: %#v", duplicates[0])
+	}
+}
+
+func TestDoctorReportsInvalidQueueJobFacts(t *testing.T) {
+	root := t.TempDir()
+	writeDoctorQueueJob(t, root, session.QueueStatusQueued, session.QueueJob{
+		ID:        "job_invalid_queue_fact",
+		Status:    session.QueueStatusQueued,
+		Prompt:    "",
+		Mode:      session.ModeExec,
+		CreatedAt: "2026-05-28T00:00:00Z",
+		UpdatedAt: "2026-05-28T00:00:00Z",
+	})
+
+	check := checkSessionPartialState(root)
+	if check.Status != "warn" {
+		t.Fatalf("expected warn, got %#v", check)
+	}
+	unreadable, ok := check.Details["unreadable_queue_jobs"].([]map[string]any)
+	if !ok || len(unreadable) != 1 {
+		t.Fatalf("expected unreadable queue job, got %#v", check.Details["unreadable_queue_jobs"])
+	}
+	if !strings.Contains(fmt.Sprint(unreadable[0]["path"]), "job_invalid_queue_fact.json") {
+		t.Fatalf("expected queue job path, got %#v", unreadable[0])
+	}
+	if !strings.Contains(fmt.Sprint(unreadable[0]["error"]), "prompt") {
+		t.Fatalf("expected prompt validation error, got %#v", unreadable[0])
 	}
 }
 

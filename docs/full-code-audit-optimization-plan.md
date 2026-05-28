@@ -8148,6 +8148,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-323 and FCA-20260528-349. FCA-323 covered symlinked, non-regular, unopenable, and missing core files; FCA-349 covered shared store list behavior when `session.json` is corrupt. This slice covers the remaining doctor-only gap where syntactically readable but semantically invalid `session.json`, `state.json`, or `messages.jsonl` facts were reported as healthy partial state.
 - Confirmed the minimal fix belongs in `internal/app/doctor_helpers.go`: after the existing Lstat/no-symlink/open checks pass, reuse `SessionStore.LoadMetadata`, `LoadState`, and `LoadMessages` for semantic validation, without duplicating store rules, introducing Web state authority, changing provider replay, or adding runtime workflow behavior.
 
+### Review 344
+
+- Confirmed FCA-20260528-351 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: queue job JSON files under `_queue/` are local session/queue facts, and `doctor` must report malformed queue snapshots using the same semantic contract enforced by the shared `SessionStore`.
+- Confirmed this is distinct from FCA-20260526-148, FCA-20260528-313, FCA-20260528-331, and FCA-20260528-350. Earlier slices made store list/claim/load paths reject corrupt or malformed queue jobs, and FCA-350 covered session core files. This slice covers the remaining doctor-only path where `_queue/<status>/<job>.json` was parsed as JSON but never semantically validated.
+- Confirmed the minimal fix belongs across a read-only exported session validator plus `doctorQueueJobRecords()`: expose a no-reconcile `ValidateQueueJobSnapshot` wrapper around the shared queue job validator, then have doctor classify semantically invalid queue job JSON as `unreadable_queue_jobs`, without using `LoadJob`/`ListJobs` paths that may repair queue state.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -11387,6 +11393,51 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `gofmt -l internal/app/doctor_helpers.go internal/app/app_test.go`: passed with no output.
 - `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/provider ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/tui ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-351
+
+Slice: `fix(app): validate doctor queue facts`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines queue jobs as durable local session/queue facts, and `spec/09-phase-plan.md` keeps `doctor` in the Web-first v1 diagnostic validation surface.
+- Shared queue store paths already rejected malformed queue snapshots through `validateQueueJob()`, including blank prompts, invalid timestamps, unsupported statuses, invalid linked session statuses, invalid role/wait/isolation values, and invalid visible paths.
+- `doctorQueueJobRecords()` still only read regular files and `json.Unmarshal`ed them. A focused regression wrote `_queue/queued/job_invalid_queue_fact.json` with a blank `prompt`; before the fix, `checkSessionPartialState()` returned `Status:"ok"` with `unreadable_queue_jobs:0`.
+
+Impact:
+
+- `go-cli-agent doctor` could report queue partial state as healthy while `ListJobs`, `LoadJob`, `ClaimNextQueuedJob`, Web queue views, TUI queue views, and worker claim paths would reject the same queue file.
+- Operators using doctor for recovery could miss semantically malformed queued/running/blocked/completed/failed job facts and misdiagnose a queue as idle or healthy.
+- This is a read-only diagnostics fix; it does not change queue claim order, duplicate status reconciliation, parent/child repair, queue worker policy, Web state authority, or runtime orchestration.
+
+Changes:
+
+- Added exported `session.ValidateQueueJobSnapshot()` as a read-only wrapper around the shared queue job validator so app diagnostics can validate queue facts without invoking mutating load/list/reconcile paths.
+- Routed `doctorQueueJobRecords()` through that validator after JSON decode and filename-derived ID compatibility handling.
+- Kept malformed queue job reports under the existing `unreadable_queue_jobs` detail key and count.
+- Updated doctor queue test fixtures to populate valid `created_at` and `updated_at` defaults, then added focused coverage for semantically invalid queue job facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestDoctorReportsInvalidQueueJobFacts -count=1`: failed before the fix because `session.partial_state` returned `ok` for a blank-prompt queued job.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReportsInvalidQueueJobFacts|TestDoctorReportsDuplicateQueueJobStatus|TestDoctorReportsQueueLeaseAndMissingSessionRef' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorReports(InvalidQueueJobFacts|InvalidSessionCoreFacts|UnsafeSessionCoreFiles|MissingSessionState|QueueJobMissingParentSessionRef|QueueLeaseAndMissingSessionRef|BlockedQueueJobMissingSessionRef|DuplicateQueueJobStatus)' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJobsRejectMalformedQueueJobSnapshot|TestQueueJobWritesRejectMalformedFacts|TestClaimNextQueuedJobRejectsMalformedQueuedJob|TestClaimNextQueuedJobRejectsMalformedQueuedJobTimestamps|TestListJobsReportsCorruptQueueJob|TestStoreClaimNextQueuedJobIsAtomicAcrossStores' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/webconsole ./internal/tui -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/tools ./internal/provider ./internal/skills ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/app/doctor_helpers.go internal/app/app_test.go internal/session/store.go`: passed with no output.
+- `git diff --check -- internal/app/doctor_helpers.go internal/app/app_test.go internal/session/store.go docs/full-code-audit-optimization-plan.md`: passed.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
