@@ -2344,6 +2344,89 @@ func TestRestoreOpenSteerRequestsPreservesOtherFacts(t *testing.T) {
 	}
 }
 
+func TestLoadSteerRequestsRejectsMalformedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	malformed := SteerRequest{
+		ID:        "../bad",
+		CreatedAt: now,
+		Source:    "cli",
+		Text:      "focus on tests",
+		Status:    SteerStatusPending,
+	}
+	steerPath := filepath.Join(store.SessionDir(meta.ID), "control", "steer.jsonl")
+	if err := store.writeJSONL(steerPath, []SteerRequest{malformed}); err != nil {
+		t.Fatalf("write malformed steer queue: %v", err)
+	}
+
+	if _, err := store.LoadSteerRequests(meta.ID); err == nil || !strings.Contains(err.Error(), "validate steer.jsonl") || !strings.Contains(err.Error(), "path separators") {
+		t.Fatalf("expected malformed steer.jsonl validation error, got %v", err)
+	}
+	if _, err := store.RefreshPendingSteerCount(meta.ID); err == nil || !strings.Contains(err.Error(), "validate steer.jsonl") {
+		t.Fatalf("expected pending count refresh to reject malformed steer.jsonl, got %v", err)
+	}
+}
+
+func TestSteerRequestWritesRejectMalformedRequests(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	blankText := NewSteerRequest("   ", false)
+	if err := store.AppendSteerRequest(meta.ID, blankText); err == nil || !strings.Contains(err.Error(), "steer request text is required") {
+		t.Fatalf("expected append to reject blank steer text, got %v", err)
+	}
+
+	valid := NewSteerRequest("focus on tests", false)
+	if err := store.AppendSteerRequest(meta.ID, valid); err != nil {
+		t.Fatalf("append valid steer: %v", err)
+	}
+	invalidStatus := valid
+	invalidStatus.Status = "done"
+	if err := store.UpdateSteerRequests(meta.ID, []SteerRequest{invalidStatus}); err == nil || !strings.Contains(err.Error(), "invalid steer request status") {
+		t.Fatalf("expected update to reject invalid status, got %v", err)
+	}
+	duplicate := NewSteerRequest("duplicate", false)
+	duplicate.ID = valid.ID
+	if err := store.AppendSteerRequest(meta.ID, duplicate); err == nil || !strings.Contains(err.Error(), "duplicate steer request id") {
+		t.Fatalf("expected append to reject duplicate id, got %v", err)
+	}
+	loaded, err := store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != valid.ID || loaded[0].Status != SteerStatusPending {
+		t.Fatalf("malformed steer write changed durable queue: %#v", loaded)
+	}
+}
+
 func TestUpdateBackgroundNotificationsMergesConcurrentAppend(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)

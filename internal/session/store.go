@@ -241,6 +241,9 @@ func (s *Store) pendingSteerCountLocked(sessionID string) (int, bool, error) {
 	if requests == nil {
 		return 0, false, nil
 	}
+	if err := validateSteerRequests(requests); err != nil {
+		return 0, false, fmt.Errorf("validate steer.jsonl: %w", err)
+	}
 	return CountOpenSteerRequests(requests), true, nil
 }
 
@@ -853,35 +856,9 @@ func (s *Store) SaveFeatureList(sessionID string, featureList FeatureList) error
 func (s *Store) AppendSteerRequest(sessionID string, request SteerRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
-	if err != nil {
-		return err
+	if err := validateSteerRequest(request); err != nil {
+		return fmt.Errorf("validate steer.jsonl: %w", err)
 	}
-	lockPath, err := s.sessionPath(sessionID, "control", "steer.lock")
-	if err != nil {
-		return err
-	}
-	return s.withFileLock(lockPath, func() error {
-		return s.appendJSONL(path, request)
-	})
-}
-
-func (s *Store) LoadSteerRequests(sessionID string) ([]SteerRequest, error) {
-	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
-	if err != nil {
-		return nil, err
-	}
-	var out []SteerRequest
-	err = readJSONL(path, &out)
-	if errors.Is(err, os.ErrNotExist) {
-		return []SteerRequest{}, nil
-	}
-	return out, err
-}
-
-func (s *Store) UpdateSteerRequests(sessionID string, requests []SteerRequest) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
 	if err != nil {
 		return err
@@ -896,8 +873,61 @@ func (s *Store) UpdateSteerRequests(sessionID string, requests []SteerRequest) e
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		current = append(current, request)
+		if err := validateSteerRequests(current); err != nil {
+			return fmt.Errorf("validate steer.jsonl: %w", err)
+		}
+		return s.appendJSONL(path, request)
+	})
+}
+
+func (s *Store) LoadSteerRequests(sessionID string) ([]SteerRequest, error) {
+	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
+	if err != nil {
+		return nil, err
+	}
+	var out []SteerRequest
+	err = readJSONL(path, &out)
+	if errors.Is(err, os.ErrNotExist) {
+		return []SteerRequest{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSteerRequests(out); err != nil {
+		return nil, fmt.Errorf("validate steer.jsonl: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) UpdateSteerRequests(sessionID string, requests []SteerRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "control", "steer.jsonl")
+	if err != nil {
+		return err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "steer.lock")
+	if err != nil {
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		if err := validateSteerRequests(requests); err != nil {
+			return fmt.Errorf("validate steer.jsonl: %w", err)
+		}
+		var current []SteerRequest
+		err := readJSONL(path, &current)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := validateSteerRequests(current); err != nil {
+			return fmt.Errorf("validate steer.jsonl: %w", err)
+		}
 		if len(current) > 0 {
 			requests = mergeSteerRequests(requests, current)
+		}
+		if err := validateSteerRequests(requests); err != nil {
+			return fmt.Errorf("validate steer.jsonl: %w", err)
 		}
 		return s.writeJSONL(path, requests)
 	})
@@ -920,7 +950,16 @@ func (s *Store) RestoreOpenSteerRequests(sessionID string, requests []SteerReque
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if err := validateSteerRequests(current); err != nil {
+			return fmt.Errorf("validate steer.jsonl: %w", err)
+		}
+		if err := validateSteerRequests(requests); err != nil {
+			return fmt.Errorf("validate steer.jsonl: %w", err)
+		}
 		requests = restoreOpenSteerRequests(requests, current)
+		if err := validateSteerRequests(requests); err != nil {
+			return fmt.Errorf("validate steer.jsonl: %w", err)
+		}
 		return s.writeJSONL(path, requests)
 	})
 }
@@ -3080,6 +3119,49 @@ func validateSessionContract(contract SessionContract) error {
 	}
 	if err := validateRequiredArtifacts(contract.RequiredArtifacts); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateSteerRequests(requests []SteerRequest) error {
+	seen := map[string]struct{}{}
+	for i, request := range requests {
+		if err := validateSteerRequest(request); err != nil {
+			return fmt.Errorf("steer request %d: %w", i+1, err)
+		}
+		if _, exists := seen[request.ID]; exists {
+			return fmt.Errorf("duplicate steer request id: %s", request.ID)
+		}
+		seen[request.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateSteerRequest(request SteerRequest) error {
+	if err := validateStoreID("steer request", request.ID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.CreatedAt) == "" {
+		return errors.New("steer request created_at is required")
+	}
+	switch request.Source {
+	case "cli", "web":
+	default:
+		if strings.TrimSpace(request.Source) == "" {
+			return errors.New("steer request source is required")
+		}
+		return fmt.Errorf("invalid steer request source %q", request.Source)
+	}
+	if strings.TrimSpace(request.Text) == "" {
+		return errors.New("steer request text is required")
+	}
+	switch request.Status {
+	case SteerStatusPending, SteerStatusAccepted, SteerStatusDeferred, SteerStatusRejected:
+	default:
+		if strings.TrimSpace(request.Status) == "" {
+			return errors.New("steer request status is required")
+		}
+		return fmt.Errorf("invalid steer request status %q", request.Status)
 	}
 	return nil
 }

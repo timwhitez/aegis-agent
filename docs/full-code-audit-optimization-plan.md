@@ -7878,6 +7878,12 @@ Evidence gates:
 - Confirmed this is the metadata/state counterpart to the recent durable fact-source validation slices. Prior store hardening covered goal, Plan Mode, todo/task, feature-list, contract, and artifact facts, but `LoadMetadata` / `LoadState` still trusted semantically malformed existing `session.json` / `state.json` snapshots.
 - Confirmed the minimal fix belongs at the session-store boundary: validate session identity, core metadata fields, mode/completion policy, linked IDs, provider option counters, state status, and non-negative execution counters on load/save/claim/create paths, while avoiding workflow-specific phase restrictions or Web/provider behavior changes.
 
+### Review 299
+
+- Confirmed FCA-20260528-306 against `spec/01-runtime-architecture.md` and `spec/13-live-input-and-steering.md`: `control/steer.jsonl` is the durable cross-process live-input queue shared by CLI and Web, and pending-count, interrupt deferral, acceptance drain, rollback, session detail, and resume behavior all trust this file.
+- Confirmed this is distinct from prior accepted-steer atomicity and state-counter slices. Those covered event/status/pending-count ordering for otherwise valid steer records; this slice covers malformed or externally modified steer queue records being trusted at the session-store fact boundary.
+- Confirmed the minimal fix belongs in `SessionStore` steer queue read/write APIs: reject malformed steer IDs, duplicate IDs, blank timestamps, unsupported `source`, blank text, and unsupported `status` before read results or writes become durable, while keeping runtime-owned message length checks and live-input scheduling unchanged.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7939,6 +7945,50 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-306
+
+Slice: `fix(session): validate steer control facts`
+
+Finding:
+
+- `LoadSteerRequests` decoded `control/steer.jsonl` without semantic validation.
+- `AppendSteerRequest`, `UpdateSteerRequests`, and `RestoreOpenSteerRequests` could persist malformed steer records or preserve malformed existing records during merge/rollback.
+- `pendingSteerCountLocked` could derive `state.json.pending_steer_count` from malformed steer records when `SaveState` refreshed the count.
+
+Impact:
+
+- Runtime control drain, interrupt deferral, accepted-steer rollback, rejected-steer rollback, pending-count refresh, Web session detail, session summaries, and continue/resume diagnostics could trust impossible live-input queue facts after restart or external modification.
+- Bad steer IDs or duplicate IDs could make status updates and rollback merge logic target the wrong record.
+- Unsupported statuses, unsupported sources, or blank steer text could hide queued input from count/drain paths or turn an invalid control fact into a real user message.
+
+Changes:
+
+- Added steer queue validation for valid store-shaped request IDs, duplicate IDs, nonblank `created_at`, supported `source` (`cli` / `web`), nonblank text, and supported status (`pending` / `accepted` / `deferred` / `rejected`).
+- Routed `LoadSteerRequests`, `AppendSteerRequest`, `UpdateSteerRequests`, `RestoreOpenSteerRequests`, and `pendingSteerCountLocked` through the validator.
+- Kept the existing runtime input boundary responsible for user-message trimming, maximum steer length, running-state checks, and Web-vs-CLI source selection.
+- Added focused regressions for malformed loaded `steer.jsonl`, pending-count refresh over malformed steer facts, malformed append/update writes, duplicate steer IDs, and durable queue preservation after rejected writes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadSteerRequestsRejectsMalformedSnapshot|TestSteerRequestWritesRejectMalformedRequests' -count=1`: failed before the fix because malformed `steer.jsonl` loaded successfully and blank steer text appended successfully.
+- `go test -timeout 120s ./internal/session -run 'TestLoadSteerRequestsRejectsMalformedSnapshot|TestSteerRequestWritesRejectMalformedRequests|TestUpdateSteerRequestsMergesConcurrentAppend|TestRestoreOpenSteerRequestsPreservesOtherFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/provider ./internal/review -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
 
 ### FCA-20260528-305
 
