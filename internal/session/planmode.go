@@ -212,6 +212,34 @@ func ValidatePlanMode(state PlanModeState) error {
 			return err
 		}
 	}
+	if err := validatePlanModeRequiredTimestamp("plan mode created_at", state.CreatedAt); err != nil {
+		return err
+	}
+	if err := validatePlanModeRequiredTimestamp("plan mode updated_at", state.UpdatedAt); err != nil {
+		return err
+	}
+	for _, approval := range state.Approvals {
+		if err := validatePlanModeRequiredTimestamp("plan mode approval approved_at", approval.ApprovedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePlanModeRequiredTimestamp(kind, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", kind)
+	}
+	return validatePlanModeOptionalTimestamp(kind, value)
+}
+
+func validatePlanModeOptionalTimestamp(kind, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+		return fmt.Errorf("%s must be RFC3339Nano: %w", kind, err)
+	}
 	return nil
 }
 
@@ -273,6 +301,15 @@ func ValidatePlanModeInputRequest(request PlanModeInputRequest) error {
 				return fmt.Errorf("request_user_input question %s option label and description are required", id)
 			}
 		}
+	}
+	if err := validatePlanModeRequiredTimestamp("plan input request created_at", request.CreatedAt); err != nil {
+		return err
+	}
+	if err := validatePlanModeOptionalTimestamp("plan input request answered_at", request.AnsweredAt); err != nil {
+		return err
+	}
+	if err := validatePlanModeOptionalTimestamp("plan input request cancelled_at", request.CancelledAt); err != nil {
+		return err
 	}
 	return nil
 }

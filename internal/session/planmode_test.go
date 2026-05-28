@@ -359,6 +359,120 @@ func TestLoadPlanModeRejectsInvalidSubmittedSnapshot(t *testing.T) {
 	}
 }
 
+func TestPlanModeSnapshotsRejectMalformedTimestamps(t *testing.T) {
+	store, sessionID := newPlanModeTestStore(t)
+	state, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+		Enabled:   true,
+		Objective: "Reject malformed plan mode timestamps",
+		Source:    PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	planModePath := filepath.Join(store.SessionDir(sessionID), "planmode.json")
+	for _, tt := range []struct {
+		name    string
+		mutate  func(*PlanModeState)
+		wantErr string
+	}{
+		{
+			name: "created_at",
+			mutate: func(state *PlanModeState) {
+				state.CreatedAt = "not-a-time"
+			},
+			wantErr: "created_at must be RFC3339Nano",
+		},
+		{
+			name: "updated_at",
+			mutate: func(state *PlanModeState) {
+				state.UpdatedAt = "not-a-time"
+			},
+			wantErr: "updated_at must be RFC3339Nano",
+		},
+		{
+			name: "pending request created_at",
+			mutate: func(state *PlanModeState) {
+				state.Status = PlanModeStatusAwaitingUserInput
+				state.PendingRequest = &PlanModeInputRequest{
+					RequestID:  "req_bad_created",
+					ToolCallID: "call_bad_created",
+					Questions:  []PlanModeInputQuestion{validPlanModeQuestion("scope")},
+					Status:     "pending",
+					CreatedAt:  "not-a-time",
+				}
+			},
+			wantErr: "created_at must be RFC3339Nano",
+		},
+		{
+			name: "pending request answered_at",
+			mutate: func(state *PlanModeState) {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				state.Status = PlanModeStatusAwaitingUserInput
+				state.PendingRequest = &PlanModeInputRequest{
+					RequestID:  "req_bad_answered",
+					ToolCallID: "call_bad_answered",
+					Questions:  []PlanModeInputQuestion{validPlanModeQuestion("scope")},
+					Status:     "answered",
+					Answers:    []PlanModeInputAnswer{{QuestionID: "scope", Label: "Narrow (Recommended)", Value: "Keep the change limited."}},
+					CreatedAt:  now,
+					AnsweredAt: "not-a-time",
+				}
+			},
+			wantErr: "answered_at must be RFC3339Nano",
+		},
+		{
+			name: "pending request cancelled_at",
+			mutate: func(state *PlanModeState) {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				state.Status = PlanModeStatusAwaitingUserInput
+				state.PendingRequest = &PlanModeInputRequest{
+					RequestID:   "req_bad_cancelled",
+					ToolCallID:  "call_bad_cancelled",
+					Questions:   []PlanModeInputQuestion{validPlanModeQuestion("scope")},
+					Status:      "cancelled",
+					CreatedAt:   now,
+					CancelledAt: "not-a-time",
+				}
+			},
+			wantErr: "cancelled_at must be RFC3339Nano",
+		},
+		{
+			name: "approval approved_at",
+			mutate: func(state *PlanModeState) {
+				state.Status = PlanModeStatusApproved
+				state.PlanVersion = 1
+				state.ApprovedVersion = 1
+				state.PlanMarkdown = "# Plan\n\nDo it."
+				state.Summary = "Do it."
+				state.Verification = []string{"manual"}
+				state.Approvals = []PlanModeApproval{{
+					Version:    1,
+					Source:     PlanModeSourceCLI,
+					ApprovedAt: "not-a-time",
+				}}
+			},
+			wantErr: "approved_at must be RFC3339Nano",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			malformed := state
+			tt.mutate(&malformed)
+			if err := store.writeJSONFile(planModePath, malformed); err != nil {
+				t.Fatalf("write malformed plan mode: %v", err)
+			}
+			if _, err := store.LoadPlanMode(sessionID); err == nil || !strings.Contains(err.Error(), "validate planmode.json") || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected malformed plan mode load error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+
+	invalidCreatedAt := state
+	invalidCreatedAt.CreatedAt = "not-a-time"
+	if err := store.SavePlanMode(sessionID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
+		t.Fatalf("expected malformed plan mode save error, got %v", err)
+	}
+}
+
 func TestSubmitPlanModeRollsBackWhenMarkdownWriteFails(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{

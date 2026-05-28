@@ -8082,6 +8082,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-338 and the earlier Plan Mode history rollback/error slices. FCA-20260528-338 hardened the analogous Goal history ledger; the Plan Mode rollback slices made missing/unwritable/corrupt history files visible and atomic. This slice covers the remaining Plan Mode history timestamp-shape gap where non-empty non-RFC3339 `PlanModeHistoryEntry.CreatedAt` values were accepted on load, append, and restore paths.
 - Confirmed the minimal fix belongs in the `SessionStore` Plan Mode history boundary: default omitted append timestamps before validation, parse `PlanModeHistoryEntry.CreatedAt` as RFC3339Nano for load/append/restore, and reject malformed restore input before replacing the existing valid history file without changing Plan Mode gate semantics, approval policy, provider replay, or Web state authority.
 
+### Review 333
+
+- Confirmed FCA-20260528-340 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `planmode.json` is the authoritative Plan Mode snapshot for the planning gate, pending `request_user_input`, approval state, Web Plan inspector, CLI fallback, provider replay recovery, summaries, and checkpoints.
+- Confirmed this is distinct from FCA-20260528-339. That slice hardened the append-only Plan Mode transition ledger; this slice covers the remaining current snapshot timestamp-shape gap where non-empty non-RFC3339 `PlanModeState.CreatedAt` / `UpdatedAt`, pending input request timestamps, and approval timestamps were accepted on load/save paths.
+- Confirmed the minimal fix belongs in `ValidatePlanMode` and `ValidatePlanModeInputRequest`: parse required snapshot and pending-request timestamps plus optional answered/cancelled timestamps and approval timestamps as RFC3339Nano, while preserving existing create/save compatibility through normalize-before-validate defaulting and without changing Plan Mode gate semantics, approval policy, provider replay, or Web state authority.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -10822,6 +10828,51 @@ Validation:
 - `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
 - `gofmt -l internal/session/taskboard.go internal/session/taskboard_test.go`: passed with no output.
 - `git diff --check -- internal/session/taskboard.go internal/session/taskboard_test.go docs/full-code-audit-optimization-plan.md`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 49 tests.
+- `go vet ./cmd/... ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./pkg/... ./validation/cmd/...`: passed.
+
+### FCA-20260528-340
+
+Slice: `fix(planmode): validate snapshot timestamps`
+
+Finding:
+
+- `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md` define `planmode.json` as the authoritative Plan Mode snapshot for planning gates, pending `request_user_input`, approval state, Web Plan inspector, CLI fallback, recovery, summaries, and checkpoints.
+- After FCA-20260528-339 hardened `artifacts/planmode-history.jsonl`, `ValidatePlanMode()` still accepted arbitrary non-empty timestamp strings in the current snapshot: `created_at`, `updated_at`, pending input request `created_at` / `answered_at` / `cancelled_at`, and approval `approved_at`.
+- A focused regression wrote `planmode.json` variants with each timestamp set to `not-a-time` and passed `CreatedAt:"not-a-time"` to `SavePlanMode()`. Before the fix, both load and save paths accepted malformed timestamp facts with nil error.
+
+Impact:
+
+- `planmode.json` could carry malformed chronology while Web/CLI/runtime recovery treated it as the current Plan Mode authority.
+- Pending input recovery, active Web runner fallback, approval replay, linked mission approval, session summaries, and long-run checkpoints could observe malformed Plan Mode snapshot timestamps as normal durable facts.
+- This was a validation-boundary fix only; it does not change Plan Mode gating, approval semantics, provider replay, mission linkage, question/answer validation, or model-led workflow behavior.
+
+Changes:
+
+- Added Plan Mode timestamp validators for required and optional RFC3339Nano fields.
+- Routed `PlanModeState.CreatedAt`, `PlanModeState.UpdatedAt`, and approval `ApprovedAt` through `ValidatePlanMode()`.
+- Routed pending input request `CreatedAt`, optional `AnsweredAt`, and optional `CancelledAt` through `ValidatePlanModeInputRequest()`.
+- Preserved create/save compatibility for omitted Plan Mode snapshot timestamps through existing defaulting before validation and automatic `updated_at` refresh.
+- Added focused load/save regressions for malformed Plan Mode snapshot, pending input request, and approval timestamps.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `TestPlanModeSnapshotsRejectMalformedTimestamps` saw `LoadPlanMode()` accept malformed `created_at`, `updated_at`, pending input request timestamps, approval timestamps, and `SavePlanMode()` accept `CreatedAt:"not-a-time"` with nil error.
+- `go test -timeout 120s ./internal/session -run 'TestPlanModeSnapshotsRejectMalformedTimestamps|TestSavePlanModeRejectsSubmittedStatesWithoutPlanFacts|TestLoadPlanModeRejectsInvalidSubmittedSnapshot|TestPlanModeSubmitApproveAndHistory|TestValidatePlanModeQuestionIDsAndAnswers' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestPlanMode|TestApprove|TestSubmit|TestCancel|TestRequestUserInput|TestContinuePlanModeCreationRetry|TestRecoveredPlanMode|TestApproveLinkedPlanMode' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: timed out once in unrelated `TestEngineWritesInterruptedToolResultOnPause`; focused rerun `go test -timeout 120s ./internal/runtime -run TestEngineWritesInterruptedToolResultOnPause -count=1` passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole ./internal/tools -count=1`: passed on rerun.
+- `go test -timeout 120s ./internal/app ./internal/skills ./internal/tui ./pkg/agent ./validation/cmd/retryproxy -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `gofmt -l internal/session/planmode.go internal/session/planmode_test.go`: passed with no output.
 - `node --check internal/webconsole/assets/app.js`: passed.
 - `node --check internal/webconsole/assets/session-view.js`: passed.
 - `node --check internal/webconsole/assets/events.js`: passed.
