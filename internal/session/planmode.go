@@ -182,6 +182,25 @@ func ValidatePlanMode(state PlanModeState) error {
 	default:
 		return fmt.Errorf("invalid plan mode status: %s", state.Status)
 	}
+	if isPlanModeSubmittedState(state.Status) {
+		if state.PlanVersion <= 0 {
+			return errors.New("plan mode submitted plan version is required")
+		}
+		if strings.TrimSpace(state.PlanMarkdown) == "" {
+			return errors.New("plan mode submitted plan markdown is required")
+		}
+		if strings.TrimSpace(state.Summary) == "" {
+			return errors.New("plan mode submitted plan summary is required")
+		}
+		if len(cleanStringSlice(state.Verification)) == 0 {
+			return errors.New("plan mode submitted plan verification is required")
+		}
+	}
+	if isPlanModeApprovedState(state.Status) {
+		if state.ApprovedVersion <= 0 || state.ApprovedVersion > state.PlanVersion {
+			return errors.New("plan mode approved version must reference submitted plan version")
+		}
+	}
 	if utf8.RuneCountInString(state.PlanMarkdown) > MaxPlanModeMarkdownChars {
 		return fmt.Errorf("plan markdown exceeds %d characters", MaxPlanModeMarkdownChars)
 	}
@@ -194,6 +213,24 @@ func ValidatePlanMode(state PlanModeState) error {
 		}
 	}
 	return nil
+}
+
+func isPlanModeSubmittedState(status string) bool {
+	switch status {
+	case PlanModeStatusAwaitingApproval, PlanModeStatusApproved, PlanModeStatusRejected, PlanModeStatusExecuting:
+		return true
+	default:
+		return false
+	}
+}
+
+func isPlanModeApprovedState(status string) bool {
+	switch status {
+	case PlanModeStatusApproved, PlanModeStatusExecuting:
+		return true
+	default:
+		return false
+	}
 }
 
 func ValidatePlanModeInputRequest(request PlanModeInputRequest) error {

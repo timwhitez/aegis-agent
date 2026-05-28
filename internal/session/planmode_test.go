@@ -237,6 +237,96 @@ func TestSubmitPlanModeRejectsBlankRequiredFields(t *testing.T) {
 	}
 }
 
+func TestSavePlanModeRejectsSubmittedStatesWithoutPlanFacts(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*PlanModeState)
+		wantErr string
+	}{
+		{
+			name: "awaiting approval missing plan version",
+			mutate: func(state *PlanModeState) {
+				state.Status = PlanModeStatusAwaitingApproval
+				state.PlanMarkdown = "# Plan\n\nDo it."
+				state.Summary = "Do it."
+				state.Verification = []string{"manual"}
+			},
+			wantErr: "plan mode submitted plan version is required",
+		},
+		{
+			name: "awaiting approval missing markdown",
+			mutate: func(state *PlanModeState) {
+				state.Status = PlanModeStatusAwaitingApproval
+				state.PlanVersion = 1
+				state.Summary = "Do it."
+				state.Verification = []string{"manual"}
+			},
+			wantErr: "plan mode submitted plan markdown is required",
+		},
+		{
+			name: "approved missing summary",
+			mutate: func(state *PlanModeState) {
+				state.Status = PlanModeStatusApproved
+				state.PlanVersion = 1
+				state.ApprovedVersion = 1
+				state.PlanMarkdown = "# Plan\n\nDo it."
+				state.Verification = []string{"manual"}
+			},
+			wantErr: "plan mode submitted plan summary is required",
+		},
+		{
+			name: "executing empty verification",
+			mutate: func(state *PlanModeState) {
+				state.Status = PlanModeStatusExecuting
+				state.PlanVersion = 1
+				state.ApprovedVersion = 1
+				state.PlanMarkdown = "# Plan\n\nDo it."
+				state.Summary = "Do it."
+				state.Verification = []string{"   "}
+			},
+			wantErr: "plan mode submitted plan verification is required",
+		},
+		{
+			name: "approved version without approved plan",
+			mutate: func(state *PlanModeState) {
+				state.Status = PlanModeStatusApproved
+				state.PlanVersion = 2
+				state.ApprovedVersion = 3
+				state.PlanMarkdown = "# Plan\n\nDo it."
+				state.Summary = "Do it."
+				state.Verification = []string{"manual"}
+			},
+			wantErr: "plan mode approved version must reference submitted plan version",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, sessionID := newPlanModeTestStore(t)
+			state, err := store.CreatePlanMode(sessionID, PlanModeDraft{
+				Enabled:   true,
+				Objective: "Validate submitted states",
+				Source:    PlanModeSourceCLI,
+			})
+			if err != nil {
+				t.Fatalf("create plan mode: %v", err)
+			}
+			tt.mutate(&state)
+
+			if err := store.SavePlanMode(sessionID, state); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected %q error, got %v", tt.wantErr, err)
+			}
+			loaded, loadErr := store.LoadPlanMode(sessionID)
+			if loadErr != nil {
+				t.Fatalf("load plan mode: %v", loadErr)
+			}
+			if loaded.Status != PlanModeStatusPlanning || loaded.PlanVersion != 0 || loaded.PlanMarkdown != "" || len(loaded.Verification) != 0 {
+				t.Fatalf("invalid full snapshot should not be persisted, got %#v", loaded)
+			}
+		})
+	}
+}
+
 func TestSubmitPlanModeRollsBackWhenMarkdownWriteFails(t *testing.T) {
 	store, sessionID := newPlanModeTestStore(t)
 	if _, err := store.CreatePlanMode(sessionID, PlanModeDraft{

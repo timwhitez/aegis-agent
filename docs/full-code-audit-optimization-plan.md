@@ -7836,6 +7836,12 @@ Evidence gates:
 - Confirmed this is distinct from prior Plan Mode transaction and replay slices. Those covered history/event/artifact rollback, approval/revision/cancellation idempotency, and input-answer validation; this slice covers malformed required `submit_plan` content being accepted before the transition is otherwise durable.
 - Confirmed the minimal fix belongs in `Store.SubmitPlanMode`, not provider adapters, Web UI state, or runtime workflow guards: normalize required fields once at the session-store boundary, reject blank title or all-blank verification, and reuse the normalized verification/title for persisted Plan Mode facts.
 
+### Review 292
+
+- Confirmed FCA-20260528-299 against `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `planmode.json` is the Plan Mode fact source, so full-snapshot writes must not create submitted, approved, rejected, or executing states without the submitted plan facts that approval gates and inspectors trust.
+- Confirmed this is distinct from FCA-20260528-298. That slice hardened the `submit_plan` transition input; this slice covers direct `SavePlanMode` / `MutatePlanMode` validation for whole-snapshot callers and recovery helpers that bypass `submit_plan`.
+- Confirmed the minimal fix belongs in `ValidatePlanMode`: require positive `plan_version`, nonblank Markdown, nonblank summary, and at least one normalized verification item for submitted states; additionally require approved/executing snapshots to have an `approved_version` that references an existing submitted plan version.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -7897,6 +7903,34 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-299
+
+Slice: `fix(session): validate submitted Plan Mode snapshots`
+
+Finding:
+
+- `ValidatePlanMode` accepted `awaiting_approval`, `approved`, `rejected`, and `executing` snapshots without requiring a submitted `plan_version`, Markdown plan, summary, or verification list.
+- `ValidatePlanMode` also accepted `approved` / `executing` snapshots whose `approved_version` was missing or greater than the submitted `plan_version`.
+- Transition helpers such as `SubmitPlanMode` and `ApprovePlanMode` checked their own facts, but direct full-snapshot writes through `SavePlanMode` could persist impossible approval/execution states.
+
+Impact:
+
+- Session list/detail, Web Plan inspector, runtime approved-plan context, linked Goal approval checks, and recovery paths trust `planmode.json` as the current Plan Mode fact source.
+- A malformed full-snapshot write could make a session appear approval-ready, approved, or executing without the plan evidence that an operator would review before approving execution.
+- The invalid current snapshot could survive reloads because the only central validator allowed it.
+
+Changes:
+
+- Added submitted-state validation in `ValidatePlanMode` for `awaiting_approval`, `approved`, `rejected`, and `executing` states.
+- Required positive submitted `plan_version`, nonblank `plan_markdown`, nonblank `summary`, and at least one normalized `verification` entry for those states.
+- Required `approved` / `executing` states to have an `approved_version` that references an existing submitted plan version.
+- Added focused store regressions proving invalid full snapshots are rejected and do not replace the existing planning Plan Mode.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestSavePlanModeRejectsSubmittedStatesWithoutPlanFacts -count=1`: failed before the fix because every malformed submitted/approved/executing snapshot was accepted.
+- `go test -timeout 120s ./internal/session -run 'TestSavePlanModeRejectsSubmittedStatesWithoutPlanFacts|TestSubmitPlanModeRejectsBlankRequiredFields|TestPlanModeSubmitApproveAndHistory|TestApprovePlanModeReturnsHistoryAppendError|TestStoreGoalApprovalCreatesFreshPendingGateAfterNeedsApprovalReset' -count=1`: passed.
 
 ### FCA-20260528-298
 
