@@ -857,6 +857,14 @@ func (s *Store) AppendEvent(sessionID string, event events.Event) error {
 	if err != nil {
 		return err
 	}
+	var existing []events.Event
+	if err := readJSONL(path, &existing); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	existing = append(existing, event)
+	if err := validateEvents(sessionID, existing); err != nil {
+		return fmt.Errorf("validate events.jsonl: %w", err)
+	}
 	if err := s.appendJSONL(path, event); err != nil {
 		return fmt.Errorf("append event %s: %w", path, err)
 	}

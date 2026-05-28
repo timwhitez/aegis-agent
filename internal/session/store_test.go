@@ -215,6 +215,44 @@ func TestEventWritesRejectMalformedFacts(t *testing.T) {
 	}
 }
 
+func TestAppendEventRejectsMalformedExistingLog(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	malformed := events.New(meta.ID, "bad.event", "test", nil)
+	malformed.Time = "not-a-time"
+	path := filepath.Join(store.SessionDir(meta.ID), "events.jsonl")
+	if err := store.writeEventsJSONL(path, []events.Event{malformed}); err != nil {
+		t.Fatalf("write malformed events: %v", err)
+	}
+
+	err := store.AppendEvent(meta.ID, events.New(meta.ID, "later.event", "test", nil))
+	if err == nil || !strings.Contains(err.Error(), "validate events.jsonl") || !strings.Contains(err.Error(), "time must be RFC3339Nano") {
+		t.Fatalf("expected malformed existing event log append error, got %v", err)
+	}
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read events: %v", readErr)
+	}
+	if got := strings.Count(string(raw), "\n"); got != 1 {
+		t.Fatalf("malformed existing event log should not be extended, got %d records: %q", got, string(raw))
+	}
+}
+
 func TestRestoreEventsReplacesDurableLogAndRejectsMalformedFacts(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

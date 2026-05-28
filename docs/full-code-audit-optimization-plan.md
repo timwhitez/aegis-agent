@@ -8232,6 +8232,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-338, FCA-20260528-339, FCA-20260528-364, and FCA-20260528-365. The timestamp slices validated individual Goal/Plan Mode history entries on load/append/restore, while the latest message/contract slices validated existing ledgers before append. This slice covers the remaining Goal/Plan Mode history append boundary where an already malformed but syntactically readable ledger could still be extended by a later valid entry.
 - Confirmed the minimal fix belongs in `AppendGoalHistory` and `AppendPlanModeHistory`: read the current history under the store mutex, append the candidate in memory, validate the resulting ledger, and only then append the new JSONL record. No Goal/Plan Mode state-machine semantics, Web controls, runtime gates, or provider adapter behavior need to change.
 
+### Review 358
+
+- Confirmed FCA-20260528-367 against `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/17-web-console.md`: `events.jsonl` is the durable session timeline/audit fact source used by runtime transitions, Web detail, session summaries, owner clues, queue reconciliation, checkpoints, and recovery diagnostics.
+- Confirmed this is distinct from FCA-20260528-312, FCA-20260528-327, FCA-20260528-363, and FCA-20260528-366. The earlier event slices added semantic/timestamp validation and event rollback snapshots, and the prior slice covered Goal/Plan Mode history ledgers. This slice covers the single-event append path where `AppendEvent` validated only the new event while `AppendEvents` already validated the full current log before rewrite.
+- Confirmed the minimal fix belongs in `AppendEvent`: read the current `events.jsonl` under the store mutex, append the candidate in memory, validate the resulting event log, and only then append the new row. This keeps runtime/Web/CLI event production unchanged and only hardens the session-store fact boundary.
+
 ### Review 219
 
 - Confirmed FCA-20260527-226 against the WebConsole Workspace browser boundary in `spec/17-web-console.md`: the Workspace panel is local read-only inspection, but it must not turn denied secret-like aliases into readable API paths.
@@ -8293,6 +8299,47 @@ Evidence gates:
 - Confirmed the minimal fix is to batch the two required acceptance events and keep notification/message rollback on either notification-update or event-batch failure; no provider, Web, or queue orchestration behavior changes are needed.
 
 ## Update Log
+
+### FCA-20260528-367
+
+Slice: `fix(session): validate existing event log before append`
+
+Finding:
+
+- `AppendEvent` validated the new event but did not read and validate existing `events.jsonl` before appending.
+- `AppendEvents` already validated the full event log before its atomic rewrite path, but the single-event append helper is the common runtime/Web/CLI path for required lifecycle, Goal, Plan Mode, queue, steer, and Web handle events.
+
+Impact:
+
+- A syntactically valid but semantically malformed existing `events.jsonl` could keep being extended by later valid required events.
+- That left the timeline/audit source internally inconsistent: `LoadEvents`, Web detail, summaries, checkpoints, owner-clue extraction, and queue lifecycle reconciliation reject the same corrupt event log, while append callers previously saw success and could add new transition evidence on top of it.
+
+Changes:
+
+- `AppendEvent` now reads the current event log under the existing store mutex, appends the candidate event in memory, and validates the whole resulting log before writing the new JSONL row.
+- Added a focused store regression that writes a malformed existing event log and proves a later valid append is rejected without extending the corrupt log.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestAppendEventRejectsMalformedExistingLog -count=1`: failed before the fix because `AppendEvent` returned nil.
+- `go test -timeout 120s ./internal/session -run 'TestAppendEventRejectsMalformedExistingLog|TestLoadEventsRejectsMalformedSnapshot|TestEventWritesRejectMalformedFacts|TestStoreAppendEventsAppendsBatchAtomically|TestRestoreEventsReplacesDurableLogAndRejectsMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/tools -count=1`: passed.
+- `gofmt -l internal/session/store.go internal/session/store_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 53 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260528-366
 
