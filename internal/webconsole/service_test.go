@@ -7209,6 +7209,60 @@ func TestHistoryMutationRejectsSymlinkedSessionRootDuringMove(t *testing.T) {
 	}
 }
 
+func TestHistoryMutationRejectsSymlinkedBackupParentBeforeCreate(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "managed")
+	root := filepath.Join(parent, "sessions")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("mkdir session root: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	symlinkProbe := filepath.Join(base, "symlink-probe")
+	if err := os.Symlink(outside, symlinkProbe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(symlinkProbe); err != nil {
+		t.Fatalf("remove symlink probe: %v", err)
+	}
+
+	beforeWebHistoryBackupRootCreate = func(backupParent string) error {
+		if backupParent != parent {
+			return fmt.Errorf("unexpected backup parent: %s", backupParent)
+		}
+		if err := os.Rename(parent, parent+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeWebHistoryBackupRootCreate = nil
+	}()
+
+	tx, err := newWebHistoryMutationTransaction(root, "delete")
+	if err == nil {
+		defer tx.Rollback()
+		t.Fatalf("expected symlinked history backup parent rejection, got backup root %s", tx.backupRoot)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".sessions.delete-") {
+			t.Fatalf("history backup root must not be created through symlinked parent, found %s", entry.Name())
+		}
+	}
+	if _, err := os.Stat(parent + ".real"); err != nil {
+		t.Fatalf("real history parent should remain available, got %v", err)
+	}
+}
+
 func TestClearSessionsRollsBackWhenAuditAppendFails(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

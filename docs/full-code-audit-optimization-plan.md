@@ -8868,7 +8868,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-455. That slice hardened backup reservation cleanup after a temporary reservation already existed; this residual issue was earlier creation of skill upload staging / backup temp directories through raw `os.MkdirTemp(parent, ...)`, which could follow a replaced managed skill root before the later no-symlink extract/rename/cleanup checks rejected the operation.
 - Confirmed the minimal fix belongs in the temp-directory creation boundary: add a shared no-symlink `MkdirTempNoSymlink` helper and use it for skill upload staging roots and skill backup reservations, preserving existing package validation, rollback, and commit semantics.
 
+### Review 454
+
+- Confirmed FCA-20260530-459 against `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, and `AGENTS.md`: Web history clear/delete transactions move local session and queue file facts through a rollback-capable backup root, and that backup root must remain under the session-root parent rather than following a replaced parent symlink.
+- Confirmed this is distinct from FCA-20260529-450 and FCA-20260530-458. FCA-20260529-450 hardened Web history move/rollback renames after a transaction exists, and FCA-20260530-458 added the shared temp-dir helper for skill upload paths; this residual issue was `newWebHistoryMutationTransaction` still creating the history backup root itself with raw `os.MkdirTemp(parent, ...)`.
+- Confirmed the minimal fix belongs in `newWebHistoryMutationTransaction`: keep existing session-root validation, transaction shape, move semantics, rollback, and finalize behavior unchanged, but route backup-root creation through `fileutil.MkdirTempNoSymlink`.
+
 ## Update Log
+
+### FCA-20260530-459
+
+Slice: `fix(webconsole): harden history backup root`
+
+Finding:
+
+- `spec/17-web-console.md` makes Web session deletion and history clearing local control operations over durable session/queue facts, while `spec/18-durable-contract-and-completion.md` keeps those facts in session-store files rather than browser/runtime side state.
+- `internal/webconsole/service.go` `newWebHistoryMutationTransaction` checked the session-root parent with `rejectAuditSymlinkAncestors`, then created the rollback backup root with raw `os.MkdirTemp(parent, "."+filepath.Base(root)+"."+prefix+"-*")`.
+- A focused regression replaced the session-root parent with a symlink immediately before backup-root creation. Before the fix, raw `os.MkdirTemp` followed that symlink and created `.sessions.delete-*` under the outside target before later history move checks could fail.
+
+Impact:
+
+- A rejected or interrupted Web history clear/delete transaction could still create a local backup-root artifact outside the session-store parent when that parent was replaced by a symlink between validation and temp-dir creation.
+- That weakened the local WebConsole history mutation boundary: session and queue facts remained protected by later no-symlink moves, but the transaction setup itself was not side-effect-free outside the intended parent.
+
+Changes:
+
+- Routed `newWebHistoryMutationTransaction` backup-root creation through `fileutil.MkdirTempNoSymlink`.
+- Added a focused WebConsole regression proving symlinked backup parents are rejected before a history backup root is created outside the session-store parent.
+- Kept existing history move, rollback, finalize, audit, and queue/session target collection behavior unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestHistoryMutationRejectsSymlinkedBackupParentBeforeCreate -count=1`: failed before the fix because `.sessions.delete-*` was created through the symlinked parent.
+- `go test -timeout 120s ./internal/webconsole -run 'TestHistoryMutationRejectsSymlinkedBackupParentBeforeCreate|TestHistoryMutationRejectsSymlinkedSessionRootDuringMove|TestClearSessionsRollsBackWhenAuditAppendFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestHistoryMutationRejectsSymlinkedBackupParentBeforeCreate|TestHistoryMutationRejectsSymlinkedSessionRootDuringMove|TestClearSessionsRollsBackWhenAuditAppendFails|TestClearSessionsRejectsRunningJobs|TestDeleteSessionTreeRollsBackWhenAuditAppendFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run TestMkdirTempNoSymlink -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-458
 

@@ -76,6 +76,9 @@ var (
 	// beforeSkillUploadStagingRootCreate is set only by package tests to force
 	// a deterministic filesystem replacement before upload staging begins.
 	beforeSkillUploadStagingRootCreate func(globalDest string) error
+	// beforeWebHistoryBackupRootCreate is set only by package tests to force a
+	// deterministic filesystem replacement before history backup creation.
+	beforeWebHistoryBackupRootCreate func(parent string) error
 )
 
 type processOwner struct {
@@ -957,7 +960,12 @@ func newWebHistoryMutationTransaction(root, prefix string) (*webHistoryMutationT
 	if err := rejectAuditSymlinkAncestors(parent); err != nil {
 		return nil, err
 	}
-	backupRoot, err := os.MkdirTemp(parent, "."+filepath.Base(root)+"."+prefix+"-*")
+	if beforeWebHistoryBackupRootCreate != nil {
+		if err := beforeWebHistoryBackupRootCreate(parent); err != nil {
+			return nil, err
+		}
+	}
+	backupRoot, err := fileutil.MkdirTempNoSymlink(parent, "."+filepath.Base(root)+"."+prefix+"-*")
 	if err != nil {
 		return nil, err
 	}
