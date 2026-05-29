@@ -262,7 +262,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if meta.ProviderOptions.SendMetadata != nil && !*meta.ProviderOptions.SendMetadata {
 			requestMetadata = nil
 		}
-		e.emit(meta.ID, "provider.request.prepared", state.Phase, providerRequestPreparedEventData(meta, requestMetadata))
+		if err := e.appendEvent(meta.ID, "provider.request.prepared", state.Phase, providerRequestPreparedEventData(meta, requestMetadata)); err != nil {
+			return RunResult{}, fmt.Errorf("record provider.request.prepared event: %w", err)
+		}
 		callCtx, cancel := context.WithCancel(ctx)
 		e.control.setCancel(cancel)
 		providerStart := time.Now()

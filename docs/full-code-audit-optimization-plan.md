@@ -8790,7 +8790,44 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-148, FCA-20260528-313, FCA-20260528-331, FCA-20260529-436, and FCA-20260529-441. Earlier slices covered corrupt queue JSON, generic queue scalar validation, timestamp validation, parent/root topology, and result/session semantic compatibility; this residual issue was a syntactically valid queue job whose filename and scalar fields were valid but whose JSON `status` contradicted the containing queue directory.
 - Confirmed the minimal fix belongs in the shared queue fact read boundaries and doctor partial-state scan: `LoadJob`, `ListJobs`, `ListJobsByParent`, `ClaimNextQueuedJob`, `RefreshQueueJobHeartbeat`, and `doctor` all need the same directory/status invariant, while `SaveJob` already writes to the directory selected by `job.Status`.
 
+### Review 441
+
+- Confirmed FCA-20260529-443 against `spec/03-provider-contracts.md`, `spec/17-web-console.md`, and `spec/01-runtime-architecture.md`: `provider.request.prepared` is the durable diagnostic event that records the provider/model request boundary, provider options, retry/timeout policy, and provider metadata keys immediately before adapter execution.
+- Confirmed this is distinct from FCA-20260527-209, FCA-20260527-210, FCA-20260528-347, and FCA-20260529-407 through FCA-20260529-410. Earlier slices required `assistant.message` / `turn.stopped`, fixed provider-native replay facts, and hardened durable provider option resolution; this residual issue was that the runtime could still call the adapter after losing the request-prepared trace event that proves the effective request options and metadata surface.
+- Confirmed the minimal fix belongs in `Engine.Run` at the event boundary just before `adapter.RunTurn`: require `provider.request.prepared` persistence before sending the provider request, while leaving the earlier `provider.call` event as best-effort coarse telemetry and preserving adapter-owned retry / response handling.
+
 ## Update Log
+
+### FCA-20260529-443
+
+Slice: `fix(runtime): require provider request prepared events`
+
+Finding:
+
+- `spec/03-provider-contracts.md` requires generation, reasoning, store, retry, timeout, and metadata options to flow from config through runtime/session metadata into provider adapters, and `spec/17-web-console.md` relies on provider option / retry facts for operator inspection and retry proof.
+- `internal/runtime/engine.go` built `requestMetadata`, applied `provider_options.send_metadata`, and emitted `provider.request.prepared` with provider, model, metadata-key, retry-policy, timeout-policy, and generation/reasoning facts.
+- That event was emitted through best-effort `e.emit`, so an unwritable `events.jsonl` could drop the prepared-request evidence while still calling `adapter.RunTurn`.
+- A focused regression blocked `events.jsonl` exactly at `provider.request.prepared`; before the fix, the fake provider was called and the session completed.
+
+Impact:
+
+- Provider execution could proceed without durable evidence of the effective provider request options that reached the adapter boundary.
+- Web detail, session summaries, retry-resume proof, and later audit diagnostics could see provider output and provider-attempt facts without the request-prepared event that explains the metadata, retry/timeout policy, and reasoning/store configuration used for that call.
+- This weakens traceability for local file facts without changing provider replay ownership: the provider adapters still own provider-specific request/response shapes, but the runtime must preserve the adapter-call boundary event before it performs the external call.
+
+Changes:
+
+- Switched `provider.request.prepared` recording from best-effort `emit` to checked `appendEvent`.
+- Return `record provider.request.prepared event` with the underlying `events.jsonl` error when persistence fails.
+- Stop before `adapter.RunTurn` if the event cannot be recorded.
+- Preserved the successful event payload and provider request metadata behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderRequestPreparedReportsEventAppendErrorBeforeProviderCall -count=1`: failed before the fix because the provider was called and the session completed with no error.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(EmitsProviderRequestPreparedEvent|ProviderRequestPreparedReportsEventAppendErrorBeforeProviderCall)' -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- Broader validation recorded with this slice before commit.
 
 ### FCA-20260529-442
 

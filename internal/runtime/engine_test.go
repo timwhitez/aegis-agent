@@ -1673,6 +1673,35 @@ func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 	}
 }
 
+func TestEngineProviderRequestPreparedReportsEventAppendErrorBeforeProviderCall(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "provider.request.prepared" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	called := false
+	fake := provider.NewFake(func(_ context.Context, _ provider.TurnRequest) (provider.TurnResult, error) {
+		called = true
+		return provider.TurnResult{
+			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "provider.request.prepared") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected provider.request.prepared events.jsonl error, result=%#v err=%v", result, err)
+	}
+	if called {
+		t.Fatal("provider should not be called after missing provider.request.prepared event")
+	}
+}
+
 func TestEngineAutoResumesProviderTimeoutBeforeFailing(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
