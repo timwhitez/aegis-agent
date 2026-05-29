@@ -3453,6 +3453,65 @@ test('fetchSkills ignores stale skill catalog responses', async () => {
   assert.doesNotMatch(finalState.grid, /Stale Skill/);
 });
 
+test('skill uninstall ignores stale confirmation after catalog refresh', async () => {
+  const appContext = createAppHarnessContext();
+  const confirmResolvers = [];
+  const toasts = [];
+  const button = fakeAppElement();
+  button.innerText = 'Uninstall';
+
+  vm.runInContext(`
+    nodes.skillsGrid = fakeAppElement();
+    nodes.toastRack = fakeAppElement();
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    confirmSkillUninstall = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    renderSkills([{
+      id: 'skill_slow',
+      name: 'Slow Skill',
+      author: 'agent',
+      description: 'old catalog entry',
+      installed: true
+    }]);
+  `, Object.assign(appContext, { fakeAppElement, confirmResolversRef: confirmResolvers, toastsRef: toasts }));
+
+  const action = vm.runInContext(`handleSkillAction('skill_slow', true, buttonRef)`, Object.assign(appContext, { buttonRef: button }));
+  assert.equal(confirmResolvers.length, 1);
+  assert.equal(appContext.pendingRequests.length, 0);
+
+  vm.runInContext(`
+    renderSkills([{
+      id: 'skill_current',
+      name: 'Current Skill',
+      author: 'agent',
+      description: 'new catalog entry',
+      installed: true
+    }]);
+  `, appContext);
+
+  confirmResolvers[0](true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (appContext.pendingRequests[0]) {
+    appContext.pendingRequests[0].resolve({ status: 'ok' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve([
+      { id: 'skill_current', name: 'Current Skill', author: 'agent', description: 'new catalog entry', installed: true }
+    ]);
+  }
+  await action;
+
+  const uninstallRequests = appContext.pendingRequests.filter((request) => request.url.includes('/uninstall'));
+  assert.equal(uninstallRequests.length, 0);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('renderSkills shows disabled reasons for read-only local skills', () => {
   const appContext = createAppHarnessContext();
 

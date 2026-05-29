@@ -9012,7 +9012,42 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-481 and the existing `renderSettings` stale-response coverage. The config fetch path already had `settingsViewState.requestSeq`, but the `Test Settings` and `Save Changes` async completion handlers captured old DOM/form state and did not re-check that their render epoch was still current before showing toasts or mutating button/API-key UI.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/settings-view.js`: reuse the Settings render request sequence inside action completions, suppress stale provider-test/save UI side effects after a newer Settings render starts, and keep the config/test request non-persistent as required by the WebConsole spec.
 
+### Review 478
+
+- Confirmed FCA-20260530-483 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: uploaded/uninstalled skills are local managed WebConsole artifacts, and destructive skill actions must be tied to the current Skills catalog projection rather than to a stale button captured before the catalog re-rendered.
+- Confirmed this is distinct from FCA-20260530-482 and existing `fetchSkills` stale-response coverage. The catalog request path already prevented stale `/api/skills` responses from replacing the current catalog, but `handleSkillAction` captured an old uninstall button before the confirmation dialog and did not re-check that the Skills render was still current after confirmation returned.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: add a Skills render epoch, invalidate it whenever the catalog view enters loading or renders a new catalog, and make skill uninstall abandon stale confirmation/cancellation continuations before issuing `/api/skills/{id}/uninstall` or showing stale toasts.
+
 ## Update Log
+
+### FCA-20260530-483
+
+Slice: `fix(webconsole): ignore stale skill actions`
+
+Finding:
+
+- `fetchSkills()` already used `skillsViewState.requestSeq` to ignore stale catalog fetch responses.
+- `renderSkills()` produced uninstall buttons from the current catalog, but `handleSkillAction()` captured the old button and skill id before opening the confirmation dialog.
+- If the Skills catalog refreshed while the confirmation dialog was open, confirming the old dialog still sent `/api/skills/{old-id}/uninstall` and could show a stale success/error toast from a catalog projection that was no longer current.
+
+Impact:
+
+- A user could uninstall a skill based on a stale Skills view after the local catalog had already changed or refreshed.
+- The WebConsole could issue a destructive local managed-artifact mutation from browser-side stale projection state rather than from the current catalog view.
+- This weakened the Web-first contract that the browser remains a projection over local facts and that risky skill artifact mutations are tied to explicit current user intent.
+
+Changes:
+
+- Added `skillsViewState.renderSeq` with helpers to invalidate and compare the current Skills render epoch.
+- `fetchSkills()` invalidates the render epoch when it replaces the catalog grid with a loading projection, so stale buttons are invalid immediately.
+- `renderSkills()` invalidates the render epoch for each rendered catalog.
+- `handleSkillAction()` records the render epoch before confirmation and returns without side effects if the epoch changed before confirmation or cancellation completes.
+- Added a regression proving a stale uninstall confirmation after catalog refresh no longer sends an uninstall request or shows stale toasts.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'skill uninstall ignores stale confirmation'` sent one stale uninstall request after the catalog re-rendered.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'skill uninstall ignores stale confirmation|fetchSkills ignores stale skill catalog responses|skill upload pending guard'`: passed.
 
 ### FCA-20260530-482
 

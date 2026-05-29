@@ -49,6 +49,7 @@ const runtimeHandles = {
 const skillsViewState = {
   catalog: [],
   requestSeq: 0,
+  renderSeq: 0,
   uploadInFlight: false
 };
 
@@ -404,6 +405,18 @@ function isSkillUploadInFlight() {
 
 function setSkillUploadInFlight(inFlight) {
   skillsViewState.uploadInFlight = Boolean(inFlight);
+}
+
+function invalidateSkillRenderSeq() {
+  skillsViewState.renderSeq += 1;
+}
+
+function currentSkillRenderSeq() {
+  return skillsViewState.renderSeq || 0;
+}
+
+function isCurrentSkillRenderSeq(renderSeq) {
+  return currentSkillRenderSeq() === renderSeq;
 }
 
 function currentSkills() {
@@ -3203,6 +3216,7 @@ async function clearHistory() {
 async function fetchSkills() {
   const requestSeq = ++skillsViewState.requestSeq;
   try {
+    invalidateSkillRenderSeq();
     nodes.skillsGrid.innerHTML = '<div class="view-loading">Loading local skills…</div>';
     const skills = await requestJSON('/api/skills');
     if (skillsViewState.requestSeq !== requestSeq) {
@@ -3225,6 +3239,7 @@ async function fetchSkills() {
 }
 
 function renderSkills(skills) {
+  invalidateSkillRenderSeq();
   if (!skills.length) {
     nodes.skillsGrid.innerHTML = `
       <div class="empty-panel">
@@ -3335,8 +3350,15 @@ async function handleSkillAction(id, isInstalled, button) {
     openSkillUploadPicker();
     return;
   }
+  const actionRenderSeq = currentSkillRenderSeq();
   if (!await confirmSkillUninstall(id)) {
+    if (!isCurrentSkillRenderSeq(actionRenderSeq)) {
+      return;
+    }
     showToast('Skill uninstall cancelled.', 'info');
+    return;
+  }
+  if (!isCurrentSkillRenderSeq(actionRenderSeq)) {
     return;
   }
   button.disabled = true;
