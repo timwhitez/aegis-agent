@@ -108,6 +108,8 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 		}
 		wasParked = coordination.Parked
 		coordination.UnresolvedChildSessions = removeString(coordination.UnresolvedChildSessions, childSessionID)
+		coordination.CompletedChildSessions = removeString(coordination.CompletedChildSessions, childSessionID)
+		coordination.FailedChildSessions = removeString(coordination.FailedChildSessions, childSessionID)
 		if status == session.StatusFailed {
 			coordination.FailedChildSessions = appendUnique(coordination.FailedChildSessions, childSessionID)
 		} else {
@@ -144,6 +146,8 @@ func resolveParentQueueJob(store *session.Store, parentSessionID, jobID, status 
 		}
 		wasParked = coordination.Parked
 		coordination.UnresolvedQueueJobs = removeString(coordination.UnresolvedQueueJobs, jobID)
+		coordination.CompletedQueueJobs = removeString(coordination.CompletedQueueJobs, jobID)
+		coordination.FailedQueueJobs = removeString(coordination.FailedQueueJobs, jobID)
 		if status == session.QueueStatusFailed {
 			coordination.FailedQueueJobs = appendUnique(coordination.FailedQueueJobs, jobID)
 		} else {

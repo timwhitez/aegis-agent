@@ -2642,7 +2642,26 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			return job, false, fmt.Errorf("persist linked session state for queue job %s: %w", job.ID, err)
 		}
 	}
+	failedWithQueueError := job.Status == QueueStatusFailed && strings.TrimSpace(job.LastError) != ""
+	queueError := job.LastError
 	changed := syncRunningQueueJobSession(&job, meta, state, messages)
+	if failedWithQueueError {
+		if job.Status != QueueStatusFailed {
+			job.Status = QueueStatusFailed
+			changed = true
+		}
+		if job.LastError != queueError {
+			job.LastError = queueError
+			changed = true
+		}
+		if err := s.SaveJob(job); err != nil {
+			return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
+		}
+		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
+			return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
+		}
+		return job, changed, nil
+	}
 	switch state.Status {
 	case StatusCompleted, StatusFailed:
 		if state.Status == StatusFailed {
@@ -3115,7 +3134,7 @@ func syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir string, visiblePat
 		if !ok {
 			continue
 		}
-		dst, ok := resolveQueueVisiblePath(requestedRoot, rel)
+		dst, ok := resolveQueueVisibleWritePath(requestedRoot, rel)
 		if !ok {
 			continue
 		}
@@ -3132,6 +3151,26 @@ func syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir string, visiblePat
 		return nil
 	}
 	return out
+}
+
+func resolveQueueVisibleWritePath(root, rel string) (string, bool) {
+	relPath := filepath.Clean(filepath.FromSlash(rel))
+	if relPath == "." || relPath == ".." || filepath.IsAbs(relPath) || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	target := filepath.Join(root, relPath)
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", false
+		}
+	} else if !os.IsNotExist(err) {
+		return "", false
+	}
+	resolved, err := resolveQueuePathWithExistingParent(target)
+	if err != nil || !pathWithinRoot(root, resolved) {
+		return "", false
+	}
+	return resolved, true
 }
 
 func resolveQueueExistingDir(path string) (string, bool) {
@@ -4738,6 +4777,9 @@ func backgroundNotificationFactsChanged(existing, next BackgroundNotification) b
 		return true
 	}
 	if strings.TrimSpace(next.SessionStatus) != "" && existing.SessionStatus != next.SessionStatus {
+		return true
+	}
+	if strings.TrimSpace(next.Status) == QueueStatusFailed && strings.TrimSpace(next.LastError) != "" {
 		return true
 	}
 	if strings.TrimSpace(next.RequestedWorkdir) != "" && existing.RequestedWorkdir != next.RequestedWorkdir {

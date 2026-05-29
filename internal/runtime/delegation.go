@@ -177,7 +177,11 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			if messages, loadErr := childRunner.store.LoadMessages(result.SessionID); loadErr == nil {
 				effectiveWorkdir := firstNonEmpty(out.Workdir, requestedChildWorkdir)
 				out.VisiblePaths = collectVisibleSessionOutputs(effectiveWorkdir, messages)
-				out.VisiblePaths = syncVisibleSessionOutputs(requestedChildWorkdir, effectiveWorkdir, out.VisiblePaths)
+				var syncErr error
+				out.VisiblePaths, syncErr = syncVisibleSessionOutputs(requestedChildWorkdir, effectiveWorkdir, out.VisiblePaths)
+				if syncErr != nil {
+					handoffErr = fmt.Errorf("sync child visible outputs for delegate handoff %s: %w", result.SessionID, syncErr)
+				}
 			} else {
 				handoffErr = fmt.Errorf("load child session messages.jsonl for delegate handoff %s: %w", result.SessionID, loadErr)
 			}
@@ -483,7 +487,11 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		if handoffErr == nil {
 			if messages, err := childRunner.store.LoadMessages(result.SessionID); err == nil {
 				job.VisiblePaths = collectVisibleSessionOutputs(job.EffectiveWorkdir, messages)
-				job.VisiblePaths = syncVisibleSessionOutputs(job.RequestedWorkdir, job.EffectiveWorkdir, job.VisiblePaths)
+				var syncErr error
+				job.VisiblePaths, syncErr = syncVisibleSessionOutputs(job.RequestedWorkdir, job.EffectiveWorkdir, job.VisiblePaths)
+				if syncErr != nil {
+					handoffErr = fmt.Errorf("sync child visible outputs for queue job %s: %w", job.ID, syncErr)
+				}
 			} else {
 				handoffErr = fmt.Errorf("load child session messages.jsonl for queue job %s: %w", job.ID, err)
 			}
@@ -718,48 +726,48 @@ func collectVisibleSessionOutputs(workdir string, messages []session.Message) []
 	return uniqueRelativePaths(paths)
 }
 
-func syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir string, visiblePaths []string) []string {
+func syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir string, visiblePaths []string) ([]string, error) {
 	visiblePaths = uniqueRelativePaths(visiblePaths)
 	if len(visiblePaths) == 0 {
-		return nil
+		return nil, nil
 	}
 	requestedRoot, ok := resolvedExistingDir(requestedWorkdir)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("requested workdir is not an existing directory: %s", requestedWorkdir)
 	}
 	effectiveRoot, ok := resolvedExistingDir(effectiveWorkdir)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("effective workdir is not an existing directory: %s", effectiveWorkdir)
 	}
 	if requestedRoot == effectiveRoot {
-		return visiblePaths
+		return visiblePaths, nil
 	}
 	out := make([]string, 0, len(visiblePaths))
 	for _, rel := range visiblePaths {
 		if err := tools.CheckWorkspaceWriteInputAllowed(requestedRoot, rel); err != nil {
-			continue
+			return out, fmt.Errorf("visible output %s is not allowed in requested workdir: %w", rel, err)
 		}
 		src, err := tools.ResolveWorkspacePath(effectiveRoot, rel)
 		if err != nil {
-			continue
+			return out, fmt.Errorf("resolve visible output source %s: %w", rel, err)
 		}
 		dst, err := tools.ResolveWorkspacePath(requestedRoot, rel)
 		if err != nil {
-			continue
+			return out, fmt.Errorf("resolve visible output destination %s: %w", rel, err)
 		}
 		if err := tools.CheckWorkspaceWriteAllowed(requestedRoot, dst); err != nil {
-			continue
+			return out, fmt.Errorf("visible output %s is not allowed in requested workdir: %w", rel, err)
 		}
 		data, _, err := fileutil.ReadRegularFileNoSymlink(src)
 		if err != nil {
-			continue
+			return out, fmt.Errorf("read visible output %s from child workdir: %w", rel, err)
 		}
 		if err := fileutil.AtomicWriteFileNoSymlink(dst, data, 0o600); err != nil {
-			continue
+			return out, fmt.Errorf("write visible output %s to requested workdir: %w", rel, err)
 		}
 		out = append(out, rel)
 	}
-	return uniqueRelativePaths(out)
+	return uniqueRelativePaths(out), nil
 }
 
 func resolvedExistingDir(path string) (string, bool) {

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1698,6 +1699,126 @@ func TestRunnerProcessNextJobReportsCorruptChildHandoffMetadata(t *testing.T) {
 	}
 }
 
+func TestRunnerProcessNextJobFailsWhenVisibleOutputCannotSync(t *testing.T) {
+	var mu sync.Mutex
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		callCount++
+		current := callCount
+		mu.Unlock()
+		if current == 1 {
+			_, _ = w.Write([]byte(`{
+				"id":"resp_1",
+				"status":"completed",
+				"output":[
+					{"type":"function_call","call_id":"call_output","name":"write_file","arguments":"{\"path\":\"reports/progress.md\",\"content\":\"# delegated progress\"}"}
+				],
+				"usage":{"input_tokens":10,"output_tokens":10}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"resp_2",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"queued done\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIKeyEnv:  "OPENAI_API_KEY",
+		BaseURL:    server.URL,
+		Model:      "gpt-5.4",
+		TimeoutSec: 30,
+		WireAPI:    "responses",
+	}
+	cfg.Session.Dir = t.TempDir()
+	cfg.Runtime.Isolation.RootDir = t.TempDir()
+	parentWorkdir := t.TempDir()
+	envPath := filepath.Join(parentWorkdir, ".env")
+	parentOutputPath := filepath.Join(parentWorkdir, "reports", "progress.md")
+	hookScript := filepath.Join(t.TempDir(), "replace-parent-output.sh")
+	hookBody := fmt.Sprintf("#!/bin/sh\nset -eu\nrm -f %q\nln -s %q %q\n", parentOutputPath, envPath, parentOutputPath)
+	if err := os.WriteFile(hookScript, []byte(hookBody), 0o700); err != nil {
+		t.Fatalf("write hook script: %v", err)
+	}
+	cfg.Hooks.ToolAfter = []config.HookDefinition{{
+		Name:    "replace-parent-visible-output",
+		Match:   config.HookMatch{Tool: "write_file"},
+		Command: []string{hookScript},
+	}}
+
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	if err := os.WriteFile(envPath, []byte("KEEP=1\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(parentWorkdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "Write reports/progress.md, then finish.",
+		AgentName:       "batch",
+		IsolationMode:   "auto",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil {
+		t.Fatalf("process next job: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected queued job to be processed")
+	}
+	if processed.ID != job.ID {
+		t.Fatalf("processed unexpected job: %#v", processed)
+	}
+	if processed.Status != session.QueueStatusFailed {
+		t.Fatalf("expected visible-output sync failure to fail queue handoff, got %#v", processed)
+	}
+	if !strings.Contains(processed.LastError, "sync child visible outputs") || !strings.Contains(processed.LastError, "progress.md") {
+		t.Fatalf("expected visible output sync error, got %#v", processed)
+	}
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if string(envBytes) != "KEEP=1\n" {
+		t.Fatalf("visible output sync should not overwrite env alias, got %q", envBytes)
+	}
+	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 {
+		t.Fatalf("expected one failure notification, got %#v", notifications)
+	}
+	if notifications[0].Status != session.QueueStatusFailed || !strings.Contains(notifications[0].LastError, "progress.md") {
+		t.Fatalf("expected failed visible-output notification, got %#v", notifications[0])
+	}
+	coordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if len(coordination.UnresolvedQueueJobs) != 0 ||
+		slices.Contains(coordination.CompletedQueueJobs, job.ID) ||
+		!slices.Contains(coordination.FailedQueueJobs, job.ID) {
+		t.Fatalf("expected failed-only parent coordination after sync failure, got %#v", coordination)
+	}
+}
+
 func TestSyncVisibleSessionOutputsRejectsDeniedSymlinkAlias(t *testing.T) {
 	requestedWorkdir := t.TempDir()
 	effectiveWorkdir := t.TempDir()
@@ -1718,9 +1839,12 @@ func TestSyncVisibleSessionOutputsRejectsDeniedSymlinkAlias(t *testing.T) {
 		t.Fatalf("symlink visible output alias: %v", err)
 	}
 
-	synced := syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir, []string{"reports/queue-output.md"})
+	synced, err := syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir, []string{"reports/queue-output.md"})
+	if err == nil {
+		t.Fatal("expected denied symlink alias to fail visible output sync")
+	}
 	if len(synced) != 0 {
-		t.Fatalf("expected denied symlink alias not to sync, got %#v", synced)
+		t.Fatalf("expected no synced paths after denied symlink alias, got %#v", synced)
 	}
 	data, err := os.ReadFile(envPath)
 	if err != nil {
@@ -1742,7 +1866,10 @@ func TestSyncVisibleSessionOutputsWritesOwnerOnlyArtifacts(t *testing.T) {
 		t.Fatalf("write child output: %v", err)
 	}
 
-	synced := syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir, []string{"reports/delegate-output.md"})
+	synced, err := syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir, []string{"reports/delegate-output.md"})
+	if err != nil {
+		t.Fatalf("sync visible output: %v", err)
+	}
 	if !slices.Equal(synced, []string{"reports/delegate-output.md"}) {
 		t.Fatalf("unexpected visible paths: %#v", synced)
 	}

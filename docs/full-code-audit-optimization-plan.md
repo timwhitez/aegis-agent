@@ -8976,7 +8976,48 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-471, FCA-20260530-472, and FCA-20260530-475. Those slices hardened file reads, session fact opens, and Web workspace listings; this residual issue was `resolveShellWorkdir` returning a checked path string which `exec.Cmd.Dir` later reopened by name. If the resolved directory path was replaced by a symlink after resolution and before process start, a non-sandboxed shell command could run in the outside symlink target.
 - Confirmed the minimal fix belongs at the shell command launch boundary: open the resolved workdir as a no-symlink directory descriptor, use that descriptor-backed cwd for non-sandboxed Linux commands, and pass the descriptor-backed source into bwrap bind arguments so the command binds the originally opened directory instead of a replaceable path string.
 
+### Review 472
+
+- Confirmed FCA-20260530-477 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/11-spec-audit-and-traceability.md`, `spec/14-multi-agent-and-isolation.md`, and `spec/18-durable-contract-and-completion.md`: isolated delegate and queue handoff results must be backed by visible file facts in the requested parent workspace, and a failed visible-output materialization must not be reported as a successful child/queue result.
+- Confirmed this is distinct from FCA-20260530-474 and FCA-20260530-476. Those slices hardened copy-isolation source opens and shell workdir execution; this residual issue was the child/queue handoff layer silently dropping visible-output sync failures, while the linked queue repair path could also copy visible paths before the parent-side handoff check and then reclassify a failed handoff as completed because the child session itself completed.
+- Confirmed the minimal fix belongs across `internal/runtime/delegation.go`, `internal/session/store.go`, and `internal/runtime/parent_coordination.go`: return visible-output sync errors to the delegate/queue handoff caller, prevent queue repair from writing through destination symlink aliases, preserve explicit failed handoff terminal jobs even when the linked child session completed, and move parent coordination ids between terminal sets instead of allowing the same job/child to remain completed and failed.
+
 ## Update Log
+
+### FCA-20260530-477
+
+Slice: `fix(runtime): fail visible output sync handoffs`
+
+Finding:
+
+- `syncVisibleSessionOutputs` collected child `write_file` / `edit_file` outputs and copied them from the isolated effective workdir back to the requested parent workdir, but returned only successfully copied paths.
+- Copy failures, denied aliases, missing files, and destination write failures were silently dropped, so a delegate or queue job could report success while the required visible handoff artifact never reached the parent workspace.
+- Queue children had a second repair path in `internal/session/store.go`: linked queue reconciliation could copy visible outputs and create completed parent notification/coordination facts before `ProcessNextJob` performed its parent-side handoff materialization. When the later handoff failed, durable job repair could reclassify the failed handoff back to completed because the linked child session itself was completed.
+- Parent coordination terminal resolution also only removed ids from unresolved sets, so a later failed handoff could collide with an earlier completed queue reconciliation and produce invalid or contradictory completed/failed coordination state.
+
+Impact:
+
+- Parent sessions could miss isolated child artifacts such as `reports/progress.md` while queue/delegate status and background notifications still said the work completed.
+- A destination symlink alias in the parent requested workdir could be hit by the store repair sync path before the stricter runtime handoff check ran.
+- Recovery and Web/CLI observers could see a completed background notification for a job whose parent handoff had actually failed.
+
+Changes:
+
+- Changed runtime visible-output sync to return `([]string, error)` and propagate sync failures through direct delegate and queue handoff result handling.
+- Kept the requested-workdir write policy and no-symlink file helpers on the runtime sync path, and added focused coverage for denied destination aliases.
+- Hardened session-store queue visible-output repair so destination symlink aliases are not copied and failed handoff jobs with explicit queue errors remain failed even when their linked child session is completed.
+- Updated background-notification merge behavior so a later failed handoff notification with `last_error` can replace an earlier completed child notification for the same queue job.
+- Updated parent coordination terminal resolution to remove ids from unresolved, completed, and failed sets before appending the current terminal result.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime ./internal/session -run 'TestRunnerProcessNextJob(FailsWhenVisibleOutputCannotSync|CopiesVisibleOutputsIntoRequestedWorkspace|ReportsCorruptChildHandoff(Messages|Metadata))|TestSyncVisibleSessionOutputs(RejectsDeniedSymlinkAlias|WritesOwnerOnlyArtifacts)|TestRunnerDelegateCopiesVisibleOutputsIntoRequestedWorkspace|TestParentCoordinationTerminalResolutionMovesBetweenSets|TestParentCoordinationConcurrentQueueResolutionsPreserveAllResults|TestSyncQueueVisiblePathsRejectsDestinationSymlinkAlias|TestReconcileCompletedSessionCompletesJob|TestReconcilePreservesFailedHandoffAfterCompletedChild' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-476
 

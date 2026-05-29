@@ -6432,6 +6432,142 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
+func TestSyncQueueVisiblePathsRejectsDestinationSymlinkAlias(t *testing.T) {
+	requestedWorkdir := t.TempDir()
+	effectiveWorkdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(effectiveWorkdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir effective reports: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(effectiveWorkdir, "reports", "child-two.md"), []byte("CHILD_TWO_OK\n"), 0o600); err != nil {
+		t.Fatalf("write child output: %v", err)
+	}
+	envPath := filepath.Join(requestedWorkdir, ".env")
+	if err := os.WriteFile(envPath, []byte("KEEP=1\n"), 0o600); err != nil {
+		t.Fatalf("write requested env: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(requestedWorkdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir requested reports: %v", err)
+	}
+	if err := os.Symlink(envPath, filepath.Join(requestedWorkdir, "reports", "child-two.md")); err != nil {
+		t.Fatalf("symlink visible output alias: %v", err)
+	}
+
+	synced := syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir, []string{"reports/child-two.md"})
+	if len(synced) != 0 {
+		t.Fatalf("expected symlink destination alias not to sync, got %#v", synced)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if string(data) != "KEEP=1\n" {
+		t.Fatalf("visible output sync should not overwrite env alias, got %q", data)
+	}
+}
+
+func TestReconcilePreservesFailedHandoffAfterCompletedChild(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_failed_handoff",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_failed_handoff",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	requestedWorkdir := t.TempDir()
+	effectiveWorkdir := t.TempDir()
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_failed_handoff",
+		CreatedAt:        now,
+		Workdir:          effectiveWorkdir,
+		RequestedWorkdir: requestedWorkdir,
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		AgentName:        "child-two",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_failed_handoff",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{
+		Status:               StatusCompleted,
+		Phase:                "turn_decide",
+		UpdatedAt:            now,
+		LastAssistantExcerpt: "Done.",
+	}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:    1,
+		ID:               childMeta.QueueJobID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		Status:           QueueStatusFailed,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		AgentName:        childMeta.AgentName,
+		AgentRole:        childMeta.AgentRole,
+		Prompt:           "Finish child two.",
+		Mode:             ModeExec,
+		RequestedWorkdir: requestedWorkdir,
+		EffectiveWorkdir: effectiveWorkdir,
+		Background:       true,
+		IsolationMode:    "auto",
+		SessionID:        childMeta.ID,
+		SessionStatus:    StatusCompleted,
+		LastError:        "queue handoff failed after child completed",
+		FinalText:        "Done.",
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save failed handoff job: %v", err)
+	}
+	if err := store.SaveParentCoordination(parentMeta.ID, ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentMeta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{job.ID},
+		Parked:              true,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+
+	repaired, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load repaired job: %v", err)
+	}
+	if repaired.Status != QueueStatusFailed || repaired.LastError != job.LastError || repaired.SessionStatus != StatusCompleted {
+		t.Fatalf("expected failed handoff job to remain failed, got %#v", repaired)
+	}
+	notifications, err := store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].Status != QueueStatusFailed || notifications[0].LastError != job.LastError {
+		t.Fatalf("expected failed handoff notification, got %#v", notifications)
+	}
+	coordination, err := store.LoadParentCoordination(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load coordination: %v", err)
+	}
+	if len(coordination.CompletedQueueJobs) != 0 || !slices.Contains(coordination.FailedQueueJobs, job.ID) {
+		t.Fatalf("expected failed queue coordination, got %#v", coordination)
+	}
+}
+
 func TestLoadJobReportsTerminalParentNotificationAppendError(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

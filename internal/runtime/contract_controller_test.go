@@ -1586,6 +1586,46 @@ func TestParentCoordinationWritesParkedAndResumedEvents(t *testing.T) {
 	}
 }
 
+func TestParentCoordinationTerminalResolutionMovesBetweenSets(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	previous := session.ParentCoordination{
+		SchemaVersion:           1,
+		ParentSessionID:         meta.ID,
+		WaitMode:                parentWaitAll,
+		CompletedChildSessions:  []string{"child-moved"},
+		CompletedQueueJobs:      []string{"job-moved"},
+		UnresolvedChildSessions: []string{"child-pending"},
+		UnresolvedQueueJobs:     []string{"job-pending"},
+		Parked:                  true,
+		UpdatedAt:               time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.SaveParentCoordination(meta.ID, previous); err != nil {
+		t.Fatalf("save previous parent coordination: %v", err)
+	}
+
+	if err := resolveParentChildSession(store, meta.ID, "child-moved", session.StatusFailed); err != nil {
+		t.Fatalf("resolve child failed: %v", err)
+	}
+	if err := resolveParentQueueJob(store, meta.ID, "job-moved", session.QueueStatusFailed); err != nil {
+		t.Fatalf("resolve queue failed: %v", err)
+	}
+
+	coordination, err := store.LoadParentCoordination(meta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if containsString(coordination.CompletedChildSessions, "child-moved") ||
+		!containsString(coordination.FailedChildSessions, "child-moved") ||
+		containsString(coordination.CompletedQueueJobs, "job-moved") ||
+		!containsString(coordination.FailedQueueJobs, "job-moved") {
+		t.Fatalf("expected terminal resolution to move ids between sets, got %#v", coordination)
+	}
+	if !containsString(coordination.UnresolvedChildSessions, "child-pending") ||
+		!containsString(coordination.UnresolvedQueueJobs, "job-pending") {
+		t.Fatalf("expected unrelated unresolved work to remain, got %#v", coordination)
+	}
+}
+
 func TestParentCoordinationConcurrentQueueResolutionsPreserveAllResults(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	jobIDs := []string{
