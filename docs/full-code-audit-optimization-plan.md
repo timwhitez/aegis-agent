@@ -8880,7 +8880,59 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-345, FCA-20260529-452, and FCA-20260530-458/459. Earlier isolation and fileutil slices hardened destination promotion and directory temp creation; this residual issue was `internal/isolation/prepare.go` `copyFile` still creating the per-file temp copy with raw `os.CreateTemp(parent, ...)`.
 - Confirmed the minimal fix belongs in the shared file temp creation boundary: add `fileutil.CreateTempNoSymlink`, use it from isolation copy and `AtomicWriteFileNoSymlink`, and preserve existing copy, chmod, rename, and cleanup semantics.
 
+### Review 456
+
+- Confirmed FCA-20260530-461 against `spec/09-phase-plan.md`, `spec/01-runtime-architecture.md`, and `AGENTS.md`: `doctor` is a default CLI fallback diagnostic, and diagnostic write/mode probes must not create artifacts through workspace or session paths that become symlinks after their initial shape checks.
+- Confirmed this is distinct from FCA-20260529-454, FCA-20260530-456, and FCA-20260530-457. Those slices hardened cleanup and initial symlinked-root/workspace checks; this residual issue was the later temp creation boundary still using raw `os.CreateTemp` / `os.MkdirTemp` after validation.
+- Confirmed the minimal fix belongs in `checkWorkspaceWrite`, `probeSessionRootCandidate`, and `probeSessionDirMode`: keep existing diagnostics and warning semantics, but route temp file/dir creation through the shared no-symlink helpers.
+
 ## Update Log
+
+### FCA-20260530-461
+
+Slice: `fix(app): harden doctor temp probes`
+
+Finding:
+
+- `spec/09-phase-plan.md` includes `doctor` in the Web-first v1 fallback diagnostics, and `AGENTS.md` requires file safety to handle symlink escape rather than relying only on cleaned paths.
+- `internal/app/app.go` `checkWorkspaceWrite` rejected a symlinked workspace root, but then created `.doctor-write-*` with raw `os.CreateTemp(cwd, ...)`.
+- `internal/app/doctor_helpers.go` `probeSessionRootCandidate` rejected a symlinked session root, but then created `.doctor-session-root-*` with raw `os.CreateTemp(path, ...)`.
+- `internal/app/app.go` `probeSessionDirMode` created `.doctor-mode-*` with raw `os.MkdirTemp(dir, ...)`.
+- Focused regressions replaced the checked workspace/session directories with symlinks immediately before temp creation. Before the fix, `doctor` probes created temp files or directories under the outside symlink target and, for session-root/mode probing, could continue as if the root still supported owner-only diagnostics.
+
+Impact:
+
+- `go-cli-agent doctor` could create diagnostic artifacts outside the checked workspace/session path when those paths were replaced with symlinks between validation and temp creation.
+- In the session root candidate path, the diagnostic could still report `Reason=ready`, `Writable=true`, and `SupportsOwnerOnly=true` after probing through the symlink target.
+- That weakened the CLI fallback diagnostic surface: the probe results could describe the symlink target rather than the intended local workspace/session boundary.
+
+Changes:
+
+- Routed `checkWorkspaceWrite` temp-file creation through `fileutil.CreateTempNoSymlink`.
+- Routed `probeSessionRootCandidate` temp-file creation through `fileutil.CreateTempNoSymlink`.
+- Routed `probeSessionDirMode` temp-directory creation through `fileutil.MkdirTempNoSymlink`.
+- Added focused regressions for workspace write, session-root candidate, and session-dir mode probes when the checked path becomes a symlink before temp creation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run 'TestCheckWorkspaceWriteRejectsSymlinkedWorkspaceBeforeTempCreate|TestProbeSessionDirModeRejectsSymlinkedProbeParentBeforeCreate|TestProbeSessionRootCandidateRejectsSymlinkedRootBeforeTempCreate' -count=1`: failed before the fix because doctor probes created outside artifacts or reported the symlink target as ready.
+- `go test -timeout 120s ./internal/app -run 'TestCheckWorkspaceWriteRejectsSymlinkedWorkspaceBeforeTempCreate|TestProbeSessionDirModeRejectsSymlinkedProbeParentBeforeCreate|TestProbeSessionRootCandidateRejectsSymlinkedRootBeforeTempCreate' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestCheckWorkspaceWriteRejectsSymlinkedWorkspaceBeforeTempCreate|TestCheckWorkspaceWriteRejectsSymlinkedWorkspace|TestProbeSessionDirModeRejectsSymlinkedProbeParentBeforeCreate|TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent|TestProbeSessionRootCandidateRejectsSymlinkedRootBeforeTempCreate|TestProbeSessionRootCandidateRejectsSymlinkedRoot|TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestCreateTempNoSymlink|TestMkdirTempNoSymlink' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-460
 

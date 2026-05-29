@@ -1743,6 +1743,56 @@ func TestCheckWorkspaceWriteRejectsSymlinkedWorkspace(t *testing.T) {
 	}
 }
 
+func TestCheckWorkspaceWriteRejectsSymlinkedWorkspaceBeforeTempCreate(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(base, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside workspace target: %v", err)
+	}
+	symlinkProbe := filepath.Join(base, "symlink-probe")
+	if err := os.Symlink(outside, symlinkProbe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(symlinkProbe); err != nil {
+		t.Fatalf("remove symlink probe: %v", err)
+	}
+
+	restoreHook := beforeWorkspaceWriteTempCreate
+	beforeWorkspaceWriteTempCreate = func(cwd string) error {
+		if cwd != workspace {
+			return fmt.Errorf("unexpected workspace %s", cwd)
+		}
+		if err := os.Rename(workspace, workspace+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, workspace)
+	}
+	defer func() {
+		beforeWorkspaceWriteTempCreate = restoreHook
+	}()
+
+	check := checkWorkspaceWrite(workspace)
+	if check.Status != "fail" {
+		t.Fatalf("expected symlinked workspace write check to fail, got %#v", check)
+	}
+	if !strings.Contains(fmt.Sprint(check.Details["error"]), "symlink") {
+		t.Fatalf("expected symlink error detail, got %#v", check)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside workspace target: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".doctor-write-") {
+			t.Fatalf("workspace write check should not create artifacts under outside symlink target, got %s", entry.Name())
+		}
+	}
+}
+
 func TestDoctorConfigFileCheckReportsUntrustedWorkspaceConfigSkipped(t *testing.T) {
 	cwd := t.TempDir()
 	configDir := filepath.Join(cwd, ".go-cli-agent")
@@ -2552,6 +2602,56 @@ func TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent(t *testing.T) {
 	}
 }
 
+func TestProbeSessionDirModeRejectsSymlinkedProbeParentBeforeCreate(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	symlinkProbe := filepath.Join(base, "symlink-probe")
+	if err := os.Symlink(outside, symlinkProbe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(symlinkProbe); err != nil {
+		t.Fatalf("remove symlink probe: %v", err)
+	}
+
+	restoreHook := beforeSessionDirModeProbeCreate
+	beforeSessionDirModeProbeCreate = func(probeParent string) error {
+		if probeParent != dir {
+			return fmt.Errorf("unexpected probe parent %s", probeParent)
+		}
+		if err := os.Rename(dir, dir+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, dir)
+	}
+	defer func() {
+		beforeSessionDirModeProbeCreate = restoreHook
+	}()
+
+	_, err := probeSessionDirMode(dir, 0o700)
+	if err == nil {
+		t.Fatal("expected symlinked probe parent to be rejected before create")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil {
+		t.Fatalf("read outside dir: %v", readErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".doctor-mode-") {
+			t.Fatalf("doctor mode probe should not create directory under outside symlink target, got %s", entry.Name())
+		}
+	}
+}
+
 func TestProbeSessionRootCandidateRejectsSymlinkedRoot(t *testing.T) {
 	base := t.TempDir()
 	outside := filepath.Join(base, "outside")
@@ -2574,6 +2674,56 @@ func TestProbeSessionRootCandidateRejectsSymlinkedRoot(t *testing.T) {
 		t.Fatalf("read outside root: %v", err)
 	} else if len(entries) != 0 {
 		t.Fatalf("probe should not create files under outside symlink target, got %d entries", len(entries))
+	}
+}
+
+func TestProbeSessionRootCandidateRejectsSymlinkedRootBeforeTempCreate(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "sessions")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("mkdir session root: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside root: %v", err)
+	}
+	symlinkProbe := filepath.Join(base, "symlink-probe")
+	if err := os.Symlink(outside, symlinkProbe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(symlinkProbe); err != nil {
+		t.Fatalf("remove symlink probe: %v", err)
+	}
+
+	restoreHook := beforeSessionRootCandidateTempCreate
+	beforeSessionRootCandidateTempCreate = func(probeRoot string) error {
+		if probeRoot != root {
+			return fmt.Errorf("unexpected session root %s", probeRoot)
+		}
+		if err := os.Rename(root, root+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, root)
+	}
+	defer func() {
+		beforeSessionRootCandidateTempCreate = restoreHook
+	}()
+
+	result := probeSessionRootCandidate(root, 0o700)
+	if result.Writable || result.SupportsOwnerOnly || result.Reason == "ready" {
+		t.Fatalf("expected symlinked session root to be rejected, got %#v", result)
+	}
+	if !strings.Contains(result.Error, "symlink") {
+		t.Fatalf("expected symlink error detail, got %#v", result)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside root: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".doctor-session-root-") || strings.HasPrefix(entry.Name(), ".doctor-mode-") {
+			t.Fatalf("probe should not create artifacts under outside symlink target, got %s", entry.Name())
+		}
 	}
 }
 

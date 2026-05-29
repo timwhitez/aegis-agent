@@ -1783,7 +1783,14 @@ func checkWorkspaceWrite(cwd string) doctorCheck {
 		check.Details["error"] = fmt.Sprintf("workspace is not a directory: %s", cwd)
 		return check
 	}
-	file, err := os.CreateTemp(cwd, ".doctor-write-*")
+	if beforeWorkspaceWriteTempCreate != nil {
+		if err := beforeWorkspaceWriteTempCreate(cwd); err != nil {
+			check.Status = "fail"
+			check.Details["error"] = err.Error()
+			return check
+		}
+	}
+	file, err := fileutil.CreateTempNoSymlink(cwd, ".doctor-write-*")
 	if err != nil {
 		check.Status = "fail"
 		check.Details["error"] = err.Error()
@@ -1809,6 +1816,8 @@ type sessionDirModeProbeResult struct {
 }
 
 var sessionDirModeProbe = probeSessionDirMode
+var beforeWorkspaceWriteTempCreate func(cwd string) error
+var beforeSessionDirModeProbeCreate func(dir string) error
 var beforeSessionDirModeProbeCleanup func(probeDir string) error
 
 func checkSessionDirMode(dir, configuredMode string) doctorCheck {
@@ -1866,7 +1875,12 @@ func checkSessionDirMode(dir, configuredMode string) doctorCheck {
 
 func probeSessionDirMode(dir string, expected fs.FileMode) (sessionDirModeProbeResult, error) {
 	result := sessionDirModeProbeResult{ExpectedMode: expected}
-	probeDir, err := os.MkdirTemp(dir, ".doctor-mode-*")
+	if beforeSessionDirModeProbeCreate != nil {
+		if err := beforeSessionDirModeProbeCreate(dir); err != nil {
+			return result, err
+		}
+	}
+	probeDir, err := fileutil.MkdirTempNoSymlink(dir, ".doctor-mode-*")
 	if err != nil {
 		return result, err
 	}

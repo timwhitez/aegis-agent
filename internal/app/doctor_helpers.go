@@ -19,6 +19,7 @@ import (
 
 var hookCommandLookPath = exec.LookPath
 var sessionRootCandidateProbe = probeSessionRootCandidate
+var beforeSessionRootCandidateTempCreate func(path string) error
 
 type hookPoint struct {
 	name  string
@@ -797,7 +798,15 @@ func probeSessionRootCandidate(path string, expected fs.FileMode) sessionRootPro
 		return result
 	}
 	result.Mode = info.Mode().Perm()
-	file, err := os.CreateTemp(path, ".doctor-session-root-*")
+	if beforeSessionRootCandidateTempCreate != nil {
+		if err := beforeSessionRootCandidateTempCreate(path); err != nil {
+			result.Error = err.Error()
+			result.Reason = "tempfile_failed"
+			result.Advice = sessionRootCandidateAdvice(path, false)
+			return result
+		}
+	}
+	file, err := fileutil.CreateTempNoSymlink(path, ".doctor-session-root-*")
 	if err != nil {
 		result.Error = err.Error()
 		result.Reason = "tempfile_failed"
