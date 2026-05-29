@@ -9024,7 +9024,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-483 and existing stale completion checks for Plan/Goal actions. Prior checks prevented stale completions from mutating a newly selected session, but the coverage override branch still re-entered the old `sessionID` after `confirmCoverageOverride()` returned and issued `?override=1` without re-checking the selected session.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: after coverage override confirmation or cancellation, re-check the selected session before showing cancellation toasts or sending override approval for both Plan Mode approval and Goal mission-plan approval.
 
+### Review 480
+
+- Confirmed FCA-20260530-485 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/18-durable-contract-and-completion.md`: `state.json` and `events.jsonl` are both durable session fact sources, and runtime failure transitions must leave a searchable failure event rather than only a terminal state snapshot.
+- Confirmed this is distinct from the existing provider failure, incomplete-no-finish, cancellation, and provider stop-reason failure event coverage. Those paths already append `session.failed` or report event append failure; the hard turn limit branch returned immediately after saving `state.Status=failed` and `LastError=max_turns_hard_exceeded`.
+- Confirmed the minimal fix belongs in `internal/runtime/engine.go`: set a dedicated `turn_limit` phase, append `session.failed` with `reason=max_turns_hard_exceeded` and the effective hard limit, and surface event append failures instead of silently accepting a state-only terminal failure.
+
 ## Update Log
+
+### FCA-20260530-485
+
+Slice: `fix(runtime): record hard turn failures`
+
+Finding:
+
+- `Engine.Run()` enforces `Runtime.MaxTurnsHard` before starting the next provider turn.
+- When the hard limit was exceeded after the single resolution turn, the branch set `state.Status=failed` and `state.LastError=max_turns_hard_exceeded`, saved `state.json`, and returned a failed `RunResult`.
+- Unlike provider errors, provider stop-reason failures, cancellation failures, and `incomplete_no_finish`, this branch did not append a `session.failed` event and did not report an `events.jsonl` write failure.
+- Existing hard-limit regression coverage asserted only the result/state, so the missing durable event was not detected.
+
+Impact:
+
+- Operator timelines, WebConsole event views, recovery summaries, and event-driven diagnostics could miss the hard turn terminal failure even though `state.json` showed the session as failed.
+- This weakened the project invariant that session state and events are durable facts for recovery and audit, especially for long-running sessions that fail due to harness limits rather than provider errors.
+- If `events.jsonl` was unwritable at that exact transition, the runtime would still return as though the failure had been fully recorded.
+
+Changes:
+
+- The hard turn limit failure path now records phase `turn_limit`.
+- The runtime appends `session.failed` with `reason=max_turns_hard_exceeded` and `max_turns_hard`.
+- Event append failures now return an explicit error with `session.failed` and `max_turns_hard_exceeded` context.
+- Added focused runtime regressions asserting that hard-limit failures write the event and that an unwritable event log is reported.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(FailsAfterResolutionTurnNeedsAnotherProviderPass|HardTurnLimitReportsFailedEventAppendError)$' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-484
 

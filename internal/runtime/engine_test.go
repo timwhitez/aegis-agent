@@ -2230,6 +2230,65 @@ func TestEngineFailsAfterResolutionTurnNeedsAnotherProviderPass(t *testing.T) {
 	if callCount != 2 {
 		t.Fatalf("expected 2 provider calls, got %d", callCount)
 	}
+	events, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	failedEvent, ok := findEventByType(events, "session.failed")
+	if !ok {
+		t.Fatalf("expected max turn failure to record session.failed event, got %#v", events)
+	}
+	if failedEvent.Phase != "turn_limit" || fmt.Sprint(failedEvent.Data["reason"]) != "max_turns_hard_exceeded" {
+		t.Fatalf("expected turn_limit failure event, got %#v", failedEvent)
+	}
+}
+
+func TestEngineHardTurnLimitReportsFailedEventAppendError(t *testing.T) {
+	cfg := config.Default()
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	engine.cfg.Runtime.MaxTurnsHard = 1
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Keep working until the hard limit fails.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "session.failed" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_1",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"reports/proof.md","content":"step one"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_2",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"reports/proof.md","content":"step two"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected hard turn session.failed event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected events append error with path context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "max_turns_hard_exceeded") || !strings.Contains(err.Error(), "session.failed") {
+		t.Fatalf("expected hard turn session.failed event context, got %v", err)
+	}
 }
 
 func TestEngineExecModeRequiresFinish(t *testing.T) {

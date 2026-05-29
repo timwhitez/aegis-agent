@@ -85,9 +85,16 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if hardTurnLimitEnabled && runTurn >= hardTurnLimit {
 			if !allowResolutionTurn {
 				state.Status = session.StatusFailed
+				state.Phase = "turn_limit"
 				state.LastError = "max_turns_hard_exceeded"
 				if err := e.store.SaveState(meta.ID, state); err != nil {
 					return RunResult{}, err
+				}
+				if err := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{
+					"reason":         state.LastError,
+					"max_turns_hard": hardTurnLimit,
+				}); err != nil {
+					return RunResult{}, fmt.Errorf("record session.failed event for %s: %w", state.LastError, err)
 				}
 				return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
 			}
