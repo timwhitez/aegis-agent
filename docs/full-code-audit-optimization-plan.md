@@ -8718,7 +8718,47 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-422. That slice fixed CLI `experimental children`; this residual issue was the model-facing `agent_list` runtime control-plane method returning empty child/job facts for an unknown parent.
 - Confirmed the minimal fix belongs in `Runner.AgentList`, before calling optional child/session and queue-job readers.
 
+### Review 429
+
+- Confirmed FCA-20260529-431 against `spec/01-runtime-architecture.md` and `spec/04-tools-and-skills.md`: model goal tools operate on the current session's durable goal and must require the current session metadata fact before reading or mutating goal files.
+- Confirmed this is distinct from FCA-20260529-428. That slice fixed CLI Goal fallback commands; this residual issue was the model tool surface (`get_goal`, `create_goal`, `record_goal_progress`, `update_goal`) accepting arbitrary `execCtx.SessionID` values without first proving `session.json` exists.
+- Confirmed the minimal fix belongs at the tool boundary, preserving lower-level store methods for callers that already have session metadata context.
+
 ## Update Log
+
+### FCA-20260529-431
+
+Slice: `fix(tools): reject orphan goal tool sessions`
+
+Finding:
+
+- `get_goal` called `Store.LoadGoal(execCtx.SessionID)` directly and treated missing `goal.json` as `null`.
+- `create_goal` called goal-history/task readers and then `Store.CreateGoal` directly.
+- `record_goal_progress` and `update_goal` likewise entered goal mutation paths without first proving the session metadata fact existed.
+- A focused pre-fix regression executed `create_goal` with `execCtx.SessionID:"missing_goal_tool_session"` and no `session.json`; before the fix, it created an orphan `goal.json` and returned a successful tool result.
+
+Impact:
+
+- A malformed or miswired tool execution context could create or mutate durable goal facts outside a real session, violating the session-store fact-source boundary.
+- `get_goal` could report `null` for a missing session, making an unknown session indistinguishable from a valid session with no goal.
+
+Changes:
+
+- Added a shared tool helper that requires `Store.LoadMetadata(execCtx.SessionID)` before goal tool operations.
+- Applied it to `get_goal`, `create_goal`, `record_goal_progress`, and `update_goal`.
+- Added focused tool coverage proving missing session metadata is an error and that failed `create_goal` leaves no orphan goal snapshot.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestGoalToolsRejectMissingSessionMetadata -count=1`: failed before the fix because `create_goal` created an orphan `goal.json`.
+- `go test -timeout 120s ./internal/tools -run 'TestGoalToolsRejectMissingSessionMetadata|TestGoalToolsCreateReadRejectInvalidStatusAndComplete' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/{app,session-view,workspace-view,events,settings-view,utils,api,icons}.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-430
 

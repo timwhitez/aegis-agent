@@ -1696,6 +1696,9 @@ func defGetGoal() Definition {
 			"properties": map[string]any{},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("get_goal", err), nil
+			}
 			goal, err := execCtx.Store.LoadGoal(execCtx.SessionID)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -1776,6 +1779,9 @@ func defCreateGoal() Definition {
 			if input.TimeBudgetMinutes != nil {
 				value := *input.TimeBudgetMinutes * 60
 				seconds = &value
+			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("create_goal", err), nil
 			}
 			previousHistory, err := execCtx.Store.LoadGoalHistory(execCtx.SessionID)
 			if err != nil {
@@ -1929,6 +1935,9 @@ func defRecordGoalProgress() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("record_goal_progress", err), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("record_goal_progress", err), nil
+			}
 			goal, record, err := execCtx.Store.RecordGoalProgress(execCtx.SessionID, session.GoalProgressInput{
 				Source:            session.GoalSourceTool,
 				Kind:              input.Kind,
@@ -2004,6 +2013,9 @@ func defUpdateGoal() Definition {
 			if strings.TrimSpace(input.Status) != session.GoalStatusComplete {
 				return errorResult("update_goal", errors.New("update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system")), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("update_goal", err), nil
+			}
 			previousGoal, err := execCtx.Store.LoadGoal(execCtx.SessionID)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -2054,6 +2066,16 @@ func defUpdateGoal() Definition {
 			}, nil
 		},
 	}
+}
+
+func requireToolSessionMetadata(execCtx ExecContext) error {
+	if execCtx.Store == nil {
+		return errors.New("session store is required")
+	}
+	if _, err := execCtx.Store.LoadMetadata(execCtx.SessionID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func defGetPlanMode() Definition {

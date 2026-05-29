@@ -1119,6 +1119,53 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	}
 }
 
+func TestGoalToolsRejectMissingSessionMetadata(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: "missing_goal_tool_session",
+		Workdir:   t.TempDir(),
+		Store:     store,
+		Config:    cfg,
+	}
+
+	result, err := registry.Execute(context.Background(), "create_goal", execCtx, json.RawMessage(`{
+		"objective":"Do not create an orphan goal"
+	}`))
+	if err != nil {
+		t.Fatalf("create_goal execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "session.json") {
+		t.Fatalf("expected missing session metadata error, got %#v", result)
+	}
+	if _, err := store.LoadGoal(execCtx.SessionID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-session create_goal should not leave goal snapshot, got %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "get_goal", raw: nil},
+		{name: "record_goal_progress", raw: json.RawMessage(`{"summary":"progress should not write"}`)},
+		{name: "update_goal", raw: json.RawMessage(`{"status":"complete"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), tc.name, execCtx, tc.raw)
+			if err != nil {
+				t.Fatalf("%s execute: %v", tc.name, err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, "session.json") {
+				t.Fatalf("expected missing session metadata error for %s, got %#v", tc.name, result)
+			}
+		})
+	}
+}
+
 func TestCreateGoalReportsRequiredEventErrorAndRestoresGoal(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()
