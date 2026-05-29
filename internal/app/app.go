@@ -1818,6 +1818,7 @@ type sessionDirModeProbeResult struct {
 var sessionDirModeProbe = probeSessionDirMode
 var beforeWorkspaceWriteTempCreate func(cwd string) error
 var beforeSessionDirModeProbeCreate func(dir string) error
+var beforeSessionDirModeProbeChmod func(probeDir string) error
 var beforeSessionDirModeProbeCleanup func(probeDir string) error
 
 func checkSessionDirMode(dir, configuredMode string) doctorCheck {
@@ -1888,8 +1889,14 @@ func probeSessionDirMode(dir string, expected fs.FileMode) (sessionDirModeProbeR
 	defer func() {
 		_ = fileutil.RemoveDirAllNoSymlink(probeDir)
 	}()
-	if err := os.Chmod(probeDir, expected); err != nil {
+	if beforeSessionDirModeProbeChmod != nil {
+		if err := beforeSessionDirModeProbeChmod(probeDir); err != nil {
+			return result, err
+		}
+	}
+	if err := fileutil.ChmodPathNoSymlink(probeDir, expected); err != nil {
 		result.ChmodError = err.Error()
+		return result, err
 	}
 	info, err := os.Stat(probeDir)
 	if err != nil {

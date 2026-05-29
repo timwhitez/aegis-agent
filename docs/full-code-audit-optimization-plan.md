@@ -8928,7 +8928,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-462 and FCA-20260530-467. Those slices hardened recursive directory creation and atomic regular-file chmod; this residual issue was the session store's later `chmodBestEffort`, which still used path-based `os.Chmod` after no-symlink directory creation or append open. A replaced final directory symlink could redirect the permission repair to an outside directory.
 - Confirmed the minimal fix belongs in the shared fileutil chmod boundary plus the session store wrapper: apply chmod through no-follow parent descriptor traversal and descriptor-relative child open, allow only existing regular files or directories, then make `chmodBestEffort` call that helper while preserving best-effort cleanup semantics.
 
+### Review 464
+
+- Confirmed FCA-20260530-469 against `AGENTS.md`, `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/17-web-console.md`: `doctor` is a default CLI fallback diagnostic for the Web-first local harness, and its session-root permission probes must not mutate paths outside the checked session directory.
+- Confirmed this is distinct from FCA-20260530-461, FCA-20260530-463, and FCA-20260530-468. Those slices hardened doctor temp creation, shared temp helpers, and session store chmod repairs; this residual issue was `probeSessionDirMode` itself still calling path-based `os.Chmod` on the probe directory after no-symlink temp creation.
+- Confirmed the minimal fix belongs in the doctor probe path: reuse `fileutil.ChmodPathNoSymlink` for the probe chmod and treat symlink/path-change failures as probe failures, while preserving the existing diagnostic behavior for ordinary chmod support checks.
+
 ## Update Log
+
+### FCA-20260530-469
+
+Slice: `fix(app): harden doctor mode chmod`
+
+Finding:
+
+- `doctor` is part of the default CLI fallback surface, and `spec/09-phase-plan.md` lists provider probe / doctor as a Web-first v1 validation path.
+- `probeSessionDirMode` already created its temporary probe directory with `fileutil.MkdirTempNoSymlink` and cleaned it up with `fileutil.RemoveDirAllNoSymlink`, but it still applied the expected mode with raw path-based `os.Chmod(probeDir, expected)`.
+- A focused regression replaced the probe parent directory with a symlink after the no-symlink temp directory was created and before chmod. Before the fix, `probeSessionDirMode` did not reject that path change at the chmod boundary.
+
+Impact:
+
+- A doctor permission probe could chmod an outside same-name probe directory if the checked session root was replaced by a symlink between temp creation and chmod.
+- This was diagnostic-only and did not write session facts, but it still violated the no-symlink file-safety rule for a default CLI fallback command and could mutate permissions outside the intended session root.
+
+Changes:
+
+- Replaced raw `os.Chmod` in `probeSessionDirMode` with `fileutil.ChmodPathNoSymlink`.
+- The probe now records `ChmodError` and returns the chmod error when the no-symlink chmod boundary detects a symlinked or replaced parent.
+- Added a deterministic hook-backed regression for the create-to-chmod race while preserving the existing create and cleanup symlink-race tests.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestProbeSessionDirModeChmodRejectsSymlinkedProbeParent -count=1`: failed before the fix because the probe did not reject the symlinked parent during chmod.
+- `go test -timeout 120s ./internal/app -run TestProbeSessionDirModeChmodRejectsSymlinkedProbeParent -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/app -run 'TestProbeSessionDirMode|TestCheckSessionDirMode' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/session ./internal/app ./internal/webconsole ./internal/isolation ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-468
 

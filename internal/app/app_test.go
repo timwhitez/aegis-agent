@@ -2652,6 +2652,55 @@ func TestProbeSessionDirModeRejectsSymlinkedProbeParentBeforeCreate(t *testing.T
 	}
 }
 
+func TestProbeSessionDirModeChmodRejectsSymlinkedProbeParent(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+
+	var outsideProbe string
+	restoreHook := beforeSessionDirModeProbeChmod
+	beforeSessionDirModeProbeChmod = func(probeDir string) error {
+		outsideProbe = filepath.Join(outside, filepath.Base(probeDir))
+		if err := os.MkdirAll(outsideProbe, 0o777); err != nil {
+			return err
+		}
+		if err := os.Chmod(outsideProbe, 0o777); err != nil {
+			return err
+		}
+		if err := os.Rename(dir, dir+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, dir)
+	}
+	defer func() {
+		beforeSessionDirModeProbeChmod = restoreHook
+	}()
+
+	probe, err := probeSessionDirMode(dir, 0o700)
+	if err == nil {
+		t.Fatal("expected symlinked probe parent during chmod to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	if probe.ChmodError == "" {
+		t.Fatalf("expected chmod error to be recorded in probe result")
+	}
+	info, statErr := os.Stat(outsideProbe)
+	if statErr != nil {
+		t.Fatalf("stat outside probe: %v", statErr)
+	}
+	if mode := info.Mode().Perm(); mode != 0o777 {
+		t.Fatalf("outside probe mode changed through symlink parent: %s", mode.String())
+	}
+}
+
 func TestProbeSessionRootCandidateRejectsSymlinkedRoot(t *testing.T) {
 	base := t.TempDir()
 	outside := filepath.Join(base, "outside")
