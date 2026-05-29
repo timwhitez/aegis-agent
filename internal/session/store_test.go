@@ -981,6 +981,53 @@ func TestStoreLoadMetadataRejectsMalformedSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsMalformedAgentRoleFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sessionPath := filepath.Join(store.SessionDir(meta.ID), "session.json")
+
+	invalidRole := meta
+	invalidRole.AgentRole = "assistant"
+	if err := store.SaveMetadata(meta.ID, invalidRole); err == nil || !strings.Contains(err.Error(), "invalid session agent_role") {
+		t.Fatalf("expected SaveMetadata to reject invalid agent_role, got %v", err)
+	}
+	if err := store.writeJSONFile(sessionPath, invalidRole); err != nil {
+		t.Fatalf("write invalid role metadata: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err == nil || !strings.Contains(err.Error(), "validate session.json") || !strings.Contains(err.Error(), "invalid session agent_role") {
+		t.Fatalf("expected LoadMetadata to reject invalid agent_role, got %v", err)
+	}
+
+	for _, role := range []string{"", "planner", "generator", "evaluator"} {
+		validRole := meta
+		validRole.AgentRole = role
+		if err := store.SaveMetadata(meta.ID, validRole); err != nil {
+			t.Fatalf("save valid role %q: %v", role, err)
+		}
+		loaded, err := store.LoadMetadata(meta.ID)
+		if err != nil {
+			t.Fatalf("load valid role %q: %v", role, err)
+		}
+		if loaded.AgentRole != role {
+			t.Fatalf("expected role %q to round trip, got %q", role, loaded.AgentRole)
+		}
+	}
+}
+
 func TestStoreLoadMetadataRejectsMalformedDelegationTopology(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
@@ -4229,6 +4276,20 @@ func TestLoadBackgroundNotificationsRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
 		t.Fatalf("expected invalid background notification timestamp validation error, got %v", err)
 	}
+
+	invalidRole := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_bad_role",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_bad_role",
+		SessionStatus: StatusCompleted,
+		AgentRole:     "assistant",
+	})
+	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{invalidRole}); err != nil {
+		t.Fatalf("write invalid-role background queue: %v", err)
+	}
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "invalid background notification agent_role") {
+		t.Fatalf("expected invalid background notification agent_role validation error, got %v", err)
+	}
 }
 
 func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
@@ -4267,12 +4328,23 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 	if err := store.AppendBackgroundNotification(meta.ID, invalidCreatedAt); err == nil || !strings.Contains(err.Error(), "created_at must be RFC3339Nano") {
 		t.Fatalf("expected append to reject invalid background timestamp, got %v", err)
 	}
+	invalidRole := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_bad_role",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_bad_role",
+		SessionStatus: StatusCompleted,
+		AgentRole:     "assistant",
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, invalidRole); err == nil || !strings.Contains(err.Error(), "invalid background notification agent_role") {
+		t.Fatalf("expected append to reject invalid background role, got %v", err)
+	}
 
 	valid := NewBackgroundNotification(QueueJob{
 		ID:            "job_background_valid",
 		Status:        QueueStatusCompleted,
 		SessionID:     "child_background_valid",
 		SessionStatus: StatusCompleted,
+		AgentRole:     "evaluator",
 		VisiblePaths:  []string{"reports/result.md"},
 	})
 	if err := store.AppendBackgroundNotification(meta.ID, valid); err != nil {
@@ -4306,7 +4378,7 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load background notifications: %v", err)
 	}
-	if len(loaded) != 1 || loaded[0].QueueJobID != valid.QueueJobID || loaded[0].DeliveryStatus != BackgroundNotificationPending {
+	if len(loaded) != 1 || loaded[0].QueueJobID != valid.QueueJobID || loaded[0].DeliveryStatus != BackgroundNotificationPending || loaded[0].AgentRole != "evaluator" {
 		t.Fatalf("malformed background notification write changed durable queue: %#v", loaded)
 	}
 }
@@ -4745,6 +4817,12 @@ func TestQueueJobWritesRejectMalformedFacts(t *testing.T) {
 	if err := store.SaveJob(invalidSessionStatus); err == nil || !strings.Contains(err.Error(), "invalid queue job session_status") {
 		t.Fatalf("expected save to reject invalid session status, got %v", err)
 	}
+	invalidRole := valid
+	invalidRole.ID = "job_invalid_role"
+	invalidRole.AgentRole = "assistant"
+	if err := store.SaveJob(invalidRole); err == nil || !strings.Contains(err.Error(), "invalid queue job agent_role") {
+		t.Fatalf("expected save to reject invalid agent role, got %v", err)
+	}
 	invalidVisiblePath := valid
 	invalidVisiblePath.ID = "job_invalid_visible_path"
 	invalidVisiblePath.VisiblePaths = []string{"../escape.md"}
@@ -4777,7 +4855,7 @@ func TestQueueJobWritesRejectMalformedFacts(t *testing.T) {
 	if loaded.ID != valid.ID || loaded.Prompt != valid.Prompt {
 		t.Fatalf("malformed queue job write changed durable valid job: %#v", loaded)
 	}
-	for _, id := range []string{invalidPrompt.ID, invalidSessionStatus.ID, invalidVisiblePath.ID, invalidCreatedAt.ID, invalidClaimedAt.ID, invalidHeartbeatAt.ID} {
+	for _, id := range []string{invalidPrompt.ID, invalidSessionStatus.ID, invalidRole.ID, invalidVisiblePath.ID, invalidCreatedAt.ID, invalidClaimedAt.ID, invalidHeartbeatAt.ID} {
 		if _, err := store.LoadJob(id); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("malformed queue job %s should not be persisted, got %v", id, err)
 		}

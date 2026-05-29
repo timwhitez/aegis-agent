@@ -3227,6 +3227,9 @@ func validateSessionMetadata(meta SessionMetadata, expectedID string) error {
 			return err
 		}
 	}
+	if err := validateAgentRole("session", meta.AgentRole); err != nil {
+		return err
+	}
 	if err := validateProviderOptions(meta.ProviderOptions); err != nil {
 		return err
 	}
@@ -3521,6 +3524,9 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 			return err
 		}
 	}
+	if err := validateAgentRole("background notification", notification.AgentRole); err != nil {
+		return err
+	}
 	if strings.TrimSpace(notification.Status) == "" {
 		return errors.New("background notification status is required")
 	}
@@ -3627,12 +3633,8 @@ func validateQueueJob(job QueueJob) error {
 			return fmt.Errorf("invalid queue job session_status %q", job.SessionStatus)
 		}
 	}
-	if strings.TrimSpace(job.AgentRole) != "" {
-		switch job.AgentRole {
-		case "planner", "generator", "evaluator":
-		default:
-			return fmt.Errorf("invalid queue job agent_role %q", job.AgentRole)
-		}
+	if err := validateAgentRole("queue job", job.AgentRole); err != nil {
+		return err
 	}
 	if err := validateProviderOptions(job.ProviderOptions); err != nil {
 		return err
@@ -3671,6 +3673,18 @@ func validateQueueJob(job QueueJob) error {
 		}
 	}
 	return nil
+}
+
+func validateAgentRole(kind, role string) error {
+	if strings.TrimSpace(role) == "" {
+		return nil
+	}
+	switch role {
+	case "planner", "generator", "evaluator":
+		return nil
+	default:
+		return fmt.Errorf("invalid %s agent_role %q", kind, role)
+	}
 }
 
 // ValidateQueueJobSnapshot validates a queue job loaded from durable storage

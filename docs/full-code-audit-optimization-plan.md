@@ -8754,7 +8754,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-313, FCA-20260528-331, FCA-20260528-325, FCA-20260526-058, and FCA-20260529-435. Earlier queue validation covered scalar job semantics, timestamps, doctor missing-reference diagnostics, tree cleanup, and session metadata topology; this residual issue was a syntactically valid but topologically malformed queue job accepted by the shared store validator.
 - Confirmed the minimal fix belongs in `validateQueueJob`: enforce `parent_session_id` and `root_session_id` as a pair for queue jobs, keep independent queue jobs with both fields empty valid, and update legacy test fixtures to use self-consistent parent-linked queue facts rather than root-only shortcuts.
 
+### Review 435
+
+- Confirmed FCA-20260529-437 against `spec/11-spec-audit-and-traceability.md`, `spec/14-multi-agent-and-isolation.md`, `spec/15-background-queue.md`, and `spec/17-web-console.md`: explicit role hints are limited to `planner`, `generator`, and `evaluator`, and those hints must remain traceable through `session.json`, queue jobs, background notifications, Web detail, session summaries, and provider request metadata.
+- Confirmed this is distinct from FCA-20260528-313, FCA-20260528-307, FCA-20260528-330, FCA-20260529-435, and FCA-20260529-436. Earlier slices covered queue scalar validation, generic background notification shape/timestamps, session topology, and queue topology; this residual issue was that `session.json` and `control/background.jsonl` accepted unsupported role strings even though runtime entrypoints and queue jobs rejected them.
+- Confirmed the minimal fix belongs in the shared session-store validators, not Web/CLI orchestration: keep empty roles valid for ordinary root sessions and role-less notifications, but reject non-empty role strings outside the explicit `planner` / `generator` / `evaluator` set wherever they are persisted as durable role facts.
+
 ## Update Log
+
+### FCA-20260529-437
+
+Slice: `fix(session): validate persisted agent roles`
+
+Finding:
+
+- `validateQueueJob` rejected unsupported non-empty `agent_role` values, matching runtime `normalizeAgentRole` and the Web start/queue request validators.
+- `validateSessionMetadata` did not validate `SessionMetadata.AgentRole`, so a syntactically valid `session.json` with `agent_role:"assistant"` could be saved or loaded as an authoritative session role fact.
+- `validateBackgroundNotification` did not validate `BackgroundNotification.AgentRole`, so direct or stale `control/background.jsonl` writes could make parent background-result cards and background result injection carry unsupported role facts.
+- Focused pre-fix store regressions showed `SaveMetadata`, `LoadMetadata`, `LoadBackgroundNotifications`, and `AppendBackgroundNotification` accepted unsupported role values.
+
+Impact:
+
+- Store readers, runtime system-prompt construction, provider request metadata, Web session detail, background-result rendering, session summaries, checkpoints, and recovery prompts could treat unsupported role strings as real durable role hints.
+- This weakened the explicit-role contract for role provider overrides and traceability, because malformed persisted role facts could bypass the same role set enforced by runtime start/delegate/queue entrypoints.
+
+Changes:
+
+- Added a shared `validateAgentRole` helper that accepts empty roles and the three explicit roles `planner`, `generator`, and `evaluator`.
+- Applied the helper to `validateSessionMetadata`, `validateBackgroundNotification`, and `validateQueueJob`, preserving the existing queue job error wording.
+- Added store regressions covering metadata save/load rejection, valid metadata role round-trips, malformed background snapshot rejection, background append rejection, valid background role round-trip, and queue write rejection through the shared helper.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestStoreRejectsMalformedAgentRoleFacts|TestLoadBackgroundNotificationsRejectsMalformedSnapshot|TestBackgroundNotificationWritesRejectMalformedFacts|TestQueueJobWritesRejectMalformedFacts' -count=1`: failed before the fix because metadata and background notification validators accepted `agent_role:"assistant"`.
+- `go test -timeout 120s ./internal/session -run 'TestStoreRejectsMalformedAgentRoleFacts|TestLoadBackgroundNotificationsRejectsMalformedSnapshot|TestBackgroundNotificationWritesRejectMalformedFacts|TestQueueJobWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEnginePassesSessionMetadataIntoProviderRequest|TestEngineEmitsProviderRequestPreparedEvent|TestRunnerDelegate|TestRunnerQueueSubmit' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceStartSessionRejectsUnsupportedAgentRole|TestServiceStartSessionPersistsRoleHints|TestServiceSessionDetail|TestServiceQueue' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/app ./internal/webconsole -count=1`: passed.
+- `node --check` for `internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-436
 
