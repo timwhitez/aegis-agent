@@ -238,6 +238,42 @@ func TestMkdirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	}
 }
 
+func TestMkdirAllNoSymlinkRejectsSymlinkParentBeforeCreate(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "skills")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	outside := t.TempDir()
+	target := filepath.Join(parent, "demo", "references")
+	firstMissing := filepath.Join(parent, "demo")
+
+	restore := beforeMkdirAllNoSymlinkMkdir
+	beforeMkdirAllNoSymlinkMkdir = func(path string) error {
+		if path != firstMissing && path != target {
+			return nil
+		}
+		if path != firstMissing {
+			return nil
+		}
+		if err := os.RemoveAll(parent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeMkdirAllNoSymlinkMkdir = restore
+	}()
+
+	err := MkdirAllNoSymlink(target, 0o755)
+	if err == nil {
+		t.Fatal("expected symlinked parent during mkdir to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "demo", "references")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
+
 func TestRemoveDirAllNoSymlinkRejectsSymlinkTarget(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

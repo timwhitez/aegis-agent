@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"go-cli-agent/internal/fileutil"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -117,7 +119,7 @@ func openAuditLogNoSymlink(path string) (*os.File, error) {
 	if err := rejectAuditSymlinkAncestors(parent); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(parent, 0o700); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(parent, 0o700); err != nil {
 		return nil, err
 	}
 	if err := rejectAuditSymlinkAncestors(parent); err != nil {

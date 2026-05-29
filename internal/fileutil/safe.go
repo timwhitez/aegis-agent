@@ -15,6 +15,7 @@ import (
 const MaxRegularFileReadBytes int64 = 16 << 20
 
 var beforeAtomicWriteRename func(tmpPath, path string) error
+var beforeMkdirAllNoSymlinkMkdir func(path string) error
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -30,7 +31,7 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 	if err := rejectExistingSymlinkAncestors(parent); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(parent, 0o700); err != nil {
+	if err := MkdirAllNoSymlink(parent, 0o700); err != nil {
 		return err
 	}
 	if err := rejectExistingSymlinkAncestors(parent); err != nil {
@@ -263,10 +264,7 @@ func MkdirAllNoSymlink(path string, mode os.FileMode) error {
 		return errors.New("path is required")
 	}
 	path = filepath.Clean(path)
-	if err := rejectExistingSymlinkAncestors(path); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(path, mode); err != nil {
+	if err := mkdirAllNoSymlinkAt(path, mode); err != nil {
 		return err
 	}
 	if err := rejectExistingSymlinkAncestors(path); err != nil {
@@ -283,6 +281,92 @@ func MkdirAllNoSymlink(path string, mode os.FileMode) error {
 		return fmt.Errorf("path is not a directory: %s", path)
 	}
 	return nil
+}
+
+func mkdirAllNoSymlinkAt(path string, mode os.FileMode) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+	root, parts := splitAbsolutePath(abs)
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Close(fd)
+	}()
+
+	current := root
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		next := filepath.Join(current, part)
+		childFD, err := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				if beforeMkdirAllNoSymlinkMkdir != nil {
+					if hookErr := beforeMkdirAllNoSymlinkMkdir(next); hookErr != nil {
+						return hookErr
+					}
+				}
+				if mkdirErr := unix.Mkdirat(fd, part, uint32(mode.Perm())); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
+					if ancestorErr := rejectExistingSymlinkAncestors(path); ancestorErr != nil {
+						return ancestorErr
+					}
+					return mkdirErr
+				}
+				childFD, err = unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			}
+			if err != nil {
+				if ancestorErr := rejectExistingSymlinkAncestors(path); ancestorErr != nil {
+					return ancestorErr
+				}
+				return mkdirAllNoSymlinkOpenError(next, err)
+			}
+		}
+		if closeErr := unix.Close(fd); closeErr != nil {
+			_ = unix.Close(childFD)
+			return closeErr
+		}
+		fd = childFD
+		current = next
+	}
+	return nil
+}
+
+func splitAbsolutePath(abs string) (string, []string) {
+	volume := filepath.VolumeName(abs)
+	rest := strings.TrimPrefix(abs, volume)
+	separator := string(os.PathSeparator)
+	root := volume
+	if strings.HasPrefix(rest, separator) {
+		root += separator
+		rest = strings.TrimPrefix(rest, separator)
+	}
+	if root == "" {
+		root = "."
+	}
+	if rest == "" {
+		return root, nil
+	}
+	return root, strings.Split(rest, separator)
+}
+
+func mkdirAllNoSymlinkOpenError(path string, err error) error {
+	info, lstatErr := os.Lstat(path)
+	if lstatErr != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to use symlinked directory: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path is not a directory: %s", path)
+	}
+	return err
 }
 
 func MkdirTempNoSymlink(parent, pattern string) (string, error) {

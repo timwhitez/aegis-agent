@@ -4856,7 +4856,7 @@ func (s *Store) ensureDir(path string) error {
 		if err := rejectSymlinkPathAncestors(target); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(target, s.dirMode); err != nil {
+		if err := fileutil.MkdirAllNoSymlink(target, os.FileMode(s.dirMode)); err != nil {
 			return err
 		}
 		if err := rejectSymlinkPathAncestors(target); err != nil {

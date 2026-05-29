@@ -8886,7 +8886,61 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-454, FCA-20260530-456, and FCA-20260530-457. Those slices hardened cleanup and initial symlinked-root/workspace checks; this residual issue was the later temp creation boundary still using raw `os.CreateTemp` / `os.MkdirTemp` after validation.
 - Confirmed the minimal fix belongs in `checkWorkspaceWrite`, `probeSessionRootCandidate`, and `probeSessionDirMode`: keep existing diagnostics and warning semantics, but route temp file/dir creation through the shared no-symlink helpers.
 
+### Review 457
+
+- Confirmed FCA-20260530-462 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/14-multi-agent-and-isolation.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: session directories, copy-isolation workdirs, and Web audit-log parents are local file-fact directories, so shared recursive directory creation must not create missing descendants through a parent that becomes a symlink during creation.
+- Confirmed this is distinct from FCA-20260529-452, FCA-20260530-458, FCA-20260530-459, FCA-20260530-460, and FCA-20260530-461. Those slices hardened temp-file/temp-dir creation, rename promotion, backup roots, and doctor probes after a checked parent existed; this residual issue was the lower-level recursive mkdir helper still using a precheck + raw `os.MkdirAll` pattern that could create missing directories under a newly swapped symlink target before the post-check rejected the path.
+- Confirmed the minimal fix belongs in `internal/fileutil.MkdirAllNoSymlink` and its production callers: use descriptor-relative no-follow directory creation, route `AtomicWriteFileNoSymlink`, copy isolation, session store `ensureDir`, and Web audit-log parent creation through that helper, and preserve existing mode, chmod, path-shape, and no-symlink rejection behavior.
+
 ## Update Log
+
+### FCA-20260530-462
+
+Slice: `fix(fileutil): harden recursive mkdir`
+
+Finding:
+
+- `AGENTS.md` requires filesystem safety to handle symlink escape rather than relying only on cleaned paths.
+- `internal/fileutil/safe.go` `MkdirAllNoSymlink` rejected symlink ancestors before and after directory creation, but used raw `os.MkdirAll(path, mode)` between those checks.
+- `AtomicWriteFileNoSymlink`, `internal/isolation/prepare.go` copy-mode directory creation, `internal/session/store.go` `ensureDir`, and `internal/webconsole/audit.go` audit-log parent creation either used that same pattern or their own raw `os.MkdirAll` wrapper.
+- A focused regression replaced an already-checked parent directory with a symlink immediately before recursive creation. Before the fix, `MkdirAllNoSymlink` returned an error but still created the missing `demo/references` directories under the outside symlink target.
+
+Impact:
+
+- A local session/store, Web audit, or copy-isolation directory creation path could leave directories outside the intended local file-fact root when a checked parent was replaced with a symlink between validation and `os.MkdirAll`.
+- That weakened the same no-symlink boundary used by session facts, audit logs, visible artifacts, copy isolation, and later temp/atomic-write helpers: the final operation failed, but the filesystem side effect had already escaped the intended root.
+
+Changes:
+
+- Reimplemented `fileutil.MkdirAllNoSymlink` with descriptor-relative `openat` / `mkdirat` using `O_NOFOLLOW` and `O_DIRECTORY` for every existing path component.
+- Kept the final symlink/non-directory validation and added a test hook only for deterministic regression coverage.
+- Routed `AtomicWriteFileNoSymlink` parent creation through the hardened helper.
+- Reused the shared helper from copy isolation's local `mkdirAllNoSymlink` wrapper, session store `ensureDir`, and Web audit-log parent creation.
+- Removed the duplicate isolation recursive-mkdir implementation so copy isolation inherits the shared no-symlink mkdir boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -run TestMkdirAllNoSymlinkRejectsSymlinkParentBeforeCreate -count=1`: failed before the fix because the outside symlink target received `demo/references`.
+- `go test -timeout 120s ./internal/fileutil -run 'TestMkdirAllNoSymlink|TestAtomicWriteFileNoSymlink|TestCreateTempNoSymlink|TestMkdirTempNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/isolation -run 'TestPrepare|TestCopyFile' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestStore|TestAppend|TestSave|TestClaim|TestDelete|TestLoad' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAppendAuditEvent|TestSensitive|TestSkillUpload' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/isolation ./internal/fileutil -count=1`: passed.
+- `rg -n "os\\.MkdirAll\\(" cmd internal pkg validation/cmd -g '!**/*_test.go' -g '!validation/runs/**' -g '!workspace/**'`: passed with no production matches.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./internal/fileutil ./internal/isolation ./internal/session ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-461
 

@@ -294,66 +294,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 }
 
 func mkdirAllNoSymlink(path string, mode fs.FileMode) error {
-	path = filepath.Clean(path)
-	if err := rejectExistingSymlinkAncestors(path); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(path, mode); err != nil {
-		return err
-	}
-	if err := rejectExistingSymlinkAncestors(path); err != nil {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to use symlinked directory: %s", path)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("path is not a directory: %s", path)
-	}
-	return nil
-}
-
-func rejectExistingSymlinkAncestors(path string) error {
-	abs, err := filepath.Abs(filepath.Clean(path))
-	if err != nil {
-		return err
-	}
-	volume := filepath.VolumeName(abs)
-	rest := strings.TrimPrefix(abs, volume)
-	separator := string(os.PathSeparator)
-	current := volume
-	if strings.HasPrefix(rest, separator) {
-		current += separator
-		rest = strings.TrimPrefix(rest, separator)
-	}
-	if current == "" {
-		current = "."
-	}
-	for _, part := range strings.Split(rest, separator) {
-		if part == "" {
-			continue
-		}
-		if current == separator || strings.HasSuffix(current, separator) {
-			current += part
-		} else {
-			current = filepath.Join(current, part)
-		}
-		info, err := os.Lstat(current)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to use symlinked path: %s", current)
-		}
-	}
-	return nil
+	return fileutil.MkdirAllNoSymlink(path, os.FileMode(mode))
 }
 
 func rejectSymlinkOrDirectory(path string) error {
