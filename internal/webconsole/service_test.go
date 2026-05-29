@@ -5629,6 +5629,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "messagePagingViewState") || !strings.Contains(jsBody, "isLoadingEarlierMessages()") || !strings.Contains(jsBody, "preserveScrollAfterRenderHeight()") || strings.Contains(jsBody, "state.loadingEarlier") || strings.Contains(jsBody, "state.preserveScrollAfterRender") {
 		t.Fatalf("expected message paging in-flight view state to stay out of durable app state, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "currentHistoryPage()") || !strings.Contains(jsBody, "currentHistoryData()") || !strings.Contains(jsBody, "currentHistoryPageSize()") || strings.Contains(jsBody, "state.historyData") || strings.Contains(jsBody, "state.historyPage") || strings.Contains(jsBody, "state.historyPageSize") {
+		t.Fatalf("expected history pagination display state to stay out of durable app state, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "STOP_FALLBACK_STEER_MESSAGE") || !strings.Contains(jsBody, "requestStopViaBestAvailablePath") || !strings.Contains(jsBody, "data-stop-session-id") {
 		t.Fatalf("expected inline session stop handling with interrupt-steer fallback, got app.js body: %s", jsBody)
 	}

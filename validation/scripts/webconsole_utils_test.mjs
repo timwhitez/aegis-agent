@@ -873,7 +873,8 @@ test('floating panel expansion preferences are isolated from durable app state',
     const restored = {
       todo: isFloatingPanelExpanded('todo'),
       files: isFloatingPanelExpanded('files'),
-      subAgents: isFloatingPanelExpanded('subAgents')
+      subAgents: isFloatingPanelExpanded('subAgents'),
+      historyPage: currentHistoryPage()
     };
     state.sessionDetail = {
       task_board: {
@@ -900,7 +901,8 @@ test('floating panel expansion preferences are isolated from durable app state',
   assert.deepEqual(sameRealm(result.restored), {
     todo: true,
     files: false,
-    subAgents: false
+    subAgents: false,
+    historyPage: 2
   });
   assert.equal(result.expandedTodoHasBody, true);
   assert.equal(result.collapsedTodoHasBody, false);
@@ -3085,19 +3087,29 @@ test('fetchHistory queues the latest requested page and ignores stale in-flight 
   assert.equal(appContext.pendingRequests.length, 2);
   assert.match(appContext.pendingRequests[1].url, /\/api\/history\?page=3&page_size=8/);
   assert.deepEqual(sameRealm(vm.runInContext(`({
+    hasHistoryPageHelper: typeof currentHistoryPage === 'function',
+    hasHistoryDataHelper: typeof currentHistoryData === 'function',
     stateHasHistoryRequestSeq: Object.prototype.hasOwnProperty.call(state, 'historyRequestSeq'),
     stateHasRefreshingHistory: Object.prototype.hasOwnProperty.call(state, 'refreshingHistory'),
     stateHasNeedsHistoryRefresh: Object.prototype.hasOwnProperty.call(state, 'needsHistoryRefresh'),
     stateHasPendingHistoryRefreshOptions: Object.prototype.hasOwnProperty.call(state, 'pendingHistoryRefreshOptions'),
+    stateHasHistoryData: Object.prototype.hasOwnProperty.call(state, 'historyData'),
+    stateHasHistoryPage: Object.prototype.hasOwnProperty.call(state, 'historyPage'),
+    stateHasHistoryPageSize: Object.prototype.hasOwnProperty.call(state, 'historyPageSize'),
     refreshing: historyViewState.refreshing,
     needsRefresh: historyViewState.needsRefresh,
-    page: state.historyPage,
-    historyIDs: maybeArray(state.historyData?.items).map((item) => item.id)
+    page: currentHistoryPage(),
+    historyIDs: maybeArray(currentHistoryData()?.items).map((item) => item.id)
   })`, appContext)), {
+    hasHistoryPageHelper: true,
+    hasHistoryDataHelper: true,
     stateHasHistoryRequestSeq: false,
     stateHasRefreshingHistory: false,
     stateHasNeedsHistoryRefresh: false,
     stateHasPendingHistoryRefreshOptions: false,
+    stateHasHistoryData: false,
+    stateHasHistoryPage: false,
+    stateHasHistoryPageSize: false,
     refreshing: true,
     needsRefresh: false,
     page: 3,
@@ -3114,12 +3126,20 @@ test('fetchHistory queues the latest requested page and ignores stale in-flight 
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    page: state.historyPage,
-    dataPage: state.historyData?.page,
-    historyIDs: maybeArray(state.historyData?.items).map((item) => item.id)
+    page: currentHistoryPage(),
+    dataPage: currentHistoryData()?.page,
+    pageSize: currentHistoryPageSize(),
+    stateHasHistoryData: Object.prototype.hasOwnProperty.call(state, 'historyData'),
+    stateHasHistoryPage: Object.prototype.hasOwnProperty.call(state, 'historyPage'),
+    stateHasHistoryPageSize: Object.prototype.hasOwnProperty.call(state, 'historyPageSize'),
+    historyIDs: maybeArray(currentHistoryData()?.items).map((item) => item.id)
   })`, appContext)), {
     page: 3,
     dataPage: 3,
+    pageSize: 8,
+    stateHasHistoryData: false,
+    stateHasHistoryPage: false,
+    stateHasHistoryPageSize: false,
     historyIDs: ['session_page_3_current']
   });
 });

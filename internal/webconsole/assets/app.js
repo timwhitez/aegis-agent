@@ -30,9 +30,6 @@ const state = {
   sessionBacked: false,
   sessionDetail: null,
   overview: null,
-  historyData: null,
-  historyPage: 1,
-  historyPageSize: 8,
   skills: [],
   fileTree: [],
   workspacePath: '',
@@ -70,6 +67,9 @@ const overviewViewState = {
 };
 
 const historyViewState = {
+  data: null,
+  page: 1,
+  pageSize: 8,
   requestSeq: 0,
   refreshing: false,
   needsRefresh: false,
@@ -302,6 +302,34 @@ function currentOverviewError() {
 
 function setOverviewError(message) {
   overviewViewState.error = String(message || '');
+}
+
+function currentHistoryData() {
+  return historyViewState.data || null;
+}
+
+function setHistoryData(data) {
+  historyViewState.data = data || null;
+}
+
+function currentHistoryPage() {
+  const page = Number(historyViewState.page);
+  return Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1;
+}
+
+function setCurrentHistoryPage(page) {
+  const nextPage = Number(page);
+  historyViewState.page = Number.isFinite(nextPage) && nextPage >= 1 ? Math.floor(nextPage) : 1;
+}
+
+function currentHistoryPageSize() {
+  const pageSize = Number(historyViewState.pageSize);
+  return Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 8;
+}
+
+function resetHistoryViewData() {
+  setHistoryData(null);
+  setCurrentHistoryPage(1);
 }
 
 function syncPageVisibilityHidden() {
@@ -846,11 +874,11 @@ function setupEventListeners() {
     if (historyPageButton) {
       const direction = historyPageButton.getAttribute('data-history-page');
       if (direction === 'prev') {
-        await fetchHistory(Math.max(1, state.historyPage - 1));
+        await fetchHistory(Math.max(1, currentHistoryPage() - 1));
       } else if (direction === 'next') {
-        const nextPage = state.historyData?.total_pages
-          ? Math.min(state.historyData.total_pages, state.historyPage + 1)
-          : state.historyPage + 1;
+        const nextPage = currentHistoryData()?.total_pages
+          ? Math.min(currentHistoryData().total_pages, currentHistoryPage() + 1)
+          : currentHistoryPage() + 1;
         await fetchHistory(nextPage);
       }
       return;
@@ -1440,7 +1468,7 @@ async function requestStopSession(sessionID, options = {}) {
       queueOverviewRefresh(180);
     }
     if (state.currentView === 'history') {
-      await fetchHistory(state.historyPage, { showLoading: false, silentError: true });
+      await fetchHistory(currentHistoryPage(), { showLoading: false, silentError: true });
     }
   } catch (err) {
     if (state.sessionId === sessionID) {
@@ -2117,7 +2145,7 @@ function startPolling() {
 
   const pollStep = () => {
     if (state.currentView === 'history') {
-      fetchHistory(state.historyPage, { showLoading: false, silentError: true });
+      fetchHistory(currentHistoryPage(), { showLoading: false, silentError: true });
     } else {
       if (shouldPollChatOverview()) {
         refreshOverview();
@@ -2822,45 +2850,45 @@ function historyErrorMessage(err, fallback = 'Failed to load recent activity.') 
   return err?.message || fallback;
 }
 
-async function fetchHistory(page = state.historyPage, options = {}) {
+async function fetchHistory(page = currentHistoryPage(), options = {}) {
   const requestedPage = Math.max(1, Number(page) || 1);
   if (historyViewState.refreshing) {
-    state.historyPage = requestedPage;
+    setCurrentHistoryPage(requestedPage);
     historyViewState.needsRefresh = true;
     historyViewState.pendingRefreshOptions = options;
     persistUIState();
     return;
   }
   const container = nodes.views.history;
-  const showLoading = options.showLoading ?? !state.historyData;
+  const showLoading = options.showLoading ?? !currentHistoryData();
   const silentError = options.silentError ?? false;
-  const pageSize = state.historyPageSize;
+  const pageSize = currentHistoryPageSize();
   const requestSeq = ++historyViewState.requestSeq;
   historyViewState.refreshing = true;
   historyViewState.needsRefresh = false;
   historyViewState.pendingRefreshOptions = null;
-  state.historyPage = requestedPage;
+  setCurrentHistoryPage(requestedPage);
   persistUIState();
   if (showLoading) {
     container.innerHTML = '<div class="view-loading">Loading sessions...</div>';
   }
   try {
     const data = await requestJSON(`/api/history?page=${encodeURIComponent(requestedPage)}&page_size=${encodeURIComponent(pageSize)}`);
-    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || state.historyPage !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || currentHistoryPage() !== requestedPage) {
       return;
     }
-    state.historyData = data;
+    setHistoryData(data);
     renderHistory(data);
     refreshOverview().catch((err) => {
       console.error('overview refresh error', err);
     });
   } catch (err) {
-    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || state.historyPage !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || currentHistoryPage() !== requestedPage) {
       return;
     }
     console.error('history error', err);
     const message = historyErrorMessage(err);
-    if (!state.historyData) {
+    if (!currentHistoryData()) {
       const panel = document.createElement('div');
       panel.className = 'empty-panel';
       panel.textContent = message;
@@ -2872,7 +2900,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
   } finally {
     historyViewState.refreshing = false;
     if (historyViewState.needsRefresh) {
-      const nextPage = state.historyPage;
+      const nextPage = currentHistoryPage();
       const nextOptions = historyViewState.pendingRefreshOptions || {};
       historyViewState.needsRefresh = false;
       historyViewState.pendingRefreshOptions = null;
@@ -2885,7 +2913,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
 
 function renderHistory(data) {
   const container = nodes.views.history;
-  const history = data || state.historyData;
+  const history = data || currentHistoryData();
   if (!history) {
     container.innerHTML = '<div class="empty-panel">No session data available yet.</div>';
     return;
@@ -2893,7 +2921,7 @@ function renderHistory(data) {
   const items = maybeArray(history.items);
   const total = Number(history.total || 0);
   const page = Number(history.page || 1);
-  const pageSize = Number(history.page_size || state.historyPageSize || 8);
+  const pageSize = Number(history.page_size || currentHistoryPageSize() || 8);
   const totalPages = Number(history.total_pages || 0);
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const rangeEnd = total === 0 ? 0 : rangeStart + items.length - 1;
@@ -2998,7 +3026,7 @@ function persistUIState() {
       : '';
     window.localStorage?.setItem(UI_STATE_STORAGE_KEY, JSON.stringify({
       currentView: state.currentView,
-      historyPage: state.historyPage,
+      historyPage: currentHistoryPage(),
       selectedSessionId,
       todoFloatExpanded: isFloatingPanelExpanded('todo'),
       fileChangesExpanded: isFloatingPanelExpanded('files'),
@@ -3017,7 +3045,7 @@ function restoreUIState() {
   const nextHistoryPage = Number(persisted.historyPage);
   state.currentView = nextView;
   if (Number.isFinite(nextHistoryPage) && nextHistoryPage >= 1) {
-    state.historyPage = Math.floor(nextHistoryPage);
+    setCurrentHistoryPage(nextHistoryPage);
   }
   if (typeof persisted.selectedSessionId === 'string' && persisted.selectedSessionId.trim()) {
     state.sessionId = persisted.selectedSessionId.trim();
@@ -3092,9 +3120,9 @@ async function deleteHistorySession(sessionID) {
       resetChatSession();
     }
     showToast('Session deleted.', 'success');
-    await fetchHistory(state.historyPage);
-    if ((state.historyData?.items || []).length === 0 && state.historyPage > 1) {
-      await fetchHistory(state.historyPage - 1);
+    await fetchHistory(currentHistoryPage());
+    if ((currentHistoryData()?.items || []).length === 0 && currentHistoryPage() > 1) {
+      await fetchHistory(currentHistoryPage() - 1);
     }
     refreshOverview().catch(() => {});
   } catch (err) {
@@ -3116,8 +3144,7 @@ async function clearHistory() {
       method: 'POST'
     });
     resetChatSession();
-    state.historyData = null;
-    state.historyPage = 1;
+    resetHistoryViewData();
     showToast('Sessions cleared.', 'success');
     await fetchHistory(1);
     refreshOverview().catch(() => {});

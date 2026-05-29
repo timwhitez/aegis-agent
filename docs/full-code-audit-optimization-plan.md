@@ -23854,6 +23854,52 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-116
+
+Slice: `fix(webconsole): isolate history pagination state`
+
+Finding:
+
+- `fetchHistory()`, history paging buttons, polling, session delete, clear-all, and UI-state restore still read and wrote `state.historyData`, `state.historyPage`, and `state.historyPageSize`.
+- Those fields are the current Sessions view display payload and browser pagination preference for `/api/history`; they are not durable session history, backend pagination authority, provider replay facts, queue state, or runtime state.
+- A focused frontend regression strengthened the queued History page test to require helper-backed History view state. Before the fix, the test failed because the helper API did not exist and the main `state` still owned `historyData`, `historyPage`, and `historyPageSize`.
+
+Changes:
+
+- Moved the current `/api/history` display payload, current page, and page size into `historyViewState`.
+- Added helper functions for reading/updating/resetting History data and current page while preserving persisted UI-state page restore.
+- Updated paging buttons, polling refreshes, `fetchHistory()`, `renderHistory()`, delete-session fallback paging, and clear-all reset paths to use the History view helpers.
+- Extended frontend and embedded-asset regressions to reject `state.historyData`, `state.historyPage`, and `state.historyPageSize` while proving stale queued History responses and page restore still work.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records the History pagination display-state slice.
+
+Validation:
+
+- `node --test --test-name-pattern "fetchHistory queues the latest requested page and ignores stale in-flight history" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because History helpers were missing and `state` still owned `historyData`, `historyPage`, and `historyPageSize`.
+- `node --test --test-name-pattern "fetchHistory queues the latest requested page and ignores stale in-flight history|floating tracker panel expansion is isolated from durable app state" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `rg -n "state\\.historyData|state\\.historyPage|state\\.historyPageSize" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs internal/webconsole/service_test.go`: passed with only regression guard strings outside production assets.
+- `rg -n "state\\.historyData|state\\.historyPage|state\\.historyPageSize" internal/webconsole/assets`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 88/88 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-113
 
 Slice: `fix(webconsole): isolate overview request guard`
