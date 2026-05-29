@@ -169,6 +169,73 @@ func TestChmodAfterAtomicRenameRejectsSymlinkParentBeforeOpen(t *testing.T) {
 	}
 }
 
+func TestChmodPathNoSymlinkRejectsSymlinkDirectory(t *testing.T) {
+	temp := t.TempDir()
+	outside := filepath.Join(temp, "outside")
+	if err := os.Mkdir(outside, 0o777); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.Chmod(outside, 0o777); err != nil {
+		t.Fatalf("chmod outside: %v", err)
+	}
+	link := filepath.Join(temp, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := ChmodPathNoSymlink(link, 0o700)
+	if err == nil || !strings.Contains(err.Error(), "symlinked path") {
+		t.Fatalf("expected symlink chmod rejection, got %v", err)
+	}
+	info, statErr := os.Stat(outside)
+	if statErr != nil {
+		t.Fatalf("stat outside: %v", statErr)
+	}
+	if mode := info.Mode().Perm(); mode != 0o777 {
+		t.Fatalf("outside directory mode changed through symlink: %s", mode.String())
+	}
+}
+
+func TestChmodPathNoSymlinkAppliesToRegularFileAndDirectory(t *testing.T) {
+	temp := t.TempDir()
+	dir := filepath.Join(temp, "dir")
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatalf("mkdir dir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("chmod dir setup: %v", err)
+	}
+	file := filepath.Join(temp, "file.txt")
+	if err := os.WriteFile(file, []byte("data"), 0o666); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := os.Chmod(file, 0o666); err != nil {
+		t.Fatalf("chmod file setup: %v", err)
+	}
+
+	if err := ChmodPathNoSymlink(dir, 0o700); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+	if err := ChmodPathNoSymlink(file, 0o600); err != nil {
+		t.Fatalf("chmod file: %v", err)
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if mode := dirInfo.Mode().Perm(); mode != 0o700 {
+		t.Fatalf("expected dir mode 0700, got %s", mode.String())
+	}
+	fileInfo, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if mode := fileInfo.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("expected file mode 0600, got %s", mode.String())
+	}
+}
+
 func TestReadRegularFileNoSymlinkRejectsSymlinkFile(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.md")

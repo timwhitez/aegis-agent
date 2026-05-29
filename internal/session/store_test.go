@@ -36,6 +36,52 @@ func TestStoreEnsureRootReappliesOwnerOnlyMode(t *testing.T) {
 	}
 }
 
+func TestStoreEnsureRootChmodDoesNotFollowReplacedSymlink(t *testing.T) {
+	temp := t.TempDir()
+	root := filepath.Join(temp, "sessions")
+	outside := filepath.Join(temp, "outside")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.Mkdir(outside, 0o777); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.Chmod(outside, 0o777); err != nil {
+		t.Fatalf("chmod outside: %v", err)
+	}
+
+	restore := beforeChmodBestEffort
+	swapped := false
+	beforeChmodBestEffort = func(chmodPath string, mode os.FileMode) error {
+		if swapped || filepath.Clean(chmodPath) != filepath.Clean(root) {
+			return nil
+		}
+		swapped = true
+		if err := os.Remove(root); err != nil {
+			return err
+		}
+		return os.Symlink(outside, root)
+	}
+	defer func() {
+		beforeChmodBestEffort = restore
+	}()
+
+	store := NewStoreWithDirMode(root, 0o700)
+	if err := store.EnsureRoot(); err != nil {
+		t.Fatalf("ensure root: %v", err)
+	}
+	if !swapped {
+		t.Fatal("expected test hook to replace root before chmod")
+	}
+	info, err := os.Stat(outside)
+	if err != nil {
+		t.Fatalf("stat outside: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o777 {
+		t.Fatalf("expected outside mode to remain 0777, got %s", perm.String())
+	}
+}
+
 func TestStoreAppendMessageReappliesParentAndFileModes(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

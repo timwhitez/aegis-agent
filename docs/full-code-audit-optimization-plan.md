@@ -8922,7 +8922,58 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-452 and FCA-20260530-466. Those slices hardened atomic-write temp promotion and shared rename helpers; this residual issue was the final `chmodAfterAtomicRename` path, which used path-based `os.OpenFile(path, O_NOFOLLOW)` after promotion. `O_NOFOLLOW` protects only the final path component, so a replaced parent symlink could still redirect the chmod to an outside same-name file.
 - Confirmed the minimal fix belongs in the shared atomic-write chmod helper: open the target parent with no-follow descriptor traversal, verify the parent descriptor still matches the path, open the child with descriptor-relative `openat(O_NOFOLLOW)`, ensure it is regular, and chmod the opened file descriptor while preserving the existing transient-missing retry behavior.
 
+### Review 463
+
+- Confirmed FCA-20260530-468 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/12-task-system.md`, `spec/13-live-input-and-steering.md`, and `spec/17-web-console.md`: session directories, state files, messages, events, steer queues, background notifications, task files, and Web-visible session facts must remain owner-only local file facts.
+- Confirmed this is distinct from FCA-20260530-462 and FCA-20260530-467. Those slices hardened recursive directory creation and atomic regular-file chmod; this residual issue was the session store's later `chmodBestEffort`, which still used path-based `os.Chmod` after no-symlink directory creation or append open. A replaced final directory symlink could redirect the permission repair to an outside directory.
+- Confirmed the minimal fix belongs in the shared fileutil chmod boundary plus the session store wrapper: apply chmod through no-follow parent descriptor traversal and descriptor-relative child open, allow only existing regular files or directories, then make `chmodBestEffort` call that helper while preserving best-effort cleanup semantics.
+
 ## Update Log
+
+### FCA-20260530-468
+
+Slice: `fix(session): harden store chmod`
+
+Finding:
+
+- `AGENTS.md` requires filesystem safety to handle symlink escape, and `spec/01-runtime-architecture.md` makes the session store the authority for `session.json`, `state.json`, messages, events, control queues, tasks, goals, Plan Mode, checkpoints, and derived session summaries.
+- `Store.ensureDir` already created directories through `fileutil.MkdirAllNoSymlink` and rechecked symlink ancestors before permission repair, but it then called `chmodBestEffort`, which used raw path-based `os.Chmod`.
+- `Store.appendJSONL` also used `chmodBestEffort` after opening append logs, so session append paths still had a path-based mode repair even after the surrounding no-symlink improvements.
+- A focused regression replaced the session root directory with a symlink immediately before `chmodBestEffort`. Before the fix, `Store.EnsureRoot` returned success and changed the outside symlink target directory from `0777` to `0700`.
+
+Impact:
+
+- Session root or child directory permission repair could chmod an outside symlink target if a checked session path was replaced between the post-create symlink check and the best-effort chmod.
+- This did not create or append session contents outside the store after the prior mkdir/write/rename hardening, but it still violated the owner-only session directory permission boundary and could mutate permissions outside the session root.
+
+Changes:
+
+- Added `fileutil.ChmodPathNoSymlink`, which opens the target parent through no-follow traversal, verifies the parent descriptor still matches its path, opens the child with descriptor-relative `openat(O_NOFOLLOW)`, accepts only regular files or directories, and applies mode with `fchmod`.
+- Reused the shared helper from `chmodBestEffort` instead of raw `os.Chmod`, preserving best-effort behavior while preventing symlink-following chmod.
+- Added focused fileutil coverage for symlinked directories and for applying mode to both regular files and directories.
+- Added a focused session store regression proving a replaced symlink root no longer changes outside directory permissions.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestStoreEnsureRootChmodDoesNotFollowReplacedSymlink -count=1`: failed before the fix because the outside directory mode changed.
+- `go test -timeout 120s ./internal/session -run TestStoreEnsureRootChmodDoesNotFollowReplacedSymlink -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/fileutil -run 'TestChmod(PathNoSymlink|AfterAtomicRename)' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestStore(EnsureRoot|AppendMessage).*Mode|TestStoreEnsureRootChmodDoesNotFollowReplacedSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/session ./internal/app ./internal/webconsole ./internal/isolation ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-467
 

@@ -43,6 +43,7 @@ const invalidStoreIDPathSegment = ".invalid-id"
 
 var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)
+var beforeChmodBestEffort func(path string, mode os.FileMode) error
 
 func NewStore(root string) *Store {
 	return NewStoreWithDirMode(root, 0o700)
@@ -4928,5 +4929,10 @@ func modeTargets(root, path string) []string {
 }
 
 func chmodBestEffort(path string, mode fs.FileMode) {
-	_ = os.Chmod(path, mode)
+	if beforeChmodBestEffort != nil {
+		if err := beforeChmodBestEffort(path, os.FileMode(mode)); err != nil {
+			return
+		}
+	}
+	_ = fileutil.ChmodPathNoSymlink(path, os.FileMode(mode))
 }

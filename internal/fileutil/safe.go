@@ -298,12 +298,22 @@ func chmodAfterAtomicRename(path string, mode os.FileMode) error {
 	return err
 }
 
+// ChmodPathNoSymlink applies mode to an existing regular file or directory
+// without following symlinks in the path.
+func ChmodPathNoSymlink(path string, mode os.FileMode) error {
+	return chmodPathAtNoSymlink(path, mode, true, true)
+}
+
 func chmodRegularFileAtNoSymlink(path string, mode os.FileMode) error {
+	return chmodPathAtNoSymlink(path, mode, true, false)
+}
+
+func chmodPathAtNoSymlink(path string, mode os.FileMode, allowRegular, allowDir bool) error {
 	path = filepath.Clean(path)
 	parent := filepath.Dir(path)
 	base := filepath.Base(path)
 	if base == "." || base == string(filepath.Separator) {
-		return fmt.Errorf("invalid file path: %s", path)
+		return fmt.Errorf("invalid chmod path: %s", path)
 	}
 	parentFD, err := openDirNoSymlink(parent)
 	if err != nil {
@@ -325,22 +335,28 @@ func chmodRegularFileAtNoSymlink(path string, mode os.FileMode) error {
 		}
 		return err
 	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
 		_ = unix.Close(fd)
-		return errors.New("chmod file descriptor is invalid")
+		return err
 	}
-	info, statErr := file.Stat()
-	if statErr != nil {
-		_ = file.Close()
-		return statErr
-	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		if !allowRegular {
+			_ = unix.Close(fd)
+			return fmt.Errorf("refusing to chmod non-directory path: %s", path)
+		}
+	case unix.S_IFDIR:
+		if !allowDir {
+			_ = unix.Close(fd)
+			return fmt.Errorf("refusing to chmod non-regular file path: %s", path)
+		}
+	default:
+		_ = unix.Close(fd)
 		return fmt.Errorf("refusing to chmod non-regular file path: %s", path)
 	}
-	err = file.Chmod(mode)
-	closeErr := file.Close()
+	err = unix.Fchmod(fd, uint32(mode.Perm()))
+	closeErr := unix.Close(fd)
 	if err == nil && closeErr != nil {
 		err = closeErr
 	}
