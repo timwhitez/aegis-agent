@@ -375,6 +375,52 @@ func TestApplySessionProviderOptionsRestoresTimeoutPolicy(t *testing.T) {
 	}
 }
 
+func TestResolvedProviderOptionsRejectsUnsupportedAPIProviderOverride(t *testing.T) {
+	cfg := config.Provider{
+		APIProvider: "openai-compatible",
+		BaseURL:     "http://provider.invalid/v1",
+		Model:       "gpt-5.4",
+	}
+	_, err := resolvedProviderOptions("openai-compatible", cfg, session.ProviderOptions{
+		APIProvider: "not-real",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+}
+
+func TestRunnerStartRejectsUnsupportedProviderOptionsAPIProviderBeforeCreate(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider: "openai-compatible",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     "http://provider.invalid/v1",
+		Model:       "gpt-5.4",
+		WireAPI:     "responses",
+	}
+	runner := NewRunner(cfg)
+
+	_, err := runner.Start(context.Background(), StartRequest{
+		Prompt: "should not create a session",
+		Mode:   session.ModeExec,
+		ProviderOptions: session.ProviderOptions{
+			APIProvider: "not-real",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+	sessions, listErr := runner.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("unsupported provider options should not create sessions, got %#v", sessions)
+	}
+}
+
 func TestRunnerRejectsDifferentConcurrentActiveSessionSlot(t *testing.T) {
 	runner := NewRunner(config.Default())
 	release, err := runner.acquireRunSlot("session_a")

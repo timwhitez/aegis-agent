@@ -8580,7 +8580,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-258, FCA-20260528-262, and FCA-20260528-355. Those slices covered explicit `model:"default"` handling, entirely missing legacy `provider_options` backfill during continue, and role provider defaults for queue/delegation; this residual issue was a partial durable/options override shape such as `{"api_provider":"openai-compatible"}` that prevented default fields like `store:false`, base URL, prompt cache, retry policy, or timeout policy from being rehydrated.
 - Confirmed the minimal fix belongs in runtime provider-option resolution: merge stored/requested partial `ProviderOptions` over provider-profile defaults, preserving explicit override fields while filling missing adapter-family defaults before saving continued session metadata or persisting queue jobs.
 
+### Review 406
+
+- Confirmed FCA-20260529-408 against `spec/03-provider-contracts.md` and `spec/17-web-console.md`'s adapter-family contract: effective `api_provider` values that reach runtime session metadata or queue jobs must map to a supported provider adapter family (`openai-compatible`, `anthropic-compatible`, or `google`).
+- Confirmed this is distinct from FCA-20260529-407 and earlier Web Settings validation slices. Web Settings already rejects unsupported adapter families before config persistence, while the new residual issue was runtime-level partial `ProviderOptions` supplied directly through Start / QueueSubmit paths after provider-profile resolution.
+- Confirmed the minimal fix belongs in the same runtime provider-option resolver introduced for partial merges: return a config-style error for unsupported explicit `ProviderOptions.APIProvider` before `Runner.Start` creates `session.json` or `QueueSubmit` enqueues a job.
+
 ## Update Log
+
+### FCA-20260529-408
+
+Slice: `fix(runtime): reject unsupported provider option api providers`
+
+Finding:
+
+- Runtime provider-option merging accepted an explicit partial `ProviderOptions.APIProvider` string without validating that it named a supported adapter family.
+- `Runner.Start` could therefore create a durable session whose `session.json` contained `provider_options.api_provider:"not-real"` and fail later only when constructing the adapter.
+- `QueueSubmit` could similarly persist an unsupported adapter family into a queued job before a worker failed on adapter construction.
+
+Impact:
+
+- Start and queue control paths could leave misleading durable facts that looked like valid provider-option snapshots but were impossible for runtime to execute.
+- This weakened the same provider-family boundary that Web Settings already enforces before saving configuration, and made advanced/SDK/runtime callers less safe than the Web-first local console.
+
+Changes:
+
+- Changed runtime provider-option resolution to return an error.
+- Added supported adapter-family validation for explicit `ProviderOptions.APIProvider` values during partial merge.
+- Updated `Runner.Start`, `Runner.Continue`, and `QueueSubmit` to propagate the resolver error before creating or updating durable runtime facts.
+- Added regressions proving unsupported provider option API families are rejected before session creation and queue enqueue.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestResolvedProviderOptionsRejectsUnsupportedAPIProviderOverride -count=1`: first failed to compile before the fix because the resolver had no error return channel; passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ResolvedProviderOptionsRejectsUnsupportedAPIProviderOverride|RunnerStartRejectsUnsupportedProviderOptionsAPIProviderBeforeCreate|RunnerQueueSubmitRejectsUnsupportedProviderOptionsAPIProviderBeforeEnqueue|RunnerQueueSubmitMergesPartialProviderOptions|RunnerContinueBackfillsPartialProviderOptions)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ResolvedProviderOptionsRejectsUnsupportedAPIProviderOverride|RunnerStartRejectsUnsupportedProviderOptionsAPIProviderBeforeCreate|RunnerQueueSubmitRejectsUnsupportedProviderOptionsAPIProviderBeforeEnqueue|RunnerQueueSubmitMergesPartialProviderOptions|RunnerContinueBackfillsPartialProviderOptions|RunnerContinueBackfillsMissingProviderOptions|RunnerStartPersistsProviderOptionsInSessionMetadata)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 80/80 tests.
+- `go test -timeout 120s ./internal/webconsole -run 'TestContinueREST(BackfillsMissingProviderOptions|CarriesRuntimeFields|ModelDefaultUsesProviderDefault)|TestServiceConfigRejectsUnsupported(APIProvider|RoleAPIProviderOverride)|TestServiceConfigTestRejectsUnsupportedAPIProvider' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-407
 

@@ -321,6 +321,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if _, err := config.EffectiveAPIProvider(providerName, providerCfg); err != nil {
 		return RunResult{}, WrapConfigError(err)
 	}
+	providerOptions, err := resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions)
+	if err != nil {
+		return RunResult{}, err
+	}
 	effectiveWorkdir := requestedWorkdir
 	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, r.cfg.Runtime.Isolation.DefaultMode)
 	if err != nil {
@@ -368,7 +372,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		QueueJobID:       req.QueueJobID,
 		Depth:            depth,
 		Isolation:        isolationInfo,
-		ProviderOptions:  resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions),
+		ProviderOptions:  providerOptions,
 	}
 	state := session.State{
 		Status:    session.StatusRunning,
@@ -2094,7 +2098,7 @@ func (r *Runner) mergedSessionProviderOptions(providerName string, current sessi
 	if err != nil {
 		return session.ProviderOptions{}, WrapConfigError(err)
 	}
-	return resolvedProviderOptions(providerName, providerCfg, current), nil
+	return resolvedProviderOptions(providerName, providerCfg, current)
 }
 
 func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, apiProvider, wireAPI, model string) (config.Provider, error) {
@@ -2271,17 +2275,32 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 	}
 }
 
-func resolvedProviderOptions(name string, cfg config.Provider, override session.ProviderOptions) session.ProviderOptions {
+func resolvedProviderOptions(name string, cfg config.Provider, override session.ProviderOptions) (session.ProviderOptions, error) {
 	defaults := providerOptionsFromConfig(name, cfg)
 	if override == (session.ProviderOptions{}) {
-		return defaults
+		return defaults, nil
 	}
 	if strings.TrimSpace(override.APIProvider) != "" {
-		defaults.APIProvider = strings.TrimSpace(override.APIProvider)
+		apiProvider := strings.TrimSpace(override.APIProvider)
+		if err := validateSupportedAPIProvider(name, apiProvider); err != nil {
+			return session.ProviderOptions{}, err
+		}
+		defaults.APIProvider = apiProvider
 		defaults.PromptCache = defaultPromptCacheForAPIProvider(defaults.APIProvider, cfg.PromptCache)
 		defaults.Store = defaultStoreForAPIProvider(defaults.APIProvider, cfg.Store)
 	}
-	return mergeProviderOptions(defaults, override)
+	return mergeProviderOptions(defaults, override), nil
+}
+
+func validateSupportedAPIProvider(providerName, apiProvider string) error {
+	switch strings.TrimSpace(apiProvider) {
+	case "openai-compatible", "anthropic-compatible", "google":
+		return nil
+	case "":
+		return nil
+	default:
+		return WrapConfigError(fmt.Errorf("unsupported api_provider for %s: %s", providerName, apiProvider))
+	}
 }
 
 func mergeProviderOptions(defaults, override session.ProviderOptions) session.ProviderOptions {

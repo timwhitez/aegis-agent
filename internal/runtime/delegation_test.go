@@ -1144,6 +1144,30 @@ func TestRunnerQueueSubmitMergesPartialProviderOptions(t *testing.T) {
 	}
 }
 
+func TestRunnerQueueSubmitRejectsUnsupportedProviderOptionsAPIProviderBeforeEnqueue(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	_, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "should not enqueue",
+		ProviderOptions: session.ProviderOptions{
+			APIProvider: "not-real",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+	jobs, listErr := runner.store.ListJobs(10)
+	if listErr != nil {
+		t.Fatalf("list jobs: %v", listErr)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("unsupported provider options should not enqueue jobs, got %#v", jobs)
+	}
+}
+
 func TestRunnerQueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
