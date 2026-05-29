@@ -4751,6 +4751,49 @@ func TestClaimNextQueuedJobWritesLease(t *testing.T) {
 	}
 }
 
+func TestClaimNextQueuedJobRollsBackWhenLeaseWriteFails(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_claim_write_failure",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	forced := errors.New("forced lease write failure")
+	store.beforeQueueClaimLeaseWrite = func(from, to string, claimed QueueJob) error {
+		if _, err := os.Stat(from); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected queued source to be renamed before lease write, got %v", err)
+		}
+		if _, err := os.Stat(to); err != nil {
+			t.Fatalf("expected running target to exist before forced lease write failure: %v", err)
+		}
+		if claimed.Status != QueueStatusRunning || claimed.ClaimedAt == "" || claimed.HeartbeatAt == "" {
+			t.Fatalf("expected claimed lease facts before write, got %#v", claimed)
+		}
+		return forced
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if !errors.Is(err, forced) || ok || claimed.ID != "" {
+		t.Fatalf("expected forced claim error without returned job, got job=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected failed claim to remove running copy, got %v", err)
+	}
+	var restored QueueJob
+	if err := readJSONFile(store.queueJobPath(QueueStatusQueued, job.ID), &restored); err != nil {
+		t.Fatalf("expected failed claim to restore queued job: %v", err)
+	}
+	if restored.Status != QueueStatusQueued || restored.ClaimedAt != "" || restored.HeartbeatAt != "" || restored.ClaimedBy != "" || restored.WorkerPID != 0 || restored.ProcessStartID != "" {
+		t.Fatalf("expected restored queued job without lease facts, got %#v", restored)
+	}
+}
+
 func TestClaimNextQueuedJobSkipsMismatchedQueueFilename(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	if err := store.ensureQueueDirs(); err != nil {

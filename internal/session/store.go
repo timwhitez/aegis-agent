@@ -30,6 +30,8 @@ type Store struct {
 
 	// Set only by package tests to force deterministic Plan Mode artifact failures.
 	beforePlanModeMarkdownWrite func(sessionID string, state PlanModeState) error
+	// Set only by package tests to force deterministic queue claim lease write failures.
+	beforeQueueClaimLeaseWrite func(from, to string, job QueueJob) error
 }
 
 const QueueRunningStaleAfter = 15 * time.Minute
@@ -2259,12 +2261,49 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 		job.Status = QueueStatusRunning
 		job.UpdatedAt = now
 		applyQueueLease(&job, now)
+		if s.beforeQueueClaimLeaseWrite != nil {
+			if err := s.beforeQueueClaimLeaseWrite(from, to, job); err != nil {
+				if rollbackErr := s.rollbackFailedQueueClaim(to, candidate.job); rollbackErr != nil {
+					return QueueJob{}, false, fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
+				}
+				return QueueJob{}, false, err
+			}
+		}
 		if err := s.writeJSONFile(to, job); err != nil {
+			if rollbackErr := s.rollbackFailedQueueClaim(to, candidate.job); rollbackErr != nil {
+				return QueueJob{}, false, fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
+			}
 			return QueueJob{}, false, err
 		}
 		return job, true, nil
 	}
 	return QueueJob{}, false, nil
+}
+
+func (s *Store) rollbackFailedQueueClaim(runningPath string, queuedJob QueueJob) error {
+	queuedJob.Status = QueueStatusQueued
+	queuedJob.ClaimedBy = ""
+	queuedJob.ClaimedAt = ""
+	queuedJob.HeartbeatAt = ""
+	queuedJob.WorkerPID = 0
+	queuedJob.ProcessStartID = ""
+	queuedJob.SessionID = ""
+	queuedJob.SessionStatus = ""
+	queuedJob.EffectiveWorkdir = ""
+	queuedJob.VisiblePaths = nil
+	queuedJob.FinalText = ""
+	queuedJob.LastError = ""
+	if err := validateQueueJob(queuedJob); err != nil {
+		return fmt.Errorf("validate queued rollback job: %w", err)
+	}
+	queuedPath := s.queueJobPath(QueueStatusQueued, queuedJob.ID)
+	if err := s.writeJSONFile(queuedPath, queuedJob); err != nil {
+		return fmt.Errorf("restore queued job: %w", err)
+	}
+	if err := fileutil.RemoveFileNoSymlink(runningPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove running claim: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {

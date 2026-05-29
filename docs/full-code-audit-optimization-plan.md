@@ -8822,6 +8822,38 @@ Evidence gates:
 
 ## Update Log
 
+### FCA-20260529-449
+
+Slice: `fix(session): roll back failed queue claim leases`
+
+Finding:
+
+- `spec/15-background-queue.md` defines queue worker claim as an atomic move from `_queue/queued` to `_queue/running`.
+- `spec/01-runtime-architecture.md` requires claim to write a durable lease (`claimed_by`, `claimed_at`, `heartbeat_at`, `worker_pid`, and `process_start_id`) so running-job ownership and liveness can be explained by file facts.
+- `internal/session/store.go` `ClaimNextQueuedJob` renamed a queued job file into `_queue/running`, then wrote the running job JSON with lease fields.
+- If the post-rename lease write failed, `ClaimNextQueuedJob` returned an error but left the old queued JSON file in `_queue/running` without the durable running lease fields.
+- A focused regression injected a deterministic failure after the rename and before the lease write. Before the fix, `_queue/running/job_claim_write_failure.json` still existed after the error.
+
+Impact:
+
+- A worker could fail to claim a job while the queue facts still removed it from `_queue/queued` and exposed it under `_queue/running` without the lease required by the queue contract.
+- Web queue views, CLI queue commands, session summaries, checkpoints, and stale-running reconciliation could then treat the job as running or corrupt instead of immediately retryable once storage recovered.
+- This is distinct from FCA-20260528-268, which rolled back after a parent `queue.job.claimed` event failure; this slice covers the earlier shared store boundary where the running file itself has not yet received a durable lease.
+
+Changes:
+
+- Added a store-level rollback path for failed claim lease writes.
+- On post-rename claim write failure, restore the original queued job under `_queue/queued`, clear claim/heartbeat/worker/result fields, and remove the transient `_queue/running` copy.
+- Kept successful claim behavior, atomic rename semantics, candidate ordering, corrupt queued-job reporting, and `os.ErrNotExist` concurrent-claim skip behavior unchanged.
+- Added focused session-store coverage proving a forced lease-write failure restores the queued job and leaves no running copy.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestClaimNextQueuedJobRollsBackWhenLeaseWriteFails -count=1`: failed before the fix because the failed claim left `_queue/running/job_claim_write_failure.json`.
+- `go test -timeout 120s ./internal/session -run TestClaimNextQueuedJobRollsBackWhenLeaseWriteFails -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestClaimNextQueuedJob(RollsBackWhenLeaseWriteFails|WritesLease|SkipsMismatchedQueueFilename|RejectsMalformedQueuedJob|RejectsMismatchedStatusDirectory|RejectsMalformedQueuedJobTimestamps)|TestStoreClaimNextQueuedJobIsAtomicAcrossStores|TestLoadAndListJobsPreferTerminalDuplicateStatusFile|TestDeleteJobRejectsSymlinkedQueueStatusDirectory' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobRollsBackClaimWhenClaimedEventFails -count=1`: passed.
+
 ### FCA-20260529-448
 
 Slice: `fix(webconsole): harden skill transaction renames`
