@@ -651,6 +651,64 @@ func TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError(t *testing.T)
 	}
 }
 
+func TestRunnerProcessNextJobSkipsDuplicateTerminalLifecycleEvents(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	var duplicateAttempted bool
+	runner.beforeQueueLifecycleEvent = func(job session.QueueJob, eventType string) {
+		if eventType == "queue.job.completed" {
+			duplicateAttempted = true
+			blockRuntimeEventsPath(t, runner.store, parentID)
+		}
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil {
+		t.Fatalf("process next job: %v", err)
+	}
+	if !ok || processed.ID != job.ID || processed.Status != session.QueueStatusCompleted {
+		t.Fatalf("expected completed claimed job to be returned, got job=%#v ok=%v", processed, ok)
+	}
+	if duplicateAttempted {
+		t.Fatalf("worker should not append duplicate terminal lifecycle events after child transition reconciliation")
+	}
+	coordination, loadErr := runner.store.LoadParentCoordination(parentID)
+	if loadErr != nil {
+		t.Fatalf("load parent coordination after queue completion: %v", loadErr)
+	}
+	if len(coordination.UnresolvedQueueJobs) != 0 ||
+		!slices.Equal(coordination.CompletedQueueJobs, []string{job.ID}) ||
+		len(coordination.FailedQueueJobs) != 0 ||
+		coordination.Parked {
+		t.Fatalf("expected completed queue coordination, got %#v", coordination)
+	}
+	eventsList, loadErr := runner.store.LoadEvents(parentID)
+	if loadErr != nil {
+		t.Fatalf("load parent events after queue completion: %v", loadErr)
+	}
+	counts := map[string]int{}
+	for _, evt := range eventsList {
+		jobID, _ := evt.Data["job_id"].(string)
+		if jobID == job.ID {
+			counts[evt.Type]++
+		}
+	}
+	if counts["queue.job.notified"] != 1 || counts["queue.job.completed"] != 1 {
+		t.Fatalf("expected one notified and completed event for %s, got %#v", job.ID, counts)
+	}
+}
+
 func TestRunnerProcessNextJobRollsBackClaimWhenClaimedEventFails(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

@@ -44,6 +44,9 @@ type Runner struct {
 	// beforeStartSessionCreatedEvent is set only by package tests to force
 	// deterministic failures around the start-time lifecycle event boundary.
 	beforeStartSessionCreatedEvent func(sessionID string)
+	// beforeQueueLifecycleEvent is set only by package tests to force
+	// deterministic failures around queue lifecycle event boundaries.
+	beforeQueueLifecycleEvent func(job session.QueueJob, eventType string)
 }
 
 const defaultSteerMaxMessageChars = 12000

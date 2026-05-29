@@ -8658,7 +8658,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-418 and FCA-20260529-419. Those slices isolated Overview rail error copy and Workspace current-directory display data; this residual issue was that page activation, title updates, polling mode selection, localStorage persistence, and lazy view refreshes still read/write `state.currentView`.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: keep durable selected-session and message-window facts on the main `state`, move current navigation view into `navigationViewState` helper accessors, and preserve navigation activation, localStorage restore/persist, history polling, and skills/workspace/settings refresh behavior.
 
+### Review 419
+
+- Confirmed FCA-20260529-421 against `spec/01-runtime-architecture.md`'s queue worker and file-fact requirements: a queue child terminal transition already reconciles the linked queue job, parent background notification, parent coordination, and terminal `queue.job.completed` / `queue.job.failed` lifecycle event before `ProcessNextJob` regains control.
+- Confirmed this is distinct from FCA-20260528-259 and FCA-20260528-260. Those slices rolled back missing `queue.job.notified` facts and store-driven terminal repair when lifecycle event append failed; this residual issue was that the worker still attempted to append duplicate terminal parent facts after successful child transition reconciliation.
+- Confirmed the minimal fix belongs in runtime queue processing: skip duplicate parent notification / coordination / lifecycle writes after a terminal child transition has already reconciled queue facts successfully, while preserving the worker fallback path when linked queue reconciliation or child handoff reload fails.
+
 ## Update Log
+
+### FCA-20260529-421
+
+Slice: `fix(queue): skip duplicate terminal events`
+
+Finding:
+
+- `ProcessNextJob` starts a child runner with `QueueJobID` set, and terminal child state transitions call `Engine.reconcileLinkedQueueJob`.
+- That reconciliation already updates the linked queue job, parent background notification, parent coordination, and terminal `queue.job.completed` / `queue.job.failed` lifecycle event when it succeeds.
+- After the child runner returned successfully, `ProcessNextJob` still saved the queue job and then attempted parent notification, parent coordination, and lifecycle event writes again.
+- A focused regression blocked the parent `events.jsonl` at the duplicate terminal lifecycle boundary. Before the fix, the worker returned an event append error even though the required terminal queue facts had already been written by the child transition reconciliation.
+
+Impact:
+
+- A healthy completed or failed queue child could be surfaced as a worker persistence error if the parent event log became unavailable only after the child transition had already reconciled terminal queue facts.
+- Parent timelines could also accumulate duplicate terminal queue lifecycle events on the normal success path, weakening traceability for Web Background inspector, session summaries, and recovery diagnostics.
+
+Changes:
+
+- Added a narrow runtime test hook to deterministically exercise the post-child duplicate lifecycle boundary.
+- Detected terminal queue jobs whose child transition reconciliation already succeeded (`result.SessionID` present, terminal queue status, no handoff failure, and no linked queue reconciliation error).
+- For that already-reconciled terminal path, `ProcessNextJob` now saves the worker's queue job projection, refreshes parent summary/checkpoint best-effort, and returns without re-appending parent notification, parent coordination, or terminal lifecycle facts.
+- Kept the existing worker fallback path for linked queue reconciliation failures and child handoff reload failures, including queue notification, parent coordination, and terminal lifecycle persistence.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobSkipsDuplicateTerminalLifecycleEvents -count=1`: failed before the fix because `ProcessNextJob` attempted a duplicate `queue.job.completed` append after child transition reconciliation.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobSkipsDuplicateTerminalLifecycleEvents -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(ProcessNextJobSkipsDuplicateTerminalLifecycleEvents|ProcessNextJobReportsQueueLifecycleEventAppendError|ProcessNextJobRollsBackClaimWhenClaimedEventFails|ProcessNextJobReportsParentCoordinationError|ProcessNextJobReportsCorruptChildHandoff(Messages|Metadata)|QueueSubmitAndWorkerCompletesJob|QueueSubmitReportsChildQueuedEventAppendError|QueueSubmitReportsParentCoordinationError)|TestProcessNextJobMarksFailedJobWithoutReturningError|TestQueueWorkerRefreshesHeartbeat|TestEngineCompletingQueuedChildReconcilesParentQueueFacts' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `node --check internal/webconsole/assets/app.js && node --check internal/webconsole/assets/session-view.js && node --check internal/webconsole/assets/workspace-view.js && node --check internal/webconsole/assets/events.js && node --check internal/webconsole/assets/settings-view.js && node --check internal/webconsole/assets/utils.js && node --check internal/webconsole/assets/api.js && node --check internal/webconsole/assets/icons.js && node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-420
 

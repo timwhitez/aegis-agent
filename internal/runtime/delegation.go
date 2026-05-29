@@ -483,10 +483,20 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			job.LastError = "child session is resumable: " + result.Status
 		}
 	}
+	terminalParentFactsAlreadyReconciled := job.ParentSessionID != "" &&
+		result.SessionID != "" &&
+		handoffErr == nil &&
+		isTerminalQueueStatus(job.Status) &&
+		!queueReconcileErr
 	if err := retryQueuePersistence("persist queue job "+job.ID, func() error {
 		return r.store.SaveJob(job)
 	}); err != nil {
 		return job, true, err
+	}
+	if terminalParentFactsAlreadyReconciled {
+		_ = writeSessionSummary(r.store, job.ParentSessionID)
+		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
+		return job, true, nil
 	}
 	if job.ParentSessionID != "" {
 		notification := session.NewBackgroundNotification(job)
@@ -512,15 +522,19 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			}
 			return job, true, err
 		}
+		var terminalCoordinationSnapshot session.ParentCoordinationSnapshot
+		var restoreTerminalCoordination bool
 		if isTerminalQueueStatus(job.Status) {
+			var snapshotErr error
+			terminalCoordinationSnapshot, snapshotErr = r.store.SnapshotParentCoordination(job.ParentSessionID)
+			if snapshotErr != nil {
+				return job, true, snapshotErr
+			}
+			restoreTerminalCoordination = true
 			if err := resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status); err != nil {
 				return job, true, err
 			}
 		}
-		_ = writeSessionSummary(r.store, job.ParentSessionID)
-		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
-	}
-	if job.ParentSessionID != "" {
 		eventType := "queue.job.blocked"
 		if job.Status == session.QueueStatusCompleted {
 			eventType = "queue.job.completed"
@@ -528,7 +542,10 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		if job.Status == session.QueueStatusFailed {
 			eventType = "queue.job.failed"
 		}
-		if err := retryQueuePersistence("append queue lifecycle event for job "+job.ID, func() error {
+		if r.beforeQueueLifecycleEvent != nil {
+			r.beforeQueueLifecycleEvent(job, eventType)
+		}
+		if err := retryQueuePersistence("append queue lifecycle event "+eventType+" for job "+job.ID, func() error {
 			return r.appendEvent(job.ParentSessionID, eventType, "queue", map[string]any{
 				"job_id":     job.ID,
 				"session_id": job.SessionID,
@@ -536,8 +553,15 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 				"agent_role": job.AgentRole,
 			})
 		}); err != nil {
+			if restoreTerminalCoordination {
+				if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, terminalCoordinationSnapshot); restoreErr != nil {
+					return job, true, fmt.Errorf("append queue lifecycle event %s for job %s failed with %v; restore parent coordination after failed queue lifecycle event: %w", eventType, job.ID, err, restoreErr)
+				}
+			}
 			return job, true, err
 		}
+		_ = writeSessionSummary(r.store, job.ParentSessionID)
+		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
 	}
 	// Failed jobs are part of normal queue lifecycle. Persist the failure on the
 	// job record and let the worker keep polling unless queue I/O itself failed.
