@@ -9607,6 +9607,60 @@ func TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit(t *testing.T) {
 	}
 }
 
+func TestReserveSkillBackupPathRejectsSymlinkedParentDuringCleanup(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "skills")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("mkdir skill parent: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	symlinkProbe := filepath.Join(base, "symlink-probe")
+	if err := os.Symlink(outside, symlinkProbe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(symlinkProbe); err != nil {
+		t.Fatalf("remove symlink probe: %v", err)
+	}
+
+	var originalBackupPath string
+	var outsideBackupPath string
+	beforeReserveSkillBackupCleanup = func(backupPath string) error {
+		originalBackupPath = backupPath
+		outsideBackupPath = filepath.Join(outside, filepath.Base(backupPath))
+		if err := os.MkdirAll(outsideBackupPath, 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(parent, parent+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeReserveSkillBackupCleanup = nil
+	}()
+
+	backupPath, err := reserveSkillBackupPath(parent, "demo-skill")
+	if err == nil {
+		t.Fatalf("expected symlinked backup parent cleanup to fail, got backup path %s", backupPath)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	if outsideBackupPath == "" {
+		t.Fatal("test hook did not record outside backup path")
+	}
+	if _, err := os.Stat(outsideBackupPath); err != nil {
+		t.Fatalf("outside backup alias should remain untouched, got %v", err)
+	}
+	realBackupPath := filepath.Join(parent+".real", filepath.Base(originalBackupPath))
+	if _, err := os.Stat(realBackupPath); err != nil {
+		t.Fatalf("original reservation under real parent should remain after failed cleanup, got %v", err)
+	}
+}
+
 func TestProcessSkillZipRejectsOversizedEntry(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")

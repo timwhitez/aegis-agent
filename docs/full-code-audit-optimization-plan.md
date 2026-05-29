@@ -8844,7 +8844,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-323 through FCA-20260528-353 and FCA-20260529-453. Earlier doctor slices validated existing session/queue facts and unsafe session roots, and the queue claim slice hardened queue promotion; this residual issue was the doctor session-dir mode probe's cleanup path using raw `os.RemoveAll(probeDir)` after creating a temporary probe directory under the configured session root.
 - Confirmed the minimal fix belongs in `probeSessionDirMode`: keep the chmod/mode probe behavior and warning classification unchanged, but route temporary probe cleanup through the shared no-symlink directory removal helper so a replaced probe parent fails closed instead of deleting through a symlinked session directory.
 
+### Review 450
+
+- Confirmed FCA-20260529-455 against `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: uploaded/uninstalled skills are local managed artifacts under the WebConsole skill directory, and skill install/uninstall transactions must keep their backup reservation and rollback facts inside the resolved managed skill root.
+- Confirmed this is distinct from FCA-20260529-450, FCA-20260529-452, and FCA-20260529-454. Earlier slices hardened Web history transaction renames, shared atomic write promotion, and doctor probe cleanup; this residual issue was the skill backup reservation helper creating a temporary directory under the managed skill root and then deleting the reservation with raw `os.Remove(backupPath)`.
+- Confirmed the minimal fix belongs in `reserveSkillBackupPath`: keep the existing temporary-name reservation behavior for collision avoidance, but route the reservation cleanup through the shared no-symlink directory remover so a replaced managed skill root fails closed before later install/uninstall renames.
+
 ## Update Log
+
+### FCA-20260529-455
+
+Slice: `fix(webconsole): harden skill backup reservation cleanup`
+
+Finding:
+
+- `spec/17-web-console.md` makes WebConsole skill upload/uninstall part of the local control surface, while `spec/04-tools-and-skills.md` keeps skills local and `spec/18-durable-contract-and-completion.md` requires durable local facts to stay under their source directories.
+- `internal/webconsole/service.go` `reserveSkillBackupPath` created a temporary backup reservation directory under the managed skill root, verified its lexical parent, then deleted that reservation with raw `os.Remove(backupPath)`.
+- A focused regression replaced the managed skill root with a symlink after reservation and before cleanup, then created an outside directory with the same backup basename. Before the fix, raw cleanup returned success through the replaced parent and left the transaction holding a backup path that no longer referred to the original managed root.
+
+Impact:
+
+- A local filesystem race or manual replacement of the managed skill root during WebConsole skill install/uninstall backup reservation could make the transaction clean up or accept a reservation path through an outside symlinked parent.
+- That weakened the install/uninstall transaction boundary used before replacing an existing skill or moving a skill into backup for audit-log rollback.
+
+Changes:
+
+- Added a package-private test hook at the reservation cleanup boundary so the replaced-parent race is deterministic in tests.
+- Routed backup reservation cleanup through `fileutil.RemoveDirAllNoSymlink`, preserving the existing temporary-name reservation behavior while rejecting symlinked ancestors before cleanup.
+- Added a focused regression proving the outside same-basename backup alias remains untouched and the reservation does not succeed when the managed skill root is replaced with a symlink.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestReserveSkillBackupPathRejectsSymlinkedParentDuringCleanup -count=1`: failed before the fix because raw `os.Remove` returned success after the managed skill root was replaced by a symlink.
+- `go test -timeout 120s ./internal/webconsole -run TestReserveSkillBackupPathRejectsSymlinkedParentDuringCleanup -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestReserveSkillBackupPathRejectsSymlinkedParentDuringCleanup|TestProcessSkillZipRejectsSymlink(Destination|edManagedRootBeforeCommit)|TestSkill(Upload|Uninstall)RollsBackWhenAuditAppendFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestRemoveDirAllNoSymlink|TestRenameDirNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
 
 ### FCA-20260529-454
 

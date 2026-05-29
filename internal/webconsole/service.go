@@ -69,6 +69,10 @@ const (
 var (
 	errWebServiceClosing    = errors.New("web service is closing")
 	errSessionAlreadyActive = errors.New("session is already active in this web console")
+
+	// beforeReserveSkillBackupCleanup is set only by package tests to force a
+	// deterministic filesystem replacement between reservation and cleanup.
+	beforeReserveSkillBackupCleanup func(backupPath string) error
 )
 
 type processOwner struct {
@@ -4553,7 +4557,13 @@ func reserveSkillBackupPath(parent, name string) (string, error) {
 		_ = fileutil.RemoveDirAllNoSymlink(backupPath)
 		return "", fmt.Errorf("invalid skill backup path: %s", backupPath)
 	}
-	if err := os.Remove(backupPath); err != nil {
+	if beforeReserveSkillBackupCleanup != nil {
+		if err := beforeReserveSkillBackupCleanup(backupPath); err != nil {
+			_ = fileutil.RemoveDirAllNoSymlink(backupPath)
+			return "", err
+		}
+	}
+	if err := fileutil.RemoveDirAllNoSymlink(backupPath); err != nil {
 		return "", err
 	}
 	return backupPath, nil
