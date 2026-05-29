@@ -645,6 +645,60 @@ func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 	}
 }
 
+func TestLongRunCheckpointMirrorsParentCoordinationUnresolvedWork(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := addParentQueueJob(store, meta.ID, "job_coordination_only", "wait-all"); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if checkpoint.ParentWaitState != "parked" {
+		t.Fatalf("expected parked parent wait state from coordination, got %#v", checkpoint)
+	}
+	if !containsString(checkpoint.UnresolvedQueueJobs, "job_coordination_only") {
+		t.Fatalf("expected coordination unresolved queue job in checkpoint, got %#v", checkpoint.UnresolvedQueueJobs)
+	}
+	if !containsString(checkpoint.ResumeHints, "resolve parent child or queue wait state") {
+		t.Fatalf("expected parent wait resume hint, got %#v", checkpoint.ResumeHints)
+	}
+}
+
+func TestLongRunCheckpointKeepsWaitAnyReadyWithRemainingUnresolvedWork(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := addParentQueueJob(store, meta.ID, "job_unresolved", "wait-any"); err != nil {
+		t.Fatalf("add unresolved parent queue job: %v", err)
+	}
+	if err := addParentQueueJob(store, meta.ID, "job_completed", "wait-any"); err != nil {
+		t.Fatalf("add completed parent queue job: %v", err)
+	}
+	if err := resolveParentQueueJob(store, meta.ID, "job_completed", session.QueueStatusCompleted); err != nil {
+		t.Fatalf("resolve parent queue job: %v", err)
+	}
+
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if checkpoint.ParentWaitState != "ready" {
+		t.Fatalf("expected wait-any checkpoint to remain ready after one completion, got %#v", checkpoint)
+	}
+	if !containsString(checkpoint.UnresolvedQueueJobs, "job_unresolved") {
+		t.Fatalf("expected unresolved wait-any queue job to stay visible, got %#v", checkpoint.UnresolvedQueueJobs)
+	}
+	if containsString(checkpoint.ResumeHints, "resolve parent child or queue wait state") {
+		t.Fatalf("ready wait-any checkpoint should not add parent wait hint, got %#v", checkpoint.ResumeHints)
+	}
+}
+
 func TestSessionSummaryReportsCorruptOptionalFacts(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "goal.json"), []byte("{not-json}\n"), 0o600); err != nil {

@@ -400,7 +400,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		return ownerClueErr
 	}
 
-	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, planMode, planModeErr, artifacts, tasks, children, jobs, state) {
+	if !shouldWriteLongRunCheckpoint(meta, contract, contractErr, goal, goalErr, planMode, planModeErr, artifacts, tasks, children, jobs, coordination, coordinationErr, state) {
 		return nil
 	}
 	latestCompaction, err := latestCompactionArtifact(store, sessionID)
@@ -461,18 +461,23 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		checkpoint.ParentWaitState = "waiting"
 	}
 	if coordinationErr == nil && coordination.ParentSessionID != "" {
-		if coordination.Parked {
-			checkpoint.ParentWaitState = "parked"
-		} else if coordination.WaitMode != "" {
-			checkpoint.ParentWaitState = "ready"
+		for _, childID := range coordination.UnresolvedChildSessions {
+			checkpoint.UnresolvedChildSessions = appendUnique(checkpoint.UnresolvedChildSessions, childID)
 		}
+		for _, jobID := range coordination.UnresolvedQueueJobs {
+			checkpoint.UnresolvedQueueJobs = appendUnique(checkpoint.UnresolvedQueueJobs, jobID)
+		}
+		checkpoint.ParentWaitState = checkpointParentWaitState(coordination)
 	}
 	checkpoint.ResumeHints = checkpointHints(checkpoint, state)
 	return store.SaveLongRunCheckpoint(sessionID, checkpoint)
 }
 
-func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session.SessionContract, contractErr error, goal session.SessionGoal, goalErr error, planMode session.PlanModeState, planModeErr error, artifacts []session.RequiredArtifact, tasks []session.Task, children []session.SessionSummary, jobs []session.QueueJob, state session.State) bool {
+func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session.SessionContract, contractErr error, goal session.SessionGoal, goalErr error, planMode session.PlanModeState, planModeErr error, artifacts []session.RequiredArtifact, tasks []session.Task, children []session.SessionSummary, jobs []session.QueueJob, coordination session.ParentCoordination, coordinationErr error, state session.State) bool {
 	if meta.Depth > 0 || meta.ParentSessionID != "" || meta.QueueJobID != "" || len(children) > 0 || len(jobs) > 0 {
+		return true
+	}
+	if coordinationErr == nil && coordination.ParentSessionID != "" {
 		return true
 	}
 	if meta.Isolation != nil && meta.Isolation.Mode != "" && meta.Isolation.Mode != "off" {
@@ -491,6 +496,24 @@ func shouldWriteLongRunCheckpoint(meta session.SessionMetadata, contract session
 		return true
 	}
 	return state.LastCompactionInputChars > 0
+}
+
+func checkpointParentWaitState(coordination session.ParentCoordination) string {
+	hasUnresolved := len(coordination.UnresolvedChildSessions) > 0 || len(coordination.UnresolvedQueueJobs) > 0
+	if !hasUnresolved {
+		if coordination.WaitMode != "" {
+			return "ready"
+		}
+		return ""
+	}
+	if normalizeParentWaitMode(coordination.WaitMode) == parentWaitAny &&
+		(len(coordination.CompletedChildSessions) > 0 || len(coordination.CompletedQueueJobs) > 0) {
+		return "ready"
+	}
+	if coordination.Parked {
+		return "parked"
+	}
+	return "waiting"
 }
 
 func latestCompactionArtifact(store *session.Store, sessionID string) (string, error) {
@@ -583,7 +606,7 @@ func checkpointHints(checkpoint session.LongRunCheckpoint, state session.State) 
 	if len(checkpoint.RequiredArtifactStatus) > 0 {
 		hints = append(hints, "recheck required artifacts before finish")
 	}
-	if checkpoint.ParentWaitState == "waiting" {
+	if checkpoint.ParentWaitState == "waiting" || checkpoint.ParentWaitState == "parked" {
 		hints = append(hints, "resolve parent child or queue wait state")
 	}
 	if state.LastError != "" {

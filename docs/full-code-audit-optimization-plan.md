@@ -8988,7 +8988,48 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-477. That slice made failed visible-output handoffs terminally failed and resolved completed/failed coordination conflicts; this residual issue was the parent-state materialization transaction itself. `ProcessNextJob` and `LoadJob` repair could update parent notification/coordination first, then return an error after `queue.job.blocked` / `queue.job.completed` / `queue.job.failed` or a later parent-state write failed, leaving stale or overly advanced parent facts.
 - Confirmed the minimal fix belongs in `internal/runtime/delegation.go` and `internal/session/store.go`: snapshot parent coordination before terminal transition, write/refresh notifications only after terminal coordination succeeds, and restore both parent coordination and background notification snapshots whenever notified/lifecycle event persistence or parent notification writes fail.
 
+### Review 474
+
+- Confirmed FCA-20260530-479 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/14-multi-agent-and-isolation.md`, and `spec/18-durable-contract-and-completion.md`: long-run checkpoints are resume indexes derived from durable facts, and parent child/queue wait state must remain linked to `parent-coordination.json` instead of being inferred only from child/session and queue-job listings.
+- Confirmed this is distinct from FCA-20260530-477 and FCA-20260530-478. Those slices fixed handoff materialization failures and parent-state transaction rollback; this residual issue was the derived checkpoint projection. `writeLongRunCheckpoint` could skip checkpoint creation for coordination-only parent wait facts, omit unresolved ids that existed only in `parent-coordination.json`, and fail to add the parent wait resume hint when the coordination state was `parked`.
+- Confirmed the minimal fix belongs in `internal/runtime/session_summary.go`: treat a valid `parent-coordination.json` as checkpoint-eligible, merge unresolved child/session and queue ids from coordination into `LongRunCheckpoint`, derive `parent_wait_state` with the same wait-all / wait-any semantics as the completion gate, and add the parent wait resume hint for both `waiting` and `parked`.
+
 ## Update Log
+
+### FCA-20260530-479
+
+Slice: `fix(runtime): mirror coordination in checkpoints`
+
+Finding:
+
+- `writeLongRunCheckpoint` created checkpoint unresolved child/queue lists from `ListChildren` and `ListJobsByParent`, then used `parent-coordination.json` only to overwrite the coarse `parent_wait_state`.
+- If `parent-coordination.json` was the only durable fact that still recorded unresolved work, the session was not checkpoint-eligible and no long-run resume index was written.
+- If child/job listings and parent coordination diverged, unresolved ids present in `parent-coordination.json` could be missing from `longrun-latest.json`.
+- When coordination was `parked`, `checkpointHints` did not add the "resolve parent child or queue wait state" hint because it only checked `parent_wait_state=waiting`.
+
+Impact:
+
+- A resumed long-running parent session could receive no checkpoint reminder for unresolved child/queue work even though the completion gate would still block `finish` from `parent-coordination.json`.
+- Web/CLI operators inspecting `longrun-latest.json` could miss unresolved queue or child ids that were present in the parent coordination fact source.
+- Under wait-all, a parked parent coordination state lacked the recovery hint that tells the agent/operator to resolve outstanding child or queue work before finishing.
+
+Changes:
+
+- `writeLongRunCheckpoint` now treats a valid `parent-coordination.json` as a reason to write a checkpoint.
+- The checkpoint now merges unresolved child session and queue job ids from parent coordination into `unresolved_child_sessions` and `unresolved_queue_jobs`.
+- Parent wait-state derivation now keeps wait-any semantics: unresolved work remains visible, but `parent_wait_state` is `ready` after one wait-any result completes; unresolved wait-all / parked work stays blocked/parked.
+- Resume hints now include "resolve parent child or queue wait state" for both `waiting` and `parked` checkpoint states.
+- Added focused regressions for coordination-only unresolved work and wait-any remaining-work visibility after one completed result.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpoint(MirrorsParentCoordinationUnresolvedWork|KeepsWaitAnyReadyWithRemainingUnresolvedWork)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-478
 
