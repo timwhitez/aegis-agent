@@ -754,12 +754,16 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err != nil {
 			return RunResult{}, WrapConfigError(err)
 		}
-		meta.Provider = providerName
 		if modelOverride != "" {
 			providerCfg.Model = modelOverride
 		}
+		providerOptions, err := resolvedProviderOptions(providerName, providerCfg, session.ProviderOptions{})
+		if err != nil {
+			return RunResult{}, err
+		}
+		meta.Provider = providerName
 		meta.Model = providerCfg.Model
-		meta.ProviderOptions = providerOptionsFromConfig(providerName, providerCfg)
+		meta.ProviderOptions = providerOptions
 	}
 	if modelOverride != "" {
 		meta.Model = modelOverride
@@ -2277,6 +2281,14 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 
 func resolvedProviderOptions(name string, cfg config.Provider, override session.ProviderOptions) (session.ProviderOptions, error) {
 	defaults := providerOptionsFromConfig(name, cfg)
+	apiProvider, err := config.EffectiveAPIProvider(name, cfg)
+	if err != nil {
+		return session.ProviderOptions{}, WrapConfigError(err)
+	}
+	if err := validateSupportedAPIProvider(name, apiProvider); err != nil {
+		return session.ProviderOptions{}, err
+	}
+	defaults.APIProvider = apiProvider
 	if override == (session.ProviderOptions{}) {
 		return defaults, nil
 	}

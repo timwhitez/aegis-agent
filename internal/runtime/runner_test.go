@@ -389,6 +389,18 @@ func TestResolvedProviderOptionsRejectsUnsupportedAPIProviderOverride(t *testing
 	}
 }
 
+func TestResolvedProviderOptionsRejectsUnsupportedConfigAPIProvider(t *testing.T) {
+	cfg := config.Provider{
+		APIProvider: "not-real",
+		BaseURL:     "http://provider.invalid/v1",
+		Model:       "gpt-5.4",
+	}
+	_, err := resolvedProviderOptions("bad-provider", cfg, session.ProviderOptions{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+}
+
 func TestRunnerStartRejectsUnsupportedProviderOptionsAPIProviderBeforeCreate(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
@@ -418,6 +430,96 @@ func TestRunnerStartRejectsUnsupportedProviderOptionsAPIProviderBeforeCreate(t *
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("unsupported provider options should not create sessions, got %#v", sessions)
+	}
+}
+
+func TestRunnerStartRejectsUnsupportedProviderConfigAPIProviderBeforeCreate(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "bad-provider"
+	cfg.Providers["bad-provider"] = config.Provider{
+		APIProvider: "not-real",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     "http://provider.invalid/v1",
+		Model:       "gpt-5.4",
+	}
+	runner := NewRunner(cfg)
+
+	_, err := runner.Start(context.Background(), StartRequest{
+		Prompt: "should not create a session",
+		Mode:   session.ModeExec,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+	sessions, listErr := runner.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("unsupported provider config should not create sessions, got %#v", sessions)
+	}
+}
+
+func TestRunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider: "openai-compatible",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     "http://provider.invalid/v1",
+		Model:       "gpt-5.4",
+		WireAPI:     "responses",
+	}
+	cfg.Providers["bad-provider"] = config.Provider{
+		APIProvider: "not-real",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     "http://bad-provider.invalid/v1",
+		Model:       "bad-model",
+	}
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	if err := runner.store.Create(meta, session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "awaiting_input",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Provider:  "bad-provider",
+		Message:   "resume",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+	loadedMeta, loadErr := runner.store.LoadMetadata(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load metadata: %v", loadErr)
+	}
+	if loadedMeta.Provider != "openai-compatible" || loadedMeta.ProviderOptions.APIProvider != "openai-compatible" {
+		t.Fatalf("unsupported continue provider should not mutate metadata, got %#v", loadedMeta)
+	}
+	loadedState, stateErr := runner.store.LoadState(meta.ID)
+	if stateErr != nil {
+		t.Fatalf("load state: %v", stateErr)
+	}
+	if loadedState.Status != session.StatusAwaitingInput {
+		t.Fatalf("unsupported continue provider should leave state awaiting_input, got %#v", loadedState)
 	}
 }
 

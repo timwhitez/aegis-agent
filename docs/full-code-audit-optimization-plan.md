@@ -8586,7 +8586,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-407 and earlier Web Settings validation slices. Web Settings already rejects unsupported adapter families before config persistence, while the new residual issue was runtime-level partial `ProviderOptions` supplied directly through Start / QueueSubmit paths after provider-profile resolution.
 - Confirmed the minimal fix belongs in the same runtime provider-option resolver introduced for partial merges: return a config-style error for unsupported explicit `ProviderOptions.APIProvider` before `Runner.Start` creates `session.json` or `QueueSubmit` enqueues a job.
 
+### Review 407
+
+- Confirmed FCA-20260529-409 against `spec/03-provider-contracts.md`, `spec/17-web-console.md`, and `spec/01-runtime-architecture.md`'s provider adapter boundary: effective `api_provider` values coming from provider profiles must be validated before runtime persists session metadata or queue job facts.
+- Confirmed this is distinct from FCA-20260529-408. That slice rejected unsupported adapter families supplied as explicit `ProviderOptions` overrides; this residual issue was a provider profile itself declaring `api_provider:"not-real"`, which could still pass through Start / QueueSubmit resolution because the default provider-options path did not validate the profile-derived family.
+- Confirmed the minimal fix belongs in runtime provider-option resolution and continue-time provider override handling: validate profile-derived adapter families through the same resolver used for explicit overrides, and reject explicit continue provider overrides before `ClaimSessionRun` or `SaveMetadata` can mutate durable session facts.
+
 ## Update Log
+
+### FCA-20260529-409
+
+Slice: `fix(runtime): reject unsupported provider config api providers`
+
+Finding:
+
+- Runtime provider-option resolution validated explicit `ProviderOptions.APIProvider` overrides, but did not validate the effective adapter family coming from the selected provider profile itself.
+- A provider profile with `api_provider:"not-real"` could make `Runner.Start` create `session.json` with `provider:"bad-provider"` and invalid `provider_options.api_provider`, then fail only during adapter construction.
+- `QueueSubmit` could enqueue a job for the same invalid profile, leaving an impossible queue fact for a worker to fail later.
+- `Runner.Continue` with an explicit provider override could claim the session, save invalid provider metadata, and only then reject the unsupported adapter family.
+
+Impact:
+
+- Runtime / SDK / advanced callers could leave durable session or queue facts that Web Settings would never allow through its profile validation path.
+- Continue could turn an `awaiting_input` session into a failed or mutated provider snapshot even though the requested provider profile was invalid before execution began.
+
+Changes:
+
+- Updated `resolvedProviderOptions` to validate the provider profile's effective API provider against supported adapter families before returning defaults.
+- Updated explicit-provider `Runner.Continue` handling to resolve and validate provider options before claiming the run slot or saving metadata.
+- Added focused regressions for resolver validation, Start pre-create rejection, QueueSubmit pre-enqueue rejection, and Continue pre-mutation rejection.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'Test(ResolvedProviderOptionsRejectsUnsupportedConfigAPIProvider|RunnerStartRejectsUnsupportedProviderConfigAPIProviderBeforeCreate|RunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation|RunnerQueueSubmitRejectsUnsupportedProviderConfigAPIProviderBeforeEnqueue)' -count=1`: failed before the fix because the resolver returned nil error, Start left a running session, QueueSubmit enqueued a job, and Continue mutated metadata.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ResolvedProviderOptionsRejectsUnsupportedConfigAPIProvider|RunnerStartRejectsUnsupportedProviderConfigAPIProviderBeforeCreate|RunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation|RunnerQueueSubmitRejectsUnsupportedProviderConfigAPIProviderBeforeEnqueue)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ResolvedProviderOptionsRejectsUnsupported(APIProviderOverride|ConfigAPIProvider)|RunnerStartRejectsUnsupportedProvider(Options|Config)APIProviderBeforeCreate|RunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation|RunnerQueueSubmitRejectsUnsupportedProvider(Options|Config)APIProviderBeforeEnqueue|RunnerQueueSubmitMergesPartialProviderOptions|RunnerContinueBackfillsPartialProviderOptions|RunnerContinueBackfillsMissingProviderOptions|RunnerStartPersistsProviderOptionsInSessionMetadata)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestContinueREST(BackfillsMissingProviderOptions|CarriesRuntimeFields|ModelDefaultUsesProviderDefault)|TestServiceConfigRejectsUnsupported(APIProvider|RoleAPIProviderOverride)|TestServiceConfigTestRejectsUnsupportedAPIProvider' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 80/80 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-408
 

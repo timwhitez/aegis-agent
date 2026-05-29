@@ -1168,6 +1168,33 @@ func TestRunnerQueueSubmitRejectsUnsupportedProviderOptionsAPIProviderBeforeEnqu
 	}
 }
 
+func TestRunnerQueueSubmitRejectsUnsupportedProviderConfigAPIProviderBeforeEnqueue(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Providers["bad-provider"] = config.Provider{
+		APIProvider: "not-real",
+		BaseURL:     "http://bad-provider.invalid/v1",
+		Model:       "bad-model",
+	}
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	_, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "should not enqueue",
+		Provider:        "bad-provider",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+	jobs, listErr := runner.store.ListJobs(10)
+	if listErr != nil {
+		t.Fatalf("list jobs: %v", listErr)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("unsupported provider config should not enqueue jobs, got %#v", jobs)
+	}
+}
+
 func TestRunnerQueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
