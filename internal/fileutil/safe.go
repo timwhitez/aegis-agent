@@ -24,6 +24,7 @@ var beforeRemoveDirAllNoSymlinkRemove func(path string) error
 var beforeRemoveFileNoSymlinkRemove func(path string) error
 var beforeRenamePathNoSymlinkRename func(oldPath, newPath string) error
 var beforeChmodAfterAtomicRenameOpen func(path string) error
+var beforeReadRegularFileOpen func(path string) error
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -369,10 +370,7 @@ func ReadRegularFileNoSymlink(path string) ([]byte, os.FileInfo, error) {
 		return nil, nil, errors.New("path is required")
 	}
 	path = filepath.Clean(path)
-	if err := rejectExistingSymlinkAncestors(path); err != nil {
-		return nil, nil, err
-	}
-	file, err := os.OpenFile(path, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	file, err := openRegularFileForReadNoSymlink(path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -412,10 +410,7 @@ func ReadRegularFileRangeNoSymlink(path string, offset, limit int64) ([]byte, os
 		return nil, nil, fmt.Errorf("range read limit exceeds maximum readable size: %d > %d bytes", limit, MaxRegularFileReadBytes)
 	}
 	path = filepath.Clean(path)
-	if err := rejectExistingSymlinkAncestors(path); err != nil {
-		return nil, nil, err
-	}
-	file, err := os.OpenFile(path, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	file, err := openRegularFileForReadNoSymlink(path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -438,6 +433,51 @@ func ReadRegularFileRangeNoSymlink(path string, offset, limit int64) ([]byte, os
 		return nil, nil, err
 	}
 	return data, info, nil
+}
+
+func openRegularFileForReadNoSymlink(path string) (*os.File, error) {
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return nil, err
+	}
+	parent := filepath.Dir(path)
+	base := filepath.Base(path)
+	if base == "." || base == string(filepath.Separator) {
+		return nil, fmt.Errorf("invalid file path: %s", path)
+	}
+	parentFD, err := openDirNoSymlink(parent)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
+			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+		}
+		return nil, err
+	}
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if beforeReadRegularFileOpen != nil {
+		if err := beforeReadRegularFileOpen(path); err != nil {
+			return nil, err
+		}
+	}
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		return nil, err
+	}
+	fd, err := unix.Openat(parentFD, base, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("refusing to read symlinked file: %s", path)
+		}
+		if errors.Is(err, unix.ENOENT) {
+			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+		}
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("failed to open regular file")
+	}
+	return file, nil
 }
 
 func MkdirAllNoSymlink(path string, mode os.FileMode) error {

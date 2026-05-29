@@ -256,6 +256,46 @@ func TestReadRegularFileNoSymlinkRejectsSymlinkFile(t *testing.T) {
 	}
 }
 
+func TestReadRegularFileNoSymlinkRejectsReplacedParent(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "facts")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	path := filepath.Join(parent, "session.json")
+	if err := os.WriteFile(path, []byte("inside"), 0o600); err != nil {
+		t.Fatalf("write inside file: %v", err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "session.json"), []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	beforeReadRegularFileOpen = func(readPath string) error {
+		if readPath != path {
+			return nil
+		}
+		if err := os.Rename(parent, parent+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeReadRegularFileOpen = nil
+	}()
+
+	data, info, err := ReadRegularFileNoSymlink(path)
+	if err == nil {
+		t.Fatalf("expected replaced parent read rejection, got data=%q info=%#v", string(data), info)
+	}
+	if !strings.Contains(err.Error(), "symlink") && !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("expected symlink/path-change error, got %v", err)
+	}
+}
+
 func TestReadRegularFileNoSymlinkRejectsOversizedFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "large.log")

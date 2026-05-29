@@ -8940,7 +8940,59 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-458, FCA-20260530-463, and FCA-20260530-469. Those slices hardened managed-root staging, shared no-symlink temp helpers, and doctor chmod probes; this residual issue was `handleUploadSkill` spooling the upload with `os.CreateTemp("", ...)`, closing it, then passing `tmpFile.Name()` to `zip.OpenReader`, making the install source a replaceable path after the upload had already been accepted.
 - Confirmed the minimal fix belongs in the Web upload handler and zip transaction boundary: create the spool with the shared no-symlink temp helper, unlink the temporary path immediately, keep the file descriptor open, and process the uploaded bytes through `zip.NewReader` on the original `io.ReaderAt` instead of reopening by path.
 
+### Review 466
+
+- Confirmed FCA-20260530-471 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/09-phase-plan.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: session facts, Web workspace previews, skills, config/env files, review artifacts, prompt attachments, and runtime recovery files use `fileutil.ReadRegularFileNoSymlink` as the shared local file-fact read boundary.
+- Confirmed this is distinct from FCA-20260530-463, FCA-20260530-467, FCA-20260530-468, and FCA-20260530-470. Those slices hardened temp creation, atomic write chmod, session chmod, and Web upload spooling; this residual issue was the shared read helper still doing a precheck plus path-based `os.OpenFile(path, O_NOFOLLOW)`. `O_NOFOLLOW` protects only the final component, so a parent replaced by a symlink after precheck could redirect reads to an outside same-name file.
+- Confirmed the minimal fix belongs in `fileutil.ReadRegularFileNoSymlink` and `ReadRegularFileRangeNoSymlink`: open the parent directory through no-follow descriptor traversal, verify the descriptor still matches the path after the deterministic race point, then open the child with descriptor-relative `openat(O_NOFOLLOW)`.
+
 ## Update Log
+
+### FCA-20260530-471
+
+Slice: `fix(fileutil): harden file reads`
+
+Finding:
+
+- The shared `fileutil.ReadRegularFileNoSymlink` helper is used by session store reads, Web workspace file previews, skill catalog loads, config/env parsing, review guard/report readers, prompt attachment context, runtime contract checks, and other local file-fact consumers.
+- The helper rejected symlink ancestors before opening, then called path-based `os.OpenFile(path, O_RDONLY|O_NOFOLLOW, 0)`.
+- On Linux, `O_NOFOLLOW` protects the final path component only. A parent directory replaced by a symlink after the ancestor precheck could redirect the read to an outside same-name regular file.
+- A focused regression replaced the checked parent with a symlink to an outside directory containing the same filename after the precheck and before open. Before the fix, `ReadRegularFileNoSymlink` returned the outside file bytes.
+
+Impact:
+
+- Any caller relying on the shared no-symlink read helper could read outside the intended local fact root if an attacker could replace a checked parent directory during that window.
+- This affected read-only paths rather than direct mutation, but it weakened session-fact authority, Web workspace read safety, skill/config parsing boundaries, and completion/review evidence checks.
+
+Changes:
+
+- Added a descriptor-relative read opener used by both `ReadRegularFileNoSymlink` and `ReadRegularFileRangeNoSymlink`.
+- The opener now validates ancestors, opens the parent directory with existing no-symlink traversal, verifies that parent descriptor still matches the path after the deterministic race hook, and opens the target child using `openat(O_NOFOLLOW)`.
+- Kept existing regular-file, size-cap, range, and symlink-file behavior intact.
+- Added a regression proving a replaced parent cannot redirect the read to outside bytes.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -run TestReadRegularFileNoSymlinkRejectsReplacedParent -count=1`: failed before the fix because the helper read the outside same-name file.
+- `go test -timeout 120s ./internal/fileutil -run 'TestReadRegularFile(NoSymlink|RangeNoSymlink)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestStoreLoadMessagesRejectsSymlinkJSONL|TestLoadMessagesRejectsMalformedSnapshot|TestLoadEventsRejectsMalformedSnapshot' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run TestGoalCommandRejectsOrphanGoalWithoutSessionMetadata -count=1`: passed after preserving path-aware missing-file errors.
+- `go test -timeout 120s ./internal/tools -run 'TestGoalToolsRejectMissingSessionMetadata|TestSessionScopedToolsRejectMissingSessionMetadata|TestAgentToolsRejectMissingSessionMetadataBeforeControlPlane' -count=1`: passed after preserving path-aware missing-file errors.
+- `go test -timeout 120s ./internal/session ./internal/webconsole ./internal/app ./internal/skills ./internal/config ./internal/runtime ./internal/review ./internal/tools -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-470
 
