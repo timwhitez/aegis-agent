@@ -9510,6 +9510,63 @@ func TestProcessSkillZipRejectsSymlinkDestination(t *testing.T) {
 	}
 }
 
+func TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	existing := filepath.Join(dest, "demo-skill")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "SKILL.md"), []byte("---\nname: existing-demo\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	zipPath := filepath.Join(base, "skill.zip")
+	createSkillZip(t, zipPath, "demo-skill", "---\nname: demo-skill\n---\nnew body\n")
+
+	tx, err := processSkillZipTransaction(zipPath, dest)
+	if err != nil {
+		t.Fatalf("process skill zip transaction: %v", err)
+	}
+	if len(tx.committed) != 1 || tx.committed[0].backupPath == "" {
+		t.Fatalf("expected committed backup path, got %#v", tx.committed)
+	}
+	outsideBackup := filepath.Join(outside, filepath.Base(tx.committed[0].backupPath))
+	if err := os.MkdirAll(outsideBackup, 0o755); err != nil {
+		t.Fatalf("mkdir outside backup alias: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideBackup, "SKILL.md"), []byte("---\nname: outside-alias\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write outside backup alias: %v", err)
+	}
+	if err := os.Rename(dest, dest+".real"); err != nil {
+		t.Fatalf("move managed skill root: %v", err)
+	}
+	if err := os.Symlink(outside, dest); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err = tx.Rollback()
+	if err == nil {
+		t.Fatal("expected rollback to reject symlinked managed skill root")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "demo-skill", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback should not restore skill through symlinked managed root, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideBackup, "SKILL.md")); err != nil {
+		t.Fatalf("outside backup alias should remain untouched, got %v", err)
+	}
+	realBackup := filepath.Join(dest+".real", filepath.Base(tx.committed[0].backupPath))
+	if data, err := os.ReadFile(filepath.Join(realBackup, "SKILL.md")); err != nil || !strings.Contains(string(data), "existing-demo") {
+		t.Fatalf("original managed root backup should retain existing skill, data=%q err=%v", string(data), err)
+	}
+}
+
 func TestProcessSkillZipRejectsOversizedEntry(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")

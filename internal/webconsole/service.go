@@ -4513,7 +4513,7 @@ func commitStagedSkillZipPlans(plans []skillZipPlan, stagingRoot string) ([]comm
 			if err != nil {
 				return nil, rollbackCommittedSkillZipPlans(committed, err)
 			}
-			if err := os.Rename(plan.TargetPath, backupPath); err != nil {
+			if err := fileutil.RenameDirNoSymlink(plan.TargetPath, backupPath); err != nil {
 				return nil, rollbackCommittedSkillZipPlans(committed, err)
 			}
 			entry.backupPath = backupPath
@@ -4524,7 +4524,7 @@ func commitStagedSkillZipPlans(plans []skillZipPlan, stagingRoot string) ([]comm
 			committed = append(committed, entry)
 		}
 
-		if err := os.Rename(stagePath, plan.TargetPath); err != nil {
+		if err := fileutil.RenameDirNoSymlink(stagePath, plan.TargetPath); err != nil {
 			return nil, rollbackCommittedSkillZipPlans(committed, err)
 		}
 		committed[len(committed)-1].installed = true
@@ -4576,7 +4576,7 @@ func restoreCommittedSkillZipPlans(committed []committedSkillZipPlan) error {
 			}
 		}
 		if entry.backupPath != "" {
-			if err := os.Rename(entry.backupPath, entry.targetPath); err != nil {
+			if err := fileutil.RenameDirNoSymlink(entry.backupPath, entry.targetPath); err != nil {
 				rollbackErrs = append(rollbackErrs, err.Error())
 			}
 		}
@@ -4920,7 +4920,7 @@ func removeSkillDirTransaction(rootDir, targetDir string) (*skillRemoveTransacti
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Rename(targetDir, backupPath); err != nil {
+	if err := fileutil.RenameDirNoSymlink(targetDir, backupPath); err != nil {
 		return nil, err
 	}
 	return &skillRemoveTransaction{targetPath: targetDir, backupPath: backupPath}, nil
@@ -4941,7 +4941,7 @@ func (tx *skillRemoveTransaction) Rollback() error {
 	if tx == nil || tx.backupPath == "" {
 		return nil
 	}
-	if err := os.Rename(tx.backupPath, tx.targetPath); err != nil {
+	if err := fileutil.RenameDirNoSymlink(tx.backupPath, tx.targetPath); err != nil {
 		return err
 	}
 	tx.backupPath = ""

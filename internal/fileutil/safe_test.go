@@ -225,6 +225,96 @@ func TestRemoveDirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	}
 }
 
+func TestRenameDirNoSymlinkRejectsSymlinkDestinationParent(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("body"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	outside := t.TempDir()
+	link := filepath.Join(root, "skills")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := RenameDirNoSymlink(source, filepath.Join(link, "demo-skill"))
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink ancestor rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "demo-skill")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(source, "SKILL.md")); statErr != nil {
+		t.Fatalf("source directory should remain after rejected rename: %v", statErr)
+	}
+}
+
+func TestRenameDirNoSymlinkRejectsSymlinkSource(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "source-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := RenameDirNoSymlink(link, filepath.Join(root, "target"))
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink source rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(link); statErr != nil {
+		t.Fatalf("source symlink should remain after rejected rename: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "target")); !os.IsNotExist(statErr) {
+		t.Fatalf("target should not be created, stat err=%v", statErr)
+	}
+}
+
+func TestRenameDirNoSymlinkRejectsSamePathSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "source-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := RenameDirNoSymlink(link, link)
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected same-path symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(link); statErr != nil {
+		t.Fatalf("source symlink should remain after rejected same-path rename: %v", statErr)
+	}
+}
+
+func TestRenameDirNoSymlinkRenamesDirectory(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("body"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	if err := RenameDirNoSymlink(source, target); err != nil {
+		t.Fatalf("rename directory: %v", err)
+	}
+	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
+		t.Fatalf("source should be moved, stat err=%v", statErr)
+	}
+	data, err := os.ReadFile(filepath.Join(target, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read renamed file: %v", err)
+	}
+	if string(data) != "body" {
+		t.Fatalf("unexpected renamed file content: %q", data)
+	}
+}
+
 func TestRemoveFileNoSymlinkRemovesRegularFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "stale.json")

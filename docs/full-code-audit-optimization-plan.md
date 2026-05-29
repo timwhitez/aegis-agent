@@ -8822,6 +8822,51 @@ Evidence gates:
 
 ## Update Log
 
+### FCA-20260529-448
+
+Slice: `fix(webconsole): harden skill transaction renames`
+
+Finding:
+
+- `spec/17-web-console.md` treats skill install and uninstall as risky local-console mutations that must stay within the managed local skill directory and preserve rollback/audit consistency.
+- `internal/webconsole/service.go` already staged skill uploads and kept replaced skills in backup until `web.skill.install` was durably appended, but the final transaction moves still used raw `os.Rename` for target-to-backup, staged-to-target, and rollback backup-to-target directory moves.
+- A focused regression committed a valid replacement transaction, then replaced the managed skill root path with a symlink before rollback. Before the fix, the rollback used the symlinked parent and moved an attacker-prepared outside backup directory into the outside `demo-skill` target instead of failing closed.
+
+Impact:
+
+- A local filesystem race or manual replacement of the managed skill root during the audit/rollback window could make skill install or uninstall rollback write outside the managed skill directory.
+- This bypassed the no-symlink extraction, removal, and manifest-read helpers already used around skill uploads and made rollback weaker than the staging/audit safety contract.
+
+Changes:
+
+- Added `fileutil.RenameDirNoSymlink`, a directory-only rename helper that rejects symlinked source paths, symlinked destination parents, existing destination paths, and filesystem roots before calling `os.Rename`.
+- Routed WebConsole skill upload install moves and rollback moves through `RenameDirNoSymlink`.
+- Routed WebConsole skill uninstall backup and rollback moves through `RenameDirNoSymlink`.
+- Added focused fileutil coverage for safe directory rename success, symlinked source rejection, same-path symlink rejection, and symlinked destination-parent rejection.
+- Added focused WebConsole coverage proving skill upload rollback rejects a symlinked managed root and does not restore through it into an outside directory.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit -count=1`: failed before the fix because rollback restored through the symlinked managed root into the outside `demo-skill` path.
+- `go test -timeout 120s ./internal/fileutil -run 'TestRenameDirNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'Test(RenameDirNoSymlink|RemoveDirAllNoSymlink|RemoveFileNoSymlink|AtomicWriteFileNoSymlink)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(ProcessSkillZip|SkillUploadRollsBackWhenAuditAppendFails|SkillUninstallRollsBackWhenAuditAppendFails|ServiceSkillRoutes|ServiceSkillListRequiresReadableSkillManifest)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+
 ### FCA-20260529-447
 
 Slice: `fix(session): harden queue job deletion paths`
