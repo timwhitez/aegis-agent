@@ -76,6 +76,9 @@ var (
 	// beforeSkillUploadStagingRootCreate is set only by package tests to force
 	// a deterministic filesystem replacement before upload staging begins.
 	beforeSkillUploadStagingRootCreate func(globalDest string) error
+	// beforeSkillUploadTempProcess is set only by package tests to force a
+	// deterministic filesystem replacement before the uploaded temp file is processed.
+	beforeSkillUploadTempProcess func(tmpPath string) error
 	// beforeWebHistoryBackupRootCreate is set only by package tests to force a
 	// deterministic filesystem replacement before history backup creation.
 	beforeWebHistoryBackupRootCreate func(parent string) error
@@ -4282,7 +4285,19 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 		return nil, wrapSkillZipPackageError(err)
 	}
 	defer r.Close()
-	globalDest, err = prepareSkillZipDestination(globalDest)
+	return processSkillZipReader(&r.Reader, globalDest)
+}
+
+func processSkillZipTransactionReader(src io.ReaderAt, size int64, globalDest string) (*skillZipInstallTransaction, error) {
+	r, err := zip.NewReader(src, size)
+	if err != nil {
+		return nil, wrapSkillZipPackageError(err)
+	}
+	return processSkillZipReader(r, globalDest)
+}
+
+func processSkillZipReader(r *zip.Reader, globalDest string) (*skillZipInstallTransaction, error) {
+	globalDest, err := prepareSkillZipDestination(globalDest)
 	if err != nil {
 		return nil, err
 	}
@@ -4797,33 +4812,39 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
+	tmpFile, err := fileutil.CreateTempNoSymlink(os.TempDir(), "skill-upload-*.zip")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	defer os.Remove(tmpFile.Name())
+	tmpPath := tmpFile.Name()
+	if err := fileutil.RemoveFileNoSymlink(tmpPath); err != nil {
+		_ = tmpFile.Close()
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer tmpFile.Close()
 	written, err := io.Copy(tmpFile, io.LimitReader(file, maxSkillUploadBytes+1))
 	if err != nil {
-		_ = tmpFile.Close()
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if written > maxSkillUploadBytes {
-		_ = tmpFile.Close()
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("skill upload exceeds %d bytes", maxSkillUploadBytes))
 		return
 	}
-	if err := tmpFile.Close(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	if beforeSkillUploadTempProcess != nil {
+		if err := beforeSkillUploadTempProcess(tmpPath); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	if err := s.ensureAuditLogWritable(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	installTx, err := processSkillZipTransaction(tmpFile.Name(), dest)
+	installTx, err := processSkillZipTransactionReader(tmpFile, written, dest)
 	if err != nil {
 		writeError(w, skillUploadProcessErrorStatus(err), err)
 		return

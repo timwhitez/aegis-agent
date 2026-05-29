@@ -9133,6 +9133,78 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	}
 }
 
+func TestSkillUploadUsesOriginalTempFileWhenPathIsReplaced(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	replacementZip := filepath.Join(t.TempDir(), "replacement.zip")
+	createSkillZip(t, replacementZip, "replacement-skill", "---\nname: replacement-skill\n---\nreplacement\n")
+
+	beforeSkillUploadTempProcess = func(tmpPath string) error {
+		if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		replacement, err := os.ReadFile(replacementZip)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(tmpPath, replacement, 0o600)
+	}
+	defer func() {
+		beforeSkillUploadTempProcess = nil
+	}()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	createSkillZip(t, zipPath, "demo-skill", "---\nname: demo-skill\n---\noriginal\n")
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(zipPath))
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	zipBytes, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	if _, err := part.Write(zipBytes); err != nil {
+		t.Fatalf("write zip to multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/upload", body)
+	if err != nil {
+		t.Fatalf("new upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected upload status %d body=%s", resp.StatusCode, string(respBody))
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "demo-skill", "SKILL.md")); err != nil {
+		t.Fatalf("expected original uploaded skill to be installed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "replacement-skill", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement path payload should not be installed, got %v", err)
+	}
+}
+
 func TestServiceSkillUninstallRejectsEncodedSeparatorInSkillID(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")

@@ -8934,7 +8934,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-461, FCA-20260530-463, and FCA-20260530-468. Those slices hardened doctor temp creation, shared temp helpers, and session store chmod repairs; this residual issue was `probeSessionDirMode` itself still calling path-based `os.Chmod` on the probe directory after no-symlink temp creation.
 - Confirmed the minimal fix belongs in the doctor probe path: reuse `fileutil.ChmodPathNoSymlink` for the probe chmod and treat symlink/path-change failures as probe failures, while preserving the existing diagnostic behavior for ordinary chmod support checks.
 
+### Review 465
+
+- Confirmed FCA-20260530-470 against `AGENTS.md`, `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/09-phase-plan.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: WebConsole skill upload mutates local managed skill artifacts, so the uploaded zip bytes must remain the request body that the service accepted rather than a later path lookup in the OS temp directory.
+- Confirmed this is distinct from FCA-20260530-458, FCA-20260530-463, and FCA-20260530-469. Those slices hardened managed-root staging, shared no-symlink temp helpers, and doctor chmod probes; this residual issue was `handleUploadSkill` spooling the upload with `os.CreateTemp("", ...)`, closing it, then passing `tmpFile.Name()` to `zip.OpenReader`, making the install source a replaceable path after the upload had already been accepted.
+- Confirmed the minimal fix belongs in the Web upload handler and zip transaction boundary: create the spool with the shared no-symlink temp helper, unlink the temporary path immediately, keep the file descriptor open, and process the uploaded bytes through `zip.NewReader` on the original `io.ReaderAt` instead of reopening by path.
+
 ## Update Log
+
+### FCA-20260530-470
+
+Slice: `fix(webconsole): harden skill upload spool`
+
+Finding:
+
+- WebConsole skill upload is part of the default local Web-first operator surface, and uploaded skills become local managed skill artifacts under the configured skill directory.
+- `handleUploadSkill` wrote the multipart body to `os.CreateTemp("", "skill-upload-*.zip")`, closed the temp file, and later called `processSkillZipTransaction(tmpFile.Name(), dest)`.
+- `processSkillZipTransaction` opened the zip with `zip.OpenReader(src)`, so the install transaction read whatever path existed at the temp filename after the close rather than the exact file descriptor that received the browser upload.
+- A focused regression replaced the temp path with a different valid skill zip after upload spooling and before processing. Before the fix, the replacement zip controlled the installed skill.
+
+Impact:
+
+- A local actor able to replace the predictable temp path during that window could redirect a Web skill upload transaction to different zip bytes than the request supplied.
+- The existing managed-root, staging, extraction, backup, rollback, and audit guards still constrained the final destination, but the source package fact was no longer bound to the accepted upload body.
+
+Changes:
+
+- Added `processSkillZipTransactionReader` and a shared `processSkillZipReader` so zip validation/extraction can operate on an existing `io.ReaderAt`.
+- Changed `handleUploadSkill` to create the spool with `fileutil.CreateTempNoSymlink(os.TempDir(), ...)`, immediately unlink it with `fileutil.RemoveFileNoSymlink`, keep the file descriptor open, and pass that descriptor plus the written size into `zip.NewReader`.
+- Kept the existing path-based `processSkillZipTransaction` for direct local zip-file callers while routing Web upload through the fd-backed transaction path.
+- Added a deterministic regression proving a path replacement after upload spooling cannot change the installed skill.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestSkillUploadUsesOriginalTempFileWhenPathIsReplaced -count=1`: failed before the fix because the original uploaded skill was not installed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestSkillUploadUsesOriginalTempFileWhenPathIsReplaced|TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported|TestSkillUploadRollsBackWhenAuditAppendFails|TestSkillUploadRejectsMalformedPackageAsBadRequest' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/webconsole ./internal/session ./internal/app ./internal/isolation ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-469
 
