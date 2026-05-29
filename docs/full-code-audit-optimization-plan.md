@@ -8892,7 +8892,43 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-452, FCA-20260530-458, FCA-20260530-459, FCA-20260530-460, and FCA-20260530-461. Those slices hardened temp-file/temp-dir creation, rename promotion, backup roots, and doctor probes after a checked parent existed; this residual issue was the lower-level recursive mkdir helper still using a precheck + raw `os.MkdirAll` pattern that could create missing directories under a newly swapped symlink target before the post-check rejected the path.
 - Confirmed the minimal fix belongs in `internal/fileutil.MkdirAllNoSymlink` and its production callers: use descriptor-relative no-follow directory creation, route `AtomicWriteFileNoSymlink`, copy isolation, session store `ensureDir`, and Web audit-log parent creation through that helper, and preserve existing mode, chmod, path-shape, and no-symlink rejection behavior.
 
+### Review 458
+
+- Confirmed FCA-20260530-463 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/14-multi-agent-and-isolation.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: session stores, copy-isolation destinations, doctor probes, Web history backups, and Web skill upload staging all rely on the shared no-symlink temp helpers for local file-fact mutations, so those helpers must not create temp children through a parent that is replaced after validation.
+- Confirmed this is distinct from FCA-20260530-458, FCA-20260530-460, FCA-20260530-461, and FCA-20260530-462. Those slices routed callers to shared no-symlink helpers and hardened recursive directory creation; this residual issue was inside `fileutil.MkdirTempNoSymlink` and `fileutil.CreateTempNoSymlink` themselves, which still used raw `os.MkdirTemp(parent, ...)` / `os.CreateTemp(parent, ...)` after checking the parent path.
+- Confirmed the minimal fix belongs in the shared fileutil helpers: anchor the validated parent directory with a no-follow descriptor, create temp names with descriptor-relative `mkdirat` / `openat(O_NOFOLLOW|O_EXCL)`, verify the descriptor still matches the parent path before returning, and preserve existing direct-child, mode, cleanup, and symlink rejection semantics for all production callers.
+
 ## Update Log
+
+### FCA-20260530-463
+
+Slice: `fix(fileutil): harden temp creation`
+
+Finding:
+
+- `AGENTS.md` requires filesystem safety to handle symlink escape rather than relying only on cleaned paths.
+- `fileutil.MkdirTempNoSymlink` and `fileutil.CreateTempNoSymlink` rejected symlink ancestors and the parent path before temp creation, but then called raw `os.MkdirTemp(parent, ...)` / `os.CreateTemp(parent, ...)`.
+- These helpers are now the shared boundary for Web skill upload staging / backup reservation, Web history backup roots, copy-isolation temp files, doctor probes, and atomic writes.
+- Focused regressions replaced an already-checked parent directory with a symlink immediately before temp creation. Before the fix, the helpers returned errors only after creating `.upload-*` temp directories/files under the outside symlink target.
+
+Impact:
+
+- A local session, WebConsole, doctor, copy-isolation, or atomic-write path using the shared helpers could still leave temp artifacts outside the intended local file-fact root when a checked parent was swapped for a symlink between validation and temp creation.
+- That weakened the hardening from FCA-20260530-458 through FCA-20260530-462 because callers had moved to shared helpers, but the helper implementation still contained a time-of-check/time-of-use gap around raw temp creation.
+
+Changes:
+
+- Reimplemented `MkdirTempNoSymlink` to open the parent directory through no-follow descriptor traversal and create temp directories with descriptor-relative `mkdirat`.
+- Reimplemented `CreateTempNoSymlink` to open the parent directory through no-follow descriptor traversal and create temp files with descriptor-relative `openat(O_NOFOLLOW|O_CREAT|O_EXCL)`.
+- Added random temp-name generation compatible with existing `*` pattern placement and rejected invalid temp patterns containing path separators.
+- Added descriptor-vs-path identity verification before returning so a replaced parent path fails closed and any fd-created temp item is cleaned up via `unlinkat` on the original directory descriptor.
+- Preserved existing direct-child, regular-file/directory, mode, cleanup, and symlink rejection checks.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -run 'Test(MkdirTempNoSymlinkRejectsSymlinkParentBeforeCreate|CreateTempNoSymlinkRejectsSymlinkParentBeforeCreate)' -count=1`: failed before the fix because the outside symlink target received temp entries.
+- `go test -timeout 120s ./internal/fileutil -run 'Test(MkdirTempNoSymlinkRejectsSymlinkParentBeforeCreate|CreateTempNoSymlinkRejectsSymlinkParentBeforeCreate|MkdirTempNoSymlinkCreatesDirectory|CreateTempNoSymlinkCreatesFile)' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
 
 ### FCA-20260530-462
 

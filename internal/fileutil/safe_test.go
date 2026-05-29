@@ -338,6 +338,42 @@ func TestMkdirTempNoSymlinkRejectsSymlinkParent(t *testing.T) {
 	}
 }
 
+func TestMkdirTempNoSymlinkRejectsSymlinkParentBeforeCreate(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "sessions")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	outside := t.TempDir()
+
+	restore := beforeMkdirTempNoSymlinkCreate
+	beforeMkdirTempNoSymlinkCreate = func(path string) error {
+		if path != parent {
+			return nil
+		}
+		if err := os.RemoveAll(parent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeMkdirTempNoSymlinkCreate = restore
+	}()
+
+	path, err := MkdirTempNoSymlink(parent, ".upload-*")
+	if err == nil {
+		_ = RemoveDirAllNoSymlink(path)
+		t.Fatalf("expected symlinked parent during temp dir create to be rejected, got %s", path)
+	}
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil {
+		t.Fatalf("read outside dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temp dir should not be created under symlink target, got %d entries", len(entries))
+	}
+}
+
 func TestMkdirTempNoSymlinkCreatesDirectory(t *testing.T) {
 	parent := t.TempDir()
 	path, err := MkdirTempNoSymlink(parent, ".upload-*")
@@ -379,6 +415,43 @@ func TestCreateTempNoSymlinkRejectsSymlinkParent(t *testing.T) {
 	entries, err := os.ReadDir(outside)
 	if err != nil {
 		t.Fatalf("read outside dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temp file should not be created under symlink target, got %d entries", len(entries))
+	}
+}
+
+func TestCreateTempNoSymlinkRejectsSymlinkParentBeforeCreate(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "sessions")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	outside := t.TempDir()
+
+	restore := beforeCreateTempNoSymlinkCreate
+	beforeCreateTempNoSymlinkCreate = func(path string) error {
+		if path != parent {
+			return nil
+		}
+		if err := os.RemoveAll(parent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeCreateTempNoSymlinkCreate = restore
+	}()
+
+	file, err := CreateTempNoSymlink(parent, ".upload-*")
+	if err == nil {
+		_ = file.Close()
+		_ = RemoveFileNoSymlink(file.Name())
+		t.Fatalf("expected symlinked parent during temp file create to be rejected, got %s", file.Name())
+	}
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil {
+		t.Fatalf("read outside dir: %v", readErr)
 	}
 	if len(entries) != 0 {
 		t.Fatalf("temp file should not be created under symlink target, got %d entries", len(entries))

@@ -1,6 +1,8 @@
 package fileutil
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +18,8 @@ const MaxRegularFileReadBytes int64 = 16 << 20
 
 var beforeAtomicWriteRename func(tmpPath, path string) error
 var beforeMkdirAllNoSymlinkMkdir func(path string) error
+var beforeMkdirTempNoSymlinkCreate func(parent string) error
+var beforeCreateTempNoSymlinkCreate func(parent string) error
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -378,40 +382,47 @@ func MkdirTempNoSymlink(parent, pattern string) (string, error) {
 	if err := rejectExistingSymlinkAncestors(parent); err != nil {
 		return "", err
 	}
-	parentInfo, err := os.Lstat(parent)
+	parentFD, err := openDirNoSymlink(parent)
 	if err != nil {
 		return "", err
 	}
-	if parentInfo.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("refusing to create temp directory under symlinked parent: %s", parent)
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if beforeMkdirTempNoSymlinkCreate != nil {
+		if err := beforeMkdirTempNoSymlinkCreate(parent); err != nil {
+			return "", err
+		}
 	}
-	if !parentInfo.IsDir() {
-		return "", fmt.Errorf("temp parent is not a directory: %s", parent)
-	}
-	path, err := os.MkdirTemp(parent, pattern)
+	name, err := mkdirTempAtNoSymlink(parentFD, parent, pattern)
 	if err != nil {
 		return "", err
 	}
+	path := filepath.Join(parent, name)
 	path = filepath.Clean(path)
 	if filepath.Dir(path) != parent {
-		_ = RemoveDirAllNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, true)
 		return "", fmt.Errorf("invalid temp directory path: %s", path)
 	}
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		_ = unlinkTempAt(parentFD, name, true)
+		return "", err
+	}
 	if err := rejectExistingSymlinkAncestors(path); err != nil {
-		_ = RemoveDirAllNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, true)
 		return "", err
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
-		_ = RemoveDirAllNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, true)
 		return "", err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		_ = RemoveDirAllNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, true)
 		return "", fmt.Errorf("created temp directory became symlinked: %s", path)
 	}
 	if !info.IsDir() {
-		_ = RemoveDirAllNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, true)
 		return "", fmt.Errorf("created temp path is not a directory: %s", path)
 	}
 	return path, nil
@@ -426,48 +437,184 @@ func CreateTempNoSymlink(parent, pattern string) (*os.File, error) {
 	if err := rejectExistingSymlinkAncestors(parent); err != nil {
 		return nil, err
 	}
-	parentInfo, err := os.Lstat(parent)
+	parentFD, err := openDirNoSymlink(parent)
 	if err != nil {
 		return nil, err
 	}
-	if parentInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing to create temp file under symlinked parent: %s", parent)
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if beforeCreateTempNoSymlinkCreate != nil {
+		if err := beforeCreateTempNoSymlinkCreate(parent); err != nil {
+			return nil, err
+		}
 	}
-	if !parentInfo.IsDir() {
-		return nil, fmt.Errorf("temp parent is not a directory: %s", parent)
-	}
-	file, err := os.CreateTemp(parent, pattern)
+	file, name, err := createTempAtNoSymlink(parentFD, parent, pattern)
 	if err != nil {
 		return nil, err
 	}
 	path := filepath.Clean(file.Name())
 	if filepath.Dir(path) != parent {
 		_ = file.Close()
-		_ = RemoveFileNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, false)
 		return nil, fmt.Errorf("invalid temp file path: %s", path)
+	}
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		_ = file.Close()
+		_ = unlinkTempAt(parentFD, name, false)
+		return nil, err
 	}
 	if err := rejectExistingSymlinkAncestors(path); err != nil {
 		_ = file.Close()
-		_ = RemoveFileNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, false)
 		return nil, err
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		_ = file.Close()
-		_ = RemoveFileNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, false)
 		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		_ = file.Close()
-		_ = RemoveFileNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, false)
 		return nil, fmt.Errorf("created temp file became symlinked: %s", path)
 	}
 	if !info.Mode().IsRegular() {
 		_ = file.Close()
-		_ = RemoveFileNoSymlink(path)
+		_ = unlinkTempAt(parentFD, name, false)
 		return nil, fmt.Errorf("created temp path is not a regular file: %s", path)
 	}
 	return file, nil
+}
+
+func openDirNoSymlink(path string) (int, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return -1, err
+	}
+	root, parts := splitAbsolutePath(abs)
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	current := root
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		next := filepath.Join(current, part)
+		childFD, err := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			_ = unix.Close(fd)
+			if ancestorErr := rejectExistingSymlinkAncestors(path); ancestorErr != nil {
+				return -1, ancestorErr
+			}
+			return -1, mkdirAllNoSymlinkOpenError(next, err)
+		}
+		if closeErr := unix.Close(fd); closeErr != nil {
+			_ = unix.Close(childFD)
+			return -1, closeErr
+		}
+		fd = childFD
+		current = next
+	}
+	if err := ensureDirFDStillAtPath(fd, path); err != nil {
+		_ = unix.Close(fd)
+		return -1, err
+	}
+	return fd, nil
+}
+
+func mkdirTempAtNoSymlink(parentFD int, parent, pattern string) (string, error) {
+	for attempt := 0; attempt < 10000; attempt++ {
+		name, err := tempChildName(pattern)
+		if err != nil {
+			return "", err
+		}
+		if err := unix.Mkdirat(parentFD, name, 0o700); err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				continue
+			}
+			if parentErr := ensureDirFDStillAtPath(parentFD, parent); parentErr != nil {
+				return "", parentErr
+			}
+			return "", err
+		}
+		return name, nil
+	}
+	return "", fmt.Errorf("unable to create unique temp directory for pattern %q", pattern)
+}
+
+func createTempAtNoSymlink(parentFD int, parent, pattern string) (*os.File, string, error) {
+	for attempt := 0; attempt < 10000; attempt++ {
+		name, err := tempChildName(pattern)
+		if err != nil {
+			return nil, "", err
+		}
+		fd, err := unix.Openat(parentFD, name, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				continue
+			}
+			if parentErr := ensureDirFDStillAtPath(parentFD, parent); parentErr != nil {
+				return nil, "", parentErr
+			}
+			return nil, "", err
+		}
+		path := filepath.Join(parent, name)
+		return os.NewFile(uintptr(fd), path), name, nil
+	}
+	return nil, "", fmt.Errorf("unable to create unique temp file for pattern %q", pattern)
+}
+
+func tempChildName(pattern string) (string, error) {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	suffix := hex.EncodeToString(random[:])
+	name := pattern + suffix
+	if index := strings.LastIndex(pattern, "*"); index >= 0 {
+		name = pattern[:index] + suffix + pattern[index+1:]
+	}
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("invalid temp pattern: %q", pattern)
+	}
+	return name, nil
+}
+
+func ensureDirFDStillAtPath(fd int, path string) error {
+	var fdStat unix.Stat_t
+	if err := unix.Fstat(fd, &fdStat); err != nil {
+		return err
+	}
+	var pathStat unix.Stat_t
+	if err := unix.Lstat(path, &pathStat); err != nil {
+		return err
+	}
+	switch pathStat.Mode & unix.S_IFMT {
+	case unix.S_IFLNK:
+		return fmt.Errorf("refusing to create temp item under symlinked parent: %s", path)
+	case unix.S_IFDIR:
+	default:
+		return fmt.Errorf("temp parent is not a directory: %s", path)
+	}
+	if fdStat.Dev != pathStat.Dev || fdStat.Ino != pathStat.Ino {
+		return fmt.Errorf("temp parent changed while creating: %s", path)
+	}
+	return nil
+}
+
+func unlinkTempAt(parentFD int, name string, directory bool) error {
+	flags := 0
+	if directory {
+		flags = unix.AT_REMOVEDIR
+	}
+	if err := unix.Unlinkat(parentFD, name, flags); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	return nil
 }
 
 func RemoveDirAllNoSymlink(path string) error {
