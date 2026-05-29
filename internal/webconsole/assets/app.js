@@ -24,7 +24,6 @@ const SHORTCUTS = {
 };
 
 const state = {
-  currentView: 'chat',
   meta: null,
   sessionId: nextEphemeralSessionId(),
   sessionBacked: false,
@@ -82,6 +81,10 @@ const sessionViewState = {
 const queueJobViewState = {
   selectedJobId: '',
   selectedJobDetail: null
+};
+
+const navigationViewState = {
+  currentView: 'chat'
 };
 
 const inspectorViewState = {
@@ -330,6 +333,14 @@ function resetHistoryViewData() {
   setCurrentHistoryPage(1);
 }
 
+function currentViewName() {
+  return navigationViewState.currentView || 'chat';
+}
+
+function setCurrentViewName(viewName) {
+  navigationViewState.currentView = nodes.views[viewName] ? viewName : 'chat';
+}
+
 function syncPageVisibilityHidden() {
   if (typeof document !== 'undefined') {
     setPageVisibilityHidden(document.visibilityState === 'hidden');
@@ -501,10 +512,10 @@ async function init() {
       });
     }
   }
-  switchView(state.currentView, { skipPersist: true });
+  switchView(currentViewName(), { skipPersist: true });
   renderCurrentSession();
 
-  if (state.currentView === 'chat' && nodes.chatInput) {
+  if (currentViewName() === 'chat' && nodes.chatInput) {
     syncComposerInputEmpty();
     nodes.chatInput.focus();
   }
@@ -1171,7 +1182,7 @@ function applyViewVisibility(viewName) {
   if (activeNav) {
     activeNav.classList.add('active');
   }
-  state.currentView = viewName;
+  setCurrentViewName(viewName);
   document.title = VIEW_TITLES[viewName] || 'Agent Console';
 }
 
@@ -1445,7 +1456,7 @@ async function requestStopSession(sessionID, options = {}) {
     return;
   }
   const selectedSessionID = state.sessionId || '';
-  const refreshSelectedSession = state.currentView === 'chat' &&
+  const refreshSelectedSession = currentViewName() === 'chat' &&
     selectedSessionID &&
     selectedSessionID !== sessionID &&
     currentSessionReferencesSession(sessionID);
@@ -1473,7 +1484,7 @@ async function requestStopSession(sessionID, options = {}) {
       queueSessionRefresh(120);
       queueOverviewRefresh(180);
     }
-    if (state.currentView === 'history') {
+    if (currentViewName() === 'history') {
       await fetchHistory(currentHistoryPage(), { showLoading: false, silentError: true });
     }
   } catch (err) {
@@ -1487,7 +1498,7 @@ async function requestStopSession(sessionID, options = {}) {
     if (button && document.body.contains(button)) {
       button.disabled = false;
     }
-    if (state.currentView === 'history') {
+    if (currentViewName() === 'history') {
       renderHistory();
     }
     if (state.sessionId === sessionID || (refreshSelectedSession && selectedContextStillCurrent())) {
@@ -2150,7 +2161,7 @@ function startPolling() {
   }
 
   const pollStep = () => {
-    if (state.currentView === 'history') {
+    if (currentViewName() === 'history') {
       fetchHistory(currentHistoryPage(), { showLoading: false, silentError: true });
     } else {
       if (shouldPollChatOverview()) {
@@ -2179,10 +2190,10 @@ function shouldRunPollingLoop() {
   if (isPageVisibilityHidden()) {
     return false;
   }
-  if (state.currentView === 'history') {
+  if (currentViewName() === 'history') {
     return true;
   }
-  if (state.currentView !== 'chat') {
+  if (currentViewName() !== 'chat') {
     return false;
   }
   if (!isLiveRelayConnected()) {
@@ -2195,7 +2206,7 @@ function shouldRunPollingLoop() {
 }
 
 function pollingIntervalForState() {
-  if (state.currentView === 'history') {
+  if (currentViewName() === 'history') {
     return POLL_INTERVAL_MS;
   }
   if (!isLiveRelayConnected() || isGenerating() || sessionDetailHasActiveDescendants(state.sessionDetail)) {
@@ -2239,7 +2250,7 @@ function queueOverviewRefresh(delay = 180) {
 }
 
 function shouldPollChatOverview() {
-  if (state.currentView !== 'chat') {
+  if (currentViewName() !== 'chat') {
     return false;
   }
   if (!state.overview) {
@@ -2249,7 +2260,7 @@ function shouldPollChatOverview() {
 }
 
 function shouldPollCurrentSession() {
-  if (state.currentView !== 'chat' || !hasDurableSession()) {
+  if (currentViewName() !== 'chat' || !hasDurableSession()) {
     return false;
   }
   return isGenerating() || !state.sessionDetail || sessionDetailHasActiveDescendants(state.sessionDetail);
@@ -2435,7 +2446,7 @@ async function refreshOverview() {
     }
     state.overview = overview;
     setOverviewError('');
-    if (state.currentView === 'chat') {
+    if (currentViewName() === 'chat') {
       renderCurrentSession();
     }
   } catch (err) {
@@ -2446,7 +2457,7 @@ async function refreshOverview() {
     if (!state.overview) {
       const message = overviewErrorMessage(err);
       setOverviewError(message);
-      if (state.currentView === 'chat') {
+      if (currentViewName() === 'chat') {
         showToast(message, 'error');
         renderCurrentSession();
       }
@@ -3031,7 +3042,7 @@ function persistUIState() {
       ? state.sessionId
       : '';
     window.localStorage?.setItem(UI_STATE_STORAGE_KEY, JSON.stringify({
-      currentView: state.currentView,
+      currentView: currentViewName(),
       historyPage: currentHistoryPage(),
       selectedSessionId,
       todoFloatExpanded: isFloatingPanelExpanded('todo'),
@@ -3049,7 +3060,7 @@ function restoreUIState() {
     ? persisted.currentView
     : 'chat';
   const nextHistoryPage = Number(persisted.historyPage);
-  state.currentView = nextView;
+  setCurrentViewName(nextView);
   if (Number.isFinite(nextHistoryPage) && nextHistoryPage >= 1) {
     setCurrentHistoryPage(nextHistoryPage);
   }
@@ -3066,7 +3077,7 @@ function restoreUIState() {
   if (typeof persisted.subAgentExpanded === 'boolean') {
     setFloatingPanelExpanded('subAgents', persisted.subAgentExpanded);
   }
-  applyViewVisibility(state.currentView);
+  applyViewVisibility(currentViewName());
 }
 
 function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevronSVG, childCount) {
@@ -3278,7 +3289,7 @@ async function handleSkillUploadChange(event) {
       method: 'POST',
     });
     showToast('Skill uploaded and extracted successfully.', 'success');
-    if (state.currentView === 'skills') {
+    if (currentViewName() === 'skills') {
       await fetchSkills();
     }
   } catch (err) {

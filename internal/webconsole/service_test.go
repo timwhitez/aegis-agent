@@ -5563,6 +5563,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "refreshSelectedQueueJobDetail") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "navigationViewState") || !strings.Contains(jsBody, "currentViewName()") || !strings.Contains(jsBody, "setCurrentViewName(viewName)") || strings.Contains(jsBody, "state.currentView") {
+		t.Fatalf("expected current navigation view state to stay out of durable app state, got app.js body: %s", jsBody)
+	}
 	if strings.Contains(jsBody, "state.workspacePath") || strings.Contains(jsBody, "state.fileTree") {
 		t.Fatalf("expected app.js durable state to exclude Workspace directory display fields, got app.js body: %s", jsBody)
 	}

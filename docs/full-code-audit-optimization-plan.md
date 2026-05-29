@@ -8652,7 +8652,64 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-110 and FCA-20260529-405. FCA-20260529-110 moved stale Workspace request sequencing out of `state`; FCA-20260529-405 moved selected file-tree path and paged file preview cache out of `state`. This residual issue was the current directory label/root-chip input and current directory payload still being written to `state.workspacePath` and `state.fileTree`.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: keep durable app/session facts on the main `state`, move Workspace current directory path and current directory payload into `workspaceViewState` helper accessors, and preserve stale directory suppression, selected workdir derivation, empty-directory copy, and file preview behavior.
 
+### Review 418
+
+- Confirmed FCA-20260529-420 against `spec/17-web-console.md`'s local single-page console boundary and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: the current navigation view is browser-local page selection state, not a durable session, message, queue, provider, runtime, or backend fact.
+- Confirmed this is distinct from FCA-20260529-418 and FCA-20260529-419. Those slices isolated Overview rail error copy and Workspace current-directory display data; this residual issue was that page activation, title updates, polling mode selection, localStorage persistence, and lazy view refreshes still read/write `state.currentView`.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: keep durable selected-session and message-window facts on the main `state`, move current navigation view into `navigationViewState` helper accessors, and preserve navigation activation, localStorage restore/persist, history polling, and skills/workspace/settings refresh behavior.
+
 ## Update Log
+
+### FCA-20260529-420
+
+Slice: `fix(webconsole): isolate navigation view state`
+
+Finding:
+
+- `app.js` still stored the current WebConsole page selection in `state.currentView`.
+- `applyViewVisibility()`, `switchView()`, `persistUIState()`, `restoreUIState()`, polling decisions, stop refresh decisions, overview rendering, and skill upload refresh decisions read or wrote that main `state` field.
+- The field is browser-local navigation/display state persisted to `localStorage`; it is not a durable session-store, message, queue, provider, runtime, or backend file fact.
+
+Impact:
+
+- Browser-only navigation selection remained mixed with durable selected-session, overview, and message-window facts after adjacent render-state isolation slices had already removed request guards, display caches, and transport state from the main `state` object.
+- Future frontend work could treat the active page selection as durable app/session state, weakening the WebConsole boundary that it only projects local runtime/session/queue/file facts instead of becoming a second authority.
+
+Changes:
+
+- Added `navigationViewState` with `currentViewName()` / `setCurrentViewName()` helper accessors.
+- Removed `currentView` from the main `state` object.
+- Updated navigation visibility, initial restore, localStorage persistence, polling decisions, stop refresh behavior, overview render checks, and skill upload refresh checks to use the helper path.
+- Added a frontend Node harness regression proving current navigation view selection is not stored on `state`, while preserving view activation, title updates, localStorage restore/persist, and history polling behavior.
+- Updated the embedded-asset smoke test to reject `state.currentView` in served `app.js`.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records the navigation view-state slice.
+
+Validation:
+
+- `node --test --test-name-pattern "current view selection is isolated" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `currentViewName()` did not exist and the production path still depended on main `state.currentView`.
+- `node --test --test-name-pattern "current view selection is isolated|page visibility tracking|live relay connection status|selected current-session queue job detail|overview load error view state|child stop completion" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed after the fix, 89/89 tests.
+- `rg -n "state\\.currentView" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs internal/webconsole/service_test.go`: passed with only the embedded-asset smoke test's negative assertion.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-419
 

@@ -498,7 +498,7 @@ test('runtime handles are isolated from durable app state', () => {
 test('page visibility tracking is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
-    state.currentView = 'history';
+    setCurrentViewName('history');
     setPageVisibilityHidden(true);
     const hidden = {
       stateHasVisibilityHidden: Object.prototype.hasOwnProperty.call(state, 'visibilityHidden'),
@@ -524,10 +524,66 @@ test('page visibility tracking is isolated from durable app state', () => {
   assert.equal(result.visible.runLoop, true);
 });
 
+test('current view selection is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    const persisted = [];
+    window.localStorage = {
+      stored: '',
+      getItem() {
+        return this.stored || null;
+      },
+      setItem(key, value) {
+        persisted.push({ key, value: JSON.parse(value) });
+        this.stored = value;
+      }
+    };
+    switchView('history');
+    const afterHistory = {
+      current: currentViewName(),
+      title: document.title,
+      stateHasCurrentView: Object.prototype.hasOwnProperty.call(state, 'currentView'),
+      historyHidden: nodes.views.history.classList.contains('is-hidden'),
+      chatHidden: nodes.views.chat.classList.contains('is-hidden'),
+      shouldRunPolling: shouldRunPollingLoop()
+    };
+    window.localStorage.stored = JSON.stringify({ currentView: 'skills', historyPage: 3 });
+    restoreUIState();
+    return {
+      afterHistory,
+      restored: {
+        current: currentViewName(),
+        title: document.title,
+        historyPage: currentHistoryPage(),
+        stateHasCurrentView: Object.prototype.hasOwnProperty.call(state, 'currentView')
+      },
+      persisted: persisted.map((entry) => entry.value.currentView)
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    afterHistory: {
+      current: 'history',
+      title: 'Sessions — Agent Console',
+      stateHasCurrentView: false,
+      historyHidden: false,
+      chatHidden: true,
+      shouldRunPolling: true
+    },
+    restored: {
+      current: 'skills',
+      title: 'Skills — Agent Console',
+      historyPage: 3,
+      stateHasCurrentView: false
+    },
+    persisted: ['history', 'history']
+  });
+});
+
 test('live relay connection status is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
-    state.currentView = 'chat';
+    setCurrentViewName('chat');
     state.sessionId = 'session_connection_view';
     state.sessionBacked = true;
     state.overview = { sessions: [] };
@@ -756,7 +812,7 @@ test('stop action pending sessions are isolated from durable app state', async (
   installChatActionAPITestWrappers(appContext);
 
   const stop = vm.runInContext(`
-    state.currentView = 'chat';
+    setCurrentViewName('chat');
     state.sessionId = 'session_stop_pending';
     state.sessionBacked = true;
     setGeneratingViewState(true);
@@ -1945,7 +2001,7 @@ test('selected current-session queue job detail keeps chat polling active while 
   const appContext = createAppHarnessContext();
 
   const result = vm.runInContext(`(() => {
-    state.currentView = 'chat';
+    setCurrentViewName('chat');
     setPageVisibilityHidden(false);
     setLiveRelayConnected(true);
     setGeneratingViewState(false);
@@ -1987,7 +2043,7 @@ test('selected queue job detail from another parent does not keep chat polling a
   const appContext = createAppHarnessContext();
 
   const result = vm.runInContext(`(() => {
-    state.currentView = 'chat';
+    setCurrentViewName('chat');
     setPageVisibilityHidden(false);
     setLiveRelayConnected(true);
     setGeneratingViewState(false);
@@ -3209,7 +3265,7 @@ test('overview load error view state is isolated from durable app state', async 
   const appContext = createAppHarnessContext();
   const renderCalls = vm.runInContext(`
     const renderCalls = [];
-    state.currentView = 'chat';
+    setCurrentViewName('chat');
     renderCurrentSession = () => {
       renderCalls.push({
         overviewError: currentOverviewError(),
@@ -3547,7 +3603,7 @@ test('child stop completion refreshes selected parent session', async () => {
   `, appContext);
 
   const stop = vm.runInContext(`
-    state.currentView = 'chat';
+    setCurrentViewName('chat');
     state.sessionId = 'parent_session_stop';
     state.sessionBacked = true;
     setGeneratingViewState(false);
