@@ -3704,6 +3704,9 @@ func validateQueueJob(job QueueJob) error {
 			return fmt.Errorf("invalid queue job session_status %q", job.SessionStatus)
 		}
 	}
+	if err := validateQueueJobResultStatus(job); err != nil {
+		return err
+	}
 	if err := validateAgentRole("queue job", job.AgentRole); err != nil {
 		return err
 	}
@@ -3727,20 +3730,36 @@ func validateQueueJob(job QueueJob) error {
 			return fmt.Errorf("invalid queue job isolation_mode %q", job.IsolationMode)
 		}
 	}
-	if isTerminalQueueStatus(job.Status) && strings.TrimSpace(job.LastError) == "" && strings.TrimSpace(job.SessionID) != "" && strings.TrimSpace(job.SessionStatus) != "" {
-		if job.Status == QueueStatusCompleted && job.SessionStatus != StatusCompleted {
-			return fmt.Errorf("completed queue job session_status must be completed, got %q", job.SessionStatus)
-		}
-		if job.Status == QueueStatusFailed && job.SessionStatus != StatusFailed {
-			return fmt.Errorf("failed queue job session_status must be failed, got %q", job.SessionStatus)
-		}
-	}
 	if err := validateStringList("queue job visible_paths", job.VisiblePaths); err != nil {
 		return err
 	}
 	for _, visiblePath := range job.VisiblePaths {
 		if _, err := validateStoreRelativePath("queue job visible_paths", visiblePath); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateQueueJobResultStatus(job QueueJob) error {
+	sessionStatus := strings.TrimSpace(job.SessionStatus)
+	if strings.TrimSpace(job.SessionID) == "" || sessionStatus == "" {
+		return nil
+	}
+	switch job.Status {
+	case QueueStatusCompleted:
+		if sessionStatus != StatusCompleted {
+			return fmt.Errorf("completed queue job session_status must be completed, got %q", job.SessionStatus)
+		}
+	case QueueStatusFailed:
+		if strings.TrimSpace(job.LastError) == "" && sessionStatus != StatusFailed {
+			return fmt.Errorf("failed queue job session_status must be failed unless last_error is set, got %q", job.SessionStatus)
+		}
+	case QueueStatusBlocked:
+		switch sessionStatus {
+		case StatusAwaitingInput, StatusPaused:
+		default:
+			return fmt.Errorf("blocked queue job session_status must be awaiting_input or paused, got %q", job.SessionStatus)
 		}
 	}
 	return nil

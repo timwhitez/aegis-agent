@@ -8778,7 +8778,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-439. That slice rejected pre-result queue statuses (`queued` / `running`) in `control/background.jsonl`; this residual issue was that result statuses could still carry contradictory child-session facts such as `completed` with `session_status=failed`, `blocked` with `session_status=completed`, or `failed` with a completed child but no queue/handoff error.
 - Confirmed the minimal fix belongs in `validateBackgroundNotification` rather than Web display or runtime drain: append, ensure, update, pending-load, parent completion gates, session summaries, checkpoints, and Web detail already flow through the same session-store validation boundary.
 
+### Review 439
+
+- Confirmed FCA-20260529-441 against `spec/15-background-queue.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: queue job files are the worker/result fact source that Web, CLI, session summaries, checkpoints, parent coordination, and background notifications derive from, so a queue result status and linked child `session_status` must be semantically compatible before the job can be saved, loaded, listed, or claimed.
+- Confirmed this is distinct from FCA-20260529-440. That slice hardened the parent-facing `control/background.jsonl` projection; this residual issue was the queue job source fact itself accepting contradictory result/session combinations, including `completed` with `session_status=failed` when `last_error` was present and `blocked` with terminal or running child session status.
+- Confirmed the minimal fix belongs in `validateQueueJob`: `LoadJob`, `ListJobs`, `ListJobsByParent`, `ClaimNextQueuedJob`, Web queue/session detail, CLI queue commands, session summaries, checkpoint writers, and background notification creation all depend on queue job validation as the shared source-fact boundary.
+
 ## Update Log
+
+### FCA-20260529-441
+
+Slice: `fix(session): validate queue result status`
+
+Finding:
+
+- `spec/15-background-queue.md` maps child `completed` to queue `completed`, child `failed` to queue `failed`, and resumable `paused` / `awaiting_input` children to queue `blocked`.
+- `internal/session/store.go` validates queue job snapshots before reconciling linked sessions or returning jobs to Web, CLI, summary, checkpoint, claim, and parent notification paths.
+- The previous terminal queue validation only rejected mismatches when `last_error` was empty, and it did not constrain blocked job `session_status` at all.
+- Focused pre-fix store regressions proved `SaveJob` and already persisted queue job snapshots accepted source facts such as `status=completed` with `session_status=failed` plus `last_error`, and `status=blocked` with terminal/running child session status.
+
+Impact:
+
+- Queue job source facts could claim a child completed, failed, or remained blocked while the linked child status described a different result class.
+- Web Background/children cards, CLI queue commands, session summaries, checkpoints, parent coordination repair, and background notification creation could inherit misleading queue job facts before any later repair had enough evidence to correct them.
+- The distinction between a successful child result, a failed child, a resumable blocked child, and a queue/handoff failure could be lost at the durable job layer.
+
+Changes:
+
+- Added `validateQueueJobResultStatus` behind the shared queue job validator.
+- Required completed queue jobs with a populated child status to carry `session_status=completed`, regardless of `last_error`.
+- Required failed queue jobs with a populated child status to carry `session_status=failed` unless `last_error` records an explicit queue/handoff failure after the child reached another state.
+- Required blocked queue jobs with a populated child status to carry `session_status=awaiting_input` or `session_status=paused`.
+- Extended queue job load/list/save validation tests, while preserving the documented legal shape where a queue job is `failed` because parent handoff failed after a child completed and `last_error` records that infrastructure failure.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'Test(LoadJobsRejectMalformedQueueJobSnapshot|QueueJobWritesRejectMalformedFacts)' -count=1`: failed before the fix because mismatched queue result/session statuses were accepted.
+- `go test -timeout 120s ./internal/session -run 'Test(LoadJobsRejectMalformedQueueJobSnapshot|QueueJobWritesRejectMalformedFacts)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(LoadJobsRejectMalformedQueueJobSnapshot|QueueJobWritesRejectMalformedFacts|ClaimNextQueuedJobRejectsMalformedQueuedJob|LoadJobRepairsBlockedParentNotificationAndEvent|LoadJobRepairsMissingTerminalBackgroundNotification|LoadJobPreservesResumableChildAsBlocked)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(EngineReconcilesCompletedQueueChild|RunnerProcessNextJob|ProcessNextJob|RunnerQueueSubmit|ParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish|ParentCoordinationGateReportsCorruptBackgroundNotifications)' -count=1`: passed.
+- `gofmt -w internal/session/store.go internal/session/store_test.go`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check` for `internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-440
 

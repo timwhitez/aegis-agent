@@ -4817,6 +4817,38 @@ func TestLoadJobsRejectMalformedQueueJobSnapshot(t *testing.T) {
 	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "job_bad_snapshot.json") || !strings.Contains(err.Error(), "updated_at must be RFC3339Nano") {
 		t.Fatalf("expected invalid updated_at queue job list error, got %v", err)
 	}
+	if err := store.DeleteJob(malformed.ID); err != nil {
+		t.Fatalf("delete malformed queue job before semantic checks: %v", err)
+	}
+
+	completedWithFailedSession := valid
+	completedWithFailedSession.ID = "job_completed_failed_session"
+	completedWithFailedSession.Status = QueueStatusCompleted
+	completedWithFailedSession.SessionID = "child_completed_failed_session"
+	completedWithFailedSession.SessionStatus = StatusFailed
+	completedWithFailedSession.LastError = "completed queue job should not carry failed child status"
+	completedWithFailedSession.CreatedAt = now
+	completedWithFailedSession.UpdatedAt = now
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusCompleted, completedWithFailedSession.ID), completedWithFailedSession); err != nil {
+		t.Fatalf("write completed queue job with failed session: %v", err)
+	}
+	if _, err := store.LoadJob(completedWithFailedSession.ID); err == nil || !strings.Contains(err.Error(), "completed queue job session_status must be completed") {
+		t.Fatalf("expected completed/session_status mismatch queue job load error, got %v", err)
+	}
+
+	blockedWithTerminalSession := valid
+	blockedWithTerminalSession.ID = "job_blocked_completed_session"
+	blockedWithTerminalSession.Status = QueueStatusBlocked
+	blockedWithTerminalSession.SessionID = "child_blocked_completed_session"
+	blockedWithTerminalSession.SessionStatus = StatusCompleted
+	blockedWithTerminalSession.CreatedAt = now
+	blockedWithTerminalSession.UpdatedAt = now
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusBlocked, blockedWithTerminalSession.ID), blockedWithTerminalSession); err != nil {
+		t.Fatalf("write blocked queue job with completed session: %v", err)
+	}
+	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "job_blocked_completed_session.json") || !strings.Contains(err.Error(), "blocked queue job session_status must be awaiting_input or paused") {
+		t.Fatalf("expected blocked/session_status mismatch queue job list error, got %v", err)
+	}
 
 	loaded, err := store.LoadJob(valid.ID)
 	if err != nil {
@@ -4950,6 +4982,32 @@ func TestQueueJobWritesRejectMalformedFacts(t *testing.T) {
 	if err := store.SaveJob(invalidHeartbeatAt); err == nil || !strings.Contains(err.Error(), "heartbeat_at must be RFC3339Nano") {
 		t.Fatalf("expected save to reject invalid heartbeat_at, got %v", err)
 	}
+	completedWithFailedSession := valid
+	completedWithFailedSession.ID = "job_completed_failed_session"
+	completedWithFailedSession.Status = QueueStatusCompleted
+	completedWithFailedSession.SessionID = "child_completed_failed_session"
+	completedWithFailedSession.SessionStatus = StatusFailed
+	completedWithFailedSession.LastError = "completed queue job should not carry failed child status"
+	if err := store.SaveJob(completedWithFailedSession); err == nil || !strings.Contains(err.Error(), "completed queue job session_status must be completed") {
+		t.Fatalf("expected save to reject completed/session_status mismatch, got %v", err)
+	}
+	blockedWithRunningSession := valid
+	blockedWithRunningSession.ID = "job_blocked_running_session"
+	blockedWithRunningSession.Status = QueueStatusBlocked
+	blockedWithRunningSession.SessionID = "child_blocked_running_session"
+	blockedWithRunningSession.SessionStatus = StatusRunning
+	if err := store.SaveJob(blockedWithRunningSession); err == nil || !strings.Contains(err.Error(), "blocked queue job session_status must be awaiting_input or paused") {
+		t.Fatalf("expected save to reject blocked/running session mismatch, got %v", err)
+	}
+	failedAfterChildCompleted := valid
+	failedAfterChildCompleted.ID = "job_failed_after_child_completed"
+	failedAfterChildCompleted.Status = QueueStatusFailed
+	failedAfterChildCompleted.SessionID = "child_failed_after_child_completed"
+	failedAfterChildCompleted.SessionStatus = StatusCompleted
+	failedAfterChildCompleted.LastError = "parent handoff failed after child completed"
+	if err := store.SaveJob(failedAfterChildCompleted); err != nil {
+		t.Fatalf("save failed queue job with completed child and explicit handoff error: %v", err)
+	}
 
 	loaded, err := store.LoadJob(valid.ID)
 	if err != nil {
@@ -4958,10 +5016,13 @@ func TestQueueJobWritesRejectMalformedFacts(t *testing.T) {
 	if loaded.ID != valid.ID || loaded.Prompt != valid.Prompt {
 		t.Fatalf("malformed queue job write changed durable valid job: %#v", loaded)
 	}
-	for _, id := range []string{invalidPrompt.ID, invalidSessionStatus.ID, invalidRole.ID, invalidVisiblePath.ID, invalidCreatedAt.ID, invalidClaimedAt.ID, invalidHeartbeatAt.ID} {
+	for _, id := range []string{invalidPrompt.ID, invalidSessionStatus.ID, invalidRole.ID, invalidVisiblePath.ID, invalidCreatedAt.ID, invalidClaimedAt.ID, invalidHeartbeatAt.ID, completedWithFailedSession.ID, blockedWithRunningSession.ID} {
 		if _, err := store.LoadJob(id); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("malformed queue job %s should not be persisted, got %v", id, err)
 		}
+	}
+	if loadedFailed, err := store.LoadJob(failedAfterChildCompleted.ID); err != nil || loadedFailed.Status != QueueStatusFailed || loadedFailed.SessionStatus != StatusCompleted {
+		t.Fatalf("valid failed queue job with completed child should remain loadable, got job=%#v err=%v", loadedFailed, err)
 	}
 }
 
