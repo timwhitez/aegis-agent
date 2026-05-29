@@ -817,7 +817,7 @@ test('composer interrupt steer intent is isolated from durable app state', async
     state.sessionBacked = true;
     state.isGenerating = true;
     state.isConnected = true;
-    state.liveActivity = { title: 'Running session', copy: '', tone: 'live' };
+    setLiveActivity({ title: 'Running session', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_interrupt_steer' },
       state: { status: 'running' },
@@ -848,7 +848,7 @@ test('composer interrupt steer intent is isolated from durable app state', async
   const afterResolve = vm.runInContext(`({
     stateHasNextSendInterrupt: Object.prototype.hasOwnProperty.call(state, 'nextSendInterrupt'),
     armed: isNextSendInterruptArmed(),
-    activityTitle: state.liveActivity.title,
+    activityTitle: currentLiveActivity().title,
     inputLabel: inputActionLabel()
   })`, appContext);
   assert.equal(afterResolve.stateHasNextSendInterrupt, false);
@@ -867,7 +867,7 @@ test('composer Goal and Plan Mode toggles are isolated from durable app state', 
     state.sessionBacked = false;
     state.isGenerating = false;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     setComposerMode('goal');
     nodes.chatInput.value = 'ship the full audit goal';
@@ -893,7 +893,7 @@ test('composer Goal and Plan Mode toggles are isolated from durable app state', 
     state.sessionBacked = false;
     state.isGenerating = false;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     setComposerMode('plan');
     nodes.chatInput.value = 'plan before changing files';
@@ -912,6 +912,43 @@ test('composer Goal and Plan Mode toggles are isolated from durable app state', 
   appContext.pendingRequests[1].resolve({ session_id: 'session_plan_start', status: 'accepted' });
   await planSend;
   assert.equal(vm.runInContext(`composerMode()`, appContext), '');
+});
+
+test('live activity is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    state.sessionId = 'session_activity_view';
+    state.sessionBacked = true;
+    state.isGenerating = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_activity_view' },
+      state: { status: 'running' },
+      messages: []
+    };
+    setLiveActivity({
+      title: 'Tool is running',
+      copy: 'Waiting for the current tool call.',
+      tone: 'live'
+    });
+    const pending = renderPendingStageCard();
+    return {
+      stateHasLiveActivity: Object.prototype.hasOwnProperty.call(state, 'liveActivity'),
+      current: currentLiveActivity(),
+      pendingHasTitle: pending.includes('Tool is running'),
+      pendingHasCopy: pending.includes('Waiting for the current tool call.')
+    };
+  })()`, appContext);
+
+  assert.equal(result.stateHasLiveActivity, false);
+  assert.deepEqual(sameRealm(result.current), {
+    title: 'Tool is running',
+    copy: 'Waiting for the current tool call.',
+    tone: 'live'
+  });
+  assert.equal(result.pendingHasTitle, true);
+  assert.equal(result.pendingHasCopy, true);
 });
 
 test('plan input selections are isolated from durable app state', async () => {
@@ -1893,7 +1930,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
       messages: []
     };
     state.isGenerating = false;
-    state.liveActivity = { title: 'Fast selected', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Fast selected', copy: '', tone: 'neutral' });
   `, appContext);
 
   appContext.pendingRequests[1].resolve({ id: 'job_slow_queue_a', prompt: 'stale queue detail' });
@@ -1904,7 +1941,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
     detailID: state.sessionDetail?.metadata?.id,
     status: state.sessionDetail?.state?.status,
     generating: state.isGenerating,
-    activityTitle: state.liveActivity?.title,
+    activityTitle: currentLiveActivity().title,
     renderCount: state.renderCount || 0,
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
   })`, appContext)), {
@@ -2135,7 +2172,7 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
     state.sessionId = 'session_plan_slow_a';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded plan A', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded plan A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_plan_slow_a' },
       state: { status: 'awaiting_input' },
@@ -2151,7 +2188,7 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2165,7 +2202,7 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     generating: state.isGenerating,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     generating: false,
@@ -2297,7 +2334,7 @@ test('running-session steer completion does not mark a newly selected session as
     state.sessionBacked = true;
     state.isGenerating = true;
     setNextSendInterruptArmed(true);
-    state.liveActivity = { title: 'Running A', copy: '', tone: 'live' };
+    setLiveActivity({ title: 'Running A', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_steer_slow_a' },
       state: { status: 'running' },
@@ -2315,7 +2352,7 @@ test('running-session steer completion does not mark a newly selected session as
     state.sessionBacked = true;
     state.isGenerating = false;
     setNextSendInterruptArmed(false);
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2330,7 +2367,7 @@ test('running-session steer completion does not mark a newly selected session as
     selected: state.sessionId,
     generating: state.isGenerating,
     interruptArmed: isNextSendInterruptArmed(),
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     generating: false,
@@ -2347,7 +2384,7 @@ test('continue completion does not mark a newly selected session as generating',
     state.sessionId = 'session_continue_slow_a';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded A', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_continue_slow_a' },
       state: { status: 'paused' },
@@ -2365,7 +2402,7 @@ test('continue completion does not mark a newly selected session as generating',
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2380,7 +2417,7 @@ test('continue completion does not mark a newly selected session as generating',
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     generating: state.isGenerating,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     generating: false,
@@ -2398,7 +2435,7 @@ test('start completion does not replace a session selected while launch is pendi
     state.sessionBacked = false;
     state.isGenerating = false;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start a slow session';
     sendMessage();
@@ -2412,7 +2449,7 @@ test('start completion does not replace a session selected while launch is pendi
     state.sessionBacked = true;
     state.isGenerating = false;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2428,7 +2465,7 @@ test('start completion does not replace a session selected while launch is pendi
     backed: state.sessionBacked,
     generating: state.isGenerating,
     launchInFlight: state.launchInFlight,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     backed: true,
@@ -2448,7 +2485,7 @@ test('new session start includes role-aware composer fields', async () => {
     state.sessionBacked = false;
     state.isGenerating = false;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start an evaluator session';
     nodes.agentNameInput.value = 'reviewer';
@@ -2474,7 +2511,7 @@ test('start completion does not clear a newer pending launch', async () => {
     state.sessionBacked = false;
     state.isGenerating = false;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start first slow session';
     sendMessage();
@@ -2488,7 +2525,7 @@ test('start completion does not clear a newer pending launch', async () => {
     state.sessionBacked = false;
     state.isGenerating = true;
     state.launchInFlight = true;
-    state.liveActivity = { title: 'Launching second session', copy: '', tone: 'live' };
+    setLiveActivity({ title: 'Launching second session', copy: '', tone: 'live' });
     state.sessionDetail = null;
   `, appContext);
 
@@ -2500,7 +2537,7 @@ test('start completion does not clear a newer pending launch', async () => {
     backed: state.sessionBacked,
     generating: state.isGenerating,
     launchInFlight: state.launchInFlight,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: '0xB22CE0',
     backed: false,
@@ -2518,7 +2555,7 @@ test('openSession clears pending launch state for the newly selected durable ses
     state.sessionBacked = false;
     state.isGenerating = true;
     state.launchInFlight = true;
-    state.liveActivity = { title: 'Launching session', copy: '', tone: 'live' };
+    setLiveActivity({ title: 'Launching session', copy: '', tone: 'live' });
     openSession('session_fast_b', { switchToChat: false });
   `, appContext);
 
@@ -2529,7 +2566,7 @@ test('openSession clears pending launch state for the newly selected durable ses
     backed: state.sessionBacked,
     generating: state.isGenerating,
     launchInFlight: state.launchInFlight,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     backed: true,
@@ -2556,7 +2593,7 @@ test('start failure does not clear generating state after another session is sel
     state.sessionBacked = false;
     state.isGenerating = false;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start a slow session';
     sendMessage();
@@ -2570,7 +2607,7 @@ test('start failure does not clear generating state after another session is sel
     state.sessionBacked = true;
     state.isGenerating = true;
     state.launchInFlight = false;
-    state.liveActivity = { title: 'Session B running', copy: '', tone: 'live' };
+    setLiveActivity({ title: 'Session B running', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'running' },
@@ -2586,7 +2623,7 @@ test('start failure does not clear generating state after another session is sel
     backed: state.sessionBacked,
     generating: state.isGenerating,
     launchInFlight: state.launchInFlight,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     backed: true,
@@ -2610,7 +2647,7 @@ test('inline continue action does not refresh a newly selected session after sta
     state.sessionId = 'session_inline_continue_slow_a';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded A', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_inline_continue_slow_a' },
       state: { status: 'awaiting_input' },
@@ -2626,7 +2663,7 @@ test('inline continue action does not refresh a newly selected session after sta
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2846,7 +2883,7 @@ test('plan revision completion does not mark a newly selected session as generat
     state.sessionId = 'session_revision_slow_a';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded plan A', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded plan A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_revision_slow_a' },
       state: { status: 'awaiting_input' },
@@ -2864,7 +2901,7 @@ test('plan revision completion does not mark a newly selected session as generat
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2879,7 +2916,7 @@ test('plan revision completion does not mark a newly selected session as generat
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     generating: state.isGenerating,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     generating: false,
@@ -2895,7 +2932,7 @@ test('interrupt completion does not update a newly selected session', async () =
     state.sessionId = 'session_interrupt_slow_a';
     state.sessionBacked = true;
     state.isGenerating = true;
-    state.liveActivity = { title: 'Running A', copy: '', tone: 'live' };
+    setLiveActivity({ title: 'Running A', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_interrupt_slow_a' },
       state: { status: 'running' },
@@ -2911,7 +2948,7 @@ test('interrupt completion does not update a newly selected session', async () =
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2925,7 +2962,7 @@ test('interrupt completion does not update a newly selected session', async () =
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     generating: state.isGenerating,
-    activityTitle: state.liveActivity.title
+    activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
     generating: false,
@@ -2941,7 +2978,7 @@ test('stop completion does not update a newly selected session', async () => {
     state.sessionId = 'session_stop_slow_a';
     state.sessionBacked = true;
     state.isGenerating = true;
-    state.liveActivity = { title: 'Running A', copy: '', tone: 'live' };
+    setLiveActivity({ title: 'Running A', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_stop_slow_a' },
       state: { status: 'running' },
@@ -2957,7 +2994,7 @@ test('stop completion does not update a newly selected session', async () => {
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Loaded session B', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
       state: { status: 'completed' },
@@ -2971,7 +3008,7 @@ test('stop completion does not update a newly selected session', async () => {
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     generating: state.isGenerating,
-    activityTitle: state.liveActivity.title,
+    activityTitle: currentLiveActivity().title,
     stoppingA: isStoppingSession('session_stop_slow_a')
   })`, appContext)), {
     selected: 'session_fast_b',
@@ -3060,7 +3097,7 @@ test('child stop completion refreshes selected parent session', async () => {
     state.sessionId = 'parent_session_stop';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.liveActivity = { title: 'Parent loaded', copy: '', tone: 'neutral' };
+    setLiveActivity({ title: 'Parent loaded', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'parent_session_stop' },
       state: { status: 'awaiting_input' },
@@ -3078,7 +3115,7 @@ test('child stop completion refreshes selected parent session', async () => {
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    activityTitle: state.liveActivity.title,
+    activityTitle: currentLiveActivity().title,
     stoppingChild: isStoppingSession('child_session_stop'),
     refreshCalls,
     toastCalls

@@ -322,11 +322,11 @@ function updateLiveActivityFromEvent(event) {
     return;
   }
   const descriptor = describeEventDescriptor(event.type, event.data, event.phase, event.id);
-  state.liveActivity = {
+  setLiveActivity({
     title: descriptor.title,
     copy: descriptor.copy,
     tone: descriptor.tone || 'neutral'
-  };
+  });
 }
 
 function shouldPromoteLiveActivity(type) {

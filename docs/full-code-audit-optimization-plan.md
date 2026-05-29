@@ -8598,7 +8598,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-409. That slice rejected invalid provider profiles before new Start / QueueSubmit / explicit-provider Continue facts were persisted; this residual issue was an existing session whose durable `provider_options.api_provider` was already unsupported. `Runner.Continue` still claimed the session and wrote a failed state before the provider-option resolver returned the adapter-family error.
 - Confirmed the minimal fix belongs in `Runner.Continue`: merge and validate stored provider options before `ClaimSessionRun`, then save the backfilled metadata after the session has been successfully claimed.
 
+### Review 409
+
+- Confirmed FCA-20260529-411 against `spec/17-web-console.md`'s local Web-first operator surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: live activity card copy is transient browser display state derived from durable session events and selected-session facts, not a durable session, message, queue, provider, or runtime fact.
+- Confirmed this is distinct from FCA-20260528-275, FCA-20260528-277, and later stale async response slices. Those slices fixed stale completions mutating the wrong selected session's live activity; this residual issue was that the live activity projection still lived on the main `state` object and was directly read/written by `app.js`, `events.js`, and `session-view.js`.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: keep durable session/message facts on `state`, move live activity copy into a tiny `activityViewState` helper, and update renderers and event promotion to use that helper without changing runtime, provider, or session-store behavior.
+
 ## Update Log
+
+### FCA-20260529-411
+
+Slice: `fix(webconsole): isolate live activity state`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `liveActivity`, even though the value is only the transient text/tone shown in the activity and pending-stage cards.
+- `events.js` promoted durable event descriptors by directly assigning `state.liveActivity`, while `session-view.js` directly read that field for card copy.
+- This kept a render-only projection mixed with durable selected-session, message-window, and session-detail facts after the rest of the P1 Render State Isolation work had already moved similar view-local facts into dedicated stores.
+
+Impact:
+
+- Browser-only activity copy could be mistaken for durable session state while auditing the local Web-first console boundary.
+- Future render or stale-response changes had to keep touching the main `state` object for a value that is derived from durable events/session facts and should not become a second authority.
+
+Changes:
+
+- Added `activityViewState` with `currentLiveActivity()` and `setLiveActivity()` helpers.
+- Removed `liveActivity` from the main `state` object.
+- Updated WebSocket disconnect, restore/load/error paths, steer/interrupt/stop actions, refresh state projection, `events.js` event promotion, and `session-view.js` activity renderers to use the helper.
+- Added a frontend Node harness regression proving live activity copy is no longer stored on `state` and pending-stage rendering still uses the current activity.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `rg -n "state\\.liveActivity" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs`: passed with no matches.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 81/81 tests.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-410
 

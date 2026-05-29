@@ -387,14 +387,15 @@ function summarizeLiveCounters(counters) {
 
 function renderSessionActivityCard() {
   const detail = state.sessionDetail;
+  const liveActivity = currentLiveActivity();
   const counters = summarizeCurrentSession();
   const status = detail?.state?.status || (state.isGenerating ? 'running' : 'idle');
   const goal = detail?.goal || null;
   const planMode = detail?.plan_mode || null;
-  const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : state.liveActivity.title;
+  const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : liveActivity.title;
   const tone = toneForStatus(status);
   const failureSummary = detail ? summarizeProviderFailure(detail) : null;
-  const copy = failureSummary?.activityCopy || detail?.state?.last_error || state.liveActivity.copy;
+  const copy = failureSummary?.activityCopy || detail?.state?.last_error || liveActivity.copy;
   const summary = summarizeLiveCounters(counters);
   const canContinue = hasDurableSession() &&
     ['paused', 'awaiting_input', 'failed'].includes(status);
@@ -975,17 +976,18 @@ function renderMetadataChips(metadata) {
 }
 
 function renderPendingStageCard() {
+  const liveActivity = currentLiveActivity();
   return `
     <section class="message assistant pending">
       <div class="pending-stage-card">
         <div class="pending-stage-indicator" aria-hidden="true"></div>
         <div class="pending-stage-body">
           <div class="pending-stage-topline">
-            <span class="status-badge ${state.liveActivity.tone || 'neutral'}">${escapeHTML(state.isGenerating ? 'Running' : 'Settling')}</span>
-            <span class="pending-stage-title">${escapeHTML(state.liveActivity.title)}</span>
+            <span class="status-badge ${liveActivity.tone || 'neutral'}">${escapeHTML(state.isGenerating ? 'Running' : 'Settling')}</span>
+            <span class="pending-stage-title">${escapeHTML(liveActivity.title)}</span>
             ${isNextSendInterruptArmed() ? '<span class="status-badge queued">Interrupt armed</span>' : ''}
           </div>
-          <div class="pending-stage-copy">${escapeHTML(state.liveActivity.copy)}</div>
+          <div class="pending-stage-copy">${escapeHTML(liveActivity.copy)}</div>
         </div>
       </div>
     </section>

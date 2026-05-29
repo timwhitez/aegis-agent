@@ -9,6 +9,11 @@ const WS_RECONNECT_MAX_MS = 30000;
 const MAX_LIVE_EVENTS = 80;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
 const STOP_FALLBACK_STEER_MESSAGE = 'Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue.';
+const DEFAULT_LIVE_ACTIVITY = {
+  title: 'Ready for a new session',
+  copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
+  tone: 'neutral'
+};
 
 const SHORTCUTS = {
   'escape': 'stop',
@@ -37,11 +42,6 @@ const state = {
   workspacePath: '',
   optimisticMessages: [],
   liveEvents: [],
-  liveActivity: {
-    title: 'Ready for a new session',
-    copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
-    tone: 'neutral'
-  },
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
@@ -136,9 +136,26 @@ const composerControlViewState = {
   mode: ''
 };
 
+const activityViewState = {
+  liveActivity: { ...DEFAULT_LIVE_ACTIVITY }
+};
+
 const pageLifecycleViewState = {
   visibilityHidden: false
 };
+
+function currentLiveActivity() {
+  return activityViewState.liveActivity || DEFAULT_LIVE_ACTIVITY;
+}
+
+function setLiveActivity(activity) {
+  const source = activity && typeof activity === 'object' ? activity : DEFAULT_LIVE_ACTIVITY;
+  activityViewState.liveActivity = {
+    title: String(source.title || DEFAULT_LIVE_ACTIVITY.title),
+    copy: String(source.copy || ''),
+    tone: String(source.tone || 'neutral')
+  };
+}
 
 function isHelpVisible() {
   return helpViewState.visible;
@@ -333,11 +350,11 @@ async function init() {
     state.liveEvents = [];
     setNextSendInterruptArmed(false);
     state.isGenerating = false;
-    state.liveActivity = {
+    setLiveActivity({
       title: 'Restoring session',
       copy: 'Loading the previously selected durable session.',
       tone: 'neutral'
-    };
+    });
     updateSessionId();
   } else {
     resetChatSession();
@@ -350,11 +367,11 @@ async function init() {
       await refreshCurrentSession({ surfaceError: true });
     } catch (err) {
       console.error('session restore error', err);
-      state.liveActivity = {
+      setLiveActivity({
         title: 'Error restoring session',
         copy: err.message || 'The session data could not be loaded.',
         tone: 'danger'
-      };
+      });
     }
   }
   switchView(state.currentView, { skipPersist: true });
@@ -487,11 +504,11 @@ function setupWebSocket() {
     runtimeHandles.ws = null;
     updateConnectionStatus();
     if (state.isGenerating) {
-      state.liveActivity = {
+      setLiveActivity({
         title: 'Disconnected from the local agent',
         copy: 'The webconsole will retry automatically. Durable session data remains on disk.',
         tone: 'danger'
-      };
+      });
     }
     updateUI();
     renderCurrentSession();
@@ -1101,13 +1118,13 @@ async function sendMessage() {
         return;
       }
       setNextSendInterruptArmed(false);
-      state.liveActivity = {
+      setLiveActivity({
         title: requestedInterrupt ? 'Interrupt steer requested' : 'Steer queued',
         copy: requestedInterrupt
           ? 'The runtime will interrupt at the nearest safe boundary and merge your new instruction.'
           : 'Your follow-up was queued for the current run without starting a new session.',
         tone: requestedInterrupt ? 'queued' : 'live'
-      };
+      });
       showToast(requestedInterrupt ? 'Interrupt steer sent.' : 'Steer queued for the running session.', 'success');
       queueSessionRefresh(120);
       queueOverviewRefresh(220);
@@ -1267,11 +1284,11 @@ async function requestInterrupt() {
     if (state.sessionId !== sessionID) {
       return;
     }
-    state.liveActivity = {
+    setLiveActivity({
       title: 'Interrupt requested',
       copy: 'The runner will stop at the nearest safe boundary and surface the session state.',
       tone: 'queued'
-    };
+    });
     showToast('Interrupt requested.', 'success');
     queueSessionRefresh(120);
   } catch (err) {
@@ -1314,13 +1331,13 @@ async function requestStopSession(sessionID, options = {}) {
   try {
     const result = await requestStopViaBestAvailablePath(sessionID);
     if (state.sessionId === sessionID) {
-      state.liveActivity = {
+      setLiveActivity({
         title: 'Stopping run',
         copy: result.via === 'steer'
           ? 'This run is being stopped through an interrupt steer request because no local handle is owned by this page.'
           : 'The current run is being stopped. Partial output and tool results will remain visible.',
         tone: 'danger'
-      };
+      });
       showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
       queueSessionRefresh(120);
       queueOverviewRefresh(180);
@@ -1460,11 +1477,11 @@ function resetChatSession() {
   if (typeof clearMarkdownCache === 'function') {
     clearMarkdownCache();
   }
-  state.liveActivity = {
+  setLiveActivity({
     title: 'Ready for a new session',
     copy: 'Send a prompt to create a durable session. Answers, tool calls, and running flow will appear here.',
     tone: 'neutral'
-  };
+  });
   state.isGenerating = false;
   state.launchInFlight = false;
   syncComposerInputEmpty();
@@ -1481,7 +1498,7 @@ function setGenerating(value, activity) {
     setNextSendInterruptArmed(false);
   }
   if (activity) {
-    state.liveActivity = activity;
+    setLiveActivity(activity);
   }
   updateUI();
   renderCurrentSession();
@@ -2352,16 +2369,16 @@ async function refreshCurrentSession(options = {}) {
     if (detail?.state?.status === 'running') {
       state.isGenerating = true;
       if (!state.liveEvents.length) {
-        state.liveActivity = {
+        setLiveActivity({
           title: phaseHeadline(detail.state.phase),
           copy: 'The runner is active. Tool calls and child-agent transitions will stream into this panel as durable events.',
           tone: 'live'
-        };
+        });
       }
     } else {
       state.isGenerating = false;
       if (!state.liveEvents.length || toneForStatus(detail?.state?.status) !== 'live') {
-        state.liveActivity = sessionActivityForState(detail?.state);
+        setLiveActivity(sessionActivityForState(detail?.state));
       }
       setNextSendInterruptArmed(false);
     }
@@ -2390,11 +2407,11 @@ async function refreshCurrentSession(options = {}) {
 function showSessionLoadError(err, options = {}) {
   const message = err?.message || 'The session data could not be loaded.';
   state.isGenerating = false;
-  state.liveActivity = {
+  setLiveActivity({
     title: 'Error loading session',
     copy: message,
     tone: 'danger'
-  };
+  });
   if (options.toast) {
     showToast(message, 'error');
   }
@@ -2543,11 +2560,11 @@ async function openSession(sessionID, options = {}) {
   setNextSendInterruptArmed(false);
   state.liveEvents = [];
   state.isGenerating = false;
-  state.liveActivity = {
+  setLiveActivity({
     title: 'Loading session',
     copy: 'Loading durable session detail and tool activity.',
     tone: 'neutral'
-  };
+  });
   if (options.switchToChat !== false) {
     switchView('chat');
   }
