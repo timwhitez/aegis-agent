@@ -1204,11 +1204,11 @@ function renderAgentsPanel(detail) {
 }
 
 function renderSelectedQueueJobPanel() {
-  const jobID = String(state.selectedQueueJobId || '');
+  const jobID = String(selectedQueueJobId() || '');
   if (!jobID) {
     return '';
   }
-  const job = state.selectedQueueJobDetail || queueJobByID(jobID) || { id: jobID };
+  const job = selectedQueueJobDetail() || queueJobByID(jobID) || { id: jobID };
   const status = queueJobDisplayStatus(job);
   const detailCopy = job.last_error || job.final_text || job.prompt || 'Job detail is loading.';
   const created = job.created_at ? formatTimestamp(job.created_at) : '';
@@ -2201,7 +2201,7 @@ function renderChildSessionCard(item) {
 function renderQueueJobCard(job) {
   const status = queueJobDisplayStatus(job);
   return `
-    <div class="job-card ${job.id === state.selectedQueueJobId ? 'active' : ''}" data-queue-job-id="${escapeAttr(job.id)}">
+    <div class="job-card ${job.id === selectedQueueJobId() ? 'active' : ''}" data-queue-job-id="${escapeAttr(job.id)}">
       <div class="job-card-top">
         <div class="job-card-title">${escapeHTML(agentLabel(job.agent_name, job.agent_role) || shortId(job.id))}</div>
         <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>

@@ -32,8 +32,6 @@ const state = {
   historyData: null,
   historyPage: 1,
   historyPageSize: 8,
-  selectedQueueJobId: '',
-  selectedQueueJobDetail: null,
   inspectorTab: 'tasks',
   skills: [],
   fileTree: [],
@@ -90,6 +88,11 @@ const historyViewState = {
 const sessionViewState = {
   refreshing: false,
   needsRefresh: false
+};
+
+const queueJobViewState = {
+  selectedJobId: '',
+  selectedJobDetail: null
 };
 
 const historyExpansionViewState = {
@@ -211,6 +214,23 @@ function isSkillUploadInFlight() {
 
 function setSkillUploadInFlight(inFlight) {
   skillsViewState.uploadInFlight = Boolean(inFlight);
+}
+
+function selectedQueueJobId() {
+  return queueJobViewState.selectedJobId || '';
+}
+
+function selectedQueueJobDetail() {
+  return queueJobViewState.selectedJobDetail || null;
+}
+
+function setSelectedQueueJob(id, detail = null) {
+  queueJobViewState.selectedJobId = String(id || '');
+  queueJobViewState.selectedJobDetail = detail || null;
+}
+
+function setSelectedQueueJobDetail(detail) {
+  queueJobViewState.selectedJobDetail = detail || null;
 }
 
 function createEmptyChatRenderCache() {
@@ -812,8 +832,7 @@ function setupEventListeners() {
 
     const queueJobButton = event.target.closest('[data-open-job]');
     if (queueJobButton) {
-      state.selectedQueueJobId = queueJobButton.getAttribute('data-open-job') || '';
-      state.selectedQueueJobDetail = null;
+      setSelectedQueueJob(queueJobButton.getAttribute('data-open-job') || '');
       state.inspectorTab = 'agents';
       await refreshSelectedQueueJobDetail();
       renderCurrentSession();
@@ -1391,8 +1410,7 @@ function adoptSession(sessionID, backed) {
     return;
   }
   if (sessionID !== state.sessionId) {
-    state.selectedQueueJobId = '';
-    state.selectedQueueJobDetail = null;
+    setSelectedQueueJob('');
     clearPlanInputSelections();
     state.hasMoreMessages = false;
     state.oldestMessageId = '';
@@ -1420,8 +1438,7 @@ function resetChatSession() {
   state.optimisticMessages = [];
   state.liveEvents = [];
   setNextSendInterruptArmed(false);
-  state.selectedQueueJobId = '';
-  state.selectedQueueJobDetail = null;
+  setSelectedQueueJob('');
   clearPlanInputSelections();
   setComposerMode(null);
   state.hasMoreMessages = false;
@@ -2095,8 +2112,8 @@ function sessionDetailHasActiveDescendants(detail) {
 }
 
 function selectedQueueJobIsActiveForSession(detail) {
-  const job = state.selectedQueueJobDetail;
-  const selectedID = String(state.selectedQueueJobId || '');
+  const job = selectedQueueJobDetail();
+  const selectedID = String(selectedQueueJobId() || '');
   const sessionID = String(detail?.metadata?.id || '');
   if (!job || !selectedID || !sessionID) {
     return false;
@@ -2139,33 +2156,33 @@ function queueJobByID(jobID, data = state.sessionDetail?.children?.jobs) {
 
 async function refreshSelectedQueueJobDetail(jobs = queueJobItems(), options = {}) {
   const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
-  const jobID = String(state.selectedQueueJobId || '');
+  const jobID = String(selectedQueueJobId() || '');
   if (!jobID) {
-    state.selectedQueueJobDetail = null;
+    setSelectedQueueJobDetail(null);
     return;
   }
   const listedJob = jobs.find((job) => String(job?.id || '') === jobID);
   if (listedJob) {
     if (isCurrent()) {
-      state.selectedQueueJobDetail = listedJob;
+      setSelectedQueueJobDetail(listedJob);
     }
     return;
   }
   try {
     const detail = await requestJSON(`/api/queue/jobs/${encodeURIComponent(jobID)}`);
-    if (String(state.selectedQueueJobId || '') !== jobID || !isCurrent()) {
+    if (String(selectedQueueJobId() || '') !== jobID || !isCurrent()) {
       return;
     }
-    state.selectedQueueJobDetail = detail;
+    setSelectedQueueJobDetail(detail);
   } catch (err) {
-    if (String(state.selectedQueueJobId || '') !== jobID || !isCurrent()) {
+    if (String(selectedQueueJobId() || '') !== jobID || !isCurrent()) {
       return;
     }
-    state.selectedQueueJobDetail = {
+    setSelectedQueueJobDetail({
       id: jobID,
       status: 'unavailable',
       last_error: err.message || 'Job detail is unavailable.'
-    };
+    });
   }
 }
 
@@ -2191,7 +2208,7 @@ function currentSessionReferencesSession(sessionID) {
   if (maybeArray(detail.background_notifications).some((item) => item?.session_id === sessionID)) {
     return true;
   }
-  return state.selectedQueueJobDetail?.session_id === sessionID;
+  return selectedQueueJobDetail()?.session_id === sessionID;
 }
 
 function sessionActivityForState(sessionState = {}) {
@@ -2506,8 +2523,7 @@ async function openSession(sessionID, options = {}) {
   adoptSession(sessionID, true);
   state.sessionDetail = null;
   state.optimisticMessages = [];
-  state.selectedQueueJobId = '';
-  state.selectedQueueJobDetail = null;
+  setSelectedQueueJob('');
   state.hasMoreMessages = false;
   state.oldestMessageId = '';
   state.loadingEarlier = false;

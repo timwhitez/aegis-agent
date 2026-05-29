@@ -8550,6 +8550,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-270, FCA-20260528-282, FCA-20260528-286, and the History/Overview refresh slices. Those slices fixed stale detail application, same-session stale detail suppression, queue-detail enrichment races, and other refresh surfaces; this residual issue was only the `refreshingSession` / `needsSessionRefresh` coalescing flags that `refreshCurrentSession()` still read and wrote through the main `state`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the session detail in-flight and queued-refresh flags into `sessionViewState`, preserve stale detail suppression, stale selected queue-job enrichment suppression, message-window merging, generation/activity updates, polling sync, session detail payloads, and backend APIs unchanged.
 
+### Review 401
+
+- Confirmed FCA-20260529-403 against `spec/17-web-console.md`'s Background inspector selected job facts panel and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: selected queue job id/detail are browser inspector selection state and a projection of durable queue/session facts, not durable queue facts, session-store facts, provider replay data, runtime state, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260528-269, FCA-20260528-324, and FCA-20260529-402. Those slices fixed stale async selected job responses, stale selected-job enrichment during a queued session refresh, and session detail refresh flags; this residual issue was only the selected job id/detail projection still living on the main `state` object and being read by `app.js` and `session-view.js`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move selected queue job id/detail into a tiny `queueJobViewState`, expose helper reads/writes, preserve selected job rendering, stale async detail suppression, active-descendant polling, session reset/open cleanup, and backend queue APIs unchanged.
+
 ## Update Log
 
 ### FCA-20260529-126
@@ -8618,6 +8624,47 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260529-403
+
+Slice: `fix(webconsole): isolate selected queue job state`
+
+Finding:
+
+- The WebConsole main `state` object still stored `selectedQueueJobId` and `selectedQueueJobDetail`, which are used only by the local Background inspector to render the currently selected queue job facts panel and to keep polling active for a selected running child job.
+- These fields are browser view state and a projection of durable queue/session facts. They are not queue-store facts, session-store facts, message facts, provider replay data, runtime state, or WebConsole file-fact authority.
+- This contradicted the current P1 Render State Isolation plan after adjacent request coordination and panel preference state had already moved into view-local state objects.
+
+Changes:
+
+- Added `queueJobViewState` to own selected queue job id/detail, with helper reads/writes shared by `app.js` and `session-view.js`.
+- Removed `selectedQueueJobId` and `selectedQueueJobDetail` from the main `state` object.
+- Preserved selected job card highlighting, selected job facts rendering, stale async queue detail suppression, stale same-session enrichment suppression, active-descendant polling, session switch/reset cleanup, and backend queue request behavior.
+- Updated focused frontend regressions and the embedded asset contract so selected queue job inspector state is proven absent from durable app state while existing queue job rendering and polling behavior remain intact.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this queue-job-inspector-local slice and refreshed the frontend asset line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "refreshSelectedQueueJobDetail ignores stale|selected current-session queue job detail|selected queue job detail from another parent|refreshCurrentSession skips stale queue detail" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `setSelectedQueueJob` did not exist and the main `state` still owned selected queue job state.
+- `node --test --test-name-pattern "refreshSelectedQueueJobDetail ignores stale|selected current-session queue job detail|selected queue job detail from another parent|refreshCurrentSession skips stale queue detail" validation/scripts/webconsole_utils_test.mjs`: passed after moving selected queue job state into `queueJobViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `rg -n "state\\.selectedQueueJobId|state\\.selectedQueueJobDetail|selectedQueueJobId|selectedQueueJobDetail" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs docs/webconsole-frontend-optimization-plan.md`: passed; production asset matches are helper-based and no `state.selectedQueueJobId` / `state.selectedQueueJobDetail` references remain.
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.

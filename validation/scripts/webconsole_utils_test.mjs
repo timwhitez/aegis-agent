@@ -57,8 +57,19 @@ const context = {
 vm.createContext(context);
 vm.runInContext(utilsSource, context, { filename: 'utils.js' });
 vm.runInContext(`
-  const state = { selectedQueueJobId: '' };
+  const state = {};
+  const queueJobViewState = { selectedJobId: '', selectedJobDetail: null };
   const stopActionViewState = { sessionIds: new Set() };
+  function selectedQueueJobId() {
+    return queueJobViewState.selectedJobId || '';
+  }
+  function selectedQueueJobDetail() {
+    return queueJobViewState.selectedJobDetail || null;
+  }
+  function setSelectedQueueJob(id, detail = null) {
+    queueJobViewState.selectedJobId = String(id || '');
+    queueJobViewState.selectedJobDetail = detail || null;
+  }
   function agentLabel(name, role) {
     if (name && role) return name + ' · ' + role;
     return name || role || '';
@@ -1469,8 +1480,7 @@ test('queue job renderers prefer queue failure over completed child status', () 
   const card = context.renderQueueJobCard(job);
   const subAgentRow = context.renderSubAgentJobRow(job);
   vm.runInContext(`
-    state.selectedQueueJobId = 'job_failed_handoff';
-    state.selectedQueueJobDetail = ${JSON.stringify(job)};
+    setSelectedQueueJob('job_failed_handoff', ${JSON.stringify(job)});
   `, context);
   const selectedPanel = context.renderSelectedQueueJobPanel();
 
@@ -1565,8 +1575,7 @@ test('sub-agent float session rows prefer blocked queue status over resumable ch
 test('refreshSelectedQueueJobDetail ignores stale async responses after selection changes', async () => {
   const appContext = createAppHarnessContext();
   const slowRefresh = vm.runInContext(`
-    state.selectedQueueJobId = 'job_slow_a';
-    state.selectedQueueJobDetail = null;
+    setSelectedQueueJob('job_slow_a');
     refreshSelectedQueueJobDetail();
   `, appContext);
 
@@ -1574,15 +1583,19 @@ test('refreshSelectedQueueJobDetail ignores stale async responses after selectio
   assert.match(appContext.pendingRequests[0].url, /job_slow_a/);
 
   await vm.runInContext(`
-    state.selectedQueueJobId = 'job_fast_b';
+    setSelectedQueueJob('job_fast_b');
     refreshSelectedQueueJobDetail([{ id: 'job_fast_b', prompt: 'fast selected' }]);
   `, appContext);
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    selected: state.selectedQueueJobId,
-    detailID: state.selectedQueueJobDetail?.id,
-    prompt: state.selectedQueueJobDetail?.prompt
+    stateHasSelectedQueueJobId: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobId'),
+    stateHasSelectedQueueJobDetail: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobDetail'),
+    selected: selectedQueueJobId(),
+    detailID: selectedQueueJobDetail()?.id,
+    prompt: selectedQueueJobDetail()?.prompt
   })`, appContext)), {
+    stateHasSelectedQueueJobId: false,
+    stateHasSelectedQueueJobDetail: false,
     selected: 'job_fast_b',
     detailID: 'job_fast_b',
     prompt: 'fast selected'
@@ -1592,10 +1605,14 @@ test('refreshSelectedQueueJobDetail ignores stale async responses after selectio
   await slowRefresh;
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    selected: state.selectedQueueJobId,
-    detailID: state.selectedQueueJobDetail?.id,
-    prompt: state.selectedQueueJobDetail?.prompt
+    stateHasSelectedQueueJobId: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobId'),
+    stateHasSelectedQueueJobDetail: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobDetail'),
+    selected: selectedQueueJobId(),
+    detailID: selectedQueueJobDetail()?.id,
+    prompt: selectedQueueJobDetail()?.prompt
   })`, appContext)), {
+    stateHasSelectedQueueJobId: false,
+    stateHasSelectedQueueJobDetail: false,
     selected: 'job_fast_b',
     detailID: 'job_fast_b',
     prompt: 'fast selected'
@@ -1619,13 +1636,14 @@ test('selected current-session queue job detail keeps chat polling active while 
       children: { sessions: [], jobs: [] },
       messages: []
     };
-    state.selectedQueueJobId = 'job_outside_window';
-    state.selectedQueueJobDetail = {
+    setSelectedQueueJob('job_outside_window', {
       id: 'job_outside_window',
       status: 'running',
       parent_session_id: 'parent_polling'
-    };
+    });
     return {
+      stateHasSelectedQueueJobId: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobId'),
+      stateHasSelectedQueueJobDetail: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobDetail'),
       runLoop: shouldRunPollingLoop(),
       overview: shouldPollChatOverview(),
       current: shouldPollCurrentSession(),
@@ -1634,6 +1652,8 @@ test('selected current-session queue job detail keeps chat polling active while 
   })()`, appContext);
 
   assert.deepEqual(sameRealm(result), {
+    stateHasSelectedQueueJobId: false,
+    stateHasSelectedQueueJobDetail: false,
     runLoop: true,
     overview: true,
     current: true,
@@ -1658,13 +1678,14 @@ test('selected queue job detail from another parent does not keep chat polling a
       children: { sessions: [], jobs: [] },
       messages: []
     };
-    state.selectedQueueJobId = 'job_other_parent';
-    state.selectedQueueJobDetail = {
+    setSelectedQueueJob('job_other_parent', {
       id: 'job_other_parent',
       status: 'running',
       parent_session_id: 'parent_other'
-    };
+    });
     return {
+      stateHasSelectedQueueJobId: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobId'),
+      stateHasSelectedQueueJobDetail: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobDetail'),
       runLoop: shouldRunPollingLoop(),
       overview: shouldPollChatOverview(),
       current: shouldPollCurrentSession(),
@@ -1673,6 +1694,8 @@ test('selected queue job detail from another parent does not keep chat polling a
   })()`, appContext);
 
   assert.deepEqual(sameRealm(result), {
+    stateHasSelectedQueueJobId: false,
+    stateHasSelectedQueueJobDetail: false,
     runLoop: false,
     overview: false,
     current: false,
@@ -1787,8 +1810,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
     state.sessionId = 'session_slow_queue_a';
     state.sessionBacked = true;
     state.inspectorTab = 'agents';
-    state.selectedQueueJobId = 'job_slow_queue_a';
-    state.selectedQueueJobDetail = null;
+    setSelectedQueueJob('job_slow_queue_a');
     state.liveEvents = [];
     refreshCurrentSession();
   `, appContext);
@@ -1811,8 +1833,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
   vm.runInContext(`
     state.sessionId = 'session_fast_queue_b';
     state.sessionBacked = true;
-    state.selectedQueueJobId = '';
-    state.selectedQueueJobDetail = null;
+    setSelectedQueueJob('');
     state.sessionDetail = {
       metadata: { id: 'session_fast_queue_b' },
       state: { status: 'completed' },
@@ -1859,8 +1880,7 @@ test('refreshCurrentSession skips stale queue detail when a newer same-session r
     state.sessionId = 'session_same_enrich';
     state.sessionBacked = true;
     state.inspectorTab = 'agents';
-    state.selectedQueueJobId = 'job_same_enrich';
-    state.selectedQueueJobDetail = null;
+    setSelectedQueueJob('job_same_enrich');
     state.liveEvents = [];
     refreshCurrentSession();
   `, appContext);
@@ -1898,11 +1918,15 @@ test('refreshCurrentSession skips stale queue detail when a newer same-session r
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    selectedJob: state.selectedQueueJobId,
-    selectedJobDetail: state.selectedQueueJobDetail,
+    stateHasSelectedQueueJobId: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobId'),
+    stateHasSelectedQueueJobDetail: Object.prototype.hasOwnProperty.call(state, 'selectedQueueJobDetail'),
+    selectedJob: selectedQueueJobId(),
+    selectedJobDetail: selectedQueueJobDetail(),
     renderCount: state.renderCount || 0
   })`, appContext)), {
     selected: 'session_same_enrich',
+    stateHasSelectedQueueJobId: false,
+    stateHasSelectedQueueJobDetail: false,
     selectedJob: 'job_same_enrich',
     selectedJobDetail: null,
     renderCount: 0

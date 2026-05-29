@@ -5608,6 +5608,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "sessionDetailHasActiveDescendants") || !strings.Contains(jsBody, "sessionViewState.needsRefresh") {
 		t.Fatalf("expected current session polling to track active descendants and coalesced refreshes, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "queueJobViewState") || !strings.Contains(jsBody, "setSelectedQueueJob") || !strings.Contains(sessionBody, "selectedQueueJobId()") {
+		t.Fatalf("expected selected queue job inspector state to stay out of durable app state, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "overviewErrorMessage") || !strings.Contains(jsBody, "state.overviewError = message") || !strings.Contains(jsBody, "showToast(message, 'error')") {
 		t.Fatalf("expected initial overview failures to surface backend API errors, got app.js body: %s", jsBody)
 	}
