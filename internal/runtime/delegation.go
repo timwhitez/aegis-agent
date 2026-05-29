@@ -331,10 +331,7 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	if err != nil {
 		return session.QueueJob{}, WrapConfigError(err)
 	}
-	providerOptions := req.ProviderOptions
-	if providerOptions == (session.ProviderOptions{}) {
-		providerOptions = providerOptionsFromConfig(providerName, providerCfg)
-	}
+	providerOptions := resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions)
 	job := session.QueueJob{
 		SchemaVersion:    1,
 		ID:               session.NewQueueJobID(),

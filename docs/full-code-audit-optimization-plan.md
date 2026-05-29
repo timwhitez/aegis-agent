@@ -8574,7 +8574,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-033, FCA-20260527-219, FCA-20260527-259, FCA-20260527-344, and FCA-20260528-376. Those slices hardened pending-count refresh, steer acceptance ordering, accepted-request rollback, and refresh failures after acceptance; this residual issue was the separate `Store.ClaimSessionRun` path used by `Runner.Continue`, `AutoContinue`, and Web continue after a paused/awaiting/failed session is claimed back to `running`.
 - Confirmed the minimal fix belongs in `internal/session/store.go`: make `ClaimSessionRun` derive `PendingSteerCount` from the durable steer queue under the existing store/file locks, preserving status claim atomicity, resumable-status checks, live steer acceptance behavior, runtime workflow boundaries, and `SaveState`'s existing queue-derived counter behavior.
 
+### Review 405
+
+- Confirmed FCA-20260529-407 against `spec/01-runtime-architecture.md` and `spec/03-provider-contracts.md`'s provider-option persistence requirement: generation / reasoning / store / retry / timeout options must be durable in session metadata and then replayed through runtime into provider adapters on continue and queue worker execution.
+- Confirmed this is distinct from FCA-20260528-258, FCA-20260528-262, and FCA-20260528-355. Those slices covered explicit `model:"default"` handling, entirely missing legacy `provider_options` backfill during continue, and role provider defaults for queue/delegation; this residual issue was a partial durable/options override shape such as `{"api_provider":"openai-compatible"}` that prevented default fields like `store:false`, base URL, prompt cache, retry policy, or timeout policy from being rehydrated.
+- Confirmed the minimal fix belongs in runtime provider-option resolution: merge stored/requested partial `ProviderOptions` over provider-profile defaults, preserving explicit override fields while filling missing adapter-family defaults before saving continued session metadata or persisting queue jobs.
+
 ## Update Log
+
+### FCA-20260529-407
+
+Slice: `fix(runtime): merge partial provider options`
+
+Finding:
+
+- `Runner.Continue` backfilled provider options only when `SessionMetadata.ProviderOptions` was exactly empty.
+- A legacy or externally edited session with a partial snapshot such as `{"api_provider":"openai-compatible"}` skipped that backfill, so the resumed OpenAI-compatible provider request omitted the runtime default `store:false`, and `session.json` still lacked the missing effective provider options after continue.
+- `QueueSubmit` had the same all-or-nothing behavior for explicit `QueueSubmitRequest.ProviderOptions`: a partial request snapshot was persisted directly onto the queue job instead of inheriting provider-profile defaults.
+
+Impact:
+
+- Continue and background queue runs could diverge from the provider-option contract while still appearing to carry durable options.
+- OpenAI-compatible resumes could omit `store:false`, weakening the local session store as the fact source.
+- Queue worker child sessions could lose traceable base URL, prompt-cache, retry, timeout, and other provider-default fields when a partial provider-options override was supplied.
+
+Changes:
+
+- Added runtime provider-option merging that starts from `providerOptionsFromConfig` and overlays only explicit fields from the stored/requested partial snapshot.
+- Updated `Runner.Continue` to merge and persist missing provider defaults before appending the resumed user message and invoking the provider.
+- Updated `QueueSubmit` to persist merged provider options on queue jobs instead of accepting partial snapshots as complete.
+- Preserved explicit override semantics for provider API family, base URL, generation, reasoning, prompt-cache, store, metadata, raw-sidecar, retry, and timeout fields.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerContinueBackfillsPartialProviderOptions -count=1`: failed before the fix because `session.json` still had `Store:nil` after continue.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinueBackfills(PartialProviderOptions|MissingProviderOptions)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(ContinueBackfills(PartialProviderOptions|MissingProviderOptions)|QueueSubmitMergesPartialProviderOptions|QueueSubmitPersistsRoleProviderOverrideOptions|QueueSubmitExplicitModelPreservesRoleProviderDefaults)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(ContinueBackfills(PartialProviderOptions|MissingProviderOptions)|QueueSubmitMergesPartialProviderOptions|StartPropagatesConfiguredProviderOptionsIntoOpenAIRequest|StartPersistsProviderOptionsInSessionMetadata)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestContinueREST(BackfillsMissingProviderOptions|CarriesRuntimeFields|ModelDefaultUsesProviderDefault)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 80/80 tests.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-406
 

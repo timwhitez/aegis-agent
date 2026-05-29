@@ -1114,6 +1114,36 @@ func TestRunnerQueueSubmitExplicitModelPreservesRoleProviderDefaults(t *testing.
 	}
 }
 
+func TestRunnerQueueSubmitMergesPartialProviderOptions(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.Providers["builder"] = cfg.Providers["openai-compatible"]
+	builder := cfg.Providers["builder"]
+	builder.APIProvider = "openai-compatible"
+	builder.BaseURL = "http://builder.invalid/v1"
+	builder.Model = "builder-default"
+	cfg.Providers["builder"] = builder
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		Provider:        "builder",
+		ProviderOptions: session.ProviderOptions{
+			APIProvider: "openai-compatible",
+		},
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if job.ProviderOptions.BaseURL != "http://builder.invalid/v1" {
+		t.Fatalf("expected partial provider options to inherit provider base URL, got %#v", job.ProviderOptions)
+	}
+	if job.ProviderOptions.Store == nil || *job.ProviderOptions.Store {
+		t.Fatalf("expected partial provider options to inherit openai-compatible store=false, got %#v", job.ProviderOptions)
+	}
+}
+
 func TestRunnerQueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

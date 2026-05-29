@@ -857,12 +857,12 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event: %w", err))
 		}
 	}
-	if meta.ProviderOptions == (session.ProviderOptions{}) {
-		providerCfg, err := r.cfg.ProviderConfig(meta.Provider)
-		if err != nil {
-			return r.failBeforeRun(meta.ID, state, "prepare", WrapConfigError(err))
-		}
-		meta.ProviderOptions = providerOptionsFromConfig(meta.Provider, providerCfg)
+	mergedProviderOptions, err := r.mergedSessionProviderOptions(meta.Provider, meta.ProviderOptions)
+	if err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
+	if !reflect.DeepEqual(meta.ProviderOptions, mergedProviderOptions) {
+		meta.ProviderOptions = mergedProviderOptions
 		if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
@@ -2089,6 +2089,14 @@ func (r *Runner) adapterForSession(meta session.SessionMetadata) (provider.Adapt
 	return r.adapterFromConfig(meta.Provider, cfg)
 }
 
+func (r *Runner) mergedSessionProviderOptions(providerName string, current session.ProviderOptions) (session.ProviderOptions, error) {
+	providerCfg, err := r.cfg.ProviderConfig(providerName)
+	if err != nil {
+		return session.ProviderOptions{}, WrapConfigError(err)
+	}
+	return resolvedProviderOptions(providerName, providerCfg, current), nil
+}
+
 func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, apiProvider, wireAPI, model string) (config.Provider, error) {
 	cfg, err := r.cfg.ProviderConfig(name)
 	if err != nil {
@@ -2264,10 +2272,69 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 }
 
 func resolvedProviderOptions(name string, cfg config.Provider, override session.ProviderOptions) session.ProviderOptions {
+	defaults := providerOptionsFromConfig(name, cfg)
 	if override == (session.ProviderOptions{}) {
-		return providerOptionsFromConfig(name, cfg)
+		return defaults
 	}
-	return override
+	if strings.TrimSpace(override.APIProvider) != "" {
+		defaults.APIProvider = strings.TrimSpace(override.APIProvider)
+		defaults.PromptCache = defaultPromptCacheForAPIProvider(defaults.APIProvider, cfg.PromptCache)
+		defaults.Store = defaultStoreForAPIProvider(defaults.APIProvider, cfg.Store)
+	}
+	return mergeProviderOptions(defaults, override)
+}
+
+func mergeProviderOptions(defaults, override session.ProviderOptions) session.ProviderOptions {
+	out := defaults
+	if strings.TrimSpace(override.APIProvider) != "" {
+		out.APIProvider = strings.TrimSpace(override.APIProvider)
+	}
+	if strings.TrimSpace(override.BaseURL) != "" {
+		out.BaseURL = strings.TrimSpace(override.BaseURL)
+	}
+	if override.Temperature != nil {
+		out.Temperature = override.Temperature
+	}
+	if override.TopP != nil {
+		out.TopP = override.TopP
+	}
+	if override.MaxOutputTokens > 0 {
+		out.MaxOutputTokens = override.MaxOutputTokens
+	}
+	if strings.TrimSpace(override.ReasoningEffort) != "" {
+		out.ReasoningEffort = strings.TrimSpace(override.ReasoningEffort)
+	}
+	if strings.TrimSpace(override.ReasoningSummary) != "" {
+		out.ReasoningSummary = strings.TrimSpace(override.ReasoningSummary)
+	}
+	if strings.TrimSpace(override.TextVerbosity) != "" {
+		out.TextVerbosity = strings.TrimSpace(override.TextVerbosity)
+	}
+	if override.ThinkingBudget > 0 {
+		out.ThinkingBudget = override.ThinkingBudget
+	}
+	if override.IncludeThoughts != nil {
+		out.IncludeThoughts = override.IncludeThoughts
+	}
+	if override.PromptCache != nil {
+		out.PromptCache = override.PromptCache
+	}
+	if override.Store != nil {
+		out.Store = override.Store
+	}
+	if override.SendMetadata != nil {
+		out.SendMetadata = override.SendMetadata
+	}
+	if override.RawSidecar != nil {
+		out.RawSidecar = override.RawSidecar
+	}
+	if override.RetryPolicy != nil {
+		out.RetryPolicy = override.RetryPolicy
+	}
+	if override.TimeoutPolicy != nil {
+		out.TimeoutPolicy = override.TimeoutPolicy
+	}
+	return out
 }
 
 func defaultStoreForAPIProvider(apiProvider string, configured *bool) *bool {
