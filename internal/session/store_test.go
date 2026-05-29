@@ -2177,6 +2177,46 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	}
 }
 
+func TestClearGoalRejectsSymlinkedSessionDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	sessionID := NewSessionID()
+	outsideDir := t.TempDir()
+	outsideGoal := filepath.Join(outsideDir, "goal.json")
+	outsideData := []byte(`{"outside":true}` + "\n")
+	if err := os.WriteFile(outsideGoal, outsideData, 0o600); err != nil {
+		t.Fatalf("write outside goal: %v", err)
+	}
+	sessionLink := filepath.Join(root, sessionID)
+	if err := os.Symlink(outsideDir, sessionLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	cleared, err := store.ClearGoal(sessionID)
+	if err == nil {
+		t.Fatal("expected symlinked session directory rejection")
+	}
+	if cleared {
+		t.Fatal("symlinked session directory must not report goal cleared")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	data, readErr := os.ReadFile(outsideGoal)
+	if readErr != nil {
+		t.Fatalf("outside goal should not be removed: %v", readErr)
+	}
+	if string(data) != string(outsideData) {
+		t.Fatalf("outside goal changed: %q", data)
+	}
+	if info, statErr := os.Lstat(sessionLink); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("session symlink should remain for diagnostics, info=%v err=%v", info, statErr)
+	}
+}
+
 func TestStoreListReportsCorruptSummarySnapshots(t *testing.T) {
 	cases := []struct {
 		name string

@@ -8808,7 +8808,57 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-048, FCA-20260526-049, FCA-20260529-301, and FCA-20260529-444. Earlier slices covered visible path collection, corrupt child handoff facts, queue visible-output sync path safety, and required tool-block events; this residual issue was only the synchronous runtime delegate copy path using `0644` while the queue repair path and ordinary tool writes already used `0600`.
 - Confirmed the minimal fix belongs in `syncVisibleSessionOutputs`: change the atomic write mode for copied visible outputs to `0600`, without changing path filtering, symlink escape rejection, visible path collection, or queue repair semantics.
 
+### Review 444
+
+- Confirmed FCA-20260529-446 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: `goal.json` is a session durable fact controlled by the shared session store, and `DELETE /api/sessions/{id}/goal` / CLI `goal clear` must clear only that current goal fact while preserving session path-safety boundaries.
+- Confirmed this is distinct from FCA-20260526-086, FCA-20260526-087, FCA-20260527-197, and FCA-20260526-102. Earlier slices covered required Goal history/event rollback and bodyless Web clear routing; this residual issue was the lower-level store deletion primitive using raw `os.Remove`, which follows symlinked path ancestors before unlinking `goal.json`.
+- Confirmed the minimal fix belongs in `Store.ClearGoal`: reject symlinked session path ancestors, require `goal.json` to be a regular file, and then remove it via `fileutil.RemoveFileNoSymlink`, without changing the existing missing-goal `cleared=false` behavior or adapter-level history/event rollback semantics.
+
 ## Update Log
+
+### FCA-20260529-446
+
+Slice: `fix(session): harden goal clear path safety`
+
+Finding:
+
+- `spec/00-product.md` and `spec/01-runtime-architecture.md` make `goal.json` a session file fact source, and `spec/17-web-console.md` defines Goal clear as a local control action that clears the current goal and writes `goal.cleared`.
+- `spec/18-durable-contract-and-completion.md` keeps Goal snapshots under `.go-cli-agent/sessions/<id>/goal.json`, and the project-wide safety boundary requires session files to avoid symlink/path escape behavior.
+- `internal/session/goal.go` `Store.ClearGoal` used `os.Remove(path)` directly after `sessionPath`.
+- Raw `os.Remove` does not follow a final symlink, but it does follow symlinked ancestor directories. A session directory replaced by a symlink could therefore make `ClearGoal` unlink an outside `goal.json` while reporting success.
+- A focused regression created a session-root child symlink that pointed outside the store and placed an external `goal.json` there; before the fix, `ClearGoal` returned success instead of rejecting the symlinked session path.
+
+Impact:
+
+- Shared CLI/Web/model rollback paths that call `Store.ClearGoal` could delete a file outside the session store if a session directory ancestor was replaced with a symlink.
+- The adapter-level `goal.cleared` history/event rollback protections could not detect this because the unsafe deletion happened below the shared store boundary.
+
+Changes:
+
+- Added a symlink-ancestor and regular-file preflight in `Store.ClearGoal`.
+- Routed the actual deletion through `fileutil.RemoveFileNoSymlink`.
+- Preserved the existing missing-goal behavior: a missing `goal.json` returns `cleared=false` without error.
+- Added focused session-store coverage proving a symlinked session directory is rejected, the external `goal.json` remains unchanged, and the symlink remains for diagnostics.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestClearGoalRejectsSymlinkedSessionDirectory -count=1`: failed before the fix because `ClearGoal` reported success through the symlinked session directory.
+- `go test -timeout 120s ./internal/session -run 'TestClearGoalRejectsSymlinkedSessionDirectory|TestStoreGoalLifecycleAccountingAndSummary' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestGoalClearCommandReportsHistoryAppendError|TestGoalClearCommandRollsBackHistoryWhenEventAppendFails' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalClearReportsHistoryAppendError|TestServiceGoalClearRollsBackHistoryWhenEventAppendFails' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-445
 

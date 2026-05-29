@@ -1237,10 +1237,23 @@ func (s *Store) ClearGoal(sessionID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.Remove(path); err != nil {
+	if err := rejectSymlinkPathAncestors(path); err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("refusing to clear symlinked goal path: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("refusing to clear non-regular goal path: %s", path)
+	}
+	if err := fileutil.RemoveFileNoSymlink(path); err != nil {
 		return false, err
 	}
 	return true, nil
