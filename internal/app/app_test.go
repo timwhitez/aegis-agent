@@ -2686,7 +2686,7 @@ func TestChildrenCommandReadsChildSessionsAndJobs(t *testing.T) {
 	if err := store.Create(child, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
-	if err := store.EnqueueJob(session.QueueJob{ID: "job_1", Status: session.QueueStatusQueued, ParentSessionID: "parent", Prompt: "hi", Mode: session.ModeExec, AgentName: "batch"}); err != nil {
+	if err := store.EnqueueJob(session.QueueJob{ID: "job_1", Status: session.QueueStatusQueued, ParentSessionID: "parent", RootSessionID: "parent", Prompt: "hi", Mode: session.ModeExec, AgentName: "batch"}); err != nil {
 		t.Fatalf("enqueue job: %v", err)
 	}
 	fake := newFakeRunner()

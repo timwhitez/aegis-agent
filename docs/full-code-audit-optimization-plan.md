@@ -8748,7 +8748,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-430 through FCA-20260529-434. Those slices hardened missing/unknown current sessions and model-facing agent list/status scoping; this residual issue was a syntactically valid but semantically malformed `session.json` snapshot being accepted by the shared store validator.
 - Confirmed the minimal fix belongs in `validateSessionMetadata`, not Web/CLI/runtime orchestration: enforce self-consistent root/child metadata at the file-fact boundary while preserving legacy root sessions with omitted `root_session_id` and preserving cleanup/recovery tests for root-linked descendants with drifted parent chains.
 
+### Review 434
+
+- Confirmed FCA-20260529-436 against `spec/15-background-queue.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: parent-linked queue jobs carry parent/root/session linkage as durable queue, child, Web Background, session-summary, and recovery facts, while independent queue jobs remain unparented and should not carry a synthetic root.
+- Confirmed this is distinct from FCA-20260528-313, FCA-20260528-331, FCA-20260528-325, FCA-20260526-058, and FCA-20260529-435. Earlier queue validation covered scalar job semantics, timestamps, doctor missing-reference diagnostics, tree cleanup, and session metadata topology; this residual issue was a syntactically valid but topologically malformed queue job accepted by the shared store validator.
+- Confirmed the minimal fix belongs in `validateQueueJob`: enforce `parent_session_id` and `root_session_id` as a pair for queue jobs, keep independent queue jobs with both fields empty valid, and update legacy test fixtures to use self-consistent parent-linked queue facts rather than root-only shortcuts.
+
 ## Update Log
+
+### FCA-20260529-436
+
+Slice: `fix(session): reject malformed queue topology`
+
+Finding:
+
+- `validateQueueJob` checked `parent_session_id` and `root_session_id` only as independent store IDs.
+- A queue job with `parent_session_id` but no `root_session_id` could be saved, loaded, listed, or claimed even though parent-linked queue facts are supposed to preserve root topology for child/session aggregation and recovery.
+- A queue job with no `parent_session_id` but a non-empty `root_session_id` could also be accepted, making an independent job look root-linked without a parent edge.
+- Focused pre-fix store regression saved a parent-linked job without a root id; before the fix, `SaveJob` returned nil.
+
+Impact:
+
+- Store readers, queue workers, Web Background job views, `children` / `agent_list`, session summaries, long-run checkpoints, and cleanup/recovery code could observe queue facts whose parent/root topology disagreed with the delegation tree.
+- This weakened the durable queue file-fact boundary and forced callers to reinterpret malformed queue topology instead of relying on the shared queue job validator.
+
+Changes:
+
+- Added queue topology checks to `validateQueueJob`:
+  - independent queue jobs with no `parent_session_id` must also omit `root_session_id`;
+  - parent-linked queue jobs must include a non-empty `root_session_id`.
+- Added store regressions covering valid independent jobs, valid parent-linked jobs, rejected parent-only writes, rejected root-only writes, malformed snapshot loads/lists, and queued claim rejection before a malformed job can move to `running`.
+- Updated existing cleanup and CLI child-view fixtures to persist valid parent-linked queue facts while preserving root-linked deletion and parent child/job listing coverage.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestQueueJobFactsRejectMalformedParentRootTopology -count=1`: failed before the fix because `SaveJob` accepted a parent-linked queue job without `root_session_id`.
+- `go test -timeout 120s ./internal/session -run TestQueueJobFactsRejectMalformedParentRootTopology -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestQueueJobFactsRejectMalformedParentRootTopology|Test(LoadJobsRejectMalformedQueueJobSnapshot|QueueJobWritesRejectMalformedFacts|ClaimNextQueuedJobRejectsMalformedQueuedJob|ClaimNextQueuedJobRejectsMalformedQueuedJobTimestamps|DeleteSessionTreeRemovesRootLinkedDescendants|ListChildrenAndParentJobsUseCreationOrder)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run TestChildrenCommandReadsChildSessionsAndJobs -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerQueueSubmit|TestRunnerProcessNextJob|TestProcessNextJob|TestRunnerAutoQueueWorkerProcessesQueuedJobs|TestParentLinkedQueueBlockedDuringPendingPlanMode' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceQueue|TestServiceSessionDetail|TestServiceClearSessionsRejectsRunningQueueJobs|TestServiceParallelQueueWorkersPersistAllJobs' -count=1`: passed.
+- `go test -timeout 120s ./internal/tui -run TestBuildSnapshotReportsSelectedQueueFactErrors -count=1`: passed after updating the selected-session queue fixture to include a legal root id.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/app ./internal/webconsole -count=1`: passed.
+- `node --check` for `internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-435
 

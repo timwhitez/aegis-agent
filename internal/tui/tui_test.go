@@ -78,7 +78,7 @@ func TestBuildSnapshotReportsSelectedSessionFactErrors(t *testing.T) {
 func TestBuildSnapshotReportsSelectedQueueFactErrors(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	createTUITestSession(t, store, "s1")
-	if err := store.EnqueueJob(session.QueueJob{ID: "job_1", Status: session.QueueStatusQueued, ParentSessionID: "s1", Prompt: "review", Mode: session.ModeExec}); err != nil {
+	if err := store.EnqueueJob(session.QueueJob{ID: "job_1", Status: session.QueueStatusQueued, ParentSessionID: "s1", RootSessionID: "s1", Prompt: "review", Mode: session.ModeExec}); err != nil {
 		t.Fatalf("enqueue job: %v", err)
 	}
 	jobPath := filepath.Join(store.Root(), "_queue", session.QueueStatusQueued, "job_1.json")

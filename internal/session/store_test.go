@@ -3503,15 +3503,16 @@ func TestDeleteSessionTreeRemovesRootLinkedDescendants(t *testing.T) {
 		t.Fatalf("create root-linked child session: %v", err)
 	}
 	if err := store.SaveJob(QueueJob{
-		SchemaVersion: 1,
-		ID:            orphanedChildMeta.QueueJobID,
-		CreatedAt:     now,
-		Status:        QueueStatusCompleted,
-		RootSessionID: rootMeta.ID,
-		SessionID:     orphanedChildMeta.ID,
-		Prompt:        "done",
-		Mode:          ModeExec,
-		Background:    true,
+		SchemaVersion:   1,
+		ID:              orphanedChildMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          QueueStatusCompleted,
+		ParentSessionID: orphanedChildMeta.ParentSessionID,
+		RootSessionID:   rootMeta.ID,
+		SessionID:       orphanedChildMeta.ID,
+		Prompt:          "done",
+		Mode:            ModeExec,
+		Background:      true,
 	}); err != nil {
 		t.Fatalf("save root-linked job: %v", err)
 	}
@@ -4648,6 +4649,72 @@ func TestLoadJobsRejectMalformedQueueJobSnapshot(t *testing.T) {
 	}
 	if loaded.ID != valid.ID || loaded.Prompt != valid.Prompt {
 		t.Fatalf("unexpected valid queue job after malformed snapshot: %#v", loaded)
+	}
+}
+
+func TestQueueJobFactsRejectMalformedParentRootTopology(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	validIndependent := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_valid_independent_topology",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Status:        QueueStatusQueued,
+		Prompt:        "do independent work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.SaveJob(validIndependent); err != nil {
+		t.Fatalf("save valid independent queue job: %v", err)
+	}
+	validParentLinked := validIndependent
+	validParentLinked.ID = "job_valid_parent_topology"
+	validParentLinked.ParentSessionID = "parent_queue_topology"
+	validParentLinked.RootSessionID = "root_queue_topology"
+	if err := store.SaveJob(validParentLinked); err != nil {
+		t.Fatalf("save valid parent-linked queue job: %v", err)
+	}
+
+	parentWithoutRoot := validIndependent
+	parentWithoutRoot.ID = "job_parent_without_root"
+	parentWithoutRoot.ParentSessionID = "parent_queue_topology"
+	if err := store.SaveJob(parentWithoutRoot); err == nil || !strings.Contains(err.Error(), "root_session_id is required for parent-linked jobs") {
+		t.Fatalf("expected save to reject parent-linked job without root, got %v", err)
+	}
+	rootWithoutParent := validIndependent
+	rootWithoutParent.ID = "job_root_without_parent"
+	rootWithoutParent.RootSessionID = "root_queue_topology"
+	if err := store.SaveJob(rootWithoutParent); err == nil || !strings.Contains(err.Error(), "root_session_id requires parent_session_id") {
+		t.Fatalf("expected save to reject root-only queue job, got %v", err)
+	}
+
+	loadStore := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	if err := loadStore.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	if err := loadStore.writeJSONFile(loadStore.queueJobPath(QueueStatusQueued, parentWithoutRoot.ID), parentWithoutRoot); err != nil {
+		t.Fatalf("write malformed parent-only queue job: %v", err)
+	}
+	if _, err := loadStore.LoadJob(parentWithoutRoot.ID); err == nil || !strings.Contains(err.Error(), "root_session_id is required for parent-linked jobs") {
+		t.Fatalf("expected load to reject parent-linked job without root, got %v", err)
+	}
+	if _, _, err := loadStore.ClaimNextQueuedJob(); err == nil || !strings.Contains(err.Error(), "root_session_id is required for parent-linked jobs") {
+		t.Fatalf("expected claim to reject parent-linked job without root, got %v", err)
+	}
+
+	listStore := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	if err := listStore.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	if err := listStore.writeJSONFile(listStore.queueJobPath(QueueStatusQueued, rootWithoutParent.ID), rootWithoutParent); err != nil {
+		t.Fatalf("write malformed root-only queue job: %v", err)
+	}
+	if _, err := listStore.LoadJob(rootWithoutParent.ID); err == nil || !strings.Contains(err.Error(), "root_session_id requires parent_session_id") {
+		t.Fatalf("expected load to reject root-only queue job, got %v", err)
+	}
+	if _, err := listStore.ListJobs(10); err == nil || !strings.Contains(err.Error(), "root_session_id requires parent_session_id") {
+		t.Fatalf("expected list to reject root-only queue job, got %v", err)
 	}
 }
 

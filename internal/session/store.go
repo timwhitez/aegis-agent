@@ -3596,15 +3596,24 @@ func validateQueueJob(job QueueJob) error {
 		}
 		return fmt.Errorf("invalid queue job mode %q", job.Mode)
 	}
-	if strings.TrimSpace(job.ParentSessionID) != "" {
+	parentSessionID := strings.TrimSpace(job.ParentSessionID)
+	rootSessionID := strings.TrimSpace(job.RootSessionID)
+	if parentSessionID != "" {
 		if err := validateStoreID("queue job parent session", job.ParentSessionID); err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(job.RootSessionID) != "" {
+	if rootSessionID != "" {
 		if err := validateStoreID("queue job root session", job.RootSessionID); err != nil {
 			return err
 		}
+	}
+	if parentSessionID == "" {
+		if rootSessionID != "" {
+			return errors.New("queue job root_session_id requires parent_session_id")
+		}
+	} else if rootSessionID == "" {
+		return errors.New("queue job root_session_id is required for parent-linked jobs")
 	}
 	if strings.TrimSpace(job.SessionID) != "" {
 		if err := validateStoreID("queue job session", job.SessionID); err != nil {
