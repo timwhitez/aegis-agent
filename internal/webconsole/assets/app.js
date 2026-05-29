@@ -30,8 +30,6 @@ const state = {
   sessionBacked: false,
   sessionDetail: null,
   overview: null,
-  fileTree: [],
-  workspacePath: '',
   hasMoreMessages: false,
   oldestMessageId: '',
   loadedAllEarlierMessages: false,

@@ -2,6 +2,8 @@ const WORKSPACE_FILE_PREVIEW_CHUNK_SIZE = 256 * 1024;
 
 const workspaceViewState = {
   requestSeq: 0,
+  path: '',
+  tree: [],
   selectedTreePath: '',
   filePreview: null
 };
@@ -15,7 +17,7 @@ async function fetchWorkspace() {
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
     nodes.editorFilename.innerText = workspaceDisplayName();
     nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
-    await loadWorkspaceDirectory(state.workspacePath || '');
+    await loadWorkspaceDirectory(currentWorkspacePath());
   } catch (err) {
     console.error('workspace error', err);
     const message = workspaceErrorMessage(err);
@@ -63,8 +65,8 @@ async function loadWorkspaceDirectory(path = '') {
   if (workspaceViewState.requestSeq !== requestSeq) {
     return;
   }
-  state.workspacePath = normalized;
-  state.fileTree = tree;
+  setCurrentWorkspacePath(normalized);
+  setCurrentWorkspaceTree(tree);
   setSelectedWorkspaceTreePath('');
   setWorkspaceFilePreview(null);
   renderFileTree(tree);
@@ -75,6 +77,22 @@ async function loadWorkspaceDirectory(path = '') {
 
 function nextWorkspaceRequestSeq() {
   return ++workspaceViewState.requestSeq;
+}
+
+function currentWorkspacePath() {
+  return workspaceViewState.path || '';
+}
+
+function setCurrentWorkspacePath(path) {
+  workspaceViewState.path = normalizeWorkspacePath(path);
+}
+
+function currentWorkspaceTree() {
+  return Array.isArray(workspaceViewState.tree) ? workspaceViewState.tree : [];
+}
+
+function setCurrentWorkspaceTree(tree) {
+  workspaceViewState.tree = Array.isArray(tree) ? tree : [];
 }
 
 function selectedWorkspaceTreePath() {
@@ -102,7 +120,8 @@ function normalizeWorkspacePath(path = '') {
 }
 
 function workspaceDisplayName() {
-  return state.workspacePath ? `Workspace / ${state.workspacePath}` : 'Workspace';
+  const path = currentWorkspacePath();
+  return path ? `Workspace / ${path}` : 'Workspace';
 }
 
 function selectedWorkspaceWorkdir() {
@@ -110,7 +129,7 @@ function selectedWorkspaceWorkdir() {
   if (!root) {
     return '';
   }
-  const rel = normalizeWorkspacePath(state.workspacePath);
+  const rel = normalizeWorkspacePath(currentWorkspacePath());
   return rel ? `${root.replace(/\/+$/g, '')}/${rel}` : root;
 }
 
@@ -125,7 +144,7 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     return;
   }
   if (level === 0 && tree.length === 0) {
-    container.innerHTML = state.workspacePath
+    container.innerHTML = currentWorkspacePath()
       ? '<div class="empty-panel">This directory is empty.</div>'
       : '<div class="empty-panel">This workspace is empty.</div>';
     return;

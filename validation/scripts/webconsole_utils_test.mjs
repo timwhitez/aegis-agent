@@ -1427,9 +1427,7 @@ function createWorkspaceHarnessContext() {
       meta: {
         workspace_root: '/tmp/workspace',
         workspace_switch_supported: false
-      },
-      workspacePath: '',
-      fileTree: []
+      }
     },
     nodes: {
       fileTree: fakeAppElement(),
@@ -3606,13 +3604,19 @@ test('loadWorkspaceDirectory ignores stale directory responses after navigation 
   await fastLoad;
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    path: state.workspacePath,
+    path: currentWorkspacePath(),
+    tree: currentWorkspaceTree().map((node) => node.name),
+    stateHasWorkspacePath: Object.prototype.hasOwnProperty.call(state, 'workspacePath'),
+    stateHasFileTree: Object.prototype.hasOwnProperty.call(state, 'fileTree'),
     stateHasRequestSeq: Object.prototype.hasOwnProperty.call(state, 'workspaceRequestSeq'),
     renderedNames: state.renderedTree.map((node) => node.name),
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText
   })`, workspaceContext)), {
     path: 'fast',
+    tree: ['current.txt'],
+    stateHasWorkspacePath: false,
+    stateHasFileTree: false,
     stateHasRequestSeq: false,
     renderedNames: ['current.txt'],
     filename: 'Workspace / fast',
@@ -3625,7 +3629,7 @@ test('loadWorkspaceDirectory ignores stale directory responses after navigation 
   await slowLoad;
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    path: state.workspacePath,
+    path: currentWorkspacePath(),
     renderedNames: state.renderedTree.map((node) => node.name),
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText
@@ -3925,7 +3929,7 @@ test('workspace file responses do not overwrite later directory navigation', asy
   await fileLoad;
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    path: state.workspacePath,
+    path: currentWorkspacePath(),
     renderedNames: state.renderedTree.map((node) => node.name),
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText
@@ -3955,7 +3959,7 @@ test('workspace directory responses do not overwrite later file selection', asyn
   await directoryLoad;
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    path: state.workspacePath,
+    path: currentWorkspacePath(),
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText
   })`, workspaceContext)), {

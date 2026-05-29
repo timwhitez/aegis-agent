@@ -8646,7 +8646,64 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-242 and FCA-20260529-113 / FCA-20260529-398. FCA-20260527-242 added overview error surfacing so failed initial loads did not look like an empty session list; FCA-20260529-113 moved Overview request sequencing into `overviewViewState`; FCA-20260529-398 moved Overview in-flight / queued-refresh flags into `overviewViewState`. This residual issue was the error copy itself still flowing through the main `state` object.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: keep the durable `/api/overview` payload on `state.overview`, move the display-only error copy into `overviewViewState`, and preserve quiet later polling failures when a previous overview snapshot exists.
 
+### Review 417
+
+- Confirmed FCA-20260529-419 against `spec/17-web-console.md`'s read-only Workspace browser boundary and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: the current Workspace directory path and directory tree payload are browser-local Workspace view display state derived from `/api/files`, not durable session, message, queue, provider, runtime, or backend file-fact authority.
+- Confirmed this is distinct from FCA-20260529-110 and FCA-20260529-405. FCA-20260529-110 moved stale Workspace request sequencing out of `state`; FCA-20260529-405 moved selected file-tree path and paged file preview cache out of `state`. This residual issue was the current directory label/root-chip input and current directory payload still being written to `state.workspacePath` and `state.fileTree`.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: keep durable app/session facts on the main `state`, move Workspace current directory path and current directory payload into `workspaceViewState` helper accessors, and preserve stale directory suppression, selected workdir derivation, empty-directory copy, and file preview behavior.
+
 ## Update Log
+
+### FCA-20260529-419
+
+Slice: `fix(webconsole): isolate workspace directory state`
+
+Finding:
+
+- `loadWorkspaceDirectory()` still wrote the current Workspace directory path to `state.workspacePath` and the current `/api/files` tree payload to `state.fileTree`.
+- `fetchWorkspace()`, `workspaceDisplayName()`, `selectedWorkspaceWorkdir()`, and empty-directory rendering read `state.workspacePath` even though this path is the browser Workspace view's current navigation position, not a durable session, queue, provider, runtime, or backend authority.
+- The current tree payload was not used as a durable fact source; it was a display cache for the current read-only Workspace browser.
+
+Impact:
+
+- Browser-local Workspace navigation state remained mixed with durable selected-session and overview facts after adjacent Workspace request sequencing, selected tree path, and file preview cache had already moved into `workspaceViewState`.
+- Future frontend changes could mistake the current directory path or cached tree payload for app-wide durable state, weakening the WebConsole boundary that it only projects local backend facts rather than becoming a second authority.
+
+Changes:
+
+- Extended `workspaceViewState` with helper-backed `path` and `tree` fields.
+- Removed `workspacePath` and `fileTree` from the main `state` object.
+- Updated Workspace loading, display name, selected workdir derivation, and empty-directory copy to use `currentWorkspacePath()` / `setCurrentWorkspacePath()` and `currentWorkspaceTree()` / `setCurrentWorkspaceTree()`.
+- Extended frontend and embedded-asset regressions to reject `state.workspacePath` and `state.fileTree` while proving stale directory responses still cannot overwrite the current Workspace view.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records the Workspace current-directory display-state slice.
+
+Validation:
+
+- `node --test --test-name-pattern "loadWorkspaceDirectory ignores stale directory responses after navigation changes" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `currentWorkspacePath()` did not exist and the production path still depended on main `state.workspacePath`.
+- `node --test --test-name-pattern "loadWorkspaceDirectory ignores stale directory responses after navigation changes" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `node --test --test-name-pattern "workspace|loadWorkspaceDirectory|loadFile" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `rg -n "state\\.(workspacePath|fileTree)" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs internal/webconsole/service_test.go`: passed with only the embedded-asset smoke test's negative assertions.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 88/88 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-418
 
@@ -24037,7 +24094,7 @@ Changes:
 
 - Added a tiny `workspaceViewState` object in `workspace-view.js` to own Workspace request sequencing.
 - Updated directory, file, file-error, and paged-preview stale-response checks to compare against `workspaceViewState.requestSeq`.
-- Kept durable UI facts such as `state.workspacePath` and `state.fileTree` unchanged; later FCA-20260529-405 moved selected tree path and file preview cache into `workspaceViewState`.
+- Kept then-existing Workspace display facts such as `state.workspacePath` and `state.fileTree` unchanged for that request-guard slice; later FCA-20260529-405 moved selected tree path and file preview cache into `workspaceViewState`, and FCA-20260529-419 moved the current directory path and tree payload there as well.
 - Extended the stale Workspace directory response regression so it proves request sequencing stays out of the main app state while stale Workspace responses remain ignored.
 - Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Workspace-local guard slice and narrows the remaining request-guard backlog.
 

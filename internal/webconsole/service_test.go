@@ -5539,6 +5539,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "function workspaceErrorMessage") || !strings.Contains(workspaceBody, "const message = workspaceErrorMessage(err") || !strings.Contains(workspaceBody, "nodes.editorContent.innerText = message") || !strings.Contains(workspaceBody, "showToast(message, 'error')") {
 		t.Fatalf("expected workspace frontend failures to surface backend API errors, got workspace-view.js body: %s", workspaceBody)
 	}
+	if !strings.Contains(workspaceBody, "currentWorkspacePath()") || !strings.Contains(workspaceBody, "setCurrentWorkspacePath(normalized)") || !strings.Contains(workspaceBody, "currentWorkspaceTree()") || strings.Contains(workspaceBody, "state.workspacePath") || strings.Contains(workspaceBody, "state.fileTree") {
+		t.Fatalf("expected Workspace directory display state to stay out of durable app state, got workspace-view.js body: %s", workspaceBody)
+	}
 	sessionBody := checkBody(server.URL + "/session-view.js")
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
 		t.Fatalf("unexpected session-view.js body: %s", sessionBody)
@@ -5559,6 +5562,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	jsBody := checkBody(server.URL + "/app.js")
 	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "refreshSelectedQueueJobDetail") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
+	}
+	if strings.Contains(jsBody, "state.workspacePath") || strings.Contains(jsBody, "state.fileTree") {
+		t.Fatalf("expected app.js durable state to exclude Workspace directory display fields, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "renderQueueView") || strings.Contains(jsBody, "fetchQueue") || strings.Contains(jsBody, "queueData") || strings.Contains(jsBody, "refreshingQueue") {
 		t.Fatalf("expected app.js to remove standalone Background Jobs view state and renderer, got app.js body: %s", jsBody)
