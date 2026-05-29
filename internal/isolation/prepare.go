@@ -30,7 +30,10 @@ type Result struct {
 	GitRepoRoot   string
 }
 
-var beforeCopyFileRename func(tmpPath, dst string) error
+var (
+	beforeCopyFileTempCreate func(parent string) error
+	beforeCopyFileRename     func(tmpPath, dst string) error
+)
 
 func Prepare(req Request) (Result, error) {
 	parentWorkdir, err := filepath.Abs(req.ParentWorkdir)
@@ -253,7 +256,12 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 		return fmt.Errorf("source is not a regular file: %s", src)
 	}
 
-	tmp, err := os.CreateTemp(parent, "."+filepath.Base(dst)+".*.tmp")
+	if beforeCopyFileTempCreate != nil {
+		if err := beforeCopyFileTempCreate(parent); err != nil {
+			return err
+		}
+	}
+	tmp, err := fileutil.CreateTempNoSymlink(parent, "."+filepath.Base(dst)+".*.tmp")
 	if err != nil {
 		return err
 	}

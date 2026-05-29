@@ -50,7 +50,7 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 		return err
 	}
 
-	tmp, err := os.CreateTemp(parent, "."+base+".*.tmp")
+	tmp, err := CreateTempNoSymlink(parent, "."+base+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -331,6 +331,59 @@ func MkdirTempNoSymlink(parent, pattern string) (string, error) {
 		return "", fmt.Errorf("created temp path is not a directory: %s", path)
 	}
 	return path, nil
+}
+
+func CreateTempNoSymlink(parent, pattern string) (*os.File, error) {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return nil, errors.New("parent path is required")
+	}
+	parent = filepath.Clean(parent)
+	if err := rejectExistingSymlinkAncestors(parent); err != nil {
+		return nil, err
+	}
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		return nil, err
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to create temp file under symlinked parent: %s", parent)
+	}
+	if !parentInfo.IsDir() {
+		return nil, fmt.Errorf("temp parent is not a directory: %s", parent)
+	}
+	file, err := os.CreateTemp(parent, pattern)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Clean(file.Name())
+	if filepath.Dir(path) != parent {
+		_ = file.Close()
+		_ = RemoveFileNoSymlink(path)
+		return nil, fmt.Errorf("invalid temp file path: %s", path)
+	}
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		_ = file.Close()
+		_ = RemoveFileNoSymlink(path)
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		_ = file.Close()
+		_ = RemoveFileNoSymlink(path)
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		_ = file.Close()
+		_ = RemoveFileNoSymlink(path)
+		return nil, fmt.Errorf("created temp file became symlinked: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		_ = RemoveFileNoSymlink(path)
+		return nil, fmt.Errorf("created temp path is not a regular file: %s", path)
+	}
+	return file, nil
 }
 
 func RemoveDirAllNoSymlink(path string) error {

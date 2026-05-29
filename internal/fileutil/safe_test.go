@@ -321,6 +321,61 @@ func TestMkdirTempNoSymlinkCreatesDirectory(t *testing.T) {
 	}
 }
 
+func TestCreateTempNoSymlinkRejectsSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	file, err := CreateTempNoSymlink(link, ".upload-*")
+	if err == nil {
+		_ = file.Close()
+		t.Fatalf("expected symlink parent to be rejected, got %s", file.Name())
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temp file should not be created under symlink target, got %d entries", len(entries))
+	}
+}
+
+func TestCreateTempNoSymlinkCreatesFile(t *testing.T) {
+	parent := t.TempDir()
+	file, err := CreateTempNoSymlink(parent, ".upload-*")
+	if err != nil {
+		t.Fatalf("create temp no symlink: %v", err)
+	}
+	path := file.Name()
+	defer RemoveFileNoSymlink(path)
+	if filepath.Dir(path) != parent {
+		t.Fatalf("temp file should be direct child of parent, got %s under %s", path, parent)
+	}
+	if _, err := file.WriteString("ok"); err != nil {
+		_ = file.Close()
+		t.Fatalf("write temp file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat temp file: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		t.Fatalf("expected regular file, got mode %v", info.Mode())
+	}
+}
+
 func TestRenameDirNoSymlinkRejectsSymlinkDestinationParent(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")

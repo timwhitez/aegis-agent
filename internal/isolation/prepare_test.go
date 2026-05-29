@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -154,6 +155,61 @@ func TestCopyFileRejectsSymlinkedDestinationParentDuringRename(t *testing.T) {
 		t.Fatal("expected symlinked destination parent to be rejected")
 	}
 	if _, statErr := os.Stat(filepath.Join(outside, "hello.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
+
+func TestCopyFileRejectsSymlinkedDestinationParentBeforeTempCreate(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "secret.txt")
+	if err := os.WriteFile(src, []byte("copy-secret"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	dstRoot := t.TempDir()
+	dstParent := filepath.Join(dstRoot, "target")
+	if err := os.MkdirAll(dstParent, 0o700); err != nil {
+		t.Fatalf("mkdir destination parent: %v", err)
+	}
+	outside := t.TempDir()
+	symlinkProbe := filepath.Join(dstRoot, "symlink-probe")
+	if err := os.Symlink(outside, symlinkProbe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(symlinkProbe); err != nil {
+		t.Fatalf("remove symlink probe: %v", err)
+	}
+
+	restore := beforeCopyFileTempCreate
+	beforeCopyFileTempCreate = func(parent string) error {
+		if parent != dstParent {
+			t.Fatalf("unexpected copy temp parent %s", parent)
+		}
+		if err := os.RemoveAll(dstParent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, dstParent)
+	}
+	defer func() {
+		beforeCopyFileTempCreate = restore
+	}()
+
+	err := copyFile(src, filepath.Join(dstParent, "secret.txt"), 0o600)
+	if err == nil {
+		t.Fatal("expected symlinked destination parent to be rejected before temp create")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil {
+		t.Fatalf("read outside dir: %v", readErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".secret.txt.") {
+			t.Fatalf("copy temp file must not be created through symlinked parent, found %s", entry.Name())
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "secret.txt")); !os.IsNotExist(statErr) {
 		t.Fatalf("outside target should not be created, stat err=%v", statErr)
 	}
 }

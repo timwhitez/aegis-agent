@@ -8874,7 +8874,57 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-450 and FCA-20260530-458. FCA-20260529-450 hardened Web history move/rollback renames after a transaction exists, and FCA-20260530-458 added the shared temp-dir helper for skill upload paths; this residual issue was `newWebHistoryMutationTransaction` still creating the history backup root itself with raw `os.MkdirTemp(parent, ...)`.
 - Confirmed the minimal fix belongs in `newWebHistoryMutationTransaction`: keep existing session-root validation, transaction shape, move semantics, rollback, and finalize behavior unchanged, but route backup-root creation through `fileutil.MkdirTempNoSymlink`.
 
+### Review 455
+
+- Confirmed FCA-20260530-460 against `spec/09-phase-plan.md`, `spec/01-runtime-architecture.md`, and `AGENTS.md`: copy isolation is part of the advanced local worktree profile, and copied file contents must not be written through a destination parent that becomes a symlink between parent validation and temp-file creation.
+- Confirmed this is distinct from FCA-20260528-345, FCA-20260529-452, and FCA-20260530-458/459. Earlier isolation and fileutil slices hardened destination promotion and directory temp creation; this residual issue was `internal/isolation/prepare.go` `copyFile` still creating the per-file temp copy with raw `os.CreateTemp(parent, ...)`.
+- Confirmed the minimal fix belongs in the shared file temp creation boundary: add `fileutil.CreateTempNoSymlink`, use it from isolation copy and `AtomicWriteFileNoSymlink`, and preserve existing copy, chmod, rename, and cleanup semantics.
+
 ## Update Log
+
+### FCA-20260530-460
+
+Slice: `fix(isolation): harden copy temp files`
+
+Finding:
+
+- `spec/09-phase-plan.md` keeps worktree isolation as an advanced profile with real local isolation evidence, and `AGENTS.md` requires file tools to handle symlink escapes rather than relying on `Clean`/`Rel` alone.
+- `internal/isolation/prepare.go` `copyFile` created the destination parent with `mkdirAllNoSymlink`, rejected a symlinked destination, opened the source with `O_NOFOLLOW`, but then used raw `os.CreateTemp(parent, "."+filepath.Base(dst)+".*.tmp")` before copying source bytes.
+- A focused regression replaced the destination parent with a symlink immediately before temp-file creation. Before the fix, the copy path followed the symlink and created a hidden `.secret.txt.*.tmp` file containing copied source data under the outside target.
+
+Impact:
+
+- A copy-isolation preparation could leak copied source file contents into an outside symlink target before the later no-symlink rename boundary rejected the final promotion.
+- That weakened the advanced isolation profile's local filesystem boundary: the final destination was protected, but temp-file creation itself still had observable outside side effects.
+
+Changes:
+
+- Added `fileutil.CreateTempNoSymlink`, which rejects empty parents, symlinked ancestors, symlinked/non-directory parents, invalid temp paths, and non-regular/symlinked temp results before returning an open temp file.
+- Routed `internal/isolation/prepare.go` `copyFile` temp-file creation through `fileutil.CreateTempNoSymlink`.
+- Routed `fileutil.AtomicWriteFileNoSymlink` temp-file creation through the same helper for consistency at the shared atomic-write boundary.
+- Added focused fileutil coverage for rejecting symlinked temp-file parents and creating ordinary temp files.
+- Added focused isolation coverage proving copy temp files are not created through a destination parent that becomes a symlink before temp creation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/isolation -run TestCopyFileRejectsSymlinkedDestinationParentBeforeTempCreate -count=1`: failed before the fix because `.secret.txt.*.tmp` was created under the outside symlink target.
+- `go test -timeout 120s ./internal/isolation -run 'TestCopyFileRejectsSymlinkedDestinationParentBeforeTempCreate|TestCopyFileRejectsSymlinkedDestinationParentDuringRename' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestCreateTempNoSymlink|TestAtomicWriteFileNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/isolation -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-459
 
