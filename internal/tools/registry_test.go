@@ -48,8 +48,12 @@ func containsString(items []string, target string) bool {
 }
 
 type recordingControlPlane struct {
-	spawnCalls int
-	spawnReq   AgentSpawnRequest
+	spawnCalls  int
+	spawnReq    AgentSpawnRequest
+	statusCalls int
+	statusReq   AgentStatusRequest
+	listCalls   int
+	listParent  string
 }
 
 func (r *recordingControlPlane) SpawnAgent(_ context.Context, req AgentSpawnRequest) (AgentSpawnResult, error) {
@@ -58,11 +62,15 @@ func (r *recordingControlPlane) SpawnAgent(_ context.Context, req AgentSpawnRequ
 	return AgentSpawnResult{SessionID: "child_1", Status: session.StatusCompleted}, nil
 }
 
-func (r *recordingControlPlane) AgentStatus(context.Context, AgentStatusRequest) (AgentStatusResult, error) {
+func (r *recordingControlPlane) AgentStatus(_ context.Context, req AgentStatusRequest) (AgentStatusResult, error) {
+	r.statusCalls++
+	r.statusReq = req
 	return AgentStatusResult{}, nil
 }
 
-func (r *recordingControlPlane) AgentList(context.Context, string) (AgentListResult, error) {
+func (r *recordingControlPlane) AgentList(_ context.Context, parent string) (AgentListResult, error) {
+	r.listCalls++
+	r.listParent = parent
 	return AgentListResult{}, nil
 }
 
@@ -2557,6 +2565,46 @@ func TestAgentSpawnRejectsBlankPromptBeforeControlPlane(t *testing.T) {
 	}
 	if control.spawnCalls != 0 {
 		t.Fatalf("blank prompt reached control plane: calls=%d req=%#v", control.spawnCalls, control.spawnReq)
+	}
+}
+
+func TestAgentToolsRejectMissingSessionMetadataBeforeControlPlane(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	control := &recordingControlPlane{}
+	registry, err := NewRegistry(cfg, nil, store, control)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: "missing_agent_tool_parent",
+		Store:     store,
+		Config:    cfg,
+	}
+
+	cases := []struct {
+		name string
+		tool string
+		args json.RawMessage
+	}{
+		{name: "spawn", tool: "agent_spawn", args: json.RawMessage(`{"prompt":"audit child slice"}`)},
+		{name: "status_session", tool: "agent_status", args: json.RawMessage(`{"session_id":"child_missing_parent"}`)},
+		{name: "status_queue", tool: "agent_status", args: json.RawMessage(`{"queue_job_id":"job_missing_parent"}`)},
+		{name: "list", tool: "agent_list", args: json.RawMessage(`{}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), tc.tool, execCtx, tc.args)
+			if err != nil {
+				t.Fatalf("%s execute: %v", tc.tool, err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, "session.json") {
+				t.Fatalf("expected missing session metadata error, got %#v", result)
+			}
+		})
+	}
+	if control.spawnCalls != 0 || control.statusCalls != 0 || control.listCalls != 0 {
+		t.Fatalf("missing current session reached control plane: spawn=%d status=%d list=%d spawnReq=%#v statusReq=%#v listParent=%q", control.spawnCalls, control.statusCalls, control.listCalls, control.spawnReq, control.statusReq, control.listParent)
 	}
 }
 

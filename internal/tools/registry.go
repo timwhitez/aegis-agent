@@ -2916,6 +2916,9 @@ func defAgentSpawn(control ControlPlane) Definition {
 			if strings.TrimSpace(input.Prompt) == "" {
 				return errorResult("agent_spawn", errors.New("prompt is required")), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("agent_spawn", err), nil
+			}
 			input.ParentSessionID = execCtx.SessionID
 			result, err := control.SpawnAgent(ctx, input)
 			if err != nil {
@@ -2944,7 +2947,7 @@ func defAgentStatus(control ControlPlane) Definition {
 				},
 			},
 		},
-		Execute: func(ctx context.Context, _ ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			if control == nil {
 				return errorResult("agent_status", errors.New("agent control plane is not available")), nil
 			}
@@ -2954,6 +2957,9 @@ func defAgentStatus(control ControlPlane) Definition {
 			}
 			if strings.TrimSpace(input.SessionID) == "" && strings.TrimSpace(input.QueueJobID) == "" {
 				return errorResult("agent_status", errors.New("session_id or queue_job_id is required")), nil
+			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("agent_status", err), nil
 			}
 			result, err := control.AgentStatus(ctx, input)
 			if err != nil {
@@ -2977,6 +2983,9 @@ func defAgentList(control ControlPlane) Definition {
 		Execute: func(ctx context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
 			if control == nil {
 				return errorResult("agent_list", errors.New("agent control plane is not available")), nil
+			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("agent_list", err), nil
 			}
 			result, err := control.AgentList(ctx, execCtx.SessionID)
 			if err != nil {

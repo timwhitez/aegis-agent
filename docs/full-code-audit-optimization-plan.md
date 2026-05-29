@@ -8730,7 +8730,48 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-431. That slice fixed Goal tools only; this residual issue was the adjacent model-facing Plan Mode / todo / task / feature-list tool surface accepting arbitrary `execCtx.SessionID` values.
 - Confirmed the minimal fix belongs at the tool boundary, preserving lower-level store methods for callers that already have session metadata context and must still distinguish optional missing fact files from corrupt existing fact files.
 
+### Review 431
+
+- Confirmed FCA-20260529-433 against `spec/01-runtime-architecture.md` and `spec/04-tools-and-skills.md`: model-facing multi-agent tools are current-session tools, even when `agent_status` reads a child session or queue job, and must prove the current session metadata fact before touching the control plane.
+- Confirmed this is distinct from FCA-20260529-430 and FCA-20260529-432. FCA-430 fixed the runtime `AgentList` parent lookup, and FCA-432 fixed Plan Mode / todo / task / feature-list tools; this residual issue was the adjacent `agent_spawn`, `agent_status`, and `agent_list` tool boundary entering the control plane before proving `execCtx.SessionID` existed.
+- Confirmed the minimal fix belongs at the tool boundary as a preflight, preserving runtime/control-plane defense-in-depth and existing valid child/queue status lookups.
+
 ## Update Log
+
+### FCA-20260529-433
+
+Slice: `fix(tools): require agent tool sessions`
+
+Finding:
+
+- `agent_spawn` validated its prompt, then set `ParentSessionID = execCtx.SessionID` and called the control plane without first proving the current session had `session.json`.
+- `agent_status` accepted either `session_id` or `queue_job_id` and called the control plane without checking the current tool session at all; the queue-job form is especially detached because the request carries no parent/session field.
+- `agent_list` called the control plane with `execCtx.SessionID` directly.
+- A focused pre-fix regression executed `agent_spawn`, both `agent_status` forms, and `agent_list` with `execCtx.SessionID:"missing_agent_tool_parent"` and no `session.json`; before the fix, every tool reached the control plane and returned successful-looking results.
+
+Impact:
+
+- A malformed or miswired tool execution context could perform delegation/status/list actions without a valid current session identity, weakening the model-facing session fact-source boundary.
+- `agent_status(queue_job_id)` could query global queue state without proving which current session was asking for recovery, diverging from the documented current-session tool model even though runtime still has lower-level checks for many paths.
+
+Changes:
+
+- Reused the shared tool metadata helper to require `Store.LoadMetadata(execCtx.SessionID)` before `agent_spawn`, `agent_status`, and `agent_list` call the control plane.
+- Extended the recording control-plane test double to count spawn/status/list calls.
+- Added focused coverage proving missing current-session metadata returns a tool error and does not call the control plane.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestAgentToolsRejectMissingSessionMetadataBeforeControlPlane -count=1`: failed before the fix because all four cases reached the control plane and returned success.
+- `go test -timeout 120s ./internal/tools -run 'TestAgent(ToolsRejectMissingSessionMetadataBeforeControlPlane|SpawnRejectsBlankPromptBeforeControlPlane|ToolsAreEnabledByDefaultAndCanBeDisabled|ToolsDescribeModelLedDelegation)' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestAgentListRejectsUnknownParentSession|TestRunnerDelegate|TestRunnerQueueSubmit|TestRunnerProcessNextJob|TestProcessNextJob|TestParentCoordination' -count=1`: passed.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/{app,session-view,workspace-view,events,settings-view,utils,api,icons}.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-432
 
