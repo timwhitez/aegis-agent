@@ -39,10 +39,8 @@ const state = {
   workspacePath: '',
   hasMoreMessages: false,
   oldestMessageId: '',
-  loadingEarlier: false,
   loadedAllEarlierMessages: false,
-  messageGapAnchorId: '',
-  preserveScrollAfterRender: null
+  messageGapAnchorId: ''
 };
 
 const renderState = {
@@ -97,7 +95,9 @@ const historyExpansionViewState = {
 };
 
 const messagePagingViewState = {
-  requestSeq: 0
+  requestSeq: 0,
+  loadingEarlier: false,
+  preserveScrollAfterRender: null
 };
 
 const toastViewState = {
@@ -268,6 +268,32 @@ function isGenerating() {
 
 function setGeneratingViewState(generating) {
   runViewState.generating = Boolean(generating);
+}
+
+function isLoadingEarlierMessages() {
+  return messagePagingViewState.loadingEarlier;
+}
+
+function setLoadingEarlierMessages(loading) {
+  messagePagingViewState.loadingEarlier = Boolean(loading);
+}
+
+function preserveScrollAfterRenderHeight() {
+  return messagePagingViewState.preserveScrollAfterRender;
+}
+
+function setPreserveScrollAfterRenderHeight(height) {
+  if (height === null || height === undefined) {
+    messagePagingViewState.preserveScrollAfterRender = null;
+    return;
+  }
+  const numeric = Number(height);
+  messagePagingViewState.preserveScrollAfterRender = Number.isFinite(numeric) ? numeric : null;
+}
+
+function resetMessagePagingRenderState() {
+  setLoadingEarlierMessages(false);
+  setPreserveScrollAfterRenderHeight(null);
 }
 
 function syncPageVisibilityHidden() {
@@ -1500,10 +1526,9 @@ function adoptSession(sessionID, backed) {
     clearPlanInputSelections();
     state.hasMoreMessages = false;
     state.oldestMessageId = '';
-    state.loadingEarlier = false;
     state.loadedAllEarlierMessages = false;
     state.messageGapAnchorId = '';
-    state.preserveScrollAfterRender = null;
+    resetMessagePagingRenderState();
     if (typeof clearMarkdownCache === 'function') {
       clearMarkdownCache();
     }
@@ -1529,10 +1554,9 @@ function resetChatSession() {
   setComposerMode(null);
   state.hasMoreMessages = false;
   state.oldestMessageId = '';
-  state.loadingEarlier = false;
   state.loadedAllEarlierMessages = false;
   state.messageGapAnchorId = '';
-  state.preserveScrollAfterRender = null;
+  resetMessagePagingRenderState();
   if (typeof clearMarkdownCache === 'function') {
     clearMarkdownCache();
   }
@@ -2484,14 +2508,14 @@ function earlierMessagesErrorMessage(err, fallback = 'Failed to load earlier mes
 }
 
 async function loadEarlierMessages() {
-  if (state.loadingEarlier || !state.hasMoreMessages || !(state.messageGapAnchorId || state.oldestMessageId)) {
+  if (isLoadingEarlierMessages() || !state.hasMoreMessages || !(state.messageGapAnchorId || state.oldestMessageId)) {
     return;
   }
   const sessionID = state.sessionId;
   const fillingGap = Boolean(state.messageGapAnchorId);
   const beforeID = state.messageGapAnchorId || state.oldestMessageId;
   const requestSeq = ++messagePagingViewState.requestSeq;
-  state.loadingEarlier = true;
+  setLoadingEarlierMessages(true);
   renderCurrentSession();
   try {
     const beforeScrollHeight = nodes.chatContainer.scrollHeight;
@@ -2515,13 +2539,13 @@ async function loadEarlierMessages() {
         state.loadedAllEarlierMessages = resp?.has_more !== true;
       }
       mergeMessageTimelineEntries(state.sessionDetail);
-      state.preserveScrollAfterRender = beforeScrollHeight;
+      setPreserveScrollAfterRenderHeight(beforeScrollHeight);
     } else {
       state.hasMoreMessages = false;
       state.loadedAllEarlierMessages = true;
       state.messageGapAnchorId = '';
     }
-    state.loadingEarlier = false;
+    setLoadingEarlierMessages(false);
     renderCurrentSession();
   } catch (err) {
     if (state.sessionId !== sessionID || messagePagingViewState.requestSeq !== requestSeq) {
@@ -2529,13 +2553,12 @@ async function loadEarlierMessages() {
     }
     console.error('load earlier messages error', err);
     const message = earlierMessagesErrorMessage(err);
-    state.loadingEarlier = false;
+    setLoadingEarlierMessages(false);
     showToast(message, 'error');
     renderCurrentSession();
   } finally {
     if (messagePagingViewState.requestSeq === requestSeq) {
-      state.loadingEarlier = false;
-      state.preserveScrollAfterRender = null;
+      resetMessagePagingRenderState();
     }
   }
 }
@@ -2613,10 +2636,9 @@ async function openSession(sessionID, options = {}) {
   setSelectedQueueJob('');
   state.hasMoreMessages = false;
   state.oldestMessageId = '';
-  state.loadingEarlier = false;
   state.loadedAllEarlierMessages = false;
   state.messageGapAnchorId = '';
-  state.preserveScrollAfterRender = null;
+  resetMessagePagingRenderState();
   setNextSendInterruptArmed(false);
   resetLiveEvents();
   setGeneratingViewState(false);

@@ -62,6 +62,7 @@ vm.runInContext(`
   const queueJobViewState = { selectedJobId: '', selectedJobDetail: null };
   const inspectorViewState = { tab: 'tasks' };
   const stopActionViewState = { sessionIds: new Set() };
+  const messagePagingViewState = { loadingEarlier: false, preserveScrollAfterRender: null };
   function selectedQueueJobId() {
     return queueJobViewState.selectedJobId || '';
   }
@@ -117,6 +118,12 @@ vm.runInContext(`
   }
   function isStoppingSession(sessionID) {
     return stopActionViewState.sessionIds.has(sessionID);
+  }
+  function isLoadingEarlierMessages() {
+    return messagePagingViewState.loadingEarlier;
+  }
+  function preserveScrollAfterRenderHeight() {
+    return messagePagingViewState.preserveScrollAfterRender;
   }
   function isFloatingPanelExpanded() {
     return true;
@@ -2415,20 +2422,116 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     stateHasMessagePageRequestSeq: Object.prototype.hasOwnProperty.call(state, 'messagePageRequestSeq'),
+    stateHasLoadingEarlier: Object.prototype.hasOwnProperty.call(state, 'loadingEarlier'),
+    stateHasPreserveScrollAfterRender: Object.prototype.hasOwnProperty.call(state, 'preserveScrollAfterRender'),
     selected: state.sessionId,
     detailID: state.sessionDetail?.metadata?.id,
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id),
     hasMore: state.hasMoreMessages,
     oldest: state.oldestMessageId,
-    loadingEarlier: state.loadingEarlier
+    loadingEarlier: isLoadingEarlierMessages(),
+    preserveScrollAfterRender: preserveScrollAfterRenderHeight()
   })`, appContext)), {
     stateHasMessagePageRequestSeq: false,
+    stateHasLoadingEarlier: false,
+    stateHasPreserveScrollAfterRender: false,
     selected: 'session_fast_b',
     detailID: 'session_fast_b',
     messageIDs: ['b1'],
     hasMore: false,
     oldest: 'b1',
-    loadingEarlier: false
+    loadingEarlier: false,
+    preserveScrollAfterRender: null
+  });
+});
+
+test('message paging in-flight view state is isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  const pageLoad = vm.runInContext(`
+    const renderSnapshots = [];
+    renderCurrentSession = () => {
+      renderSnapshots.push({
+        loading: isLoadingEarlierMessages(),
+        preserveScrollAfterRender: preserveScrollAfterRenderHeight()
+      });
+    };
+    nodes.chatContainer.scrollHeight = 240;
+    state.sessionId = 'session_page_state';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_page_state' },
+      messages: [{ id: 'm8', role: 'assistant', text: 'tail' }],
+      timeline: []
+    };
+    state.hasMoreMessages = true;
+    state.oldestMessageId = 'm8';
+    loadEarlierMessages();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_page_state/);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasMessagePageRequestSeq: Object.prototype.hasOwnProperty.call(state, 'messagePageRequestSeq'),
+    stateHasLoadingEarlier: Object.prototype.hasOwnProperty.call(state, 'loadingEarlier'),
+    stateHasPreserveScrollAfterRender: Object.prototype.hasOwnProperty.call(state, 'preserveScrollAfterRender'),
+    helperLoading: isLoadingEarlierMessages(),
+    helperPreserveScrollAfterRender: preserveScrollAfterRenderHeight(),
+    durablePagingFacts: {
+      hasMoreMessages: state.hasMoreMessages,
+      oldestMessageId: state.oldestMessageId,
+      loadedAllEarlierMessages: state.loadedAllEarlierMessages,
+      messageGapAnchorId: state.messageGapAnchorId
+    }
+  })`, appContext)), {
+    stateHasMessagePageRequestSeq: false,
+    stateHasLoadingEarlier: false,
+    stateHasPreserveScrollAfterRender: false,
+    helperLoading: true,
+    helperPreserveScrollAfterRender: null,
+    durablePagingFacts: {
+      hasMoreMessages: true,
+      oldestMessageId: 'm8',
+      loadedAllEarlierMessages: false,
+      messageGapAnchorId: ''
+    }
+  });
+
+  appContext.pendingRequests[0].resolve({
+    messages: [
+      { id: 'm6', role: 'assistant', text: 'older' },
+      { id: 'm7', role: 'assistant', text: 'newer older' }
+    ],
+    has_more: false
+  });
+  await pageLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasLoadingEarlier: Object.prototype.hasOwnProperty.call(state, 'loadingEarlier'),
+    stateHasPreserveScrollAfterRender: Object.prototype.hasOwnProperty.call(state, 'preserveScrollAfterRender'),
+    messagePagingKeys: Object.keys(messagePagingViewState).sort(),
+    helperLoading: isLoadingEarlierMessages(),
+    helperPreserveScrollAfterRender: preserveScrollAfterRenderHeight(),
+    messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id),
+    hasMoreMessages: state.hasMoreMessages,
+    oldestMessageId: state.oldestMessageId,
+    loadedAllEarlierMessages: state.loadedAllEarlierMessages,
+    messageGapAnchorId: state.messageGapAnchorId,
+    renderSnapshots
+  })`, appContext)), {
+    stateHasLoadingEarlier: false,
+    stateHasPreserveScrollAfterRender: false,
+    messagePagingKeys: ['loadingEarlier', 'preserveScrollAfterRender', 'requestSeq'],
+    helperLoading: false,
+    helperPreserveScrollAfterRender: null,
+    messageIDs: ['m6', 'm7', 'm8'],
+    hasMoreMessages: false,
+    oldestMessageId: 'm6',
+    loadedAllEarlierMessages: true,
+    messageGapAnchorId: '',
+    renderSnapshots: [
+      { loading: true, preserveScrollAfterRender: null },
+      { loading: false, preserveScrollAfterRender: 240 }
+    ]
   });
 });
 

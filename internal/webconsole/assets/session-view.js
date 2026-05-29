@@ -65,7 +65,7 @@ function renderCurrentSession() {
   const previousScrollTop = nodes.chatContainer.scrollTop;
   const previousScrollHeight = nodes.chatContainer.scrollHeight;
   const shouldStick = isChatNearBottom(nodes.chatContainer) || !chatRenderCacheValue('body');
-  const prependScrollHeight = state.preserveScrollAfterRender;
+  const prependScrollHeight = preserveScrollAfterRenderHeight();
   const sections = renderMessageStream();
   let mutated = false;
 
@@ -278,8 +278,8 @@ function renderMessageStream() {
 
   const loadEarlierHTML = state.hasMoreMessages ? `
     <div class="load-earlier-bar">
-      <button class="load-earlier-btn" type="button" data-load-earlier ${state.loadingEarlier ? 'disabled' : ''}>
-        ${state.loadingEarlier ? 'Loading...' : 'Load earlier messages'}
+      <button class="load-earlier-btn" type="button" data-load-earlier ${isLoadingEarlierMessages() ? 'disabled' : ''}>
+        ${isLoadingEarlierMessages() ? 'Loading...' : 'Load earlier messages'}
       </button>
     </div>
   ` : '';

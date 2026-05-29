@@ -8634,7 +8634,68 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-415 and earlier stale async completion slices. Those slices fixed or isolated launch-pending request coordination before a durable session id exists; this residual issue was the selected-session running affordance flag still driving steer routing, interrupt controls, stop controls, pending-stage rendering, composer labels, and active polling through the main `state` object.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: move the generating flag into a tiny `runViewState`, keep durable selected-session detail and message paging facts on `state`, and preserve UI behavior that projects runtime/session facts without creating a second authority.
 
+### Review 415
+
+- Confirmed FCA-20260529-417 against `spec/17-web-console.md`'s message-window requirements and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: earlier-message paging's in-flight loading flag and one-render scroll-preservation height are browser-local display/request coordination, not durable session messages, backend pagination facts, provider replay facts, queue facts, or runtime state.
+- Confirmed this is distinct from FCA-20260529-115 and FCA-20260529-416. FCA-20260529-115 moved the earlier-message page request sequence out of `state`; FCA-20260529-416 moved the selected-session generating affordance out of `state`; this residual issue was the load-earlier disabled/loading state and prepend scroll restoration value still flowing through the main `state` object.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: extend `messagePagingViewState` for in-flight/render scroll state, keep durable message-window facts such as `hasMoreMessages`, `oldestMessageId`, `loadedAllEarlierMessages`, and `messageGapAnchorId` on `state`, and preserve stale page suppression plus scroll restoration.
+
 ## Update Log
+
+### FCA-20260529-417
+
+Slice: `fix(webconsole): isolate message paging view state`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `loadingEarlier` and `preserveScrollAfterRender`.
+- `app.js` used `loadingEarlier` to suppress duplicate earlier-message page requests and used `preserveScrollAfterRender` to restore the chat scroll position after prepending older messages.
+- `session-view.js` rendered the Load earlier button disabled/loading state and one-render scroll restoration directly from those main `state` fields.
+- Durable message-window facts still come from session detail and backend message pagination (`hasMoreMessages`, `oldestMessageId`, `loadedAllEarlierMessages`, and `messageGapAnchorId`); the loading flag and scroll height are browser-only request/render coordination.
+
+Impact:
+
+- Browser-local earlier-message paging state remained mixed with durable selected-session and message-window facts after the adjacent request-sequence guard had already been isolated in `messagePagingViewState`.
+- Future frontend changes could mistake in-flight loading or scroll-restoration values for durable session/message facts, weakening the WebConsole boundary that it only projects the local file/session store instead of becoming a second authority.
+
+Changes:
+
+- Extended `messagePagingViewState` to hold the earlier-message loading flag and one-render scroll-preservation height alongside the existing request sequence.
+- Added helper functions for reading, setting, and resetting the isolated message-paging render state.
+- Removed `loadingEarlier` and `preserveScrollAfterRender` from the main `state` object.
+- Updated session adoption, reset, open, earlier-message loading, and `session-view.js` rendering to use the helper path.
+- Kept durable message-window facts (`hasMoreMessages`, `oldestMessageId`, `loadedAllEarlierMessages`, and `messageGapAnchorId`) on `state`.
+- Added a frontend Node harness regression proving the loading flag and scroll-preservation height are not stored on `state`, still disable/render the paging path, preserve prepend scroll once, and leave durable paging facts intact.
+- Updated the stale earlier-message page regression to assert the new helper-backed state and durable facts after a session switch.
+- Updated the embedded asset smoke test to reject `state.loadingEarlier` and `state.preserveScrollAfterRender` in served `app.js`.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "message paging in-flight view state" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the helper-backed message paging view state did not exist and the production path still depended on main `state` fields.
+- `node --test --test-name-pattern "message paging in-flight view state|loadEarlierMessages ignores stale" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `rg -n "state\\.(loadingEarlier|preserveScrollAfterRender)" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs internal/webconsole/service_test.go`: passed with only the service smoke's negative assertion.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 87/87 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed after adding the embedded asset smoke guard for message paging view state.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-416
 
