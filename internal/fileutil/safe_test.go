@@ -737,3 +737,42 @@ func TestRemoveFileNoSymlinkRejectsSymlinkTarget(t *testing.T) {
 		t.Fatalf("expected outside file to remain, got %v", statErr)
 	}
 }
+
+func TestRemoveFileNoSymlinkRejectsSymlinkParentBeforeRemove(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "sessions")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	path := filepath.Join(parent, "stale.json")
+	if err := os.WriteFile(path, []byte("local"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "stale.json")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	restore := beforeRemoveFileNoSymlinkRemove
+	beforeRemoveFileNoSymlinkRemove = func(removePath string) error {
+		if removePath != path {
+			return nil
+		}
+		if err := os.RemoveAll(parent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeRemoveFileNoSymlinkRemove = restore
+	}()
+
+	err := RemoveFileNoSymlink(path)
+	if err == nil {
+		t.Fatal("expected symlinked parent during file remove to be rejected")
+	}
+	if _, statErr := os.Stat(outsideFile); statErr != nil {
+		t.Fatalf("outside file should not be removed, got %v", statErr)
+	}
+}

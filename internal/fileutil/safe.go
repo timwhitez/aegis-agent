@@ -21,6 +21,7 @@ var beforeMkdirAllNoSymlinkMkdir func(path string) error
 var beforeMkdirTempNoSymlinkCreate func(parent string) error
 var beforeCreateTempNoSymlinkCreate func(parent string) error
 var beforeRemoveDirAllNoSymlinkRemove func(path string) error
+var beforeRemoveFileNoSymlinkRemove func(path string) error
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -924,6 +925,11 @@ func RemoveFileNoSymlink(path string) error {
 	if filepath.Dir(path) == path {
 		return fmt.Errorf("refusing to remove filesystem root: %s", path)
 	}
+	parent := filepath.Dir(path)
+	base := filepath.Base(path)
+	if base == "." || base == string(filepath.Separator) {
+		return fmt.Errorf("invalid file path: %s", path)
+	}
 	if err := rejectExistingSymlinkAncestors(path); err != nil {
 		return err
 	}
@@ -943,7 +949,49 @@ func RemoveFileNoSymlink(path string) error {
 	if err := rejectExistingSymlinkAncestors(path); err != nil {
 		return err
 	}
-	return os.Remove(path)
+	parentFD, err := openDirNoSymlink(parent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if err := rejectRegularFileChildAtNoSymlink(parentFD, base, path); err != nil {
+		return err
+	}
+	if beforeRemoveFileNoSymlinkRemove != nil {
+		if err := beforeRemoveFileNoSymlinkRemove(path); err != nil {
+			return err
+		}
+	}
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		return err
+	}
+	if err := rejectRegularFileChildAtNoSymlink(parentFD, base, path); err != nil {
+		return err
+	}
+	if err := unix.Unlinkat(parentFD, base, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	return nil
+}
+
+func rejectRegularFileChildAtNoSymlink(parentFD int, name, path string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFLNK:
+		return fmt.Errorf("refusing to remove symlinked path: %s", path)
+	case unix.S_IFREG:
+		return nil
+	default:
+		return fmt.Errorf("refusing to remove non-regular file path: %s", path)
+	}
 }
 
 func rejectExistingSymlinkAncestors(path string) error {

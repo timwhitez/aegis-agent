@@ -8904,7 +8904,57 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-454/455, FCA-20260530-458/459, FCA-20260530-463, and prior rename/file cleanup slices. Those slices routed callers to the shared remover or hardened creation/promotion; this residual issue was inside `RemoveDirAllNoSymlink` itself, which still used raw `os.RemoveAll(path)` after path prechecks and could delete through a parent that was replaced by a symlink before the recursive remove.
 - Confirmed the minimal fix belongs in the shared directory remover: anchor the parent directory with a no-follow descriptor, verify the descriptor still matches the parent path before deletion, recursively enumerate with fd-relative operations, unlink child symlinks without following them, and remove directories with `unlinkat(AT_REMOVEDIR)`.
 
+### Review 460
+
+- Confirmed FCA-20260530-465 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: session stores, Web history cleanup, doctor probes, copy isolation, and atomic writes use `fileutil.RemoveFileNoSymlink` as the shared regular-file deletion boundary for local file facts.
+- Confirmed this is distinct from FCA-20260530-457, FCA-20260530-460/461, FCA-20260530-463, and FCA-20260530-464. Those slices routed temp cleanup into the shared remover or hardened temp/recursive directory creation and deletion; this residual issue was inside `RemoveFileNoSymlink` itself, which still used raw `os.Remove(path)` after path prechecks and could delete through a parent that was replaced by a symlink before the file remove.
+- Confirmed the minimal fix belongs in the shared file remover: anchor the target parent with a no-follow descriptor, verify the descriptor still matches the parent path before deletion, validate the child with descriptor-relative `fstatat(AT_SYMLINK_NOFOLLOW)`, and remove it with `unlinkat` instead of path-based `os.Remove`.
+
 ## Update Log
+
+### FCA-20260530-465
+
+Slice: `fix(fileutil): harden file remove`
+
+Finding:
+
+- `AGENTS.md` requires filesystem safety to handle symlink escape rather than relying only on cleaned paths.
+- `fileutil.RemoveFileNoSymlink` rejected symlink ancestors and symlink targets before deletion, but then called raw `os.Remove(path)`.
+- The helper is the shared regular-file deletion boundary for session-store goal/plan/contract cleanup, queue status cleanup, WebConsole session-history file deletion, doctor temp probes, copy-isolation temp cleanup, and atomic-write temp cleanup.
+- A focused regression replaced an already-checked parent directory with a symlink immediately before deletion. Before the fix, `RemoveFileNoSymlink` returned success after raw `os.Remove` removed the outside symlink target's same-name file.
+
+Impact:
+
+- A local WebConsole, session-store, doctor, copy-isolation, or atomic-write cleanup path could delete a regular file outside the intended local fact root when a checked parent was swapped for a symlink between validation and `os.Remove`.
+- That weakened earlier hardening slices that correctly routed callers into the shared no-symlink file remover, because the helper implementation itself still had a time-of-check/time-of-use gap around single-file removal.
+
+Changes:
+
+- Reimplemented `RemoveFileNoSymlink` to open the target parent through no-follow descriptor traversal and require the parent descriptor to still match the path before deletion.
+- Replaced raw path-based `os.Remove` with descriptor-relative file validation and deletion: `fstatat(AT_SYMLINK_NOFOLLOW)` verifies the child is still a regular file, and `unlinkat` removes it relative to the anchored parent fd.
+- Preserved existing rejection of symlinked target paths and non-regular paths, and kept missing target paths as no-op cleanup.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -run TestRemoveFileNoSymlinkRejectsSymlinkParentBeforeRemove -count=1`: failed before the fix because raw `os.Remove` returned success after deleting the outside target file.
+- `go test -timeout 120s ./internal/fileutil -run TestRemoveFileNoSymlinkRejectsSymlinkParentBeforeRemove -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestRemoveFileNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/webconsole ./internal/session ./internal/app -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `rg -n "os\\.Remove\\(" cmd internal pkg validation/cmd -g '!**/*_test.go' -g '!validation/runs/**' -g '!workspace/**'`: passed with only the OS temp upload spool cleanup at `internal/webconsole/service.go:4805`.
 
 ### FCA-20260530-464
 
