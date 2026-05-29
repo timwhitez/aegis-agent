@@ -754,7 +754,7 @@ func syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir string, visibl
 		if err != nil {
 			continue
 		}
-		if err := fileutil.AtomicWriteFileNoSymlink(dst, data, 0o644); err != nil {
+		if err := fileutil.AtomicWriteFileNoSymlink(dst, data, 0o600); err != nil {
 			continue
 		}
 		out = append(out, rel)

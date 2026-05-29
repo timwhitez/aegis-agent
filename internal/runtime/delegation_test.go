@@ -1731,6 +1731,30 @@ func TestSyncVisibleSessionOutputsRejectsDeniedSymlinkAlias(t *testing.T) {
 	}
 }
 
+func TestSyncVisibleSessionOutputsWritesOwnerOnlyArtifacts(t *testing.T) {
+	requestedWorkdir := t.TempDir()
+	effectiveWorkdir := t.TempDir()
+	outputPath := filepath.Join(effectiveWorkdir, "reports", "delegate-output.md")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
+		t.Fatalf("mkdir effective reports: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("# delegated output"), 0o600); err != nil {
+		t.Fatalf("write child output: %v", err)
+	}
+
+	synced := syncVisibleSessionOutputs(requestedWorkdir, effectiveWorkdir, []string{"reports/delegate-output.md"})
+	if !slices.Equal(synced, []string{"reports/delegate-output.md"}) {
+		t.Fatalf("unexpected visible paths: %#v", synced)
+	}
+	info, err := os.Stat(filepath.Join(requestedWorkdir, "reports", "delegate-output.md"))
+	if err != nil {
+		t.Fatalf("stat synced output: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("expected synced visible output mode 0600, got %v", perm)
+	}
+}
+
 func TestRunnerDelegateCopiesVisibleOutputsIntoRequestedWorkspace(t *testing.T) {
 	var mu sync.Mutex
 	callCount := 0

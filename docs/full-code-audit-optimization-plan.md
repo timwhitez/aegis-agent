@@ -8802,7 +8802,42 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-200, FCA-20260527-201, and FCA-20260527-202. Earlier slices required `tool.before`, `tool.interrupted`, and `tool.after`; this residual issue was the guard-block branch between required completion-gate events and the replayed blocked tool result.
 - Confirmed the minimal fix belongs in `Engine.Run`: require `tool.blocked` persistence when a guard blocks a provider tool call, preserve a replay-complete blocked tool result plus synthetic skipped results on event append failure, and keep generic non-contract `ExecContext.Emit` telemetry best-effort.
 
+### Review 443
+
+- Confirmed FCA-20260529-445 against `spec/04-tools-and-skills.md`, `spec/05-session-interrupt-resume.md`, `spec/14-multi-agent-and-isolation.md`, and `spec/18-durable-contract-and-completion.md`: synchronous delegate visible outputs are agent handoff artifacts copied from an isolated child workdir into the requested workspace, so the copied facts should keep owner-only artifact permissions instead of becoming world-readable by default.
+- Confirmed this is distinct from FCA-20260526-048, FCA-20260526-049, FCA-20260529-301, and FCA-20260529-444. Earlier slices covered visible path collection, corrupt child handoff facts, queue visible-output sync path safety, and required tool-block events; this residual issue was only the synchronous runtime delegate copy path using `0644` while the queue repair path and ordinary tool writes already used `0600`.
+- Confirmed the minimal fix belongs in `syncVisibleSessionOutputs`: change the atomic write mode for copied visible outputs to `0600`, without changing path filtering, symlink escape rejection, visible path collection, or queue repair semantics.
+
 ## Update Log
+
+### FCA-20260529-445
+
+Slice: `fix(runtime): sync delegate outputs owner-only`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` requires new agent artifact writes to use atomic replacement with owner-only default permissions, and `spec/05-session-interrupt-resume.md` sets the session fact-file baseline to `0600`.
+- `spec/14-multi-agent-and-isolation.md` requires child handoff to rely on visible file facts rather than in-memory context, and `spec/18-durable-contract-and-completion.md` treats delegated/child output as recovery and completion evidence.
+- `internal/runtime/delegation.go` `syncVisibleSessionOutputs` copied visible outputs from an isolated child effective workdir back into the requested workspace with `fileutil.AtomicWriteFileNoSymlink(dst, data, 0o644)`.
+- The adjacent queue repair path in `internal/session/store.go` `syncQueueVisiblePaths` already used `0600`, and regular `write_file` / `edit_file` artifacts already write through owner-only mode.
+- A focused regression created an isolated child visible output and asserted the copied requested-workspace artifact mode; before the fix, the synced file mode was `-rw-r--r--`.
+
+Impact:
+
+- Synchronous delegate handoff artifacts could be made group/world-readable even though they may contain audit notes, generated reports, recovered evidence, or other agent-produced facts.
+- Direct `agent_spawn` / `Delegate` and queue repair could produce the same visible output file with different permissions, weakening the repository's owner-only file-fact convention and making recovery behavior depend on the execution path.
+
+Changes:
+
+- Changed `syncVisibleSessionOutputs` to write copied visible outputs with mode `0600`.
+- Added focused runtime coverage proving copied synchronous delegate visible outputs are owner-only.
+- Left existing path validation, symlink escape rejection, visible-path filtering, and queue `syncQueueVisiblePaths` behavior unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestSyncVisibleSessionOutputsWritesOwnerOnlyArtifacts -count=1`: failed before the fix because the copied output mode was `-rw-r--r--`.
+- `go test -timeout 120s ./internal/runtime -run 'TestSyncVisibleSessionOutputs(WritesOwnerOnlyArtifacts|RejectsDeniedSymlinkAlias)|TestRunnerDelegateCopiesVisibleOutputsIntoRequestedWorkspace' -count=1`: passed.
+- Broader validation recorded with this slice before commit.
 
 ### FCA-20260529-444
 
