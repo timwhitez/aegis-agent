@@ -1921,10 +1921,12 @@ func (r *Runner) AutoContinue(ctx context.Context, sessionID string) (RunResult,
 		return RunResult{}, errors.New("auto-continue requires incomplete_no_finish reason")
 	}
 	if state.RalphLoopCount >= r.cfg.Runtime.RalphLoop.MaxIterations {
-		r.emit(sessionID, events.EventRalphLoopExhausted, "ralph_loop", map[string]any{
+		if err := r.appendEvent(sessionID, events.EventRalphLoopExhausted, "ralph_loop", map[string]any{
 			"count":          state.RalphLoopCount,
 			"max_iterations": r.cfg.Runtime.RalphLoop.MaxIterations,
-		})
+		}); err != nil {
+			return RunResult{}, fmt.Errorf("record %s event: %w", events.EventRalphLoopExhausted, err)
+		}
 		return RunResult{}, fmt.Errorf("ralph loop exhausted after %d iterations", state.RalphLoopCount)
 	}
 	messages, err := r.store.LoadMessages(sessionID)
@@ -1935,22 +1937,30 @@ func (r *Runner) AutoContinue(ctx context.Context, sessionID string) (RunResult,
 		return RunResult{}, errors.New("no messages found for auto-continue")
 	}
 	originalPrompt := messages[0].Text
+	previousState := state
 	state.RalphLoopCount++
 	if err := r.store.SaveState(sessionID, state); err != nil {
 		return RunResult{}, err
 	}
-	r.emit(sessionID, events.EventRalphLoopTriggered, "ralph_loop", map[string]any{
+	if err := r.appendEvent(sessionID, events.EventRalphLoopTriggered, "ralph_loop", map[string]any{
 		"count":          state.RalphLoopCount,
 		"max_iterations": r.cfg.Runtime.RalphLoop.MaxIterations,
-	})
+	}); err != nil {
+		if rollbackErr := r.store.SaveState(sessionID, previousState); rollbackErr != nil {
+			return RunResult{}, fmt.Errorf("restore state after %s event error %v: %w", events.EventRalphLoopTriggered, err, rollbackErr)
+		}
+		return RunResult{}, fmt.Errorf("record %s event: %w", events.EventRalphLoopTriggered, err)
+	}
 	result, err := r.Continue(ctx, ContinueRequest{
 		SessionID: sessionID,
 		Message:   originalPrompt,
 	})
 	if err == nil && result.Status == session.StatusCompleted {
-		r.emit(sessionID, events.EventRalphLoopCompleted, "ralph_loop", map[string]any{
+		if appendErr := r.appendEvent(sessionID, events.EventRalphLoopCompleted, "ralph_loop", map[string]any{
 			"count": state.RalphLoopCount,
-		})
+		}); appendErr != nil {
+			return RunResult{}, fmt.Errorf("record %s event: %w", events.EventRalphLoopCompleted, appendErr)
+		}
 	}
 	return result, err
 }

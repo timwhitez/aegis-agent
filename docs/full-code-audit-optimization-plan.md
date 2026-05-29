@@ -8682,7 +8682,58 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-417. That slice moved the earlier-message page request sequence, loading flag, and one-render scroll-preservation height into `messagePagingViewState`; this residual issue was the loaded message-window availability/gap facts still flowing through the main `state` object.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: extend `messagePagingViewState` for message-window paging facts, add helper accessors, keep durable selected-session detail on `state`, and preserve load-earlier rendering, stale page suppression, gap filling, loaded-all behavior, and session-switch resets.
 
+### Review 423
+
+- Confirmed FCA-20260529-425 against `spec/01-runtime-architecture.md`'s session events fact-source boundary and the explicit `ralph_loop.*` event catalog in `internal/events/events.go`: the automatic recovery loop increments `state.ralph_loop_count` and may re-enter the runner, so its trigger / completion / exhaustion events are durable recovery facts, not best-effort local telemetry.
+- Confirmed this is distinct from FCA-20260522-007 and FCA-20260529-406. Those slices fixed durable run claiming and pending steer count preservation for `Continue` / `AutoContinue`; this residual issue was only the Ralph loop event writes still using best-effort `Runner.emit` after mutating state or before reporting exhaustion.
+- Confirmed the minimal fix belongs in `Runner.AutoContinue`: use checked event appends for `ralph_loop.exhausted`, `ralph_loop.triggered`, and `ralph_loop.completed`, and roll back the just-incremented `RalphLoopCount` if the triggered event cannot be persisted before re-entering `Continue`.
+
 ## Update Log
+
+### FCA-20260529-425
+
+Slice: `fix(runtime): require Ralph loop events`
+
+Finding:
+
+- `Runner.AutoContinue` increments `state.RalphLoopCount`, saves `state.json`, and then re-enters `Continue` with the original prompt.
+- The matching `ralph_loop.triggered` event was emitted through best-effort `Runner.emit`, which ignores `events.jsonl` append failures.
+- The exhaustion and completed paths also emitted `ralph_loop.exhausted` and `ralph_loop.completed` through the same unchecked helper.
+- A focused pre-fix regression blocked `events.jsonl` before `AutoContinue`; before the fix, the missing `ralph_loop.triggered` event was ignored, `RalphLoopCount` remained incremented, and execution continued until a later unrelated provider/config error surfaced.
+
+Impact:
+
+- Automatic recovery could mutate durable loop state or report exhaustion without the durable event explaining why the runner resumed, completed, or stopped retrying after `incomplete_no_finish`.
+- This weakens Web timelines, session summaries, recovery diagnostics, and auditability for autonomous no-finish recovery because `state.json` and `events.jsonl` could disagree about whether the Ralph loop actually triggered.
+
+Changes:
+
+- Changed `AutoContinue` to append `ralph_loop.exhausted`, `ralph_loop.triggered`, and `ralph_loop.completed` through the checked event path.
+- Snapshotted the previous state before incrementing `RalphLoopCount`.
+- If `ralph_loop.triggered` cannot be persisted, `AutoContinue` restores the previous state and returns an event-specific error instead of re-entering `Continue`.
+- Added focused runtime coverage proving a blocked triggered event rolls back `RalphLoopCount`, leaves the original failed state intact, and does not append the auto-continue user message.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestAutoContinueRollsBackRalphLoopCountWhenTriggeredEventFails -count=1`: failed before the fix because the missing `ralph_loop.triggered` event was ignored and execution continued to an unrelated provider error.
+- `go test -timeout 120s ./internal/runtime -run TestAutoContinueRollsBackRalphLoopCountWhenTriggeredEventFails -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'TestAutoContinue(PersistsRalphLoopCountBeforeResume|RollsBackRalphLoopCountWhenTriggeredEventFails)|TestRunnerAutoContinue' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/app ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-424
 

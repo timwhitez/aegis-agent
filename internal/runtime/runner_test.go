@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"go-cli-agent/internal/config"
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 )
 
@@ -2235,6 +2236,47 @@ func TestAutoContinuePersistsRalphLoopCountBeforeResume(t *testing.T) {
 	}
 	if loaded.RalphLoopCount != 1 {
 		t.Fatalf("expected persisted Ralph loop count, got %#v", loaded)
+	}
+}
+
+func TestAutoContinueRollsBackRalphLoopCountWhenTriggeredEventFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.Runtime.RalphLoop.MaxIterations = 2
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), Mode: session.ModeExec, Provider: "fake", Model: "fake", CompletionPolicy: completionPolicy(session.ModeExec)}
+	state := session.State{Status: session.StatusFailed, Phase: "turn_decide", IncompleteReason: "incomplete_no_finish", LastError: "incomplete_no_finish", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "finish")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(runner.store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatalf("remove events: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events: %v", err)
+	}
+
+	_, err := runner.AutoContinue(context.Background(), meta.ID)
+	if err == nil || !strings.Contains(err.Error(), events.EventRalphLoopTriggered) || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected ralph_loop.triggered event error, got %v", err)
+	}
+	loaded, err := runner.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.RalphLoopCount != 0 || loaded.Status != session.StatusFailed || loaded.IncompleteReason != "incomplete_no_finish" {
+		t.Fatalf("expected Ralph loop count rollback to original failed state, got %#v", loaded)
+	}
+	messages, err := runner.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected no auto-continue user message after event failure, got %d messages", len(messages))
 	}
 }
 
