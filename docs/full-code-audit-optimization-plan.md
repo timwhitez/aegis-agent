@@ -9000,7 +9000,40 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-479. That slice fixed checkpoint production from parent coordination; this residual issue was WebConsole consumption. `session-view.js` did not render `parent_coordination` or `longrun_checkpoint`, so unresolved wait/parked state and checkpoint resume hints could remain invisible even though the backend returned them.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/session-view.js`: render parent wait/checkpoint rows and recovery cards from existing `detail.parent_coordination` / `detail.longrun_checkpoint`, and show full unresolved child/job ids for traceability.
 
+### Review 476
+
+- Confirmed FCA-20260530-481 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/13-live-input-and-steering.md`: WebConsole message paging is a browser view window over durable `messages.jsonl`, and stale page responses must not mutate the currently selected session view after that window has been reset or reopened.
+- Confirmed this is distinct from the existing stale-response coverage. Prior regressions covered page responses after changing to another session ID; this residual issue kept the same session ID but reset the message window, so the old `loadEarlierMessages()` response still passed the `state.sessionId === sessionID` guard and merged stale older rows into the fresh tail.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: advance the message paging request sequence whenever the message window is reset, so in-flight earlier-page requests are invalidated even when the user reopens the same durable session.
+
 ## Update Log
+
+### FCA-20260530-481
+
+Slice: `fix(webconsole): invalidate reset message paging`
+
+Finding:
+
+- `loadEarlierMessages()` guarded stale responses with the selected `sessionID` and `messagePagingViewState.requestSeq`.
+- `resetMessagePagingWindowState()` cleared paging flags, anchors, and render state, but did not advance `requestSeq`.
+- If a user requested earlier messages, then reopened or otherwise reset the same session before the request returned, the stale page response still matched the same session id and current request sequence.
+
+Impact:
+
+- Stale older messages could be merged into a freshly reset same-session message window.
+- The central WebConsole timeline could show a hybrid of the newly loaded tail and an older paging request, weakening the spec requirement that loaded message windows reflect durable session facts without browser-side stale state becoming authoritative.
+- Operators inspecting long sessions could see incorrect oldest-message anchors and stale rows after same-session reopen flows.
+
+Changes:
+
+- `resetMessagePagingWindowState()` now increments the message paging request sequence before clearing paging flags and anchors.
+- Added a regression for same-session window reset: an in-flight earlier-page response no longer merges stale rows after the window has been reset and repopulated with a fresh tail.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'same-session window reset'` merged stale `m6` / `m7` messages into the fresh `session_same_reset` view.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'loadEarlierMessages ignores stale page responses|message paging in-flight'`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
 
 ### FCA-20260530-480
 

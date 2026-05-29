@@ -330,6 +330,7 @@ function setMessageGapAnchorId(messageID) {
 }
 
 function resetMessagePagingWindowState() {
+  messagePagingViewState.requestSeq += 1;
   setHasMoreMessagesToLoad(false);
   setOldestLoadedMessageId('');
   setLoadedAllEarlierMessages(false);
