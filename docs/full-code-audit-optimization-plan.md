@@ -8766,7 +8766,43 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-038, FCA-20260525-039, FCA-20260526-076, FCA-20260526-077, FCA-20260526-149, FCA-20260529-390, and FCA-20260529-391. Earlier slices covered continued blocked children reaching terminal completion, stale accepted blocked notifications racing with terminal refresh, linked child state repair failures, parent coordination write errors, terminal parent-notification/event repair, and corrupt/mismatched linked child facts. This residual issue was the nonterminal repair path: a running queue job whose linked child had already become `awaiting_input` could be repaired to `blocked` without the matching parent notification or `queue.job.blocked` event.
 - Confirmed the minimal fix belongs in `internal/session/store.go` queue reconciliation, not Web rendering or runtime orchestration: when file facts prove a parent-linked queue job is `blocked`, store repair must ensure unresolved parent coordination plus the same durable background notification and lifecycle events that `ProcessNextJob` writes for a direct blocked worker result.
 
+### Review 437
+
+- Confirmed FCA-20260529-439 against `spec/15-background-queue.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: `control/background.jsonl` is the parent-visible result notification channel, so records in that file must represent a resumable or terminal child result (`blocked`, `completed`, or `failed`) rather than a pre-result queue state.
+- Confirmed this is distinct from FCA-20260528-307, FCA-20260528-330, FCA-20260529-385, FCA-20260529-437, and FCA-20260529-438. Earlier slices covered generic background notification shape/timestamps, Web display priority for failed queue handoffs, role validation, and missing blocked-result repair; this residual issue was that a syntactically valid `status=running` background notification could be accepted and then injected into the parent as a provider-visible background result.
+- Confirmed the minimal fix belongs in the shared `validateBackgroundNotification` boundary, not Web rendering or `drainBackground`: queue jobs themselves can still be `queued` or `running`, but background notifications are already result facts waiting for parent transcript acceptance.
+
 ## Update Log
+
+### FCA-20260529-439
+
+Slice: `fix(session): reject active background notifications`
+
+Finding:
+
+- `spec/15-background-queue.md` defines `control/background.jsonl` as the parent notification written after a worker has a child result, and says it is later accepted at the parent `control_drain` boundary.
+- `internal/runtime/engine.go` `drainBackground` loads pending background notifications, wraps them in `<background-agent-results>`, appends them as a provider-visible user message, and then marks them accepted.
+- `validateBackgroundNotification` allowed any queue status enum, including `queued` and `running`.
+- A focused pre-fix store regression appended a background notification with `status=running` and `session_status=running`; before the fix, `AppendBackgroundNotification` accepted it.
+
+Impact:
+
+- A malformed or stale `control/background.jsonl` record could make the parent transcript accept an active queue fact as if it were a background child result.
+- The parent completion gate would stop blocking once that pending notification was accepted, while the real queue job could still be running or not yet settled elsewhere.
+- Web Background, session summaries, recovery prompts, and provider-visible background-result replay could receive a misleading result payload that did not correspond to a resumable or terminal child outcome.
+
+Changes:
+
+- Added a shared `isBackgroundResultQueueStatus` validator that accepts only `blocked`, `completed`, or `failed` for `BackgroundNotification.Status`.
+- Kept `queued` and `running` valid for queue jobs themselves; the restriction applies only to the parent-visible result notification channel.
+- Extended focused store tests so both append-time writes and already persisted `control/background.jsonl` snapshots reject active queue statuses.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestBackgroundNotificationWritesRejectMalformedFacts -count=1`: failed before the fix because a `status=running` background notification was accepted.
+- `go test -timeout 120s ./internal/session -run 'Test(LoadBackgroundNotificationsRejectsMalformedSnapshot|BackgroundNotificationWritesRejectMalformedFacts|EnsureBackgroundNotificationRefreshesChangedQueueFacts|UpdateBackgroundNotificationsPreservesConcurrentFactRefresh|LoadJobRepairsBlockedParentNotificationAndEvent|LoadJobRepairsMissingTerminalBackgroundNotification)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish|CompletionControllerReportsPendingBackgroundEventError|ParentCoordinationGateReportsCorruptBackgroundNotifications|EngineReconcilesCompletedQueueChild|RunnerProcessNextJob|ProcessNextJob|RunnerQueueSubmit)' -count=1`: passed.
+- `gofmt -w internal/session/store.go internal/session/store_test.go`: passed.
 
 ### FCA-20260529-438
 

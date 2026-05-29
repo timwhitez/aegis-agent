@@ -3574,6 +3574,9 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 	if !isQueueStatus(notification.Status) {
 		return fmt.Errorf("invalid background notification status %q", notification.Status)
 	}
+	if !isBackgroundResultQueueStatus(notification.Status) {
+		return fmt.Errorf("background notification status must be blocked, completed, or failed, got %q", notification.Status)
+	}
 	if strings.TrimSpace(notification.SessionStatus) != "" {
 		switch notification.SessionStatus {
 		case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusFailed:
@@ -4705,6 +4708,15 @@ func isQueueStatus(status string) bool {
 		}
 	}
 	return false
+}
+
+func isBackgroundResultQueueStatus(status string) bool {
+	switch status {
+	case QueueStatusBlocked, QueueStatusCompleted, QueueStatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeDirMode(mode fs.FileMode) fs.FileMode {

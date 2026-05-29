@@ -4290,6 +4290,19 @@ func TestLoadBackgroundNotificationsRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "invalid background notification agent_role") {
 		t.Fatalf("expected invalid background notification agent_role validation error, got %v", err)
 	}
+
+	runningResult := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_running_result",
+		Status:        QueueStatusRunning,
+		SessionID:     "child_background_running_result",
+		SessionStatus: StatusRunning,
+	})
+	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{runningResult}); err != nil {
+		t.Fatalf("write running background result: %v", err)
+	}
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "background notification status must be blocked, completed, or failed") {
+		t.Fatalf("expected running background result validation error, got %v", err)
+	}
 }
 
 func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
@@ -4364,6 +4377,15 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 	})
 	if err := store.AppendBackgroundNotification(meta.ID, invalidVisiblePath); err == nil || !strings.Contains(err.Error(), "visible_paths") {
 		t.Fatalf("expected append to reject invalid visible path, got %v", err)
+	}
+	runningResult := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_running",
+		Status:        QueueStatusRunning,
+		SessionID:     "child_background_running",
+		SessionStatus: StatusRunning,
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, runningResult); err == nil || !strings.Contains(err.Error(), "background notification status must be blocked, completed, or failed") {
+		t.Fatalf("expected append to reject running background result, got %v", err)
 	}
 	duplicate := NewBackgroundNotification(QueueJob{
 		ID:            valid.QueueJobID,
