@@ -8670,7 +8670,49 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-127 / the later `fix(webconsole): reject unknown session subresources` slice. Those fixes added Web route-level metadata checks before `/api/sessions/{id}/children`, `/tasks`, `/messages`, and goal subresources; this residual issue was that `Runner.Tasks` and CLI `experimental children` still read optional child/task facts without first proving the requested session metadata existed.
 - Confirmed the minimal fix belongs at the CLI/core read boundary: require `LoadMetadata(sessionID)` before building a task board or child/job view, while preserving empty todo/task/children results for real sessions whose optional fact files are absent.
 
+### Review 421
+
+- Confirmed FCA-20260529-423 against `spec/00-product.md`'s CLI fallback role and `spec/01-runtime-architecture.md`'s TerminalDashboard boundary: `experimental tui --once --session <id>` must be a projection of the explicitly selected durable session, not a best-effort view of whichever recent session appears first in `Store.List(limit)`.
+- Confirmed this is distinct from FCA-20260526-152 / the later `fix(tui): report corrupt selected facts` slice. That slice made selected-session fact load errors visible after a selected session had been resolved; this residual issue was the selection step itself silently falling back to index 0 when the requested session id was outside the current list window or absent.
+- Confirmed the minimal fix belongs in `internal/tui.BuildSnapshot`: when `selectedID` is provided and not present in the limited recent-session list, load that exact session's `session.json` / `state.json`, append its summary to the snapshot, select it, and return the metadata error if it does not exist.
+
 ## Update Log
+
+### FCA-20260529-423
+
+Slice: `fix(tui): honor explicit session selection`
+
+Finding:
+
+- `BuildSnapshot` starts from `Store.List(limit)` and defaulted `SelectedIndex` to `0`.
+- When `selectedID` was non-empty but not found in that limited recent-session list, the lookup loop fell through without error, leaving the first listed session selected.
+- A focused regression created `newer` and `older` sessions, requested `BuildSnapshot(store, "older", 1)`, and observed the snapshot render `newer`.
+- A second focused regression requested a missing selected session while another valid session existed, and observed a nil error with the valid session selected.
+
+Impact:
+
+- `go-cli-agent experimental tui --once --session <id>` could show the wrong durable session when the requested session was older than the current list limit, mistyped, stale, or deleted.
+- This weakens the CLI fallback observer because the operator can believe they are inspecting a specific session's state, messages, events, children, and queue links while the TUI has silently switched to another session.
+
+Changes:
+
+- `BuildSnapshot` now resolves explicit `selectedID` independently of the limited recent-session list.
+- If the selected session is outside the list window, TUI loads its metadata/state, appends a summary to the snapshot list, and selects it.
+- If the selected session is missing or invalid, TUI returns the selected session metadata/state load error instead of rendering an unrelated session.
+- Existing default behavior without `--session` is unchanged: the first recent session remains selected, and an empty session store still renders the empty Sessions panel.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tui -run 'TestBuildSnapshot(HonorsExplicitSessionOutsideListLimit|RejectsUnknownExplicitSession)' -count=1`: failed before the fix because explicit selection fell back to the first recent session.
+- `go test -timeout 120s ./internal/tui -run 'TestBuildSnapshot(HonorsExplicitSessionOutsideListLimit|RejectsUnknownExplicitSession|ReportsSelected(Session|Queue)FactErrors)|TestHandleKeyRefreshKeepsCurrentSelection|TestRunRejectsNonTTY' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `node --check internal/webconsole/assets/app.js && node --check internal/webconsole/assets/session-view.js && node --check internal/webconsole/assets/workspace-view.js && node --check internal/webconsole/assets/events.js && node --check internal/webconsole/assets/settings-view.js && node --check internal/webconsole/assets/utils.js && node --check internal/webconsole/assets/api.js && node --check internal/webconsole/assets/icons.js && node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-422
 

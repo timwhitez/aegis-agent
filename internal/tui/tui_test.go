@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,14 +92,43 @@ func TestBuildSnapshotReportsSelectedQueueFactErrors(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotHonorsExplicitSessionOutsideListLimit(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	createTUITestSessionAt(t, store, "older", "2026-05-29T00:00:00Z", "2026-05-29T00:00:00Z")
+	createTUITestSessionAt(t, store, "newer", "2026-05-29T00:01:00Z", "2026-05-29T00:01:00Z")
+
+	snapshot, err := BuildSnapshot(store, "older", 1)
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	if snapshot.Meta.ID != "older" || snapshot.Sessions[snapshot.SelectedIndex].ID != "older" {
+		t.Fatalf("expected explicit older session to be selected, got selected=%q meta=%q sessions=%#v", snapshot.Sessions[snapshot.SelectedIndex].ID, snapshot.Meta.ID, snapshot.Sessions)
+	}
+}
+
+func TestBuildSnapshotRejectsUnknownExplicitSession(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	createTUITestSession(t, store, "s1")
+
+	_, err := BuildSnapshot(store, "missing_selected", 10)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected missing selected session error, got %v", err)
+	}
+}
+
 func createTUITestSession(t *testing.T, store *session.Store, id string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	createTUITestSessionAt(t, store, id, now, now)
+}
+
+func createTUITestSessionAt(t *testing.T, store *session.Store, id, createdAt, updatedAt string) {
+	t.Helper()
 	workdir := t.TempDir()
 	meta := session.SessionMetadata{
 		SchemaVersion:    1,
 		ID:               id,
-		CreatedAt:        now,
+		CreatedAt:        createdAt,
 		Workdir:          workdir,
 		RequestedWorkdir: workdir,
 		Mode:             session.ModeRun,
@@ -106,7 +137,7 @@ func createTUITestSession(t *testing.T, store *session.Store, id string) {
 		CompletionPolicy: session.CompletionPolicyInteractive,
 		RootSessionID:    id,
 	}
-	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: updatedAt}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 }

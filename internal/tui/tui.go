@@ -32,19 +32,38 @@ func BuildSnapshot(store *session.Store, selectedID string, limit int) (Snapshot
 	}
 	snapshot := Snapshot{Sessions: sessions}
 	if len(sessions) == 0 {
-		return snapshot, nil
+		if selectedID != "" {
+			selected, err := loadSelectedSummary(store, selectedID)
+			if err != nil {
+				return Snapshot{}, err
+			}
+			snapshot.Sessions = append(snapshot.Sessions, selected)
+		}
+		if len(snapshot.Sessions) == 0 {
+			return snapshot, nil
+		}
 	}
 	index := 0
 	if selectedID != "" {
-		for i, item := range sessions {
+		found := false
+		for i, item := range snapshot.Sessions {
 			if item.ID == selectedID {
 				index = i
+				found = true
 				break
 			}
 		}
+		if !found {
+			selected, err := loadSelectedSummary(store, selectedID)
+			if err != nil {
+				return Snapshot{}, err
+			}
+			snapshot.Sessions = append(snapshot.Sessions, selected)
+			index = len(snapshot.Sessions) - 1
+		}
 	}
 	snapshot.SelectedIndex = index
-	selected := sessions[index]
+	selected := snapshot.Sessions[index]
 	meta, err := store.LoadMetadata(selected.ID)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load selected session session.json: %w", err)
@@ -76,6 +95,34 @@ func BuildSnapshot(store *session.Store, selectedID string, limit int) (Snapshot
 	}
 	snapshot.Jobs = jobs
 	return snapshot, nil
+}
+
+func loadSelectedSummary(store *session.Store, sessionID string) (session.SessionSummary, error) {
+	meta, err := store.LoadMetadata(sessionID)
+	if err != nil {
+		return session.SessionSummary{}, fmt.Errorf("load selected session session.json: %w", err)
+	}
+	state, err := store.LoadState(sessionID)
+	if err != nil {
+		return session.SessionSummary{}, fmt.Errorf("load selected session state.json: %w", err)
+	}
+	return session.SessionSummary{
+		ID:              meta.ID,
+		Status:          state.Status,
+		Provider:        meta.Provider,
+		Model:           meta.Model,
+		CreatedAt:       meta.CreatedAt,
+		UpdatedAt:       state.UpdatedAt,
+		Phase:           state.Phase,
+		LastError:       state.LastError,
+		Workdir:         meta.Workdir,
+		ParentSessionID: meta.ParentSessionID,
+		RootSessionID:   meta.RootSessionID,
+		AgentName:       meta.AgentName,
+		AgentRole:       meta.AgentRole,
+		Depth:           meta.Depth,
+		QueueJobID:      meta.QueueJobID,
+	}, nil
 }
 
 func Render(snapshot Snapshot) string {
