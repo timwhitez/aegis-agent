@@ -533,7 +533,7 @@ func doctorQueueJobRecords(sessionRoot string) ([]doctorQueueJobRecord, []map[st
 			if job.ID == "" {
 				job.ID = strings.TrimSuffix(entry.Name(), ".json")
 			}
-			if err := session.ValidateQueueJobSnapshot(job); err != nil {
+			if err := session.ValidateQueueJobSnapshotInStatus(job, status); err != nil {
 				unreadable = append(unreadable, map[string]any{"path": path, "error": err.Error()})
 				continue
 			}

@@ -1938,6 +1938,9 @@ func (s *Store) loadQueueJobCopies(jobID string) ([]queueJobCopy, error) {
 		if err := validateQueueJob(job); err != nil {
 			return nil, fmt.Errorf("queue job %s: %w", filepath.Base(path), err)
 		}
+		if err := validateQueueJobStatusDirectory(job, status); err != nil {
+			return nil, fmt.Errorf("queue job %s: %w", filepath.Base(path), err)
+		}
 		copies = append(copies, queueJobCopy{status: status, path: path, job: job})
 	}
 	return copies, nil
@@ -1974,6 +1977,9 @@ func (s *Store) listQueueJobCopies() ([]queueJobCopy, error) {
 				continue
 			}
 			if err := validateQueueJob(job); err != nil {
+				return nil, fmt.Errorf("queue job %s: %w", entry.Name(), err)
+			}
+			if err := validateQueueJobStatusDirectory(job, status); err != nil {
 				return nil, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 			}
 			out = append(out, queueJobCopy{status: status, path: path, job: job})
@@ -2228,8 +2234,8 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 		if err := validateQueueJob(job); err != nil {
 			return QueueJob{}, false, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 		}
-		if job.Status != QueueStatusQueued {
-			continue
+		if err := validateQueueJobStatusDirectory(job, QueueStatusQueued); err != nil {
+			return QueueJob{}, false, fmt.Errorf("queue job %s: %w", entry.Name(), err)
 		}
 		candidates = append(candidates, candidate{name: entry.Name(), job: job})
 	}
@@ -2278,8 +2284,8 @@ func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 	if err := validateQueueJob(job); err != nil {
 		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
 	}
-	if job.Status != QueueStatusRunning {
-		return QueueJob{}, fmt.Errorf("queue job %s is not running", jobID)
+	if err := validateQueueJobStatusDirectory(job, QueueStatusRunning); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	job.UpdatedAt = now
@@ -3765,6 +3771,13 @@ func validateQueueJobResultStatus(job QueueJob) error {
 	return nil
 }
 
+func validateQueueJobStatusDirectory(job QueueJob, directoryStatus string) error {
+	if job.Status != directoryStatus {
+		return fmt.Errorf("queue job status %s does not match queue directory %s", job.Status, directoryStatus)
+	}
+	return nil
+}
+
 func validateAgentRole(kind, role string) error {
 	if strings.TrimSpace(role) == "" {
 		return nil
@@ -3781,6 +3794,15 @@ func validateAgentRole(kind, role string) error {
 // without reconciling linked sessions or mutating queue files.
 func ValidateQueueJobSnapshot(job QueueJob) error {
 	return validateQueueJob(job)
+}
+
+// ValidateQueueJobSnapshotInStatus validates a queue job loaded from a specific
+// queue status directory without reconciling linked sessions or mutating files.
+func ValidateQueueJobSnapshotInStatus(job QueueJob, directoryStatus string) error {
+	if err := validateQueueJob(job); err != nil {
+		return err
+	}
+	return validateQueueJobStatusDirectory(job, directoryStatus)
 }
 
 func normalizeAndValidateParentCoordination(sessionID string, coordination *ParentCoordination) error {

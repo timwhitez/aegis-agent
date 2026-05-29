@@ -4849,6 +4849,27 @@ func TestLoadJobsRejectMalformedQueueJobSnapshot(t *testing.T) {
 	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "job_blocked_completed_session.json") || !strings.Contains(err.Error(), "blocked queue job session_status must be awaiting_input or paused") {
 		t.Fatalf("expected blocked/session_status mismatch queue job list error, got %v", err)
 	}
+	if err := store.DeleteJob(blockedWithTerminalSession.ID); err != nil {
+		t.Fatalf("delete blocked/session mismatch queue job before status-dir check: %v", err)
+	}
+
+	statusDirMismatch := valid
+	statusDirMismatch.ID = "job_status_dir_mismatch"
+	statusDirMismatch.Status = QueueStatusQueued
+	statusDirMismatch.CreatedAt = now
+	statusDirMismatch.UpdatedAt = now
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusRunning, statusDirMismatch.ID), statusDirMismatch); err != nil {
+		t.Fatalf("write status-dir mismatch queue job: %v", err)
+	}
+	if _, err := store.LoadJob(statusDirMismatch.ID); err == nil || !strings.Contains(err.Error(), "status queued does not match queue directory running") {
+		t.Fatalf("expected status-dir mismatch queue job load error, got %v", err)
+	}
+	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "job_status_dir_mismatch.json") || !strings.Contains(err.Error(), "status queued does not match queue directory running") {
+		t.Fatalf("expected status-dir mismatch queue job list error, got %v", err)
+	}
+	if err := store.DeleteJob(statusDirMismatch.ID); err != nil {
+		t.Fatalf("delete status-dir mismatch queue job before valid load check: %v", err)
+	}
 
 	loaded, err := store.LoadJob(valid.ID)
 	if err != nil {
@@ -5055,6 +5076,40 @@ func TestClaimNextQueuedJobRejectsMalformedQueuedJob(t *testing.T) {
 	}
 	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, job.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected malformed queued job not to move to running, got %v", err)
+	}
+}
+
+func TestClaimNextQueuedJobRejectsMismatchedStatusDirectory(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_claim_status_dir_mismatch",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Status:        QueueStatusRunning,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+		ClaimedAt:     now,
+		HeartbeatAt:   now,
+	}
+	if err := store.ensureQueueDirs(); err != nil {
+		t.Fatalf("ensure queue dirs: %v", err)
+	}
+	if err := store.writeJSONFile(store.queueJobPath(QueueStatusQueued, job.ID), job); err != nil {
+		t.Fatalf("write status-dir mismatch queued job: %v", err)
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err == nil || !strings.Contains(err.Error(), "job_claim_status_dir_mismatch.json") || !strings.Contains(err.Error(), "status running does not match queue directory queued") {
+		t.Fatalf("expected status-dir mismatch queued job claim error, got job=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); err != nil {
+		t.Fatalf("expected mismatched queued job to remain queued for diagnostics, got %v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected mismatched queued job not to move to running, got %v", err)
 	}
 }
 

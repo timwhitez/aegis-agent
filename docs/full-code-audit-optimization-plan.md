@@ -8784,7 +8784,47 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-440. That slice hardened the parent-facing `control/background.jsonl` projection; this residual issue was the queue job source fact itself accepting contradictory result/session combinations, including `completed` with `session_status=failed` when `last_error` was present and `blocked` with terminal or running child session status.
 - Confirmed the minimal fix belongs in `validateQueueJob`: `LoadJob`, `ListJobs`, `ListJobsByParent`, `ClaimNextQueuedJob`, Web queue/session detail, CLI queue commands, session summaries, checkpoint writers, and background notification creation all depend on queue job validation as the shared source-fact boundary.
 
+### Review 440
+
+- Confirmed FCA-20260529-442 against `spec/15-background-queue.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: `_queue/<status>/<job_id>.json` uses the status directory as a durable claim/list partition while the JSON `status` is the worker/result fact projected into Web, CLI, summaries, checkpoints, and parent notifications, so those two status facts must agree before any reader treats the job as valid.
+- Confirmed this is distinct from FCA-20260526-148, FCA-20260528-313, FCA-20260528-331, FCA-20260529-436, and FCA-20260529-441. Earlier slices covered corrupt queue JSON, generic queue scalar validation, timestamp validation, parent/root topology, and result/session semantic compatibility; this residual issue was a syntactically valid queue job whose filename and scalar fields were valid but whose JSON `status` contradicted the containing queue directory.
+- Confirmed the minimal fix belongs in the shared queue fact read boundaries and doctor partial-state scan: `LoadJob`, `ListJobs`, `ListJobsByParent`, `ClaimNextQueuedJob`, `RefreshQueueJobHeartbeat`, and `doctor` all need the same directory/status invariant, while `SaveJob` already writes to the directory selected by `job.Status`.
+
 ## Update Log
+
+### FCA-20260529-442
+
+Slice: `fix(session): validate queue status directory`
+
+Finding:
+
+- `spec/15-background-queue.md` defines `_queue/queued`, `_queue/running`, `_queue/blocked`, `_queue/completed`, and `_queue/failed` as durable queue status directories used for atomic worker claim, listing, and recovery.
+- `internal/session/store.go` selected canonical queue copies and worker claim candidates from the status directory, but validation only checked the JSON `status` value in isolation.
+- A persisted `_queue/running/job_x.json` containing `status:"queued"` was accepted by `LoadJob` / `ListJobs` as a normal queued job even though the filesystem partition said it was running.
+- A persisted `_queue/queued/job_x.json` containing `status:"running"` was silently skipped by `ClaimNextQueuedJob`, making a valid queue-fact filename disappear from worker processing without surfacing a durable corruption error.
+- `doctor` scanned queue files directly and used the same status-agnostic snapshot validation, so it could also treat path/status contradictions as valid queue facts.
+
+Impact:
+
+- Web Background/children projections, CLI queue commands, session summaries, checkpoints, parent coordination repair, and queue worker claim behavior could disagree about whether a job was queued, running, blocked, completed, or failed.
+- A status-directory mismatch could hide queued work from workers or make a moved/running queue file appear as still queued in operator views.
+- Doctor partial-state diagnostics could miss a queue corruption that directly affects recovery and worker liveness.
+
+Changes:
+
+- Added a shared directory/status validator for queue job snapshots.
+- Applied it in `LoadJob` and list paths after scalar queue job validation and before canonical duplicate selection.
+- Applied it in `ClaimNextQueuedJob` so a valid queued filename with contradictory JSON status returns a durable error instead of being skipped as no work.
+- Applied it in `RefreshQueueJobHeartbeat` so heartbeat updates require the running-directory file to also carry `status=running`.
+- Exposed `ValidateQueueJobSnapshotInStatus` and routed `doctor` queue scanning through it, keeping CLI diagnostics aligned with the session store source-fact boundary.
+- Added focused regressions for load/list, claim, and doctor partial-state diagnostics.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'Test(LoadJobsRejectMalformedQueueJobSnapshot|ClaimNextQueuedJobRejectsMismatchedStatusDirectory)' -count=1`: failed before the fix because status-directory mismatches were accepted or silently skipped.
+- `go test -timeout 120s ./internal/session -run 'Test(LoadJobsRejectMalformedQueueJobSnapshot|ClaimNextQueuedJobRejectsMismatchedStatusDirectory|ClaimNextQueuedJobRejectsMalformedQueuedJob|LoadAndListJobsPreferTerminalDuplicateStatusFile)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/app -run 'Test(LoadJobsRejectMalformedQueueJobSnapshot|ClaimNextQueuedJobRejectsMismatchedStatusDirectory|ClaimNextQueuedJobRejectsMalformedQueuedJob|LoadAndListJobsPreferTerminalDuplicateStatusFile|DoctorReportsQueueJobStatusDirectoryMismatch|DoctorReportsInvalidQueueJobFacts|DoctorReportsDuplicateQueueJobStatus)' -count=1`: passed.
+- Broader validation recorded with this slice before commit.
 
 ### FCA-20260529-441
 
