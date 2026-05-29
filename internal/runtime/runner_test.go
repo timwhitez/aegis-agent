@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,6 +111,16 @@ func TestRunnerSupportsOpenAICompatibleResponses(t *testing.T) {
 	}
 	if adapter.Name() != "openai" {
 		t.Fatalf("expected openai adapter, got %s", adapter.Name())
+	}
+}
+
+func TestRunnerTasksRejectsUnknownSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = filepath.Join(t.TempDir(), "sessions")
+	runner := NewRunner(cfg)
+
+	if _, err := runner.Tasks("missing_session_tasks"); err == nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected missing session metadata error, got %v", err)
 	}
 }
 

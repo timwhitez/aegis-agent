@@ -8664,7 +8664,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-259 and FCA-20260528-260. Those slices rolled back missing `queue.job.notified` facts and store-driven terminal repair when lifecycle event append failed; this residual issue was that the worker still attempted to append duplicate terminal parent facts after successful child transition reconciliation.
 - Confirmed the minimal fix belongs in runtime queue processing: skip duplicate parent notification / coordination / lifecycle writes after a terminal child transition has already reconciled queue facts successfully, while preserving the worker fallback path when linked queue reconciliation or child handoff reload fails.
 
+### Review 420
+
+- Confirmed FCA-20260529-422 against `spec/00-product.md` and `spec/01-runtime-architecture.md`: CLI fallback and SDK-facing runtime task reads must project the same local session-store facts as Web, and must not make an absent `session.json` look like a valid empty task or child view.
+- Confirmed this is distinct from FCA-20260526-127 / the later `fix(webconsole): reject unknown session subresources` slice. Those fixes added Web route-level metadata checks before `/api/sessions/{id}/children`, `/tasks`, `/messages`, and goal subresources; this residual issue was that `Runner.Tasks` and CLI `experimental children` still read optional child/task facts without first proving the requested session metadata existed.
+- Confirmed the minimal fix belongs at the CLI/core read boundary: require `LoadMetadata(sessionID)` before building a task board or child/job view, while preserving empty todo/task/children results for real sessions whose optional fact files are absent.
+
 ## Update Log
+
+### FCA-20260529-422
+
+Slice: `fix(cli): reject unknown task and child views`
+
+Finding:
+
+- The Web session subresource route already verifies `session.json` before dispatching `/children`, `/tasks`, `/messages`, Goal, Plan Mode, or control mutations.
+- `Runner.Tasks` still called `LoadTodo` and `ListTasks` directly. Both readers legitimately treat missing optional fact files/directories as empty, so an unknown session id returned a valid empty task board.
+- CLI `experimental children` still called `ListChildren` and `ListJobsByParent` directly. Those readers can naturally return empty lists for an unknown parent id, so the command printed empty child/session sections instead of reporting that the parent session fact was missing.
+- Focused regressions reproduced both false-empty views before the fix.
+
+Impact:
+
+- CLI fallback and SDK-facing task views could hide mistyped, stale, or deleted session ids behind normal empty output.
+- That weakens recovery and traceability for exactly the fallback path operators use when Web is unavailable, and diverges from the Web-first route boundary that already treats unknown session ids as missing durable session facts.
+
+Changes:
+
+- `Runner.Tasks` now loads session metadata before reading optional `todo.json` / `tasks/` facts.
+- CLI `experimental children` now loads parent session metadata before listing child sessions or parent-linked queue jobs.
+- Existing valid-session empty-state behavior is unchanged: a real session without todo, tasks, children, or queue jobs still renders as empty.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerTasksRejectsUnknownSession -count=1`: failed before the fix because `Runner.Tasks` returned an empty task board for an absent session.
+- `go test -timeout 120s ./internal/app -run TestChildrenCommandRejectsUnknownParentSession -count=1`: failed before the fix because `experimental children missing_parent` printed empty child/job sections.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerTasksRejectsUnknownSession -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestChildrenCommand(ReadsChildSessionsAndJobs|RejectsUnknownParentSession)|TestTasksCommand(RendersTaskBoard|AllRendersFlatTaskList)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/webconsole -count=1`: `internal/session` passed; `internal/webconsole` hit one transient timeout in existing `TestServiceStopSessionPausesWithManualStopReason`.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceStopSessionPausesWithManualStopReason -count=1`: passed on focused rerun.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-421
 

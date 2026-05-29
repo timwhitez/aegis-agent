@@ -1883,6 +1883,9 @@ func (r *Runner) State(sessionID string) (session.State, error) {
 }
 
 func (r *Runner) Tasks(sessionID string) (session.TaskBoard, error) {
+	if _, err := r.store.LoadMetadata(sessionID); err != nil {
+		return session.TaskBoard{}, err
+	}
 	todo, err := r.store.LoadTodo(sessionID)
 	if err != nil {
 		return session.TaskBoard{}, err

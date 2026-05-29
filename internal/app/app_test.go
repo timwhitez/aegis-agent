@@ -2525,6 +2525,23 @@ func TestChildrenCommandReadsChildSessionsAndJobs(t *testing.T) {
 	}
 }
 
+func TestChildrenCommandRejectsUnknownParentSession(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	err := Run(context.Background(), []string{"experimental", "children", "missing_parent"}, &stdout, &bytes.Buffer{})
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected missing parent session error, got %v stdout=%s", err, stdout.String())
+	}
+}
+
 func TestTUISnapshotRendersPanels(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

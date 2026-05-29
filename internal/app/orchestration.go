@@ -114,12 +114,16 @@ func childrenCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	store := runner.Store()
+	if _, err := store.LoadMetadata(fs.Arg(0)); err != nil {
+		return err
+	}
 	result := runtime.ChildrenResult{}
-	result.Sessions, err = runner.Store().ListChildren(fs.Arg(0), *limit)
+	result.Sessions, err = store.ListChildren(fs.Arg(0), *limit)
 	if err != nil {
 		return err
 	}
-	result.Jobs, err = runner.Store().ListJobsByParent(fs.Arg(0), *limit)
+	result.Jobs, err = store.ListJobsByParent(fs.Arg(0), *limit)
 	if err != nil {
 		return err
 	}
