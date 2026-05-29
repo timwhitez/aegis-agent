@@ -9036,7 +9036,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-481, FCA-20260530-483, and FCA-20260530-484. Those slices covered message paging resets, stale skill catalog confirmations, and stale coverage override confirmations; this residual issue was the History delete/clear confirmation path, where `fetchHistory()` already ignored stale responses but `deleteHistorySession()` and `clearHistory()` did not re-check a History render epoch after `confirmLocalAction()` returned.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: add a History render epoch, invalidate it on History refresh/render/reset, and abandon stale delete/clear confirmation continuations before sending destructive API requests or showing stale toasts.
 
+### Review 482
+
+- Confirmed FCA-20260530-487 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: WebConsole Goal clear is a destructive local control over the durable `goal.json` fact and must apply to the Goal snapshot the operator actually confirmed, not merely to whichever Goal is current by the time the dialog resolves.
+- Confirmed this is distinct from FCA-20260530-484 and FCA-20260530-486. Those slices covered stale coverage override confirmations across selected-session changes and History delete/clear actions across History projection changes; this residual issue was same-session Goal refresh, where `handleGoalAction(clear)` rechecked only `state.sessionId` after `confirmGoalClear()` and could clear a refreshed replacement Goal for the same session.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture a compact Goal action identity from the currently rendered Goal snapshot before opening the clear confirmation, then abandon the clear continuation if the selected session or Goal identity changed before confirmation returns.
+
 ## Update Log
+
+### FCA-20260530-487
+
+Slice: `fix(webconsole): ignore stale goal clear`
+
+Finding:
+
+- `handleGoalAction()` correctly avoided refreshing a newly selected session after stale Goal action completions.
+- The Goal clear branch opened `confirmGoalClear()` and then only rechecked `state.sessionId` before calling `DELETE /api/sessions/{id}/goal`.
+- A focused regression reproduced that if the same session's Goal snapshot changed while the confirmation dialog was open, confirming the old dialog still cleared the refreshed current Goal.
+
+Impact:
+
+- Operators could clear a durable Goal they did not actually review or confirm if the same session refreshed from `goal_old` to `goal_new` while the clear dialog was pending.
+- This weakened the WebConsole contract that destructive local mutations operate on the currently confirmed browser projection over durable session facts.
+
+Changes:
+
+- Added a compact Goal action identity derived from the rendered Goal snapshot.
+- `handleGoalAction(clear)` now captures that identity before opening confirmation and abandons the destructive continuation if the selected session or Goal identity changed.
+- Added a focused frontend regression for stale same-session Goal clear confirmation.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "Goal clear ignores stale confirmation"`: failed before the fix because the stale confirmation still sent one `DELETE /api/sessions/session_goal_clear_stale_a/goal` request.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "Goal clear ignores stale confirmation"`: passed after the fix, 99 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 99 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
 
 ### FCA-20260530-486
 

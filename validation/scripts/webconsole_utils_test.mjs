@@ -2996,6 +2996,62 @@ test('Goal actions do not refresh a newly selected session after stale completio
   ]);
 });
 
+test('Goal clear ignores stale confirmation after same-session refresh', async () => {
+  const appContext = createAppHarnessContext();
+  installGoalAPITestWrappers(appContext);
+  const confirmResolvers = [];
+  const requestURLs = [];
+  const toasts = [];
+  appContext.goalClearButton = fakeActionButton({ 'data-goal-action': 'clear' });
+
+  const action = vm.runInContext(`
+    requestJSON = async function(url) {
+      requestURLsRef.push(String(url));
+      return {
+        metadata: { id: 'session_goal_clear_stale_a' },
+        state: { status: 'awaiting_input' },
+        goal: null,
+        messages: [],
+        timeline: []
+      };
+    };
+    confirmGoalClear = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_goal_clear_stale_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_clear_stale_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_old', status: 'active', objective: 'old objective' }
+    };
+    handleGoalAction(goalClearButton);
+  `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, requestURLsRef: requestURLs, toastsRef: toasts }));
+
+  assert.equal(confirmResolvers.length, 1);
+  assert.deepEqual(sameRealm(requestURLs), []);
+
+  vm.runInContext(`
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_clear_stale_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_new', status: 'active', objective: 'new objective' }
+    };
+  `, appContext);
+
+  confirmResolvers[0](true);
+  await action;
+
+  const deleteRequests = requestURLs.filter((url) => url === '/api/sessions/session_goal_clear_stale_a/goal');
+  assert.equal(deleteRequests.length, 0);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('Goal plan approval override ignores stale confirmation after session changes', async () => {
   const appContext = createAppHarnessContext();
   installGoalAPITestWrappers(appContext);

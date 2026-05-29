@@ -1989,6 +1989,23 @@ async function confirmSkillUninstall(id) {
   });
 }
 
+function currentGoalActionIdentity() {
+  const goal = state.sessionDetail?.goal;
+  if (!goal || typeof goal !== 'object') {
+    return '';
+  }
+  return [
+    goal.goal_id || goal.id || '',
+    goal.updated_at || '',
+    goal.status || '',
+    goal.objective || ''
+  ].map((part) => String(part || '')).join('\n');
+}
+
+function isCurrentGoalActionIdentity(identity) {
+  return currentGoalActionIdentity() === identity;
+}
+
 async function handlePlanModeAction(button) {
   if (!hasDurableSession()) {
     showToast('No durable session is loaded.', 'info');
@@ -2133,6 +2150,7 @@ async function handleGoalAction(button) {
     return;
   }
   const sessionID = state.sessionId;
+  const actionGoalIdentity = currentGoalActionIdentity();
   const action = button.getAttribute('data-goal-action');
   button.disabled = true;
   try {
@@ -2161,7 +2179,7 @@ async function handleGoalAction(button) {
         }
         return;
       }
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
         return;
       }
       await deleteGoal(sessionID);
