@@ -8760,7 +8760,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-313, FCA-20260528-307, FCA-20260528-330, FCA-20260529-435, and FCA-20260529-436. Earlier slices covered queue scalar validation, generic background notification shape/timestamps, session topology, and queue topology; this residual issue was that `session.json` and `control/background.jsonl` accepted unsupported role strings even though runtime entrypoints and queue jobs rejected them.
 - Confirmed the minimal fix belongs in the shared session-store validators, not Web/CLI orchestration: keep empty roles valid for ordinary root sessions and role-less notifications, but reject non-empty role strings outside the explicit `planner` / `generator` / `evaluator` set wherever they are persisted as durable role facts.
 
+### Review 436
+
+- Confirmed FCA-20260529-438 against `spec/15-background-queue.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: blocked queue jobs are resumable parent-linked work and must remain visible through queue files, parent coordination, background notifications, queue lifecycle events, session summaries, and Web Background projections.
+- Confirmed this is distinct from FCA-20260525-038, FCA-20260525-039, FCA-20260526-076, FCA-20260526-077, FCA-20260526-149, FCA-20260529-390, and FCA-20260529-391. Earlier slices covered continued blocked children reaching terminal completion, stale accepted blocked notifications racing with terminal refresh, linked child state repair failures, parent coordination write errors, terminal parent-notification/event repair, and corrupt/mismatched linked child facts. This residual issue was the nonterminal repair path: a running queue job whose linked child had already become `awaiting_input` could be repaired to `blocked` without the matching parent notification or `queue.job.blocked` event.
+- Confirmed the minimal fix belongs in `internal/session/store.go` queue reconciliation, not Web rendering or runtime orchestration: when file facts prove a parent-linked queue job is `blocked`, store repair must ensure unresolved parent coordination plus the same durable background notification and lifecycle events that `ProcessNextJob` writes for a direct blocked worker result.
+
 ## Update Log
+
+### FCA-20260529-438
+
+Slice: `fix(session): repair blocked queue notifications`
+
+Finding:
+
+- `reconcileQueueJobSession` already repaired a parent-linked running queue job to `blocked` when the linked child session state was `awaiting_input` or `paused`.
+- That blocked repair persisted the queue job and updated parent coordination, but did not ensure the parent `control/background.jsonl` notification, `queue.job.notified` event, or `queue.job.blocked` event.
+- A focused pre-fix store regression reproduced the crash/recovery shape: a running parent-linked queue job pointed at a child whose durable `state.json` was already `awaiting_input`; `LoadJob` repaired the job to `blocked` but left the parent with no pending background notification.
+
+Impact:
+
+- Parent sessions could keep unresolved queue work in `parent-coordination.json` while Web Background, parent transcript drain, session summaries, and recovery prompts had no blocked-child notification to explain that the queue job was resumable.
+- The parent finish gate still saw unresolved coordination, but the operator and model-visible background-result path could miss the blocked child facts until another worker path rewrote them.
+- This weakened the durable queue recovery contract for interrupted worker runs after child state became resumable but before the worker wrote parent-visible blocked-result facts.
+
+Changes:
+
+- Added `ensureBlockedQueueJobParentState` alongside the existing terminal queue repair helper.
+- Called the helper from both unchanged blocked loads and changed-to-blocked queue repairs.
+- The helper keeps parent coordination unresolved, ensures a pending background notification for the blocked job, and idempotently appends missing `queue.job.notified` and `queue.job.blocked` events.
+- Added a focused store regression proving `LoadJob` repairs blocked parent notification and lifecycle events from durable linked child facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestLoadJobRepairsBlockedParentNotificationAndEvent -count=1`: failed before the fix because the repaired blocked queue job had no parent background notification.
+- `go test -timeout 120s ./internal/session -run TestLoadJobRepairsBlockedParentNotificationAndEvent -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestLoadJob(RepairsBlockedParentNotificationAndEvent|ReportsTerminalParentNotificationAppendError|ReportsTerminalParentEventAppendError|RollsBackBackgroundNotificationWhenNotifiedEventFails|RollsBackParentCoordinationWhenLifecycleEventFails|RepairsMissingTerminalBackgroundNotification|PreservesResumableChildAsBlocked)|TestEnsureBackgroundNotificationRefreshesChangedQueueFacts|TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh|TestQueueJobWritesRejectMalformedFacts' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineReconcilesCompletedQueueChild|TestEngineReportsLinkedQueueJobReconcileSaveError|TestRunnerProcessNextJob|TestProcessNextJob|TestRunnerQueueSubmit' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check` for `internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-437
 

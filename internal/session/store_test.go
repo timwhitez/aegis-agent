@@ -6171,6 +6171,120 @@ func TestLoadJobRollsBackParentCoordinationWhenLifecycleEventFails(t *testing.T)
 	}
 }
 
+func TestLoadJobRepairsBlockedParentNotificationAndEvent(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_blocked_repair",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_blocked_repair",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_blocked_repair",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusRunning,
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       "child_blocked_repair",
+		SessionStatus:   StatusRunning,
+		Prompt:          "pause for input",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               job.SessionID,
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		QueueJobID:       job.ID,
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := store.SaveParentCoordination(parentMeta.ID, ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentMeta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{job.ID},
+		Parked:              true,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+
+	repaired, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load repaired job: %v", err)
+	}
+	if repaired.Status != QueueStatusBlocked || repaired.SessionStatus != StatusAwaitingInput {
+		t.Fatalf("expected blocked repaired job, got %#v", repaired)
+	}
+	coordination, err := store.LoadParentCoordination(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if !slices.Equal(coordination.UnresolvedQueueJobs, []string{job.ID}) ||
+		len(coordination.CompletedQueueJobs) != 0 ||
+		len(coordination.FailedQueueJobs) != 0 ||
+		!coordination.Parked {
+		t.Fatalf("blocked repair should keep parent coordination unresolved, got %#v", coordination)
+	}
+	notifications, err := store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 ||
+		notifications[0].QueueJobID != job.ID ||
+		notifications[0].Status != QueueStatusBlocked ||
+		notifications[0].SessionStatus != StatusAwaitingInput ||
+		notifications[0].DeliveryStatus != BackgroundNotificationPending {
+		t.Fatalf("expected pending blocked notification, got %#v", notifications)
+	}
+	eventsList, err := store.LoadEvents(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	var foundNotified, foundBlocked bool
+	for _, evt := range eventsList {
+		jobID, _ := evt.Data["job_id"].(string)
+		if jobID != job.ID {
+			continue
+		}
+		switch evt.Type {
+		case "queue.job.notified":
+			foundNotified = true
+		case "queue.job.blocked":
+			foundBlocked = true
+		}
+	}
+	if !foundNotified || !foundBlocked {
+		t.Fatalf("expected queue.job.notified and queue.job.blocked repair events, got notified=%v blocked=%v events=%#v", foundNotified, foundBlocked, eventsList)
+	}
+}
+
 func TestLoadAndListJobsPreferTerminalDuplicateStatusFile(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	if err := store.ensureQueueDirs(); err != nil {
