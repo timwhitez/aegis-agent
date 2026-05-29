@@ -2731,6 +2731,62 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
   });
 });
 
+test('Plan Mode approval override ignores stale confirmation after session changes', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  const confirmResolvers = [];
+  const toasts = [];
+  appContext.planApproveButton = fakeActionButton({ 'data-plan-action': 'approve' });
+
+  const approval = vm.runInContext(`
+    confirmCoverageOverride = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_plan_override_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_override_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: { status: 'awaiting_approval' }
+    };
+    handlePlanModeAction(planApproveButton);
+  `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_plan_override_a\/planmode\/approve$/);
+  appContext.pendingRequests[0].reject({
+    status: 409,
+    message: 'validation coverage blocks approval'
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(confirmResolvers.length, 1);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      plan_mode: null
+    };
+  `, appContext);
+
+  confirmResolvers[0](true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({ session_id: 'session_plan_override_a', status: 'accepted' });
+  }
+  await approval;
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('Plan input answer does not refresh a newly selected session after stale completion', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);
@@ -2844,6 +2900,62 @@ test('Goal actions do not refresh a newly selected session after stale completio
   assert.deepEqual(sameRealm(requestURLs), [
     '/api/sessions/session_goal_slow_a/goal/pause'
   ]);
+});
+
+test('Goal plan approval override ignores stale confirmation after session changes', async () => {
+  const appContext = createAppHarnessContext();
+  installGoalAPITestWrappers(appContext);
+  const confirmResolvers = [];
+  const toasts = [];
+  appContext.goalApprovePlanButton = fakeActionButton({ 'data-goal-action': 'approve-plan' });
+
+  const approval = vm.runInContext(`
+    confirmCoverageOverride = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_goal_override_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_override_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_a', status: 'active' }
+    };
+    handleGoalAction(goalApprovePlanButton);
+  `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_goal_override_a\/mission\/plan\/approve$/);
+  appContext.pendingRequests[0].reject({
+    status: 409,
+    message: 'validation coverage blocks approval'
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(confirmResolvers.length, 1);
+
+  vm.runInContext(`
+    state.sessionId = 'session_fast_b';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_fast_b' },
+      state: { status: 'completed' },
+      goal: { goal_id: 'goal_b', status: 'active' }
+    };
+  `, appContext);
+
+  confirmResolvers[0](true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({ session_id: 'session_goal_override_a', status: 'accepted' });
+  }
+  await approval;
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(sameRealm(toasts), []);
 });
 
 test('running-session steer completion does not mark a newly selected session as queued', async () => {

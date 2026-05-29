@@ -1995,7 +1995,12 @@ async function handlePlanModeAction(button) {
           throw err;
         }
         if (!await confirmCoverageOverride()) {
-          showToast('Plan approval was not overridden.', 'info');
+          if (state.sessionId === sessionID) {
+            showToast('Plan approval was not overridden.', 'info');
+          }
+          return;
+        }
+        if (state.sessionId !== sessionID) {
           return;
         }
         await approvePlanMode(sessionID, { override_coverage: true });
@@ -2162,7 +2167,9 @@ async function handleGoalAction(button) {
           throw err;
         }
         if (!await confirmCoverageOverride()) {
-          showToast('Goal plan approval was not overridden.', 'info');
+          if (state.sessionId === sessionID) {
+            showToast('Goal plan approval was not overridden.', 'info');
+          }
           return;
         }
         if (state.sessionId !== sessionID) {

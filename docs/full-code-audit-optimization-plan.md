@@ -9018,7 +9018,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-482 and existing `fetchSkills` stale-response coverage. The catalog request path already prevented stale `/api/skills` responses from replacing the current catalog, but `handleSkillAction` captured an old uninstall button before the confirmation dialog and did not re-check that the Skills render was still current after confirmation returned.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: add a Skills render epoch, invalidate it whenever the catalog view enters loading or renders a new catalog, and make skill uninstall abandon stale confirmation/cancellation continuations before issuing `/api/skills/{id}/uninstall` or showing stale toasts.
 
+### Review 479
+
+- Confirmed FCA-20260530-484 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Plan Mode and Goal plan coverage override are explicit risk actions for the currently selected durable session, and an older coverage-confirmation result must not authorize a later override request after the operator has moved to another session.
+- Confirmed this is distinct from FCA-20260530-483 and existing stale completion checks for Plan/Goal actions. Prior checks prevented stale completions from mutating a newly selected session, but the coverage override branch still re-entered the old `sessionID` after `confirmCoverageOverride()` returned and issued `?override=1` without re-checking the selected session.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: after coverage override confirmation or cancellation, re-check the selected session before showing cancellation toasts or sending override approval for both Plan Mode approval and Goal mission-plan approval.
+
 ## Update Log
+
+### FCA-20260530-484
+
+Slice: `fix(webconsole): ignore stale coverage overrides`
+
+Finding:
+
+- `handlePlanModeAction()` guarded the first Plan Mode approve call and final success path with `state.sessionId === sessionID`.
+- When the first approve call failed with validation coverage conflict, it opened `confirmCoverageOverride()`.
+- If the operator switched to another session while that confirmation was open, confirming the old dialog still sent `/api/sessions/{old-session}/planmode/approve?override=1`.
+- The Goal mission-plan approval branch already rechecked the selected session before sending override, but it could still show a stale cancellation toast after a session switch.
+
+Impact:
+
+- An explicit validation coverage override could be authorized from a stale Plan Mode confirmation dialog after the user had moved to another session.
+- This weakened the WebConsole contract that risk actions apply to the current durable session context and that browser dialogs do not become independent authority after the underlying session projection changes.
+- The Goal branch had a narrower stale UI symptom on cancellation, where a stale "not overridden" toast could appear for a session that was no longer selected.
+
+Changes:
+
+- Plan Mode approval now re-checks `state.sessionId` after coverage confirmation returns before issuing the override approval request.
+- Plan Mode and Goal plan override cancellation toasts are shown only if the same session is still selected.
+- Added focused regressions for stale Plan Mode coverage override confirmation and stale Goal plan override confirmation after session changes.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'Plan Mode approval override ignores stale confirmation'` observed a second stale override request.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'Plan Mode approval override ignores stale confirmation|Goal plan approval override ignores stale confirmation|Goal actions do not refresh'`: passed.
 
 ### FCA-20260530-483
 
