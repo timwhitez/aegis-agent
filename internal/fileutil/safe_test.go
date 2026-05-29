@@ -124,6 +124,51 @@ func TestChmodAfterAtomicRenameRejectsSymlinkTarget(t *testing.T) {
 	}
 }
 
+func TestChmodAfterAtomicRenameRejectsSymlinkParentBeforeOpen(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "sessions")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	path := filepath.Join(parent, "state.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "state.json")
+	if err := os.WriteFile(outsideFile, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	swapped := false
+	restore := beforeChmodAfterAtomicRenameOpen
+	beforeChmodAfterAtomicRenameOpen = func(chmodPath string) error {
+		if swapped || chmodPath != path {
+			return nil
+		}
+		swapped = true
+		if err := os.RemoveAll(parent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeChmodAfterAtomicRenameOpen = restore
+	}()
+
+	err := chmodAfterAtomicRename(path, 0o600)
+	if err == nil {
+		t.Fatal("expected symlinked parent during chmod to be rejected")
+	}
+	info, statErr := os.Stat(outsideFile)
+	if statErr != nil {
+		t.Fatalf("stat outside file: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("outside target mode changed: got %v", info.Mode().Perm())
+	}
+}
+
 func TestReadRegularFileNoSymlinkRejectsSymlinkFile(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.md")

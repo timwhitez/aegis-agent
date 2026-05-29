@@ -8916,7 +8916,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-450, FCA-20260529-452, FCA-20260530-460, FCA-20260530-462/463, and FCA-20260530-465. Those slices routed callers to shared helpers or hardened temp/create/remove boundaries; this residual issue was inside the rename helpers themselves, which still used raw `os.Rename(oldPath, newPath)` after path prechecks and could move files or directories through a parent that was replaced by a symlink before rename.
 - Confirmed the minimal fix belongs in the shared rename boundary: anchor source and destination parents with no-follow descriptors, verify both descriptors still match their paths before rename, validate source/target children with descriptor-relative `fstatat(AT_SYMLINK_NOFOLLOW)`, use `renameat2(RENAME_NOREPLACE)` for non-replacing moves, and use anchored `renameat` only for the existing atomic-write regular-file replacement path.
 
+### Review 462
+
+- Confirmed FCA-20260530-467 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/09-phase-plan.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: config/env writes, session store facts, Web snapshots, skill extraction, model-visible artifacts, and runtime visible-output sync all rely on `fileutil.AtomicWriteFileNoSymlink`, including its final owner-only mode normalization.
+- Confirmed this is distinct from FCA-20260529-452 and FCA-20260530-466. Those slices hardened atomic-write temp promotion and shared rename helpers; this residual issue was the final `chmodAfterAtomicRename` path, which used path-based `os.OpenFile(path, O_NOFOLLOW)` after promotion. `O_NOFOLLOW` protects only the final path component, so a replaced parent symlink could still redirect the chmod to an outside same-name file.
+- Confirmed the minimal fix belongs in the shared atomic-write chmod helper: open the target parent with no-follow descriptor traversal, verify the parent descriptor still matches the path, open the child with descriptor-relative `openat(O_NOFOLLOW)`, ensure it is regular, and chmod the opened file descriptor while preserving the existing transient-missing retry behavior.
+
 ## Update Log
+
+### FCA-20260530-467
+
+Slice: `fix(fileutil): harden atomic chmod`
+
+Finding:
+
+- `AGENTS.md` requires filesystem safety to handle symlink escape rather than relying only on cleaned paths.
+- `fileutil.AtomicWriteFileNoSymlink` now creates temp files, promotes them, and cleans them up through no-symlink helpers, but its final `chmodAfterAtomicRename` still opened the destination with path-based `os.OpenFile(path, O_NOFOLLOW)`.
+- `O_NOFOLLOW` rejects a symlink as the final component, but it does not prevent an already-checked parent directory from being replaced by a symlink before the open.
+- A focused regression replaced the destination parent directory with a symlink immediately before the chmod open. Before the fix, `chmodAfterAtomicRename` returned success and changed the outside symlink target's same-name file mode.
+
+Impact:
+
+- Atomic writes for config/env files, session facts, Web snapshots, skill extraction files, model-visible artifacts, and runtime visible-output sync could leave the intended file mode unapplied while chmodding an outside same-name file if a checked parent was swapped for a symlink after promotion.
+- This did not reintroduce content write escape after the rename hardening, but it still violated the shared atomic writer's local file-fact and owner-only permission boundary.
+
+Changes:
+
+- Reimplemented `chmodAfterAtomicRename` to call a descriptor-relative `chmodRegularFileAtNoSymlink` helper.
+- The helper opens the target parent through no-follow traversal, verifies the parent descriptor still matches its path, opens the child with `openat(O_NOFOLLOW)`, ensures the opened file is regular, and calls `File.Chmod` on that descriptor.
+- Preserved the existing retry behavior for transient missing paths after atomic promotion.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -run TestChmodAfterAtomicRenameRejectsSymlinkParentBeforeOpen -count=1`: failed before the fix because the outside target file mode changed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestChmodAfterAtomicRename' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestAtomicWriteFileNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/webconsole ./internal/session ./internal/isolation ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-466
 

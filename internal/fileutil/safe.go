@@ -23,6 +23,7 @@ var beforeCreateTempNoSymlinkCreate func(parent string) error
 var beforeRemoveDirAllNoSymlinkRemove func(path string) error
 var beforeRemoveFileNoSymlinkRemove func(path string) error
 var beforeRenamePathNoSymlinkRename func(oldPath, newPath string) error
+var beforeChmodAfterAtomicRenameOpen func(path string) error
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -280,36 +281,68 @@ func validateRenameTargetAtNoSymlink(parentFD int, name, path string, opts renam
 func chmodAfterAtomicRename(path string, mode os.FileMode) error {
 	var err error
 	for attempt := 0; attempt < 6; attempt++ {
-		var file *os.File
-		file, err = os.OpenFile(path, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				return err
+		if beforeChmodAfterAtomicRenameOpen != nil {
+			if hookErr := beforeChmodAfterAtomicRenameOpen(path); hookErr != nil {
+				return hookErr
 			}
-			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
-			continue
 		}
-		info, statErr := file.Stat()
-		if statErr != nil {
-			_ = file.Close()
-			return statErr
-		}
-		if !info.Mode().IsRegular() {
-			_ = file.Close()
-			return fmt.Errorf("refusing to chmod non-regular file path: %s", path)
-		}
-		err = file.Chmod(mode)
-		closeErr := file.Close()
-		if err == nil && closeErr != nil {
-			err = closeErr
-		}
+		err = chmodRegularFileAtNoSymlink(path, mode)
 		if err == nil {
 			return nil
 		}
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return err
+}
+
+func chmodRegularFileAtNoSymlink(path string, mode os.FileMode) error {
+	path = filepath.Clean(path)
+	parent := filepath.Dir(path)
+	base := filepath.Base(path)
+	if base == "." || base == string(filepath.Separator) {
+		return fmt.Errorf("invalid file path: %s", path)
+	}
+	parentFD, err := openDirNoSymlink(parent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		return err
+	}
+	fd, err := unix.Openat(parentFD, base, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return fmt.Errorf("refusing to chmod symlinked path: %s", path)
+		}
+		if errors.Is(err, unix.ENOENT) {
+			return os.ErrNotExist
+		}
+		return err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return errors.New("chmod file descriptor is invalid")
+	}
+	info, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return statErr
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return fmt.Errorf("refusing to chmod non-regular file path: %s", path)
+	}
+	err = file.Chmod(mode)
+	closeErr := file.Close()
+	if err == nil && closeErr != nil {
+		err = closeErr
 	}
 	return err
 }
