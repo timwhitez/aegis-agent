@@ -5233,6 +5233,65 @@ func TestAppendAuditEventRejectsSymlinkedAuditLog(t *testing.T) {
 	}
 }
 
+func TestAppendAuditEventRejectsReplacedParent(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	auditDir := filepath.Dir(auditPath)
+	if err := os.MkdirAll(auditDir, 0o700); err != nil {
+		t.Fatalf("mkdir audit dir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-audit-dir")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside audit dir: %v", err)
+	}
+	outsideAudit := filepath.Join(outside, filepath.Base(auditPath))
+	originalOutside := `{"schema_version":1,"id":"audit_outside","type":"web.outside","time":"2026-05-30T00:00:00Z"}` + "\n"
+	if err := os.WriteFile(outsideAudit, []byte(originalOutside), 0o600); err != nil {
+		t.Fatalf("write outside audit: %v", err)
+	}
+
+	restore := beforeOpenAuditLog
+	swapped := false
+	beforeOpenAuditLog = func(openPath string) error {
+		if swapped || filepath.Clean(openPath) != filepath.Clean(auditPath) {
+			return nil
+		}
+		swapped = true
+		if err := os.Rename(auditDir, auditDir+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, auditDir)
+	}
+	defer func() {
+		beforeOpenAuditLog = restore
+	}()
+
+	err = svc.appendAuditEvent("web.test", nil)
+	if err == nil {
+		data, readErr := os.ReadFile(outsideAudit)
+		if readErr != nil {
+			t.Fatalf("read outside audit after unexpected success: %v", readErr)
+		}
+		t.Fatalf("expected replaced audit parent append to fail, but it succeeded and outside log became %q", data)
+	}
+	if !strings.Contains(err.Error(), "symlink") && !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("expected symlink/path-change error, got %v", err)
+	}
+	data, readErr := os.ReadFile(outsideAudit)
+	if readErr != nil {
+		t.Fatalf("read outside audit: %v", readErr)
+	}
+	if string(data) != originalOutside {
+		t.Fatalf("outside audit log should not be modified, got %q", data)
+	}
+}
+
 func TestAppendAuditEventRejectsMalformedExistingLog(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})

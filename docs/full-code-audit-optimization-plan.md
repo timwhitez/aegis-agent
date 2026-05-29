@@ -8952,7 +8952,57 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-471. That slice hardened shared regular-file reads; this residual issue was session store append/open still calling path-based `unix.Open(path, O_NOFOLLOW)`. As with reads, `O_NOFOLLOW` only protects the final component, so a session parent replaced by a symlink after validation could redirect append writes to an outside same-name file.
 - Confirmed the minimal fix belongs in the shared session open boundary and reusable fileutil helper: expose descriptor-relative `fileutil.OpenFileNoSymlink`, keep existing session validation and JSONL semantics, and make session store append/read/lock opens go through parent-descriptor `openat(O_NOFOLLOW)`.
 
+### Review 468
+
+- Confirmed FCA-20260530-473 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: WebConsole audit events protect sensitive local mutations such as settings/API key writes, skill install/uninstall, session delete, and session clear, so the audit log append target must remain the configured local audit file after preflight.
+- Confirmed this is distinct from FCA-20260530-472. That slice hardened session store fact opens; this residual issue was `openAuditLogNoSymlink` still doing audit-specific symlink prechecks and then path-based `unix.Open(path, O_NOFOLLOW)`, leaving the audit log parent replacement window open.
+- Confirmed the minimal fix belongs in `openAuditLogNoSymlink`: keep the existing audit parent creation, symlink/path validation, existing-log validation, and batch append logic, but use the shared descriptor-relative `fileutil.OpenFileNoSymlink` for the final audit log open.
+
 ## Update Log
+
+### FCA-20260530-473
+
+Slice: `fix(webconsole): harden audit log opens`
+
+Finding:
+
+- WebConsole audit logging is the durable evidence gate for sensitive local mutations: config writes, API key env writes, skill install/uninstall, session delete, and sessions clear all depend on audit append success or rollback.
+- `openAuditLogNoSymlink` rejected symlink ancestors and final symlink logs, then called path-based `unix.Open(path, O_CREAT|O_RDWR|O_APPEND|O_NOFOLLOW, 0o600)`.
+- On Linux, `O_NOFOLLOW` protects only the final component. A local actor could replace the audit log parent directory with a symlink after the precheck and before open.
+- A focused regression replaced the audit log parent with a symlink to an outside directory containing a valid same-name audit log. Before the fix, `appendAuditEvent` succeeded and appended `web.test` to the outside log.
+
+Impact:
+
+- Sensitive Web mutations could record their audit event outside the intended local audit log while the service treated audit persistence as successful.
+- This weakened the rollback/audit guarantee for config/API key, skill, and destructive session operations because the configured audit log was no longer the actual append target.
+
+Changes:
+
+- Reused `fileutil.OpenFileNoSymlink` from the shared file-safety boundary for audit log opens.
+- Kept existing audit directory creation, audit symlink/path prechecks, malformed/duplicate existing-log validation, append batching, and failed-write truncation behavior.
+- Added a regression proving a replaced audit parent is rejected and the outside audit log remains unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAppendAuditEventRejectsReplacedParent -count=1`: failed before the fix because `appendAuditEvent` appended to the outside log and returned success.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAppendAuditEventRejects(SymlinkedAuditLog|ReplacedParent|MalformedExistingLog|DuplicateExistingAuditIDs)|TestSensitiveActionsPreflightAuditBeforeMutating|TestSensitiveWebActionsEmitAuditEvents|Test(UpdateConfig|APIKeyWrite|SkillUpload|SkillUninstall|DeleteSession|ClearSessions).*Audit' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestReadRegularFile|TestAtomicWriteFileNoSymlink|TestCreateTempNoSymlink|TestMkdirTempNoSymlink' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/config ./internal/skills ./internal/review -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-472
 

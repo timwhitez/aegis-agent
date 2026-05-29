@@ -31,6 +31,8 @@ type pendingWebAuditEvent struct {
 	data      map[string]any
 }
 
+var beforeOpenAuditLog func(path string) error
+
 func (s *Service) appendAuditEvent(eventType string, data map[string]any) error {
 	return s.appendAuditEvents(pendingWebAuditEvent{eventType: eventType, data: data})
 }
@@ -135,11 +137,12 @@ func openAuditLogNoSymlink(path string) (*os.File, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND|unix.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, err
+	if beforeOpenAuditLog != nil {
+		if err := beforeOpenAuditLog(path); err != nil {
+			return nil, err
+		}
 	}
-	return os.NewFile(uintptr(fd), path), nil
+	return fileutil.OpenFileNoSymlink(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND, 0o600)
 }
 
 func validateExistingAuditLog(file *os.File) error {
