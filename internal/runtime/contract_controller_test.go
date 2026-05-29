@@ -580,10 +580,7 @@ func TestRequiredArtifactGateRejectsSymlinkedArtifactAfterContractCreation(t *te
 
 func TestProviderAttemptsLedgerAndLongRunCheckpointAreDurable(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	if err := store.SaveState(meta.ID, session.State{
 		Status:    session.StatusRunning,
 		Phase:     "provider",
@@ -884,10 +881,7 @@ func TestSessionSummaryReportsCorruptLogFacts(t *testing.T) {
 
 func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	if _, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "ship completed task"}); err != nil {
 		t.Fatalf("create completed task: %v", err)
 	}
@@ -925,10 +919,7 @@ func TestSessionSummaryAndCheckpointSeparateCancelledTasks(t *testing.T) {
 
 func TestLongRunCheckpointReportsCorruptTaskGraph(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	if _, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "preserve corrupt task evidence"}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -947,10 +938,7 @@ func TestLongRunCheckpointReportsCorruptTaskGraph(t *testing.T) {
 
 func TestLongRunCheckpointReportsCorruptTodoState(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "todo.json"), []byte("{not-json}\n"), 0o600); err != nil {
 		t.Fatalf("corrupt todo: %v", err)
 	}
@@ -966,10 +954,7 @@ func TestLongRunCheckpointReportsCorruptTodoState(t *testing.T) {
 
 func TestLongRunCheckpointReportsCorruptArtifactTracker(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "artifact-tracker.json"), []byte("{not-json}\n"), 0o600); err != nil {
 		t.Fatalf("corrupt artifact tracker: %v", err)
 	}
@@ -986,11 +971,7 @@ func TestLongRunCheckpointReportsCorruptArtifactTracker(t *testing.T) {
 func TestLongRunCheckpointReportsCorruptChildrenQueueFacts(t *testing.T) {
 	makeCheckpointEligible := func(t *testing.T, store *session.Store, meta session.SessionMetadata) session.SessionMetadata {
 		t.Helper()
-		meta.ParentSessionID = "parent-session"
-		if err := store.SaveMetadata(meta.ID, meta); err != nil {
-			t.Fatalf("save metadata: %v", err)
-		}
-		return meta
+		return saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	}
 	assertNoCheckpoint := func(t *testing.T, store *session.Store, sessionID string) {
 		t.Helper()
@@ -1076,11 +1057,7 @@ func TestLongRunCheckpointReportsCorruptChildrenQueueFacts(t *testing.T) {
 func TestLongRunCheckpointReportsCorruptLogFacts(t *testing.T) {
 	makeCheckpointEligible := func(t *testing.T, store *session.Store, meta session.SessionMetadata) session.SessionMetadata {
 		t.Helper()
-		meta.ParentSessionID = "parent-session"
-		if err := store.SaveMetadata(meta.ID, meta); err != nil {
-			t.Fatalf("save metadata: %v", err)
-		}
-		return meta
+		return saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	}
 	assertNoCheckpoint := func(t *testing.T, store *session.Store, sessionID string) {
 		t.Helper()
@@ -1131,10 +1108,7 @@ func TestLongRunCheckpointReportsCorruptOptionalFacts(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			store, meta := newRuntimeTestSession(t)
-			meta.ParentSessionID = "parent-session"
-			if err := store.SaveMetadata(meta.ID, meta); err != nil {
-				t.Fatalf("save metadata: %v", err)
-			}
+			meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 			if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), tc.file), []byte("{not-json}\n"), 0o600); err != nil {
 				t.Fatalf("write corrupt %s: %v", tc.file, err)
 			}
@@ -1152,10 +1126,7 @@ func TestLongRunCheckpointReportsCorruptOptionalFacts(t *testing.T) {
 
 func TestLongRunCheckpointReportsUnreadableCompactionArtifactDirectory(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	dir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions")
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatalf("remove compactions dir: %v", err)
@@ -1175,10 +1146,7 @@ func TestLongRunCheckpointReportsUnreadableCompactionArtifactDirectory(t *testin
 
 func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	if err := store.AppendEvent(meta.ID, events.New(meta.ID, "webconsole.handle.acquired", "webconsole", map[string]any{
 		"source":           "webconsole",
 		"process_start_id": "123:2026-05-08T00:00:00Z",
@@ -1212,10 +1180,7 @@ func TestSessionSummaryAndCheckpointRecordRecentOwnerClue(t *testing.T) {
 
 func TestSessionSummaryAndCheckpointRejectMalformedRecentOwnerTimestamps(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
-	meta.ParentSessionID = "parent-session"
-	if err := store.SaveMetadata(meta.ID, meta); err != nil {
-		t.Fatalf("save metadata: %v", err)
-	}
+	meta = saveRuntimeTestChildMetadata(t, store, meta, "parent-session")
 	if err := store.AppendEvent(meta.ID, events.New(meta.ID, "webconsole.handle.released", "webconsole", map[string]any{
 		"source":           "webconsole",
 		"process_start_id": "123:2026-05-08T00:00:00Z",
@@ -1695,6 +1660,17 @@ func newRuntimeTestSession(t *testing.T) (*session.Store, session.SessionMetadat
 		t.Fatalf("create session: %v", err)
 	}
 	return store, meta
+}
+
+func saveRuntimeTestChildMetadata(t *testing.T, store *session.Store, meta session.SessionMetadata, parentID string) session.SessionMetadata {
+	t.Helper()
+	meta.ParentSessionID = parentID
+	meta.RootSessionID = parentID
+	meta.Depth = 1
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	return meta
 }
 
 func blockRuntimeContractHistoryPath(t *testing.T, store *session.Store, sessionID string) {

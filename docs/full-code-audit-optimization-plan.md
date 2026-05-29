@@ -8742,7 +8742,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-430 and FCA-20260529-433. FCA-430 made `agent_list` reject unknown parent sessions, and FCA-433 made agent tools prove the current `execCtx.SessionID` exists before entering the control plane; this residual issue was that a valid current session could still query a child session or queue job owned by another parent.
 - Confirmed the minimal fix belongs across the tool/control-plane boundary: `defAgentStatus` must pass the current session id as parent context, and `Runner.AgentStatus` must load that parent metadata and verify the requested child session or queue job is directly linked to it.
 
+### Review 433
+
+- Confirmed FCA-20260529-435 against `spec/14-multi-agent-and-isolation.md` and `spec/01-runtime-architecture.md`: `session.json` is the durable source for parent/root/depth topology, and root sessions either use legacy omitted `root_session_id` or self-reference, while child sessions must carry a root id and positive depth.
+- Confirmed this is distinct from FCA-20260529-430 through FCA-20260529-434. Those slices hardened missing/unknown current sessions and model-facing agent list/status scoping; this residual issue was a syntactically valid but semantically malformed `session.json` snapshot being accepted by the shared store validator.
+- Confirmed the minimal fix belongs in `validateSessionMetadata`, not Web/CLI/runtime orchestration: enforce self-consistent root/child metadata at the file-fact boundary while preserving legacy root sessions with omitted `root_session_id` and preserving cleanup/recovery tests for root-linked descendants with drifted parent chains.
+
 ## Update Log
+
+### FCA-20260529-435
+
+Slice: `fix(session): reject malformed delegation metadata`
+
+Finding:
+
+- `validateSessionMetadata` checked `parent_session_id`, `root_session_id`, and `depth` only as independent scalar fields.
+- A session with no `parent_session_id` but a non-self `root_session_id` could load as a root-like session even though the durable topology said it belonged to a different root tree.
+- A child-like session with `parent_session_id` but no `root_session_id`, or with depth `0`, could also pass shared metadata validation.
+- Focused pre-fix store regression wrote these malformed `session.json` snapshots directly; before the fix, `LoadMetadata` accepted the foreign-root root-like snapshot.
+
+Impact:
+
+- Store readers, Web session summaries, child/queue projections, `request_user_input` root-session gating, and cleanup/recovery code could disagree about whether a session was a root or a child.
+- This weakened the durable file-fact contract for delegation trees and made later model-facing scoping fixes depend on callers remembering to reinterpret malformed topology instead of relying on the shared metadata validator.
+
+Changes:
+
+- Added topology checks to `validateSessionMetadata`:
+  - root sessions with no `parent_session_id` may omit `root_session_id` for legacy compatibility, but any non-empty root id must equal the session id;
+  - root sessions must have depth `0`;
+  - child sessions with `parent_session_id` must have non-empty `root_session_id`;
+  - child sessions must have positive depth.
+- Added store regressions covering `LoadMetadata` and `SaveMetadata` rejection for foreign-root root snapshots, child snapshots without root ids, and child snapshots at depth `0`.
+- Kept legacy root snapshots with omitted `root_session_id` valid, and adjusted the existing root-linked delete recovery fixture to use a drifted parent chain with positive child depth rather than an invalid root-like child.
+- Updated runtime metadata test fixtures that intentionally model child metadata so their `depth` and prepared-event key assertions match the now-enforced topology.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestStoreLoadMetadataRejectsMalformedDelegationTopology -count=1`: failed before the fix because `LoadMetadata` accepted a root-like session whose `root_session_id` pointed at another session.
+- `go test -timeout 120s ./internal/session -run 'TestStoreLoadMetadataRejectsMalformed(DelegationTopology|Snapshot)|TestListChildrenAndParentJobsUseCreationOrder|TestStoreListReportsCorruptMetadataSnapshot|TestDeleteSessionTreeRemovesRootLinkedDescendants' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEnginePassesSessionMetadataIntoProviderRequest|TestEngineEmitsProviderRequestPreparedEvent|TestEngineEmitsContextLoadedEventWithDurableState|TestRunnerDelegateRejectsDepthLimit|TestRunnerDelegate|TestRunnerQueueSubmit|TestRunnerProcessNextJob|TestProcessNextJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalEndpointsMutateDurableGoal|TestServiceGoalStatusPreservesAccountingAndProgressFacts|TestServiceSessionDetail|TestServiceDeleteSessionTree|TestServiceHistory|TestServicePlanMode' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `node --check` for `internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/app -run TestChildrenCommandReadsChildSessionsAndJobs -count=1`: passed after updating the CLI child-view fixture to use legal child depth.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-434
 

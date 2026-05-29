@@ -1582,6 +1582,7 @@ func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 	meta.ParentSessionID = "parent-1"
 	meta.AgentName = "reviewer"
 	meta.AgentRole = "evaluator"
+	meta.Depth = 1
 	store := false
 	includeThoughts := true
 	meta.ProviderOptions = session.ProviderOptions{
@@ -1638,7 +1639,7 @@ func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 		t.Fatalf("expected metadata_enabled=true, got %#v", evt.Data["metadata_enabled"])
 	}
 	keys, _ := evt.Data["metadata_keys"].([]any)
-	wantKeys := []string{"agent_name", "agent_role", "mode", "parent_session_id", "root_session_id", "session_id"}
+	wantKeys := []string{"agent_name", "agent_role", "depth", "mode", "parent_session_id", "root_session_id", "session_id"}
 	if len(keys) != len(wantKeys) {
 		t.Fatalf("unexpected metadata keys: %#v", evt.Data["metadata_keys"])
 	}
@@ -3563,6 +3564,7 @@ func TestEngineCompletingQueuedChildReconcilesParentQueueFacts(t *testing.T) {
 	meta.ParentSessionID = parentMeta.ID
 	meta.RootSessionID = parentMeta.ID
 	meta.QueueJobID = "job_child_reconcile"
+	meta.Depth = 1
 	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
 		t.Fatalf("save child metadata: %v", err)
 	}
@@ -3655,6 +3657,7 @@ func TestEngineReportsLinkedQueueJobReconcileSaveError(t *testing.T) {
 	meta.ParentSessionID = parentMeta.ID
 	meta.RootSessionID = parentMeta.ID
 	meta.QueueJobID = "job_queue_save_error"
+	meta.Depth = 1
 	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
 		t.Fatalf("save child metadata: %v", err)
 	}
@@ -4310,6 +4313,7 @@ func TestEngineEmitsContextLoadedEventWithDurableState(t *testing.T) {
 	meta.ParentSessionID = "parent-role"
 	meta.AgentName = "reviewer"
 	meta.AgentRole = "evaluator"
+	meta.Depth = 1
 	if err := os.MkdirAll(filepath.Join(meta.Workdir, "reports"), 0o755); err != nil {
 		t.Fatalf("mkdir reports: %v", err)
 	}

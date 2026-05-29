@@ -2058,9 +2058,9 @@ func TestRunnerContinueKeepsDurableTurnAndResetsRunBudgetAfterMaxTurnsFailure(t 
 		Provider:         "openai-compatible",
 		Model:            "gpt-5.4",
 		CompletionPolicy: completionPolicy(session.ModeRun),
-		RootSessionID:    "root",
 		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
 	}
+	meta.RootSessionID = meta.ID
 	state := session.State{
 		Status:    session.StatusFailed,
 		Phase:     "tool_execute",

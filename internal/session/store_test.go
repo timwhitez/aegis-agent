@@ -981,6 +981,81 @@ func TestStoreLoadMetadataRejectsMalformedSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreLoadMetadataRejectsMalformedDelegationTopology(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sessionPath := filepath.Join(store.SessionDir(meta.ID), "session.json")
+
+	rootWithForeignRoot := meta
+	rootWithForeignRoot.RootSessionID = NewSessionID()
+	if err := store.writeJSONFile(sessionPath, rootWithForeignRoot); err != nil {
+		t.Fatalf("write root with foreign root: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err == nil || !strings.Contains(err.Error(), "root_session_id") {
+		t.Fatalf("expected LoadMetadata to reject root with foreign root_session_id, got %v", err)
+	}
+	if err := store.SaveMetadata(meta.ID, rootWithForeignRoot); err == nil || !strings.Contains(err.Error(), "root_session_id") {
+		t.Fatalf("expected SaveMetadata to reject root with foreign root_session_id, got %v", err)
+	}
+
+	childWithoutRoot := meta
+	childWithoutRoot.ParentSessionID = NewSessionID()
+	childWithoutRoot.Depth = 1
+	if err := store.writeJSONFile(sessionPath, childWithoutRoot); err != nil {
+		t.Fatalf("write child without root: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err == nil || !strings.Contains(err.Error(), "root_session_id") {
+		t.Fatalf("expected LoadMetadata to reject child without root_session_id, got %v", err)
+	}
+	if err := store.SaveMetadata(meta.ID, childWithoutRoot); err == nil || !strings.Contains(err.Error(), "root_session_id") {
+		t.Fatalf("expected SaveMetadata to reject child without root_session_id, got %v", err)
+	}
+
+	childAtRootDepth := meta
+	childAtRootDepth.ParentSessionID = NewSessionID()
+	childAtRootDepth.RootSessionID = childAtRootDepth.ParentSessionID
+	if err := store.writeJSONFile(sessionPath, childAtRootDepth); err != nil {
+		t.Fatalf("write child at root depth: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("expected LoadMetadata to reject child with zero depth, got %v", err)
+	}
+	if err := store.SaveMetadata(meta.ID, childAtRootDepth); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("expected SaveMetadata to reject child with zero depth, got %v", err)
+	}
+
+	rootWithSelfRoot := meta
+	rootWithSelfRoot.RootSessionID = rootWithSelfRoot.ID
+	if err := store.writeJSONFile(sessionPath, rootWithSelfRoot); err != nil {
+		t.Fatalf("write root with self root: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err != nil {
+		t.Fatalf("expected root with self root_session_id to load: %v", err)
+	}
+
+	legacyRoot := meta
+	if err := store.writeJSONFile(sessionPath, legacyRoot); err != nil {
+		t.Fatalf("write legacy root: %v", err)
+	}
+	if _, err := store.LoadMetadata(meta.ID); err != nil {
+		t.Fatalf("expected legacy root without root_session_id to load: %v", err)
+	}
+}
+
 func TestStoreLoadStateRejectsMalformedSnapshot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
@@ -2372,8 +2447,8 @@ func TestStoreListReportsCorruptMetadataSnapshot(t *testing.T) {
 		Provider:         "fake",
 		Model:            "fake",
 		CompletionPolicy: CompletionPolicyInteractive,
-		RootSessionID:    "metadata_snapshot_parent",
 	}
+	meta.RootSessionID = meta.ID
 	state := State{Status: StatusCompleted, Phase: "done", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := store.Create(meta, state); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -3419,8 +3494,10 @@ func TestDeleteSessionTreeRemovesRootLinkedDescendants(t *testing.T) {
 		Provider:         "openai",
 		Model:            "gpt-5.4",
 		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "missing_root_linked_parent",
 		RootSessionID:    rootMeta.ID,
 		QueueJobID:       "job_root_linked_delete",
+		Depth:            1,
 	}
 	if err := store.Create(orphanedChildMeta, State{Status: StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
 		t.Fatalf("create root-linked child session: %v", err)

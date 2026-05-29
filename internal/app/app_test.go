@@ -2682,7 +2682,7 @@ func TestChildrenCommandReadsChildSessionsAndJobs(t *testing.T) {
 	if err := store.Create(parent, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child := session.SessionMetadata{SchemaVersion: 1, ID: "child", CreatedAt: now, Workdir: t.TempDir(), RequestedWorkdir: t.TempDir(), Mode: session.ModeExec, Provider: "openai", Model: "gpt-5.4", CompletionPolicy: session.CompletionPolicyAutonomous, ParentSessionID: "parent", RootSessionID: "parent", AgentName: "reviewer"}
+	child := session.SessionMetadata{SchemaVersion: 1, ID: "child", CreatedAt: now, Workdir: t.TempDir(), RequestedWorkdir: t.TempDir(), Mode: session.ModeExec, Provider: "openai", Model: "gpt-5.4", CompletionPolicy: session.CompletionPolicyAutonomous, ParentSessionID: "parent", RootSessionID: "parent", AgentName: "reviewer", Depth: 1}
 	if err := store.Create(child, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
 		t.Fatalf("create child: %v", err)
 	}

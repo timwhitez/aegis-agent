@@ -6808,6 +6808,7 @@ func TestServiceListLimitsRejectOversizedQueryValues(t *testing.T) {
 		meta.CreatedAt = time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
 		meta.ParentSessionID = parent.ID
 		meta.RootSessionID = parent.ID
+		meta.Depth = 1
 		if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
 			t.Fatalf("create child session %d: %v", i, err)
 		}
@@ -6988,6 +6989,7 @@ func TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs(t *testing.T) {
 		ParentSessionID:  parentMeta.ID,
 		RootSessionID:    parentMeta.ID,
 		QueueJobID:       "job_history_delete",
+		Depth:            1,
 	}
 	childState := session.State{
 		Status:    session.StatusCompleted,
@@ -7116,6 +7118,7 @@ func TestDeleteSessionRollsBackWhenAuditAppendFails(t *testing.T) {
 	childMeta.ParentSessionID = parentMeta.ID
 	childMeta.RootSessionID = parentMeta.ID
 	childMeta.QueueJobID = "delete_audit_failure_job"
+	childMeta.Depth = 1
 	if err := svc.store.Create(childMeta, testSessionState(session.StatusCompleted)); err != nil {
 		t.Fatalf("create child session: %v", err)
 	}

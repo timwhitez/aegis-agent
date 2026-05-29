@@ -3195,14 +3195,31 @@ func validateSessionMetadata(meta SessionMetadata, expectedID string) error {
 	if meta.Depth < 0 {
 		return errors.New("session depth must be non-negative")
 	}
-	if strings.TrimSpace(meta.ParentSessionID) != "" {
+	parentSessionID := strings.TrimSpace(meta.ParentSessionID)
+	rootSessionID := strings.TrimSpace(meta.RootSessionID)
+	if parentSessionID != "" {
 		if err := validateStoreID("parent session", meta.ParentSessionID); err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(meta.RootSessionID) != "" {
+	if rootSessionID != "" {
 		if err := validateStoreID("root session", meta.RootSessionID); err != nil {
 			return err
+		}
+	}
+	if parentSessionID == "" {
+		if rootSessionID != "" && rootSessionID != meta.ID {
+			return fmt.Errorf("root session root_session_id %q must match session id %q", meta.RootSessionID, meta.ID)
+		}
+		if meta.Depth != 0 {
+			return errors.New("root session depth must be zero")
+		}
+	} else {
+		if rootSessionID == "" {
+			return errors.New("child session root_session_id is required")
+		}
+		if meta.Depth <= 0 {
+			return errors.New("child session depth must be positive")
 		}
 	}
 	if strings.TrimSpace(meta.QueueJobID) != "" {

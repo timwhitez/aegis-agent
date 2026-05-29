@@ -1938,7 +1938,12 @@ func createParentSessionWithDepth(t *testing.T, store *session.Store, workdir st
 		RootSessionID:    "",
 		Depth:            depth,
 	}
-	meta.RootSessionID = meta.ID
+	if depth > 0 {
+		meta.ParentSessionID = "ancestor_" + meta.ID
+		meta.RootSessionID = meta.ParentSessionID
+	} else {
+		meta.RootSessionID = meta.ID
+	}
 	state := session.State{
 		Status:    session.StatusCompleted,
 		Phase:     "turn_decide",
