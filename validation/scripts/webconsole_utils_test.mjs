@@ -4135,6 +4135,63 @@ test('summary panel renders provider attempt ledger facts', () => {
   assert.match(html, /response resp_p.+done/);
 });
 
+test('session panels render parent coordination and checkpoint recovery facts', () => {
+  const detail = {
+    state: {
+      status: 'completed',
+      phase: 'turn_decide',
+      turn: 3,
+      loaded_skills: []
+    },
+    metadata: {
+      id: 'sess_parent_recovery_facts',
+      provider: 'openai-compatible',
+      model: 'gpt-test',
+      mode: 'run',
+      workdir: '/tmp/workspace'
+    },
+    messages: [],
+    steer_requests: [],
+    background_notifications: [],
+    provider_attempts: [],
+    children: {
+      sessions: [],
+      jobs: []
+    },
+    parent_coordination: {
+      parent_session_id: 'sess_parent_recovery_facts',
+      wait_mode: 'wait-all',
+      parked: true,
+      unresolved_child_sessions: ['child_coordination_only'],
+      unresolved_queue_jobs: ['job_coordination_only'],
+      completed_queue_jobs: ['job_completed'],
+      updated_at: '2026-05-30T01:02:03Z'
+    },
+    longrun_checkpoint: {
+      session_id: 'sess_parent_recovery_facts',
+      parent_wait_state: 'parked',
+      unresolved_child_sessions: ['child_coordination_only'],
+      unresolved_queue_jobs: ['job_coordination_only'],
+      resume_hints: ['resolve parent child or queue wait state'],
+      created_at: '2026-05-30T01:03:04Z'
+    }
+  };
+
+  const summaryHTML = context.renderSummaryPanel(detail);
+  assert.match(summaryHTML, />Recovery facts<\/h4>/);
+  assert.match(summaryHTML, /Parent coordination/);
+  assert.match(summaryHTML, /wait-all · parked · unresolved 1\/1 · completed 0\/1/);
+  assert.match(summaryHTML, /Long-run checkpoint/);
+  assert.match(summaryHTML, /resolve parent child or queue wait state/);
+  assert.match(summaryHTML, /child_coordination_only/);
+  assert.match(summaryHTML, /job_coordination_only/);
+
+  const agentsHTML = context.renderAgentsPanel(detail);
+  assert.match(agentsHTML, /parent-coordination-panel/);
+  assert.match(agentsHTML, /Parent coordination/);
+  assert.match(agentsHTML, /Unresolved jobs: job_coordination_only/);
+});
+
 test('settings save keeps empty API key fields unmasked after success', async () => {
   const { elements, savedPayloads, toasts, restore } = await renderSettingsHarness({ hasKey: false });
   try {

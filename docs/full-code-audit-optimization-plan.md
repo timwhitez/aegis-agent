@@ -8994,7 +8994,48 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-477 and FCA-20260530-478. Those slices fixed handoff materialization failures and parent-state transaction rollback; this residual issue was the derived checkpoint projection. `writeLongRunCheckpoint` could skip checkpoint creation for coordination-only parent wait facts, omit unresolved ids that existed only in `parent-coordination.json`, and fail to add the parent wait resume hint when the coordination state was `parked`.
 - Confirmed the minimal fix belongs in `internal/runtime/session_summary.go`: treat a valid `parent-coordination.json` as checkpoint-eligible, merge unresolved child/session and queue ids from coordination into `LongRunCheckpoint`, derive `parent_wait_state` with the same wait-all / wait-any semantics as the completion gate, and add the parent wait resume hint for both `waiting` and `parked`.
 
+### Review 475
+
+- Confirmed FCA-20260530-480 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: WebConsole session detail already receives durable parent coordination and long-run checkpoint facts, and the default Summary/Background inspector must expose those recovery facts instead of only showing browser-derived message/child/job counters.
+- Confirmed this is distinct from FCA-20260530-479. That slice fixed checkpoint production from parent coordination; this residual issue was WebConsole consumption. `session-view.js` did not render `parent_coordination` or `longrun_checkpoint`, so unresolved wait/parked state and checkpoint resume hints could remain invisible even though the backend returned them.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/session-view.js`: render parent wait/checkpoint rows and recovery cards from existing `detail.parent_coordination` / `detail.longrun_checkpoint`, and show full unresolved child/job ids for traceability.
+
 ## Update Log
+
+### FCA-20260530-480
+
+Slice: `fix(webconsole): expose recovery facts`
+
+Finding:
+
+- `Service.sessionDetail` returns `ParentCoordination` and `LongRunCheckpoint`, and tests already verify corrupt snapshots fail instead of being hidden.
+- `session-view.js` did not read either field. Summary and Background inspector panels showed only message-derived counters, child/job lists, and notifications.
+- A parent session with `parent-coordination.json` parked/waiting or a checkpoint with resume hints could therefore look normal in the Web UI unless the operator opened raw files or timeline events.
+
+Impact:
+
+- Web operators could miss unresolved child/queue work or checkpoint resume guidance in the default local console.
+- The UI weakened the Web-first durable fact contract by making important parent recovery facts effectively invisible, while not actually contradicting the backend.
+- Long-running/large-project sessions could appear less blocked or less recoverable than the session store facts proved.
+
+Changes:
+
+- Summary panel now renders Parent wait and Checkpoint rows plus a Recovery facts card section.
+- Background inspector now renders a Parent coordination panel above sub-agent cards.
+- Recovery cards use existing backend `parent_coordination` and `longrun_checkpoint` payloads; no new browser authority state is introduced.
+- Unresolved child/session and queue ids are rendered as full ids for traceability.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'session panels render parent coordination|summary panel renders provider attempt'`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSessionDetailReportsSnapshotLoadErrors|TestServiceGoalFactsAndMissionCoverageApproval' -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-479
 

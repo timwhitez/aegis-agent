@@ -1000,6 +1000,8 @@ function renderSummaryPanel(detail) {
   const recentTools = collectRecentToolEntries(detail.messages).slice(-6).reverse();
   const loadedSkills = maybeArray(detail.state?.loaded_skills);
   const failureSummary = summarizeProviderFailure(detail);
+  const parentFacts = parentCoordinationFacts(detail);
+  const checkpointFacts = checkpointRecoveryFacts(detail);
   return `
     <section class="panel-section">
       <div class="summary-grid wide">
@@ -1027,9 +1029,13 @@ function renderSummaryPanel(detail) {
         ${detail.active_handle ? renderKVRow('Webconsole handle', 'active') : ''}
         ${failureSummary ? renderKVRow('Failure class', failureSummary.label) : ''}
         ${failureSummary ? renderKVRow('Operator hint', failureSummary.hint) : ''}
+        ${parentFacts ? renderKVRow('Parent wait', parentFacts.summary) : ''}
+        ${checkpointFacts ? renderKVRow('Checkpoint', checkpointFacts.summary) : ''}
         ${detail.state.last_error ? renderKVRow('Last error', detail.state.last_error) : ''}
       </div>
     </section>
+
+    ${renderRecoveryFactsSection(parentFacts, checkpointFacts)}
 
     ${renderProviderAttemptsSection(detail.provider_attempts)}
 
@@ -1056,6 +1062,129 @@ function renderSummaryPanel(detail) {
       </div>
     </section>
   `;
+}
+
+function parentCoordinationFacts(detail) {
+  const coordination = detail?.parent_coordination;
+  if (!coordination || !coordination.parent_session_id) {
+    return null;
+  }
+  const unresolvedChildren = maybeArray(coordination.unresolved_child_sessions);
+  const unresolvedJobs = maybeArray(coordination.unresolved_queue_jobs);
+  const completedChildren = maybeArray(coordination.completed_child_sessions);
+  const completedJobs = maybeArray(coordination.completed_queue_jobs);
+  const failedChildren = maybeArray(coordination.failed_child_sessions);
+  const failedJobs = maybeArray(coordination.failed_queue_jobs);
+  const waitMode = coordination.wait_mode || 'wait-all';
+  const waitState = coordination.parked
+    ? 'parked'
+    : unresolvedChildren.length || unresolvedJobs.length
+      ? 'waiting'
+      : 'ready';
+  const parts = [
+    waitMode,
+    waitState,
+    unresolvedChildren.length || unresolvedJobs.length ? `unresolved ${unresolvedChildren.length}/${unresolvedJobs.length}` : '',
+    completedChildren.length || completedJobs.length ? `completed ${completedChildren.length}/${completedJobs.length}` : '',
+    failedChildren.length || failedJobs.length ? `failed ${failedChildren.length}/${failedJobs.length}` : ''
+  ].filter(Boolean);
+  return {
+    waitMode,
+    waitState,
+    unresolvedChildren,
+    unresolvedJobs,
+    completedChildren,
+    completedJobs,
+    failedChildren,
+    failedJobs,
+    updatedAt: coordination.updated_at || '',
+    summary: parts.join(' · ')
+  };
+}
+
+function checkpointRecoveryFacts(detail) {
+  const checkpoint = detail?.longrun_checkpoint;
+  if (!checkpoint || !checkpoint.session_id) {
+    return null;
+  }
+  const unresolvedChildren = maybeArray(checkpoint.unresolved_child_sessions);
+  const unresolvedJobs = maybeArray(checkpoint.unresolved_queue_jobs);
+  const hints = maybeArray(checkpoint.resume_hints);
+  const waitState = checkpoint.parent_wait_state || '';
+  const parts = [
+    waitState ? `wait ${waitState}` : '',
+    unresolvedChildren.length || unresolvedJobs.length ? `unresolved ${unresolvedChildren.length}/${unresolvedJobs.length}` : '',
+    hints.length ? `${hints.length} resume hint${hints.length === 1 ? '' : 's'}` : '',
+    checkpoint.created_at ? `created ${formatTimestamp(checkpoint.created_at)}` : ''
+  ].filter(Boolean);
+  return {
+    waitState,
+    unresolvedChildren,
+    unresolvedJobs,
+    hints,
+    createdAt: checkpoint.created_at || '',
+    summary: parts.join(' · ') || 'recorded'
+  };
+}
+
+function renderRecoveryFactsSection(parentFacts, checkpointFacts) {
+  if (!parentFacts && !checkpointFacts) {
+    return '';
+  }
+  const cards = [];
+  if (parentFacts) {
+    const chips = [
+      `mode ${parentFacts.waitMode}`,
+      `state ${parentFacts.waitState}`,
+      parentFacts.updatedAt ? `updated ${formatTimestamp(parentFacts.updatedAt)}` : ''
+    ].filter(Boolean);
+    cards.push(`
+      <div class="notification-card recovery-fact-card">
+        <div class="job-card-top">
+          <div class="job-card-title">Parent coordination</div>
+          <span class="status-badge ${toneForStatus(parentFacts.waitState)}">${escapeHTML(humanizeStatus(parentFacts.waitState))}</span>
+        </div>
+        <div class="notification-copy">${escapeHTML(parentFacts.summary)}</div>
+        <div class="path-pill-row">
+          ${chips.map((chip) => `<span class="surface-chip">${escapeHTML(chip)}</span>`).join('')}
+        </div>
+        ${renderFactIdList('Unresolved children', parentFacts.unresolvedChildren)}
+        ${renderFactIdList('Unresolved jobs', parentFacts.unresolvedJobs)}
+      </div>
+    `);
+  }
+  if (checkpointFacts) {
+    cards.push(`
+      <div class="notification-card recovery-fact-card">
+        <div class="job-card-top">
+          <div class="job-card-title">Long-run checkpoint</div>
+          ${checkpointFacts.waitState ? `<span class="status-badge ${toneForStatus(checkpointFacts.waitState)}">${escapeHTML(humanizeStatus(checkpointFacts.waitState))}</span>` : ''}
+        </div>
+        <div class="notification-copy">${escapeHTML(checkpointFacts.summary)}</div>
+        ${renderFactIdList('Checkpoint children', checkpointFacts.unresolvedChildren)}
+        ${renderFactIdList('Checkpoint jobs', checkpointFacts.unresolvedJobs)}
+        ${checkpointFacts.hints.length ? `<div class="goal-meta-line">${escapeHTML(checkpointFacts.hints.join(' · '))}</div>` : ''}
+      </div>
+    `);
+  }
+  return `
+    <section class="panel-section">
+      <div class="section-title-row">
+        <h4>Recovery facts</h4>
+      </div>
+      <div class="card-stack">
+        ${cards.join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderFactIdList(label, ids) {
+  const values = maybeArray(ids);
+  if (!values.length) {
+    return '';
+  }
+  return `<div class="goal-meta-line">${escapeHTML(label)}: ${escapeHTML(values.join(', '))}</div>`;
 }
 
 function renderProviderAttemptsSection(items) {
@@ -1179,6 +1308,7 @@ function renderAgentsPanel(detail) {
   const jobs = maybeArray(detail.children?.jobs);
   const notifications = maybeArray(detail.background_notifications);
   const agents = mergeSubAgentRows(children, jobs);
+  const parentFacts = parentCoordinationFacts(detail);
   return `
     <section class="panel-section">
       <div class="summary-grid wide">
@@ -1192,6 +1322,7 @@ function renderAgentsPanel(detail) {
       <div class="section-title-row">
         <h4>Sub agents</h4>
       </div>
+      ${parentFacts ? renderParentCoordinationBanner(parentFacts) : ''}
       ${renderSelectedQueueJobPanel()}
       ${agents.length ? `<div class="card-stack">${agents.map((item) => renderSubAgentCard(item)).join('')}</div>` : '<div class="empty-panel">No sub agents yet.</div>'}
     </section>
@@ -1202,6 +1333,22 @@ function renderAgentsPanel(detail) {
       </div>
       ${notifications.length ? `<div class="card-stack">${notifications.map((note) => renderNotificationCard(note)).join('')}</div>` : '<div class="empty-panel">No background notifications yet.</div>'}
     </section>
+  `;
+}
+
+function renderParentCoordinationBanner(parentFacts) {
+  return `
+    <div class="selected-queue-job-panel parent-coordination-panel">
+      <div class="job-card-top">
+        <div>
+          <div class="job-card-title">Parent coordination</div>
+          <div class="job-card-meta">${escapeHTML(parentFacts.summary)}</div>
+        </div>
+        <span class="status-badge ${toneForStatus(parentFacts.waitState)}">${escapeHTML(humanizeStatus(parentFacts.waitState))}</span>
+      </div>
+      ${renderFactIdList('Unresolved children', parentFacts.unresolvedChildren)}
+      ${renderFactIdList('Unresolved jobs', parentFacts.unresolvedJobs)}
+    </div>
   `;
 }
 
