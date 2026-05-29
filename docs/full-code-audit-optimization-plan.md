@@ -8700,7 +8700,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-409 and FCA-20260529-410. Those slices fixed runtime Start / Continue / Queue validation before durable execution facts are created or claimed; this residual issue was a doctor-only projection that still reported invalid provider config as `provider.config ok`.
 - Confirmed this is distinct from FCA-20260529-426. That slice corrected `store:false` provenance for valid custom OpenAI-compatible profiles; this slice rejects invalid custom profiles with no `api_provider` and explicit unsupported adapter families before API-key/session/skill/probe checks can make the report look otherwise usable.
 
+### Review 426
+
+- Confirmed FCA-20260529-428 against `spec/01-runtime-architecture.md` and `spec/02-cli-and-config.md`: CLI `goal`, `goal plan`, and `goal validation` are fallback views over session-store facts, so they must not treat a standalone `goal.json` as proof that the session exists.
+- Confirmed this is distinct from FCA-20260526-127 and the later Web unknown-session subresource fix. Those slices made Web `/children`, `/tasks`, `/messages`, and goal subresources reject unknown session IDs; this residual issue was only the CLI Goal fallback path reading or mutating goal facts without first loading `session.json`.
+- Confirmed this is distinct from FCA-20260529-422. That slice fixed CLI `tasks` and `experimental children`; this slice covers `goal show`, status mutation, `goal plan show/check/approve`, and `goal validation show`.
+
 ## Update Log
+
+### FCA-20260529-428
+
+Slice: `fix(cli): reject orphan goal facts`
+
+Finding:
+
+- CLI `goal show` loaded `goal.json` directly through `Store.LoadGoal`.
+- `goal pause`, `goal resume`, `goal complete`, and `goal clear` also used goal-only reads before mutation.
+- `goal plan show`, `goal plan check`, `goal plan approve`, and `goal validation show` likewise accepted the goal fact without first proving the owning `session.json` metadata fact existed.
+- A focused pre-fix regression created a normal session goal, removed `session.json`, and then ran `go-cli-agent goal show <id> --json`; before the fix, the command printed the orphan goal as valid JSON and returned success.
+
+Impact:
+
+- CLI fallback diagnostics could diverge from Web and runtime session boundaries by presenting a partial/orphan session directory as a valid durable goal.
+- Status-changing CLI commands could mutate `goal.json` and append goal history/events for a directory whose core session metadata fact was missing, making partial-state recovery harder.
+
+Changes:
+
+- Added a shared CLI Goal loader that calls `Store.LoadMetadata` before `Store.LoadGoal`.
+- Routed `goal show`, `goal clear`, goal status mutation, `goal plan show/check/approve`, and `goal validation show` through that loader.
+- Added focused CLI coverage for orphan goal facts across read, mutation, plan, and validation subcommands while preserving existing valid Goal CLI behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestGoalCommandRejectsOrphanGoalWithoutSessionMetadata -count=1`: failed before the fix because `goal show` printed the orphan `goal.json` and returned success.
+- `go test -timeout 120s ./internal/app -run 'TestGoalCommandRejectsOrphanGoalWithoutSessionMetadata|TestGoalCommandAcceptsFlagsAfterSessionID|TestGoalMissionPlanAndValidationCommands' -count=1`: passed.
+- `gofmt -l internal/app/app.go internal/app/app_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `git diff --check`: passed with no output.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed 89/89.
 
 ### FCA-20260529-427
 

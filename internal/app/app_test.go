@@ -533,6 +533,62 @@ func TestGoalCommandAcceptsFlagsAfterSessionID(t *testing.T) {
 	}
 }
 
+func TestGoalCommandRejectsOrphanGoalWithoutSessionMetadata(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_orphan_goal_cli",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_orphan_goal_cli",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Do not trust orphan goal facts",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := os.Remove(filepath.Join(store.SessionDir(meta.ID), "session.json")); err != nil {
+		t.Fatalf("remove session metadata: %v", err)
+	}
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	for _, args := range [][]string{
+		{"goal", "show", meta.ID, "--json"},
+		{"goal", "pause", meta.ID, "--json"},
+		{"goal", "plan", "show", meta.ID, "--json"},
+		{"goal", "plan", "check", meta.ID, "--json"},
+		{"goal", "validation", "show", meta.ID, "--json"},
+	} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		err := Run(context.Background(), args, &stdout, &stderr)
+		if err == nil {
+			t.Fatalf("expected missing session metadata error for %v, stdout=%s", args, stdout.String())
+		}
+		if !strings.Contains(err.Error(), "session.json") {
+			t.Fatalf("expected session.json error for %v, got %v stdout=%s stderr=%s", args, err, stdout.String(), stderr.String())
+		}
+	}
+}
+
 func TestGoalMissionPlanAndValidationCommands(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

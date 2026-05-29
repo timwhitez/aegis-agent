@@ -646,7 +646,7 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	store := runner.Store()
 	switch subcommand {
 	case "show":
-		goal, err := store.LoadGoal(sessionID)
+		goal, err := loadCLIGoal(store, sessionID)
 		if err != nil {
 			return err
 		}
@@ -662,7 +662,7 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	case "complete":
 		return mutateGoalStatus(stdout, store, sessionID, session.GoalStatusComplete, "goal.completed", "complete", *jsonMode)
 	case "clear":
-		goal, err := store.LoadGoal(sessionID)
+		goal, err := loadCLIGoal(store, sessionID)
 		if err != nil {
 			return err
 		}
@@ -740,7 +740,7 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		if err != nil {
 			return err
 		}
-		goal, err := runner.Store().LoadGoal(sessionID)
+		goal, err := loadCLIGoal(runner.Store(), sessionID)
 		if err != nil {
 			return err
 		}
@@ -758,7 +758,7 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		if err != nil {
 			return err
 		}
-		goal, err := runner.Store().LoadGoal(sessionID)
+		goal, err := loadCLIGoal(runner.Store(), sessionID)
 		if err != nil {
 			return err
 		}
@@ -785,7 +785,7 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		return err
 	}
 	store := storeRunner.Store()
-	goal, err := store.LoadGoal(sessionID)
+	goal, err := loadCLIGoal(store, sessionID)
 	if err != nil {
 		return err
 	}
@@ -927,7 +927,7 @@ func goalValidationCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	goal, err := runner.Store().LoadGoal(fs.Arg(0))
+	goal, err := loadCLIGoal(runner.Store(), fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -950,8 +950,15 @@ func approveMissionCoverage(goal session.SessionGoal, override bool) error {
 	return fmt.Errorf("mission validation coverage blocks approval: %s; use --override-coverage to approve anyway", coverage.BlockingSummary())
 }
 
+func loadCLIGoal(store *session.Store, sessionID string) (session.SessionGoal, error) {
+	if _, err := store.LoadMetadata(sessionID); err != nil {
+		return session.SessionGoal{}, err
+	}
+	return store.LoadGoal(sessionID)
+}
+
 func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status, eventType, label string, jsonMode bool) error {
-	previous, err := store.LoadGoal(sessionID)
+	previous, err := loadCLIGoal(store, sessionID)
 	if err != nil {
 		return err
 	}
