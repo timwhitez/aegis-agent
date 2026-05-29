@@ -39,7 +39,6 @@ const state = {
   needsHistoryRefresh: false,
   pendingHistoryRefreshOptions: null,
   skills: [],
-  skillUploadInFlight: false,
   fileTree: [],
   workspacePath: '',
   selectedTreePath: '',
@@ -76,7 +75,8 @@ const runtimeHandles = {
 };
 
 const skillsViewState = {
-  requestSeq: 0
+  requestSeq: 0,
+  uploadInFlight: false
 };
 
 const overviewViewState = {
@@ -200,6 +200,14 @@ function setFloatingPanelExpanded(panel, expanded) {
   if (Object.prototype.hasOwnProperty.call(floatingPanelViewState, panel)) {
     floatingPanelViewState[panel] = expanded !== false;
   }
+}
+
+function isSkillUploadInFlight() {
+  return skillsViewState.uploadInFlight;
+}
+
+function setSkillUploadInFlight(inFlight) {
+  skillsViewState.uploadInFlight = Boolean(inFlight);
 }
 
 function createEmptyChatRenderCache() {
@@ -880,39 +888,7 @@ function setupEventListeners() {
 
   });
 
-  document.addEventListener('change', async (event) => {
-    if (!event.target || event.target.id !== 'skill-upload') {
-      return;
-    }
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-    if (state.skillUploadInFlight) {
-      showToast('Skill upload is already in progress.', 'info');
-      event.target.value = '';
-      return;
-    }
-    const formData = new FormData();
-    formData.append('file', file);
-    state.skillUploadInFlight = true;
-    setSkillUploadPending(document, true);
-    try {
-      await requestFormJSON('/api/skills/upload', formData, {
-        method: 'POST',
-      });
-      showToast('Skill uploaded and extracted successfully.', 'success');
-      if (state.currentView === 'skills') {
-        await fetchSkills();
-      }
-    } catch (err) {
-      showToast(err.message || 'Failed to upload skill zip.', 'error');
-    } finally {
-      state.skillUploadInFlight = false;
-      setSkillUploadPending(document, false);
-      event.target.value = '';
-    }
-  });
+  document.addEventListener('change', handleSkillUploadChange);
 
   document.addEventListener('keydown', (event) => {
     const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
@@ -3055,7 +3031,7 @@ function renderSkills(skills) {
     const emptyBtn = document.getElementById('empty-upload-btn');
     if (emptyBtn) {
       emptyBtn.addEventListener('click', () => openSkillUploadPicker());
-      setSkillUploadPending(document, state.skillUploadInFlight);
+      setSkillUploadPending(document, isSkillUploadInFlight());
     }
     return;
   }
@@ -3095,11 +3071,11 @@ function renderSkills(skills) {
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: nodes.skillsGrid });
   }
-  setSkillUploadPending(document, state.skillUploadInFlight);
+  setSkillUploadPending(document, isSkillUploadInFlight());
 }
 
 function openSkillUploadPicker() {
-  if (state.skillUploadInFlight) {
+  if (isSkillUploadInFlight()) {
     showToast('Skill upload is already in progress.', 'info');
     return;
   }
@@ -3108,6 +3084,40 @@ function openSkillUploadPicker() {
     uploadInput.click();
   } else {
     showToast('Upload input not available.', 'error');
+  }
+}
+
+async function handleSkillUploadChange(event) {
+  if (!event.target || event.target.id !== 'skill-upload') {
+    return;
+  }
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+  if (isSkillUploadInFlight()) {
+    showToast('Skill upload is already in progress.', 'info');
+    event.target.value = '';
+    return;
+  }
+  const formData = new FormData();
+  formData.append('file', file);
+  setSkillUploadInFlight(true);
+  setSkillUploadPending(document, true);
+  try {
+    await requestFormJSON('/api/skills/upload', formData, {
+      method: 'POST',
+    });
+    showToast('Skill uploaded and extracted successfully.', 'success');
+    if (state.currentView === 'skills') {
+      await fetchSkills();
+    }
+  } catch (err) {
+    showToast(err.message || 'Failed to upload skill zip.', 'error');
+  } finally {
+    setSkillUploadInFlight(false);
+    setSkillUploadPending(document, false);
+    event.target.value = '';
   }
 }
 

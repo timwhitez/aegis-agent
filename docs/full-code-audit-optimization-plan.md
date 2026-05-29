@@ -8573,6 +8573,45 @@ Validation:
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-400
+
+Slice: `fix(webconsole): isolate skill upload pending state`
+
+Finding:
+
+- The WebConsole Skills upload duplicate-submit guard still stored `skillUploadInFlight` on the main global `state`.
+- That flag is browser view machinery for the local Skills upload control, not a durable session fact, session-store fact, runtime fact, provider fact, or Skills catalog authority.
+- Keeping it on `state` contradicted the current P1 Render State Isolation plan after Skills catalog request sequencing had already moved into `skillsViewState`.
+
+Changes:
+
+- Moved the upload pending guard into `skillsViewState.uploadInFlight` with small `isSkillUploadInFlight` / `setSkillUploadInFlight` helpers.
+- Split the upload change handler into `handleSkillUploadChange` so the pending guard can be tested directly without changing the existing upload flow.
+- Preserved duplicate upload suppression, pending control disabling/restoration, upload success refresh, and backend error toast behavior.
+- Updated the embedded asset contract to check `skillsViewState.uploadInFlight` rather than the old main-state field.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records the Skills upload pending-state slice and refreshed the frontend asset line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "skill upload pending guard is isolated from durable app state|setSkillUploadPending disables" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-125
 
 Slice: `fix(webconsole): isolate composer mode state`

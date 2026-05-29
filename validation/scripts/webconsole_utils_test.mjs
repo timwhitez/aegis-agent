@@ -282,6 +282,7 @@ function createAppHarnessContext() {
       }
     },
     document: {
+      listeners: {},
       getElementById() {
         return fakeAppElement();
       },
@@ -294,7 +295,9 @@ function createAppHarnessContext() {
       querySelectorAll() {
         return [];
       },
-      addEventListener() {},
+      addEventListener(event, callback) {
+        this.listeners[event] = callback;
+      },
       body: {
         contains() {
           return true;
@@ -318,9 +321,22 @@ function createAppHarnessContext() {
     },
     clearInterval() {},
     renderCurrentSession() {},
+    FormData: class FakeFormData {
+      constructor() {
+        this.entries = [];
+      }
+      append(name, value) {
+        this.entries.push([name, value]);
+      }
+    },
     requestJSON(url, payload) {
       return new Promise((resolve, reject) => {
         pendingRequests.push({ url, payload, resolve, reject });
+      });
+    },
+    requestFormJSON(url, formData, options = {}) {
+      return new Promise((resolve, reject) => {
+        pendingRequests.push({ url, formData, options, resolve, reject });
       });
     }
   };
@@ -1286,6 +1302,79 @@ test('setSkillUploadPending disables and restores upload controls', () => {
   delete freshCardButton.dataset.uploadIdleLabel;
   context.setSkillUploadPending(root, false);
   assert.equal(freshCardButton.textContent, 'Upload to Install');
+});
+
+test('skill upload pending guard is isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  const uploadInput = fakeAppElement();
+  uploadInput.id = 'skill-upload';
+  uploadInput.files = [{ name: 'demo-skill.zip' }];
+  uploadInput.value = 'C:\\fakepath\\demo-skill.zip';
+  const uploadButton = fakeAppElement({ value: 'Upload .zip Skill' });
+  uploadButton.textContent = 'Upload .zip Skill';
+  const toasts = [];
+
+  vm.runInContext(`
+    nodes.skillUpload = uploadInputRef;
+    nodes.skillUploadBtn = uploadButtonRef;
+    nodes.skillsGrid = fakeAppElement();
+    nodes.toastRack = fakeAppElement();
+    document.getElementById = function(id) {
+      if (id === 'skill-upload') return uploadInputRef;
+      if (id === 'skill-upload-btn') return uploadButtonRef;
+      return null;
+    };
+    document.querySelectorAll = function(selector) {
+      if (selector === '[data-skill-action][data-skill-installed="0"]') return [];
+      return [];
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+  `, Object.assign(appContext, { uploadInputRef: uploadInput, uploadButtonRef: uploadButton, toastsRef: toasts, fakeAppElement }));
+
+  const uploadPromise = vm.runInContext(`
+    handleSkillUploadChange({ target: uploadInputRef });
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/skills/upload');
+
+  const pending = vm.runInContext(`({
+    stateHasSkillUploadInFlight: Object.prototype.hasOwnProperty.call(state, 'skillUploadInFlight'),
+    uploadInFlight: isSkillUploadInFlight(),
+    buttonDisabled: uploadButtonRef.disabled,
+    inputDisabled: uploadInputRef.disabled
+  })`, appContext);
+  assert.equal(pending.stateHasSkillUploadInFlight, false);
+  assert.equal(pending.uploadInFlight, true);
+  assert.equal(pending.buttonDisabled, true);
+  assert.equal(pending.inputDisabled, true);
+
+  const duplicateInput = fakeAppElement();
+  duplicateInput.id = 'skill-upload';
+  duplicateInput.files = [{ name: 'other-skill.zip' }];
+  duplicateInput.value = 'C:\\fakepath\\other-skill.zip';
+  await vm.runInContext(`handleSkillUploadChange({ target: duplicateInputRef })`, Object.assign(appContext, { duplicateInputRef: duplicateInput }));
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(sameRealm(toasts.at(-1)), { message: 'Skill upload is already in progress.', tone: 'info' });
+  assert.equal(duplicateInput.value, '');
+
+  appContext.pendingRequests[0].resolve({ installed: 1 });
+  await uploadPromise;
+
+  const restored = vm.runInContext(`({
+    stateHasSkillUploadInFlight: Object.prototype.hasOwnProperty.call(state, 'skillUploadInFlight'),
+    uploadInFlight: isSkillUploadInFlight(),
+    buttonDisabled: uploadButtonRef.disabled,
+    inputDisabled: uploadInputRef.disabled,
+    inputValue: uploadInputRef.value
+  })`, appContext);
+  assert.equal(restored.stateHasSkillUploadInFlight, false);
+  assert.equal(restored.uploadInFlight, false);
+  assert.equal(restored.buttonDisabled, false);
+  assert.equal(restored.inputDisabled, false);
+  assert.equal(restored.inputValue, '');
 });
 
 test('mergeMessageWindows preserves older loaded messages when server tail overlaps', () => {

@@ -5578,7 +5578,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "confirmGoalClear") || !strings.Contains(jsBody, "confirmSkillUninstall") || !strings.Contains(jsBody, "Skill uninstall cancelled") {
 		t.Fatalf("expected risky goal clear and skill uninstall actions to require confirmation, got app.js body: %s", jsBody)
 	}
-	if !strings.Contains(jsBody, "state.skillUploadInFlight") || !strings.Contains(jsBody, "setSkillUploadPending") {
+	if !strings.Contains(jsBody, "skillsViewState.uploadInFlight") || !strings.Contains(jsBody, "setSkillUploadPending") {
 		t.Fatalf("expected skill upload to track and restore pending controls, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "const message = err?.message || 'Failed to load local skills.'") || !strings.Contains(jsBody, "showToast(message, 'error')") {
