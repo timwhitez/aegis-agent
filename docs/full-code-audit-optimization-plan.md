@@ -8610,7 +8610,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-411. That slice moved the human-readable live activity copy out of `state`; this residual issue was the capped `liveEvents` relay buffer that `handleServerEvent`, session restore/open/reset, and `refreshCurrentSession` still read or wrote through the main `state` object.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the live event relay window into a tiny `liveEventsViewState`, keep durable session detail and message paging facts on `state`, preserve capped buffering, reset-on-session-switch behavior, and the existing guard that prevents polling detail from overwriting active live-event activity copy.
 
+### Review 411
+
+- Confirmed FCA-20260529-413 against `spec/17-web-console.md`'s local Web-first operator surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: optimistic messages are browser-local pending display records, not durable `messages.jsonl`, steer queue, session state, provider replay, queue, or runtime facts.
+- Confirmed this is distinct from FCA-20260528-290 and related stale-launch slices. Those slices fixed stale async completion paths that could clear or mutate the wrong selected session; this residual issue was only the pending optimistic-message buffer still living on the main `state` object and being consumed by `session-view.js`.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: move the pending optimistic-message buffer into a tiny `optimisticMessagesViewState`, keep durable session detail and message paging facts on `state`, preserve pending message rendering, reset-on-session-switch behavior, and reconciliation against durable messages / steer requests.
+
 ## Update Log
+
+### FCA-20260529-413
+
+Slice: `fix(webconsole): isolate optimistic messages`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `optimisticMessages`, the browser-only pending message buffer created before a start / continue / steer request is reflected by durable session facts.
+- `session-view.js` rendered those entries directly from `state.optimisticMessages`, while `app.js` appended, removed, reset, and reconciled them after session detail refreshes.
+- Durable message and steer facts still come from `messages.jsonl`, session detail, and `control/steer.jsonl`; optimistic messages are only local display placeholders.
+
+Impact:
+
+- Pending browser display records remained mixed with durable selected-session, message-window, and session-detail facts after adjacent render-state isolation work had moved similar transient state into view-local stores.
+- Future start / continue / steer rendering changes could mistake optimistic display entries for durable messages or provider replay inputs, weakening the WebConsole boundary that UI state must project local file facts rather than become a second authority.
+
+Changes:
+
+- Added `optimisticMessagesViewState` with `currentOptimisticMessages()` and `resetOptimisticMessages()` helpers.
+- Removed `optimisticMessages` from the main `state` object.
+- Updated session restore, session reset/open, optimistic append/remove/reconcile paths, and the session message stream renderer to use the helper path.
+- Added a frontend Node harness regression proving optimistic messages are not stored on `state`, still render as pending messages, and reset cleanly.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "optimistic message buffer"`: failed before the fix because `resetOptimisticMessages` was undefined.
+- `rg -n "state\\.optimisticMessages" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs`: passed with no matches after the fix.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "optimistic message buffer"`: passed, 83/83 tests.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 83/83 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-412
 

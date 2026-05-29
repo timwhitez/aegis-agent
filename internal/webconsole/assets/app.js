@@ -40,7 +40,6 @@ const state = {
   skills: [],
   fileTree: [],
   workspacePath: '',
-  optimisticMessages: [],
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
@@ -143,6 +142,10 @@ const liveEventsViewState = {
   events: []
 };
 
+const optimisticMessagesViewState = {
+  messages: []
+};
+
 const pageLifecycleViewState = {
   visibilityHidden: false
 };
@@ -170,6 +173,14 @@ function hasLiveEvents() {
 
 function resetLiveEvents() {
   liveEventsViewState.events = [];
+}
+
+function currentOptimisticMessages() {
+  return optimisticMessagesViewState.messages;
+}
+
+function resetOptimisticMessages() {
+  optimisticMessagesViewState.messages = [];
 }
 
 function isHelpVisible() {
@@ -361,7 +372,7 @@ async function init() {
   setupLayoutObservers();
   if (hasDurableSession()) {
     state.sessionDetail = null;
-    state.optimisticMessages = [];
+    resetOptimisticMessages();
     resetLiveEvents();
     setNextSendInterruptArmed(false);
     state.isGenerating = false;
@@ -1477,7 +1488,7 @@ function resetChatSession() {
   state.sessionId = nextEphemeralSessionId();
   state.sessionBacked = false;
   state.sessionDetail = null;
-  state.optimisticMessages = [];
+  resetOptimisticMessages();
   resetLiveEvents();
   setNextSendInterruptArmed(false);
   setSelectedQueueJob('');
@@ -2564,7 +2575,7 @@ function messageTimelineText(message) {
 async function openSession(sessionID, options = {}) {
   adoptSession(sessionID, true);
   state.sessionDetail = null;
-  state.optimisticMessages = [];
+  resetOptimisticMessages();
   setSelectedQueueJob('');
   state.hasMoreMessages = false;
   state.oldestMessageId = '';
@@ -2699,7 +2710,7 @@ function isMultiAgentTool(name) {
 
 function appendOptimisticMessage(role, text, meta = {}) {
   const id = `optimistic_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-  state.optimisticMessages.push({
+  optimisticMessagesViewState.messages.push({
     id,
     role,
     text,
@@ -2711,7 +2722,7 @@ function appendOptimisticMessage(role, text, meta = {}) {
 }
 
 function removeOptimisticMessage(id) {
-  state.optimisticMessages = state.optimisticMessages.filter((message) => message.id !== id);
+  optimisticMessagesViewState.messages = optimisticMessagesViewState.messages.filter((message) => message.id !== id);
   renderCurrentSession();
 }
 
@@ -2725,7 +2736,7 @@ function reconcileOptimisticMessages(detail) {
     maybeArray(detail.steer_requests)
       .map((item) => normalizeText(item.text))
   );
-  state.optimisticMessages = state.optimisticMessages.filter((message) => {
+  optimisticMessagesViewState.messages = optimisticMessagesViewState.messages.filter((message) => {
     const text = normalizeText(message.text);
     return !durableTexts.has(text) && !steerTexts.has(text);
   });

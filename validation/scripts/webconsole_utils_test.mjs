@@ -58,11 +58,15 @@ vm.createContext(context);
 vm.runInContext(utilsSource, context, { filename: 'utils.js' });
 vm.runInContext(`
   const state = {};
+  const optimisticMessagesViewState = { messages: [] };
   const queueJobViewState = { selectedJobId: '', selectedJobDetail: null };
   const inspectorViewState = { tab: 'tasks' };
   const stopActionViewState = { sessionIds: new Set() };
   function selectedQueueJobId() {
     return queueJobViewState.selectedJobId || '';
+  }
+  function currentOptimisticMessages() {
+    return optimisticMessagesViewState.messages;
   }
   function selectedQueueJobDetail() {
     return queueJobViewState.selectedJobDetail || null;
@@ -976,6 +980,38 @@ test('live event relay buffer is isolated from durable app state', () => {
     eventCount: 80,
     firstSequence: 2,
     lastSequence: 81,
+    afterResetCount: 0
+  });
+});
+
+test('optimistic message buffer is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    resetOptimisticMessages();
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = true;
+    state.sessionDetail = null;
+    appendOptimisticMessage('user', 'pending launch prompt', { source: 'user' });
+    const rendered = renderMessageStream();
+    const snapshot = {
+      stateHasOptimisticMessages: Object.prototype.hasOwnProperty.call(state, 'optimisticMessages'),
+      pendingCount: currentOptimisticMessages().length,
+      bodyHasPendingPrompt: rendered.body.includes('pending launch prompt'),
+      bodyHasOptimisticClass: rendered.body.includes('optimistic')
+    };
+    resetOptimisticMessages();
+    snapshot.afterResetCount = currentOptimisticMessages().length;
+    return snapshot;
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    stateHasOptimisticMessages: false,
+    pendingCount: 1,
+    bodyHasPendingPrompt: true,
+    bodyHasOptimisticClass: true,
     afterResetCount: 0
   });
 });

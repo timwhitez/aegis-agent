@@ -263,7 +263,7 @@ function summarizeProviderFailure(detail) {
 
 function renderMessageStream() {
   const detailMessages = maybeArray(state.sessionDetail?.messages);
-  const optimisticMessages = state.optimisticMessages.slice();
+  const optimisticMessages = currentOptimisticMessages().slice();
   const stream = detailMessages.length ? detailMessages.concat(optimisticMessages) : optimisticMessages;
   const displayStream = buildDisplayMessageStream(stream);
 
