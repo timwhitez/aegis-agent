@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"text/template"
@@ -128,6 +129,8 @@ type Registry struct {
 	control ControlPlane
 	cfg     *config.Config
 }
+
+var beforeShellCommandStart func(workdir string) error
 
 var reservedNames = map[string]struct{}{
 	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
@@ -621,7 +624,15 @@ func defShell() Definition {
 			if execCtx.Config != nil {
 				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
 			}
-			commandPath, commandArgs, sandboxStatus, sandboxErr := shellSandboxCommand(shellSandbox, workdir, command, shellArg, input.Command)
+			stableDir, commandDir, err := openStableCommandWorkdir(workdir)
+			if err != nil {
+				return errorResult("shell", err), nil
+			}
+			defer func() {
+				_ = stableDir.Close()
+			}()
+			sandboxSource, sandboxExtraFiles := commandWorkdirSandboxSource(stableDir, workdir)
+			commandPath, commandArgs, sandboxStatus, sandboxErr := shellSandboxCommand(shellSandbox, workdir, sandboxSource, command, shellArg, input.Command)
 			policyMode := effectiveExecPolicyMode(execCtx.Config)
 			policyViolations := DetectExecPolicyViolations(input.Command)
 			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
@@ -663,8 +674,16 @@ func defShell() Definition {
 			}
 			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
 			procutil.PrepareCommandCancellation(cmd)
-			cmd.Dir = workdir
+			cmd.Dir = commandDir
+			if sandboxStatus == "bwrap" {
+				cmd.ExtraFiles = append(cmd.ExtraFiles, sandboxExtraFiles...)
+			}
 			cmd.Env = filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist)
+			if beforeShellCommandStart != nil {
+				if err := beforeShellCommandStart(workdir); err != nil {
+					return errorResult("shell", err), nil
+				}
+			}
 			output, err := cmd.CombinedOutput()
 			exitCode := 0
 			if cmd.ProcessState != nil {
@@ -705,6 +724,24 @@ func defShell() Definition {
 			}, nil
 		},
 	}
+}
+
+func openStableCommandWorkdir(path string) (*os.File, string, error) {
+	dir, err := fileutil.OpenDirNoSymlink(path)
+	if err != nil {
+		return nil, "", err
+	}
+	if runtime.GOOS == "linux" {
+		return dir, fmt.Sprintf("/proc/self/fd/%d", dir.Fd()), nil
+	}
+	return dir, path, nil
+}
+
+func commandWorkdirSandboxSource(dir *os.File, fallback string) (string, []*os.File) {
+	if runtime.GOOS != "linux" || dir == nil {
+		return fallback, nil
+	}
+	return "/proc/self/fd/3", []*os.File{dir}
 }
 
 func defReadFile() Definition {
@@ -3053,7 +3090,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			if execCtx.Config != nil {
 				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
 			}
-			commandPath, commandArgs, sandboxStatus, sandboxErr := sandboxCommand(shellSandbox, skillDir, argv)
+			commandPath, commandArgs, sandboxStatus, sandboxErr := sandboxCommand(shellSandbox, skillDir, skillDir, argv)
 			if policyMode == "deny" && len(policyViolations) > 0 {
 				text := "Error: skill command denied by exec policy"
 				return session.ToolResult{

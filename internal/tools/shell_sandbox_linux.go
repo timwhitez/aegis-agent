@@ -9,11 +9,11 @@ import (
 	"strings"
 )
 
-func shellSandboxCommand(sandbox, workdir, shellPath, shellArg, command string) (string, []string, string, error) {
-	return sandboxCommand(sandbox, workdir, []string{shellPath, shellArg, command})
+func shellSandboxCommand(sandbox, workdir, bindSource, shellPath, shellArg, command string) (string, []string, string, error) {
+	return sandboxCommand(sandbox, workdir, bindSource, []string{shellPath, shellArg, command})
 }
 
-func sandboxCommand(sandbox, workdir string, argv []string) (string, []string, string, error) {
+func sandboxCommand(sandbox, workdir, bindSource string, argv []string) (string, []string, string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(sandbox))
 	if normalized == "" {
 		return argv[0], argv[1:], "off", nil
@@ -25,9 +25,12 @@ func sandboxCommand(sandbox, workdir string, argv []string) (string, []string, s
 	if err != nil {
 		return "", nil, "bwrap_unavailable", fmt.Errorf("runtime.shell.sandbox=bwrap requested but bwrap is unavailable")
 	}
+	if strings.TrimSpace(bindSource) == "" {
+		bindSource = workdir
+	}
 	args := []string{
 		"--die-with-parent",
-		"--bind", workdir, workdir,
+		"--bind", bindSource, workdir,
 		"--dev", "/dev",
 		"--proc", "/proc",
 		"--ro-bind", "/bin", "/bin",
@@ -37,7 +40,7 @@ func sandboxCommand(sandbox, workdir string, argv []string) (string, []string, s
 		"--ro-bind-try", "/etc", "/etc",
 		"--tmpfs", "/tmp",
 		"--chdir", workdir,
-		"--ro-bind-try", filepath.Join(workdir, ".git"), filepath.Join(workdir, ".git"),
+		"--ro-bind-try", filepath.Join(bindSource, ".git"), filepath.Join(workdir, ".git"),
 	}
 	args = append(args, argv...)
 	return bwrapPath, args, "bwrap", nil

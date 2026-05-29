@@ -8970,7 +8970,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-226 and FCA-20260529-106. Those slices denied sensitive workspace read paths and paged file-preview reads through the backend no-symlink reader; this residual issue was the directory listing projection still classifying and rendering entries from their lexical names without checking the resolved symlink target.
 - Confirmed the minimal fix belongs in `Service.listDirectory`: before rendering a child entry, resolve it through the same workspace-root boundary used by read/list requests and apply the sensitive-path filter to the resolved path, while keeping existing read and request-time denial logic unchanged.
 
+### Review 471
+
+- Confirmed FCA-20260530-476 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/09-phase-plan.md`, and `spec/13-live-input-and-steering.md`: the `shell` tool workdir override is an execution boundary, not just display metadata, and relative workdirs must remain inside the workspace or a registered skill root at command start.
+- Confirmed this is distinct from FCA-20260530-471, FCA-20260530-472, and FCA-20260530-475. Those slices hardened file reads, session fact opens, and Web workspace listings; this residual issue was `resolveShellWorkdir` returning a checked path string which `exec.Cmd.Dir` later reopened by name. If the resolved directory path was replaced by a symlink after resolution and before process start, a non-sandboxed shell command could run in the outside symlink target.
+- Confirmed the minimal fix belongs at the shell command launch boundary: open the resolved workdir as a no-symlink directory descriptor, use that descriptor-backed cwd for non-sandboxed Linux commands, and pass the descriptor-backed source into bwrap bind arguments so the command binds the originally opened directory instead of a replaceable path string.
+
 ## Update Log
+
+### FCA-20260530-476
+
+Slice: `fix(tools): stabilize shell workdirs`
+
+Finding:
+
+- `shell` accepted an optional `workdir` and resolved it through `ResolveWorkspacePath` or a registered skill directory check.
+- After that check, the tool assigned the resolved path string directly to `exec.Cmd.Dir`.
+- On Linux, if the resolved workdir directory was renamed and replaced by a symlink to an outside directory before command start, the child process could chdir through the replacement path and run outside the checked workspace directory.
+
+Impact:
+
+- A local shell command could execute relative writes, reads, or tests in a path different from the workspace directory that the tool had just authorized.
+- That weakened the tool contract that `shell.workdir` remains inside the workspace or registered skill root, and made metadata report the authorized path even though the process had used the later symlink target.
+
+Changes:
+
+- Added `fileutil.OpenDirNoSymlink` as a small exported wrapper around the existing descriptor-relative no-symlink directory opener.
+- Updated non-sandboxed Linux shell execution to open the resolved workdir as a stable directory descriptor and use `/proc/self/fd/<fd>` as `cmd.Dir`.
+- Updated bwrap command construction to accept a separate bind source and pass the opened directory descriptor through `ExtraFiles`, so the sandbox bind uses `/proc/self/fd/3` instead of reopening the mutable path string.
+- Added a deterministic regression that replaces the authorized `workdir` path with a symlink before command start and proves the command writes into the originally opened directory rather than the outside symlink target.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'TestShellToolKeepsResolvedWorkdirWhenPathReplacedBeforeStart|TestShellToolSupportsRelativeWorkdirOverride|TestSandboxCommandRejectsUnsupportedLinuxSandbox' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
 
 ### FCA-20260530-475
 

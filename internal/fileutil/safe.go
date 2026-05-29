@@ -526,6 +526,21 @@ func OpenFileNoSymlink(path string, flags int, mode os.FileMode) (*os.File, erro
 	return file, nil
 }
 
+// OpenDirNoSymlink opens an existing directory without following symlinks in
+// the directory path or its existing ancestors.
+func OpenDirNoSymlink(path string) (*os.File, error) {
+	fd, err := openDirNoSymlink(path)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), filepath.Clean(path))
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("failed to open directory")
+	}
+	return file, nil
+}
+
 func MkdirAllNoSymlink(path string, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
 	if path == "" {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2409,6 +2410,87 @@ func TestShellToolSupportsRelativeWorkdirOverride(t *testing.T) {
 	}
 	if !strings.Contains(result.DisplayOutput, skillDir) {
 		t.Fatalf("expected pwd output to include %q, got %q", skillDir, result.DisplayOutput)
+	}
+}
+
+func TestShellToolKeepsResolvedWorkdirWhenPathReplacedBeforeStart(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("stable shell workdir uses /proc/self/fd on non-sandboxed linux commands")
+	}
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	root := t.TempDir()
+	workdir := filepath.Join(root, "workspace")
+	safeDir := filepath.Join(workdir, "safe")
+	renamedSafeDir := filepath.Join(workdir, "safe-renamed")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{safeDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+
+	restoreHook := beforeShellCommandStart
+	beforeShellCommandStart = func(commandWorkdir string) error {
+		if commandWorkdir != safeDir {
+			return nil
+		}
+		if err := os.Rename(safeDir, renamedSafeDir); err != nil {
+			return err
+		}
+		return os.Symlink(outsideDir, safeDir)
+	}
+	defer func() {
+		beforeShellCommandStart = restoreHook
+	}()
+
+	result, err := registry.Execute(context.Background(), "shell", execCtx, json.RawMessage(`{
+		"command":"printf stable > marker.txt",
+		"workdir":"safe"
+	}`))
+	if err != nil {
+		t.Fatalf("execute shell: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected shell to run in originally resolved workdir, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "marker.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("shell followed replaced workdir symlink outside workspace, stat err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(renamedSafeDir, "marker.txt"))
+	if err != nil {
+		t.Fatalf("expected marker in originally resolved workdir: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "stable" {
+		t.Fatalf("unexpected marker content: %q", data)
 	}
 }
 
