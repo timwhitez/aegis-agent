@@ -8814,7 +8814,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-086, FCA-20260526-087, FCA-20260527-197, and FCA-20260526-102. Earlier slices covered required Goal history/event rollback and bodyless Web clear routing; this residual issue was the lower-level store deletion primitive using raw `os.Remove`, which follows symlinked path ancestors before unlinking `goal.json`.
 - Confirmed the minimal fix belongs in `Store.ClearGoal`: reject symlinked session path ancestors, require `goal.json` to be a regular file, and then remove it via `fileutil.RemoveFileNoSymlink`, without changing the existing missing-goal `cleared=false` behavior or adapter-level history/event rollback semantics.
 
+### Review 445
+
+- Confirmed FCA-20260529-447 against `spec/15-background-queue.md`, `spec/05-session-interrupt-resume.md`, and `spec/01-runtime-architecture.md`: queue jobs are durable session-store facts partitioned by `_queue/<status>/`, and store-level queue deletion must only remove queue fact files under that no-symlink store tree.
+- Confirmed this is distinct from FCA-20260526-148, FCA-20260528-313, FCA-20260529-441, and FCA-20260529-442. Earlier slices covered corrupt queue JSON, semantic queue validation, malformed queue write rejection, and status directory mismatches; this residual issue was the lower-level deletion primitive for queue job cleanup using raw `os.Remove` on queue status paths.
+- Confirmed the minimal fix belongs in the shared queue store deletion helpers: use `fileutil.RemoveFileNoSymlink` for duplicate queue-copy cleanup and `DeleteJob`, preserving best-effort stale-copy cleanup while making direct queue deletion fail closed on symlinked status directories.
+
 ## Update Log
+
+### FCA-20260529-447
+
+Slice: `fix(session): harden queue job deletion paths`
+
+Finding:
+
+- `spec/15-background-queue.md` defines `_queue/queued`, `_queue/running`, `_queue/blocked`, `_queue/completed`, and `_queue/failed` as the durable queue partitions used for worker claim/list/result facts.
+- `spec/05-session-interrupt-resume.md` requires session JSON facts to use no-symlink regular-file handling, and `spec/01-runtime-architecture.md` makes the session store the shared file-fact boundary for Web, CLI, runtime, and queue workers.
+- `internal/session/store.go` `deleteJobLocked`, `removeDuplicateQueueJobCopies`, and stale-copy cleanup in `saveJobLocked` used raw `os.Remove` for queue job paths.
+- `DeleteJob` did not run `ensureQueueDirs` before deletion, so a symlinked `_queue/<status>` directory could make a direct queue deletion unlink an outside `<job_id>.json`.
+- A focused regression created `_queue/queued` as a symlink to an outside directory with a matching job filename; before the fix, `DeleteJob` returned success instead of rejecting the symlinked queue status path.
+
+Impact:
+
+- Runtime queue rollback paths and any direct queue deletion caller could remove files outside the session store when queue status directories were replaced with symlinks.
+- This bypassed the store's no-symlink JSON read/write helpers and made low-level queue cleanup less safe than queue load/list/claim validation paths.
+
+Changes:
+
+- Replaced raw queue-job `os.Remove` calls with `fileutil.RemoveFileNoSymlink`.
+- Kept `saveJobLocked` stale-copy cleanup best-effort by ignoring cleanup errors, while preventing symlink traversal during the attempted cleanup.
+- Kept `DeleteJob` failure-visible so symlinked queue status directories report an error and leave the outside file untouched.
+- Added focused session-store coverage proving direct queue deletion rejects a symlinked queue status directory and preserves the outside file.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestDeleteJobRejectsSymlinkedQueueStatusDirectory -count=1`: failed before the fix because `DeleteJob` reported success through the symlinked queue status directory.
+- `go test -timeout 120s ./internal/session -run 'TestDeleteJobRejectsSymlinkedQueueStatusDirectory|TestLoadJobsRejectMalformedQueueJobSnapshot|TestLoadAndListJobsPreferTerminalDuplicateStatusFile|TestStoreClaimNextQueuedJobIsAtomicAcrossStores' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerQueueSubmit|TestRunnerProcessNextJob|TestProcessNextJob' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-446
 

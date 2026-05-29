@@ -4920,6 +4920,44 @@ func TestLoadJobsRejectMalformedQueueJobSnapshot(t *testing.T) {
 	}
 }
 
+func TestDeleteJobRejectsSymlinkedQueueStatusDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	queueRoot := filepath.Join(root, "_queue")
+	if err := os.MkdirAll(queueRoot, 0o700); err != nil {
+		t.Fatalf("mkdir queue root: %v", err)
+	}
+	jobID := "job_symlink_delete"
+	outsideDir := t.TempDir()
+	outsideJob := filepath.Join(outsideDir, jobID+".json")
+	outsideData := []byte(`{"outside":true}` + "\n")
+	if err := os.WriteFile(outsideJob, outsideData, 0o600); err != nil {
+		t.Fatalf("write outside queue job: %v", err)
+	}
+	statusLink := filepath.Join(queueRoot, QueueStatusQueued)
+	if err := os.Symlink(outsideDir, statusLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := store.DeleteJob(jobID)
+	if err == nil {
+		t.Fatal("expected symlinked queue status directory rejection")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	data, readErr := os.ReadFile(outsideJob)
+	if readErr != nil {
+		t.Fatalf("outside queue job should not be removed: %v", readErr)
+	}
+	if string(data) != string(outsideData) {
+		t.Fatalf("outside queue job changed: %q", data)
+	}
+	if info, statErr := os.Lstat(statusLink); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("queue status symlink should remain for diagnostics, info=%v err=%v", info, statErr)
+	}
+}
+
 func TestQueueJobFactsRejectMalformedParentRootTopology(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

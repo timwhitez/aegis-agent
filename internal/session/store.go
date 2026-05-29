@@ -1811,7 +1811,7 @@ func (s *Store) saveJobLocked(job QueueJob) error {
 		if path == target {
 			continue
 		}
-		_ = os.Remove(path)
+		_ = fileutil.RemoveFileNoSymlink(path)
 	}
 	return nil
 }
@@ -2078,7 +2078,7 @@ func (s *Store) removeDuplicateQueueJobCopies(copies []queueJobCopy, keepPath st
 		if copy.path == keepPath {
 			continue
 		}
-		if err := os.Remove(copy.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := fileutil.RemoveFileNoSymlink(copy.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
@@ -2187,7 +2187,7 @@ func (s *Store) deleteJobLocked(jobID string) error {
 	}
 	for _, status := range queueStatuses() {
 		path := s.queueJobPath(status, jobID)
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := fileutil.RemoveFileNoSymlink(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
