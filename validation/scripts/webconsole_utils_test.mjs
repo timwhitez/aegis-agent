@@ -2520,6 +2520,18 @@ test('refreshOverview queues the latest refresh and ignores stale in-flight over
 
   await vm.runInContext(`refreshOverview()`, appContext);
 
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasRefreshingOverview: Object.prototype.hasOwnProperty.call(state, 'refreshingOverview'),
+    stateHasNeedsOverviewRefresh: Object.prototype.hasOwnProperty.call(state, 'needsOverviewRefresh'),
+    refreshing: overviewViewState.refreshing,
+    needsRefresh: overviewViewState.needsRefresh
+  })`, appContext)), {
+    stateHasRefreshingOverview: false,
+    stateHasNeedsOverviewRefresh: false,
+    refreshing: true,
+    needsRefresh: true
+  });
+
   appContext.pendingRequests[0].resolve({
     recent_sessions: [{ id: 'session_stale_overview' }],
     queue_counters: { queued: 1 }
@@ -2547,11 +2559,17 @@ test('refreshOverview queues the latest refresh and ignores stale in-flight over
   assert.deepEqual(sameRealm(vm.runInContext(`({
     overviewIDs: maybeArray(state.overview?.recent_sessions).map((item) => item.id),
     queued: state.overview?.queue_counters?.queued ?? null,
-    refreshing: state.refreshingOverview
+    stateHasRefreshingOverview: Object.prototype.hasOwnProperty.call(state, 'refreshingOverview'),
+    stateHasNeedsOverviewRefresh: Object.prototype.hasOwnProperty.call(state, 'needsOverviewRefresh'),
+    refreshing: overviewViewState.refreshing,
+    needsRefresh: overviewViewState.needsRefresh
   })`, appContext)), {
     overviewIDs: ['session_current_overview'],
     queued: 0,
-    refreshing: false
+    stateHasRefreshingOverview: false,
+    stateHasNeedsOverviewRefresh: false,
+    refreshing: false,
+    needsRefresh: false
   });
 });
 

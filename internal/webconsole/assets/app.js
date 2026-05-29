@@ -50,10 +50,8 @@ const state = {
     copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
     tone: 'neutral'
   },
-  refreshingOverview: false,
   refreshingSession: false,
   needsSessionRefresh: false,
-  needsOverviewRefresh: false,
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
@@ -82,7 +80,9 @@ const skillsViewState = {
 };
 
 const overviewViewState = {
-  requestSeq: 0
+  requestSeq: 0,
+  refreshing: false,
+  needsRefresh: false
 };
 
 const historyViewState = {
@@ -2272,16 +2272,16 @@ function overviewErrorMessage(err, fallback = 'Failed to load session overview.'
 }
 
 async function refreshOverview() {
-  if (state.refreshingOverview) {
-    state.needsOverviewRefresh = true;
+  if (overviewViewState.refreshing) {
+    overviewViewState.needsRefresh = true;
     return;
   }
   const requestSeq = ++overviewViewState.requestSeq;
-  state.refreshingOverview = true;
-  state.needsOverviewRefresh = false;
+  overviewViewState.refreshing = true;
+  overviewViewState.needsRefresh = false;
   try {
     const overview = await requestJSON('/api/overview');
-    if (overviewViewState.requestSeq !== requestSeq || state.needsOverviewRefresh) {
+    if (overviewViewState.requestSeq !== requestSeq || overviewViewState.needsRefresh) {
       return;
     }
     state.overview = overview;
@@ -2290,7 +2290,7 @@ async function refreshOverview() {
       renderCurrentSession();
     }
   } catch (err) {
-    if (overviewViewState.requestSeq !== requestSeq || state.needsOverviewRefresh) {
+    if (overviewViewState.requestSeq !== requestSeq || overviewViewState.needsRefresh) {
       return;
     }
     console.error('overview error', err);
@@ -2303,9 +2303,9 @@ async function refreshOverview() {
       }
     }
   } finally {
-    state.refreshingOverview = false;
-    if (state.needsOverviewRefresh) {
-      state.needsOverviewRefresh = false;
+    overviewViewState.refreshing = false;
+    if (overviewViewState.needsRefresh) {
+      overviewViewState.needsRefresh = false;
       refreshOverview().catch((err) => {
         console.error('queued overview refresh error', err);
       });

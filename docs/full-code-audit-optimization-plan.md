@@ -8532,7 +8532,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-120, FCA-20260529-122, and FCA-20260529-124. Those slices isolated pending Plan Mode input answers, composer empty-state throttling, and interrupt steer intent; this residual issue was the mutually exclusive `goalEnabled` / `planModeEnabled` composer-mode bits that `sendMessage()`, `toggleGoalMode()`, `togglePlanMode()`, `renderGoalComposer()`, `collectGoalDraft()`, `collectPlanModeDraft()`, `chatInputPlaceholder()`, and `inputActionLabel()` read through the main `state`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: replace the two main-state booleans with a tiny `composerControlViewState.mode`, expose helper reads/writes for Goal and Plan Mode composer intent, and preserve mutually exclusive toggle rendering plus the `goal` and `planMode` start/continue payloads without changing backend Goal, Plan Mode, session, queue, provider, or runtime facts.
 
+### Review 398
+
+- Confirmed FCA-20260529-126 against `spec/17-web-console.md`'s polling-first local WebConsole model and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: Overview refresh in-flight and queued-refresh flags are browser request coordination, not durable overview data, session-store facts, queue facts, provider replay data, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-113. That earlier slice moved the Overview request sequence guard into `overviewViewState`; this residual issue was only the `refreshingOverview` / `needsOverviewRefresh` coalescing flags that `refreshOverview()` still read and wrote through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the Overview in-flight and queued-refresh flags into `overviewViewState`, preserve stale overview suppression and queued refresh coalescing, and leave overview payloads, polling cadence, session detail refresh, queue facts, and backend APIs unchanged.
+
 ## Update Log
+
+### FCA-20260529-126
+
+Slice: `fix(webconsole): isolate overview refresh flags`
+
+Finding:
+
+- The WebConsole's main `state` object still stored `refreshingOverview` and `needsOverviewRefresh`, two flags used only by `refreshOverview()` to coalesce overlapping `/api/overview` requests and suppress stale overview responses.
+- These flags are browser request coordination. They are not durable overview payload data, session-store facts, queue facts, provider replay data, runtime state, or WebConsole file-fact authority.
+- This contradicted the current P1 Render State Isolation plan after the Overview request sequence guard had already moved into `overviewViewState`.
+
+Changes:
+
+- Moved Overview in-flight and queued-refresh flags into `overviewViewState` next to the existing Overview request sequence guard.
+- Removed `refreshingOverview` and `needsOverviewRefresh` from the main `state` object.
+- Preserved queued refresh coalescing, stale overview response suppression, overview error handling, render behavior, and polling cadence.
+- Extended the frontend regression for queued Overview refreshes to prove the refresh coordination flags are absent from `state` while the queued refresh still runs and stale data remains ignored.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Overview-refresh-local slice.
+
+Validation:
+
+- `node --test --test-name-pattern "refreshOverview queues" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 78/78 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `rg -n "state\\.refreshingOverview|state\\.needsOverviewRefresh|refreshingOverview|needsOverviewRefresh" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs docs/webconsole-frontend-optimization-plan.md`: passed; remaining matches are the frontend regression assertions and the existing `needsOverviewRefresh(type)` event helper, with no production main-state field usage.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-125
 
