@@ -41,7 +41,6 @@ const state = {
   fileTree: [],
   workspacePath: '',
   optimisticMessages: [],
-  liveEvents: [],
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
@@ -140,6 +139,10 @@ const activityViewState = {
   liveActivity: { ...DEFAULT_LIVE_ACTIVITY }
 };
 
+const liveEventsViewState = {
+  events: []
+};
+
 const pageLifecycleViewState = {
   visibilityHidden: false
 };
@@ -155,6 +158,18 @@ function setLiveActivity(activity) {
     copy: String(source.copy || ''),
     tone: String(source.tone || 'neutral')
   };
+}
+
+function currentLiveEvents() {
+  return liveEventsViewState.events;
+}
+
+function hasLiveEvents() {
+  return liveEventsViewState.events.length > 0;
+}
+
+function resetLiveEvents() {
+  liveEventsViewState.events = [];
 }
 
 function isHelpVisible() {
@@ -347,7 +362,7 @@ async function init() {
   if (hasDurableSession()) {
     state.sessionDetail = null;
     state.optimisticMessages = [];
-    state.liveEvents = [];
+    resetLiveEvents();
     setNextSendInterruptArmed(false);
     state.isGenerating = false;
     setLiveActivity({
@@ -667,9 +682,9 @@ function matchesCurrentSession(sessionID) {
 }
 
 function pushLiveEvent(event) {
-  state.liveEvents.push(event);
-  if (state.liveEvents.length > MAX_LIVE_EVENTS) {
-    state.liveEvents = state.liveEvents.slice(-MAX_LIVE_EVENTS);
+  liveEventsViewState.events.push(event);
+  if (liveEventsViewState.events.length > MAX_LIVE_EVENTS) {
+    liveEventsViewState.events = liveEventsViewState.events.slice(-MAX_LIVE_EVENTS);
   }
 }
 
@@ -1463,7 +1478,7 @@ function resetChatSession() {
   state.sessionBacked = false;
   state.sessionDetail = null;
   state.optimisticMessages = [];
-  state.liveEvents = [];
+  resetLiveEvents();
   setNextSendInterruptArmed(false);
   setSelectedQueueJob('');
   clearPlanInputSelections();
@@ -2368,7 +2383,7 @@ async function refreshCurrentSession(options = {}) {
     state.oldestMessageId = msgs.length > 0 ? msgs[0].id : '';
     if (detail?.state?.status === 'running') {
       state.isGenerating = true;
-      if (!state.liveEvents.length) {
+      if (!hasLiveEvents()) {
         setLiveActivity({
           title: phaseHeadline(detail.state.phase),
           copy: 'The runner is active. Tool calls and child-agent transitions will stream into this panel as durable events.',
@@ -2377,7 +2392,7 @@ async function refreshCurrentSession(options = {}) {
       }
     } else {
       state.isGenerating = false;
-      if (!state.liveEvents.length || toneForStatus(detail?.state?.status) !== 'live') {
+      if (!hasLiveEvents() || toneForStatus(detail?.state?.status) !== 'live') {
         setLiveActivity(sessionActivityForState(detail?.state));
       }
       setNextSendInterruptArmed(false);
@@ -2558,7 +2573,7 @@ async function openSession(sessionID, options = {}) {
   state.messageGapAnchorId = '';
   state.preserveScrollAfterRender = null;
   setNextSendInterruptArmed(false);
-  state.liveEvents = [];
+  resetLiveEvents();
   state.isGenerating = false;
   setLiveActivity({
     title: 'Loading session',

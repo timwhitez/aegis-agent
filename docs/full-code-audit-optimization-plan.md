@@ -8604,7 +8604,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-275, FCA-20260528-277, and later stale async response slices. Those slices fixed stale completions mutating the wrong selected session's live activity; this residual issue was that the live activity projection still lived on the main `state` object and was directly read/written by `app.js`, `events.js`, and `session-view.js`.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: keep durable session/message facts on `state`, move live activity copy into a tiny `activityViewState` helper, and update renderers and event promotion to use that helper without changing runtime, provider, or session-store behavior.
 
+### Review 410
+
+- Confirmed FCA-20260529-412 against `spec/17-web-console.md`'s local Web-first operator surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: the WebSocket live event relay buffer is browser-local display coordination, not a durable `events.jsonl`, session, message, queue, provider, or runtime fact.
+- Confirmed this is distinct from FCA-20260529-411. That slice moved the human-readable live activity copy out of `state`; this residual issue was the capped `liveEvents` relay buffer that `handleServerEvent`, session restore/open/reset, and `refreshCurrentSession` still read or wrote through the main `state` object.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the live event relay window into a tiny `liveEventsViewState`, keep durable session detail and message paging facts on `state`, preserve capped buffering, reset-on-session-switch behavior, and the existing guard that prevents polling detail from overwriting active live-event activity copy.
+
 ## Update Log
+
+### FCA-20260529-412
+
+Slice: `fix(webconsole): isolate live event buffer`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `liveEvents`, a short browser-side buffer of WebSocket relay events.
+- The buffer is used only to preserve live activity text while current-session events are streaming and to reset the activity overwrite guard on session switches.
+- Durable event facts still come from session `events.jsonl` through session detail and timeline APIs; this relay buffer is not a durable session, message, queue, provider, or runtime fact.
+
+Impact:
+
+- A browser-only event relay window remained mixed with durable selected-session, message-window, and session-detail facts after adjacent render-state isolation work had moved similar transient state into view-local stores.
+- Future live-refresh or event-rendering changes could mistake the relay buffer for a durable event source, weakening the WebConsole boundary that UI state must project local file facts rather than become a second authority.
+
+Changes:
+
+- Added `liveEventsViewState` with `currentLiveEvents()`, `hasLiveEvents()`, and `resetLiveEvents()` helpers.
+- Removed `liveEvents` from the main `state` object.
+- Updated session restore, session reset/open, WebSocket event promotion, and `refreshCurrentSession` activity overwrite checks to use the helper path.
+- Added a frontend Node harness regression proving the live event relay buffer is not stored on `state`, remains capped to `MAX_LIVE_EVENTS`, and resets cleanly.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "live event relay buffer"`: failed before the fix because `resetLiveEvents` was undefined.
+- `rg -n "state\\.liveEvents" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs`: passed with no matches after the fix.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "live event relay buffer"`: passed, 82/82 tests.
+- `node --check internal/webconsole/assets/app.js validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 82/82 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-411
 

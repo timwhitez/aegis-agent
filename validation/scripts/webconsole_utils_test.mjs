@@ -951,6 +951,35 @@ test('live activity is isolated from durable app state', () => {
   assert.equal(result.pendingHasCopy, true);
 });
 
+test('live event relay buffer is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+
+  const result = vm.runInContext(`(() => {
+    resetLiveEvents();
+    for (let index = 0; index < MAX_LIVE_EVENTS + 2; index += 1) {
+      pushLiveEvent({ type: 'tool.after', sequence: index });
+    }
+    const events = currentLiveEvents();
+    const snapshot = {
+      stateHasLiveEvents: Object.prototype.hasOwnProperty.call(state, 'liveEvents'),
+      eventCount: events.length,
+      firstSequence: events[0]?.sequence,
+      lastSequence: events[events.length - 1]?.sequence
+    };
+    resetLiveEvents();
+    snapshot.afterResetCount = currentLiveEvents().length;
+    return snapshot;
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    stateHasLiveEvents: false,
+    eventCount: 80,
+    firstSequence: 2,
+    lastSequence: 81,
+    afterResetCount: 0
+  });
+});
+
 test('plan input selections are isolated from durable app state', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);
@@ -1901,7 +1930,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
     state.sessionBacked = true;
     setInspectorTab('agents');
     setSelectedQueueJob('job_slow_queue_a');
-    state.liveEvents = [];
+    resetLiveEvents();
     refreshCurrentSession();
   `, appContext);
 
@@ -1971,7 +2000,7 @@ test('refreshCurrentSession skips stale queue detail when a newer same-session r
     state.sessionBacked = true;
     setInspectorTab('agents');
     setSelectedQueueJob('job_same_enrich');
-    state.liveEvents = [];
+    resetLiveEvents();
     refreshCurrentSession();
   `, appContext);
 
