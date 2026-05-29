@@ -30,6 +30,8 @@ type Store struct {
 
 	// Set only by package tests to force deterministic Plan Mode artifact failures.
 	beforePlanModeMarkdownWrite func(sessionID string, state PlanModeState) error
+	// Set only by package tests to force deterministic queue claim rename races.
+	beforeQueueClaimRename func(from, to string, job QueueJob) error
 	// Set only by package tests to force deterministic queue claim lease write failures.
 	beforeQueueClaimLeaseWrite func(from, to string, job QueueJob) error
 }
@@ -2250,7 +2252,12 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 	for _, candidate := range candidates {
 		from := filepath.Join(dir, candidate.name)
 		to := filepath.Join(s.queueStatusDir(QueueStatusRunning), candidate.name)
-		if err := os.Rename(from, to); err != nil {
+		if s.beforeQueueClaimRename != nil {
+			if err := s.beforeQueueClaimRename(from, to, candidate.job); err != nil {
+				return QueueJob{}, false, err
+			}
+		}
+		if err := fileutil.RenamePathNoSymlink(from, to); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}

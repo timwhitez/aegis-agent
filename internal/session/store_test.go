@@ -4794,6 +4794,56 @@ func TestClaimNextQueuedJobRollsBackWhenLeaseWriteFails(t *testing.T) {
 	}
 }
 
+func TestClaimNextQueuedJobRejectsSymlinkedRunningDirDuringRename(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_symlink_running_claim",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	outsideDir := t.TempDir()
+	store.beforeQueueClaimRename = func(from, to string, queued QueueJob) error {
+		if queued.ID != job.ID {
+			t.Fatalf("unexpected queued job before rename: %#v", queued)
+		}
+		if _, err := os.Stat(from); err != nil {
+			t.Fatalf("expected queued source before rename: %v", err)
+		}
+		runningDir := filepath.Dir(to)
+		if err := os.RemoveAll(runningDir); err != nil {
+			t.Fatalf("remove running dir before rename: %v", err)
+		}
+		if err := os.Symlink(outsideDir, runningDir); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		return nil
+	}
+
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err == nil || ok || claimed.ID != "" {
+		t.Fatalf("expected claim to reject symlinked running dir, got job=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, job.ID+".json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside running target should not receive claimed job, got %v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); err != nil {
+		t.Fatalf("queued job should remain after rejected claim: %v", err)
+	}
+	if info, statErr := os.Lstat(store.queueStatusDir(QueueStatusRunning)); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("running symlink should remain for diagnostics, info=%v err=%v", info, statErr)
+	}
+}
+
 func TestClaimNextQueuedJobSkipsMismatchedQueueFilename(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	if err := store.ensureQueueDirs(); err != nil {

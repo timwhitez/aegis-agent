@@ -8832,7 +8832,57 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-451. That slice hardened `internal/isolation.copyFile`; this residual issue was the lower-level shared helper itself still using raw `os.Rename(tmpPath, path)` after the final destination check. Any caller of the helper could inherit the same replaced-parent escape window.
 - Confirmed the minimal fix belongs in `internal/fileutil.AtomicWriteFileNoSymlink`: keep the existing parent creation, safe replacement of existing regular files, mode/chmod behavior, and caller-visible API, but use a no-symlink replacement promotion plus no-symlink cleanup for the temp path.
 
+### Review 448
+
+- Confirmed FCA-20260529-453 against `spec/15-background-queue.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md`: queue worker claim is the atomic durable transition from `_queue/queued` to `_queue/running`, and the claimed job file must stay under the resolved no-symlink queue status directories because Web, CLI, workers, session summaries, checkpoints, parent coordination, and background notifications all derive running-job ownership from that file fact.
+- Confirmed this is distinct from FCA-20260529-449 and FCA-20260529-452. FCA-20260529-449 rolled back failed lease writes after a successful queued-to-running move, and FCA-20260529-452 hardened lower-level atomic write replacement; this residual issue was the claim promotion itself still using raw `os.Rename(from, to)`, so a replaced `_queue/running` ancestor could redirect the claimed job outside the session store before lease persistence.
+- Confirmed the minimal fix belongs in `Store.ClaimNextQueuedJob`: preserve the queue contract's atomic multi-worker claim semantics, keep `os.ErrNotExist` as the concurrent-claim skip path, and route only the queued-to-running promotion through the shared no-symlink rename helper before writing durable lease fields.
+
 ## Update Log
+
+### FCA-20260529-453
+
+Slice: `fix(session): harden queue claim promotion`
+
+Finding:
+
+- `spec/15-background-queue.md` defines worker claim as an atomic rename from `_queue/queued` to `_queue/running`, while `spec/01-runtime-architecture.md` requires the running job file to carry durable lease facts and `spec/18-durable-contract-and-completion.md` treats queue/parent coordination files as completion-gate source facts.
+- `internal/session/store.go` `ClaimNextQueuedJob` validated queued job JSON and status-directory consistency, then used raw `os.Rename(from, to)` to promote the file into `_queue/running` before writing the lease.
+- A focused regression replaced the `_queue/running` status directory with a symlink after queued candidates were selected and before promotion. Before the fix, the raw rename could follow that replaced status directory and move the queued job outside the session store.
+
+Impact:
+
+- A local filesystem race or manual replacement of the running status directory could make a worker claim remove a queued job from the session queue and create the running copy outside the validated queue tree.
+- That weakened the queue fact-source boundary used by Web queue/session views, CLI queue commands, queue workers, parent coordination, background notifications, session summaries, and long-run checkpoints.
+
+Changes:
+
+- Added a package-private test hook at the claim promotion boundary so the status-directory replacement race is deterministic in tests.
+- Routed `ClaimNextQueuedJob` queued-to-running promotion through `fileutil.RenamePathNoSymlink`, preserving the existing atomic rename claim primitive and `os.ErrNotExist` concurrent-claim skip behavior while rejecting symlinked source or destination ancestors before promotion.
+- Added a focused regression proving a symlinked `_queue/running` directory during claim promotion is rejected, the outside target receives no job file, and the queued job remains in `_queue/queued`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestClaimNextQueuedJobRejectsSymlinkedRunningDirDuringRename -count=1`: failed before the fix because raw `os.Rename` could follow the symlinked running directory.
+- `go test -timeout 120s ./internal/session -run TestClaimNextQueuedJobRejectsSymlinkedRunningDirDuringRename -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestClaimNextQueuedJob(RejectsSymlinkedRunningDirDuringRename|RollsBackWhenLeaseWriteFails|WritesLease|SkipsMismatchedQueueFilename|RejectsMalformedQueuedJob|RejectsMismatchedStatusDirectory|RejectsMalformedQueuedJobTimestamps)|TestStoreClaimNextQueuedJobIsAtomicAcrossStores|TestLoadAndListJobsPreferTerminalDuplicateStatusFile|TestDeleteJobRejectsSymlinkedQueueStatusDirectory' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run TestRunnerProcessNextJobRollsBackClaimWhenClaimedEventFails -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-452
 
