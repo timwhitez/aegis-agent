@@ -2087,6 +2087,9 @@ func defGetPlanMode() Definition {
 			"properties": map[string]any{},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("get_plan_mode", err), nil
+			}
 			planMode, err := execCtx.Store.LoadPlanMode(execCtx.SessionID)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -2131,6 +2134,9 @@ func defSubmitPlan() Definition {
 				return errorResult("submit_plan", err), nil
 			}
 			input.Source = session.PlanModeSourceTool
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("submit_plan", err), nil
+			}
 			previousPlanMode, err := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
 			if err != nil {
 				return errorResult("submit_plan", err), nil
@@ -2382,6 +2388,9 @@ func defTodoWrite() Definition {
 			if err := validateTodoSnapshot(input.Todos); err != nil {
 				return errorResult("todo_write", err), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("todo_write", err), nil
+			}
 			existing, err := execCtx.Store.LoadTodo(execCtx.SessionID)
 			if err != nil {
 				return errorResult("todo_write", err), nil
@@ -2443,6 +2452,9 @@ func defTodoRead() Definition {
 		Description: "Read the current session todo list. Use before updating todos when resuming, avoiding duplicates, checking pending work, or answering progress questions. Returns an empty list if no todos exist.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("todo_read", err), nil
+			}
 			todo, err := execCtx.Store.LoadTodo(execCtx.SessionID)
 			if err != nil {
 				return errorResult("todo_read", err), nil
@@ -2615,6 +2627,9 @@ func defTaskCreate() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("task_create", err), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("task_create", err), nil
+			}
 			existing, err := execCtx.Store.ListTasks(execCtx.SessionID)
 			if err != nil {
 				return errorResult("task_create", err), nil
@@ -2673,6 +2688,9 @@ func defTaskUpdate() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("task_update", err), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("task_update", err), nil
+			}
 			existing, err := execCtx.Store.ListTasks(execCtx.SessionID)
 			if err != nil {
 				return errorResult("task_update", err), nil
@@ -2715,6 +2733,9 @@ func defTaskList() Definition {
 			"additionalProperties": false,
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("task_list", err), nil
+			}
 			todo, err := execCtx.Store.LoadTodo(execCtx.SessionID)
 			if err != nil {
 				return errorResult("task_list", err), nil
@@ -2761,6 +2782,9 @@ func defTaskGet() Definition {
 				TaskID string `json:"task_id"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("task_get", err), nil
+			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
 				return errorResult("task_get", err), nil
 			}
 			task, err := execCtx.Store.GetTask(execCtx.SessionID, input.TaskID)

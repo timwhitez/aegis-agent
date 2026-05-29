@@ -8724,7 +8724,49 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-428. That slice fixed CLI Goal fallback commands; this residual issue was the model tool surface (`get_goal`, `create_goal`, `record_goal_progress`, `update_goal`) accepting arbitrary `execCtx.SessionID` values without first proving `session.json` exists.
 - Confirmed the minimal fix belongs at the tool boundary, preserving lower-level store methods for callers that already have session metadata context.
 
+### Review 430
+
+- Confirmed FCA-20260529-432 against `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, and `spec/12-task-system.md`: Plan Mode, todo, task graph, and feature-list tools all operate on current-session durable facts and must not treat absent optional files as proof that the session exists.
+- Confirmed this is distinct from FCA-20260529-431. That slice fixed Goal tools only; this residual issue was the adjacent model-facing Plan Mode / todo / task / feature-list tool surface accepting arbitrary `execCtx.SessionID` values.
+- Confirmed the minimal fix belongs at the tool boundary, preserving lower-level store methods for callers that already have session metadata context and must still distinguish optional missing fact files from corrupt existing fact files.
+
 ## Update Log
+
+### FCA-20260529-432
+
+Slice: `fix(tools): reject orphan session-scoped tools`
+
+Finding:
+
+- `get_plan_mode` called `Store.LoadPlanMode(execCtx.SessionID)` directly and treated missing `planmode.json` as `null`, even when `session.json` was also missing.
+- `todo_read` and `task_list` called optional todo/task readers directly, so a missing session looked like a valid session with empty todo and task facts.
+- `todo_write`, `task_create`, and `feature_list_create` could create `todo.json`, `tasks/task_0001.json`, and `feature_list.json` under a directory without session metadata.
+- `feature_list_read` returned a generic missing feature-list error for an unknown session, hiding the missing session metadata fact.
+- A focused pre-fix regression executed these tools with `execCtx.SessionID:"missing_tool_scoped_session"` and no `session.json`; before the fix, read tools returned empty/null optional facts and write tools created orphan side files.
+
+Impact:
+
+- A malformed or miswired tool execution context could create or report durable session-scoped facts outside a real session, violating the session-store fact-source boundary.
+- Missing optional per-session files such as `todo.json`, `tasks/`, `planmode.json`, and `feature_list.json` were conflated with a missing session, weakening recovery and model-facing diagnostics.
+
+Changes:
+
+- Reused the shared tool metadata helper to require `Store.LoadMetadata(execCtx.SessionID)` before Plan Mode, todo, task, and feature-list tool operations.
+- Applied it to `get_plan_mode`, `submit_plan`, `todo_write`, `todo_read`, `task_create`, `task_update`, `task_list`, `task_get`, `feature_list_create`, `feature_list_update`, and `feature_list_read`.
+- Added focused coverage proving missing session metadata is an error and failed mutating tools leave no orphan todo, task, or feature-list files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestSessionScopedToolsRejectMissingSessionMetadata -count=1`: failed before the fix because read tools returned empty/null facts and mutating tools created orphan `todo.json`, `tasks/task_0001.json`, and `feature_list.json`.
+- `go test -timeout 120s ./internal/tools -run 'TestSessionScopedToolsRejectMissingSessionMetadata|TestGoalToolsRejectMissingSessionMetadata' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go internal/tools/feature_list.go`: passed with no output.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(PlanMode|PreCompletionFeature|CompactorReportsCorruptFeatureList)' -count=1`: passed.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/{app,session-view,workspace-view,events,settings-view,utils,api,icons}.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-431
 

@@ -54,6 +54,9 @@ func defFeatureListCreate() Definition {
 			if len(input.Features) == 0 {
 				return errorResult("feature_list_create", fmt.Errorf("at least one feature is required")), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("feature_list_create", err), nil
+			}
 
 			now := time.Now().UTC().Format(time.RFC3339)
 			var features []session.Feature
@@ -130,6 +133,9 @@ func defFeatureListUpdate() Definition {
 			if input.Passes != nil && *input.Passes < 0 {
 				return errorResult("feature_list_update", fmt.Errorf("passes must be non-negative")), nil
 			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("feature_list_update", err), nil
+			}
 
 			featureList, err := execCtx.Store.LoadFeatureList(execCtx.SessionID)
 			if err != nil {
@@ -177,6 +183,9 @@ func defFeatureListRead() Definition {
 			"properties": map[string]any{},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("feature_list_read", err), nil
+			}
 			featureList, err := execCtx.Store.LoadFeatureList(execCtx.SessionID)
 			if err != nil {
 				return errorResult("feature_list_read", fmt.Errorf("feature list not found: %w", err)), nil

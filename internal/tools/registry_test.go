@@ -1166,6 +1166,70 @@ func TestGoalToolsRejectMissingSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestSessionScopedToolsRejectMissingSessionMetadata(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: "missing_tool_scoped_session",
+		Workdir:   t.TempDir(),
+		Store:     store,
+		Config:    cfg,
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "get_plan_mode", raw: nil},
+		{name: "todo_read", raw: nil},
+		{name: "task_list", raw: nil},
+		{name: "feature_list_read", raw: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), tc.name, execCtx, tc.raw)
+			if err != nil {
+				t.Fatalf("%s execute: %v", tc.name, err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, "session.json") {
+				t.Fatalf("expected missing session metadata error for %s, got %#v", tc.name, result)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "todo_write", raw: json.RawMessage(`{"todos":[{"content":"Do not orphan todo","status":"pending"}]}`)},
+		{name: "task_create", raw: json.RawMessage(`{"subject":"Do not orphan task"}`)},
+		{name: "feature_list_create", raw: json.RawMessage(`{"features":[{"description":"Do not orphan feature list"}]}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), tc.name, execCtx, tc.raw)
+			if err != nil {
+				t.Fatalf("%s execute: %v", tc.name, err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, "session.json") {
+				t.Fatalf("expected missing session metadata error for %s, got %#v", tc.name, result)
+			}
+		})
+	}
+
+	if _, err := os.Stat(filepath.Join(store.SessionDir(execCtx.SessionID), "todo.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-session todo_write should not leave todo snapshot, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.SessionDir(execCtx.SessionID), "tasks")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-session task_create should not leave task directory, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.SessionDir(execCtx.SessionID), "feature_list.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-session feature_list_create should not leave feature list snapshot, got %v", err)
+	}
+}
+
 func TestCreateGoalReportsRequiredEventErrorAndRestoresGoal(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()
