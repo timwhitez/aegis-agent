@@ -315,6 +315,59 @@ func TestRenameDirNoSymlinkRenamesDirectory(t *testing.T) {
 	}
 }
 
+func TestRenamePathNoSymlinkRejectsSymlinkSourceAncestor(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "session"), 0o700); err != nil {
+		t.Fatalf("mkdir outside session: %v", err)
+	}
+	outsideFile := filepath.Join(outside, "session", "job.json")
+	if err := os.WriteFile(outsideFile, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	link := filepath.Join(root, "sessions")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := RenamePathNoSymlink(filepath.Join(link, "session", "job.json"), filepath.Join(root, "backup.json"))
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlink ancestor rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(outsideFile); statErr != nil {
+		t.Fatalf("outside file should remain after rejected rename: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "backup.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("backup target should not be created, stat err=%v", statErr)
+	}
+}
+
+func TestRenamePathNoSymlinkRenamesRegularFile(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "job.json")
+	target := filepath.Join(root, "backup", "job.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatalf("mkdir backup: %v", err)
+	}
+	if err := os.WriteFile(source, []byte(`{"id":"job"}`), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	if err := RenamePathNoSymlink(source, target); err != nil {
+		t.Fatalf("rename regular file: %v", err)
+	}
+	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
+		t.Fatalf("source should be moved, stat err=%v", statErr)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != `{"id":"job"}` {
+		t.Fatalf("unexpected target content: %q", data)
+	}
+}
+
 func TestRemoveFileNoSymlinkRemovesRegularFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "stale.json")

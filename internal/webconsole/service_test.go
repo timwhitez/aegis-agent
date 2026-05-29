@@ -7168,6 +7168,46 @@ func TestDeleteSessionRollsBackWhenAuditAppendFails(t *testing.T) {
 	}
 }
 
+func TestHistoryMutationRejectsSymlinkedSessionRootDuringMove(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "sessions")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatalf("mkdir session root: %v", err)
+	}
+	outsideRoot := filepath.Join(t.TempDir(), "outside-sessions")
+	if err := os.Mkdir(outsideRoot, 0o700); err != nil {
+		t.Fatalf("mkdir outside root: %v", err)
+	}
+	outsideSession := filepath.Join(outsideRoot, "session_outside")
+	if err := os.Mkdir(outsideSession, 0o700); err != nil {
+		t.Fatalf("mkdir outside session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideSession, "session.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write outside session: %v", err)
+	}
+
+	tx, err := newWebHistoryMutationTransaction(root, "delete")
+	if err != nil {
+		t.Fatalf("new history transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	if err := os.Remove(root); err != nil {
+		t.Fatalf("remove empty session root: %v", err)
+	}
+	if err := os.Symlink(outsideRoot, root); err != nil {
+		t.Fatalf("symlink session root: %v", err)
+	}
+
+	err = tx.MovePath(filepath.Join(root, "session_outside"))
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("expected symlinked session root rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outsideSession, "session.json")); statErr != nil {
+		t.Fatalf("outside session should not be moved through symlinked root: %v", statErr)
+	}
+}
+
 func TestClearSessionsRollsBackWhenAuditAppendFails(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

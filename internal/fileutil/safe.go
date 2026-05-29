@@ -310,6 +310,66 @@ func RenameDirNoSymlink(oldPath, newPath string) error {
 	return nil
 }
 
+func RenamePathNoSymlink(oldPath, newPath string) error {
+	oldPath = strings.TrimSpace(oldPath)
+	newPath = strings.TrimSpace(newPath)
+	if oldPath == "" || newPath == "" {
+		return errors.New("source and destination paths are required")
+	}
+	oldPath = filepath.Clean(oldPath)
+	newPath = filepath.Clean(newPath)
+	if filepath.Dir(oldPath) == oldPath || filepath.Dir(newPath) == newPath {
+		return fmt.Errorf("refusing to rename filesystem root: %s -> %s", oldPath, newPath)
+	}
+	if err := rejectExistingSymlinkAncestors(oldPath); err != nil {
+		return err
+	}
+	if err := rejectExistingSymlinkAncestors(filepath.Dir(newPath)); err != nil {
+		return err
+	}
+	info, err := os.Lstat(oldPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to rename symlinked path: %s", oldPath)
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to rename unsupported path: %s", oldPath)
+	}
+	if oldPath == newPath {
+		return nil
+	}
+	if targetInfo, err := os.Lstat(newPath); err == nil {
+		if targetInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to replace symlinked path: %s", newPath)
+		}
+		return fmt.Errorf("refusing to replace existing path: %s", newPath)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return err
+	}
+	if err := rejectExistingSymlinkAncestors(newPath); err != nil {
+		return err
+	}
+	newInfo, err := os.Lstat(newPath)
+	if err != nil {
+		return err
+	}
+	if newInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("renamed path became symlinked: %s", newPath)
+	}
+	if info.IsDir() && !newInfo.IsDir() {
+		return fmt.Errorf("renamed path is not a directory: %s", newPath)
+	}
+	if info.Mode().IsRegular() && !newInfo.Mode().IsRegular() {
+		return fmt.Errorf("renamed path is not a regular file: %s", newPath)
+	}
+	return nil
+}
+
 func RemoveFileNoSymlink(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {

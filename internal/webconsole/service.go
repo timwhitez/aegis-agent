@@ -1004,7 +1004,7 @@ func (tx *webHistoryMutationTransaction) MovePath(path string) error {
 	if err := fileutil.MkdirAllNoSymlink(filepath.Dir(backupPath), 0o700); err != nil {
 		return err
 	}
-	if err := os.Rename(path, backupPath); err != nil {
+	if err := fileutil.RenamePathNoSymlink(path, backupPath); err != nil {
 		return err
 	}
 	tx.moves = append(tx.moves, webHistoryMove{originalPath: path, backupPath: backupPath})
@@ -1034,7 +1034,7 @@ func (tx *webHistoryMutationTransaction) Rollback() error {
 			errs = append(errs, err)
 			continue
 		}
-		if err := os.Rename(move.backupPath, move.originalPath); err != nil {
+		if err := fileutil.RenamePathNoSymlink(move.backupPath, move.originalPath); err != nil {
 			errs = append(errs, err)
 		}
 	}

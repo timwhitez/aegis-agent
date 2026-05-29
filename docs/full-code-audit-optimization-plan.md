@@ -8822,6 +8822,34 @@ Evidence gates:
 
 ## Update Log
 
+### FCA-20260529-450
+
+Slice: `fix(webconsole): harden history transaction renames`
+
+Finding:
+
+- `spec/17-web-console.md` treats session delete and session history clear as risky local-console mutations that must stay within the local session/queue facts and preserve audit/rollback consistency.
+- FCA-20260527-225 added a WebConsole-local history mutation transaction that moves session directories and queue job JSON files into a sibling backup before appending the required Web audit event, but `webHistoryMutationTransaction.MovePath` and `Rollback` still used raw `os.Rename`.
+- A focused regression created a history transaction, then replaced the session root with a symlink before `MovePath`. Before the fix, `MovePath` returned nil and moved the symlink target's outside session directory into the backup root.
+
+Impact:
+
+- A local filesystem race or manual replacement of the session root during the delete/clear transaction window could make WebConsole history cleanup move files outside the configured session store.
+- This weakened the same Web-first local auditability boundary that the transaction was meant to protect: the required audit append could still be ordered correctly while the underlying move followed a symlinked ancestor.
+
+Changes:
+
+- Added `fileutil.RenamePathNoSymlink`, a regular-file-or-directory rename helper that rejects symlinked source paths, symlinked destination parents, unsupported source types, existing destination paths, and filesystem roots before calling `os.Rename`.
+- Routed WebConsole history transaction forward moves and rollback restores through `RenamePathNoSymlink`.
+- Added focused fileutil coverage for regular-file rename success and symlinked source-ancestor rejection.
+- Added focused WebConsole coverage proving a symlinked session root is rejected before moving an outside session path.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestHistoryMutationRejectsSymlinkedSessionRootDuringMove -count=1`: failed before the fix because `MovePath` returned nil through a symlinked session root.
+- `go test -timeout 120s ./internal/fileutil -run 'TestRenamePathNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestHistoryMutationRejectsSymlinkedSessionRootDuringMove -count=1`: passed.
+
 ### FCA-20260529-449
 
 Slice: `fix(session): roll back failed queue claim leases`
