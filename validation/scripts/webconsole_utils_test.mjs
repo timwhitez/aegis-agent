@@ -3282,10 +3282,14 @@ test('fetchSkills ignores stale skill catalog responses', async () => {
 
   const currentState = sameRealm(vm.runInContext(`({
     stateHasSkillsRequestSeq: Object.prototype.hasOwnProperty.call(state, 'skillsRequestSeq'),
-    skillIDs: maybeArray(state.skills).map((skill) => skill.id),
+    stateHasSkills: Object.prototype.hasOwnProperty.call(state, 'skills'),
+    hasCurrentSkillsHelper: typeof currentSkills === 'function',
+    skillIDs: maybeArray(currentSkills()).map((skill) => skill.id),
     grid: nodes.skillsGrid.innerHTML
   })`, appContext));
   assert.equal(currentState.stateHasSkillsRequestSeq, false);
+  assert.equal(currentState.stateHasSkills, false);
+  assert.equal(currentState.hasCurrentSkillsHelper, true);
   assert.deepEqual(currentState.skillIDs, ['skill_current']);
   assert.match(currentState.grid, /Current Skill/);
 
@@ -3295,9 +3299,11 @@ test('fetchSkills ignores stale skill catalog responses', async () => {
   await firstLoad;
 
   const finalState = sameRealm(vm.runInContext(`({
-    skillIDs: maybeArray(state.skills).map((skill) => skill.id),
+    stateHasSkills: Object.prototype.hasOwnProperty.call(state, 'skills'),
+    skillIDs: maybeArray(currentSkills()).map((skill) => skill.id),
     grid: nodes.skillsGrid.innerHTML
   })`, appContext));
+  assert.equal(finalState.stateHasSkills, false);
   assert.deepEqual(finalState.skillIDs, ['skill_current']);
   assert.match(finalState.grid, /Current Skill/);
   assert.doesNotMatch(finalState.grid, /Stale Skill/);

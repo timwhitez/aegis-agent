@@ -5581,6 +5581,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "skillsViewState.uploadInFlight") || !strings.Contains(jsBody, "setSkillUploadPending") {
 		t.Fatalf("expected skill upload to track and restore pending controls, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "currentSkills()") || !strings.Contains(jsBody, "setCurrentSkills(skills)") || strings.Contains(jsBody, "state.skills") {
+		t.Fatalf("expected Skills catalog display state to stay out of durable app state, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "const message = err?.message || 'Failed to load local skills.'") || !strings.Contains(jsBody, "showToast(message, 'error')") {
 		t.Fatalf("expected skills list failures to surface backend errors, got app.js body: %s", jsBody)
 	}

@@ -30,7 +30,6 @@ const state = {
   sessionBacked: false,
   sessionDetail: null,
   overview: null,
-  skills: [],
   fileTree: [],
   workspacePath: '',
   hasMoreMessages: false,
@@ -55,6 +54,7 @@ const runtimeHandles = {
 };
 
 const skillsViewState = {
+  catalog: [],
   requestSeq: 0,
   uploadInFlight: false
 };
@@ -354,6 +354,14 @@ function isSkillUploadInFlight() {
 
 function setSkillUploadInFlight(inFlight) {
   skillsViewState.uploadInFlight = Boolean(inFlight);
+}
+
+function currentSkills() {
+  return Array.isArray(skillsViewState.catalog) ? skillsViewState.catalog : [];
+}
+
+function setCurrentSkills(skills) {
+  skillsViewState.catalog = Array.isArray(skills) ? skills : [];
 }
 
 function selectedQueueJobId() {
@@ -3162,8 +3170,8 @@ async function fetchSkills() {
     if (skillsViewState.requestSeq !== requestSeq) {
       return;
     }
-    state.skills = skills;
-    renderSkills(skills);
+    setCurrentSkills(skills);
+    renderSkills(currentSkills());
   } catch (err) {
     if (skillsViewState.requestSeq !== requestSeq) {
       return;

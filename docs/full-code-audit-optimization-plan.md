@@ -23900,6 +23900,51 @@ Validation:
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
+### FCA-20260529-127
+
+Slice: `fix(webconsole): isolate skills catalog state`
+
+Finding:
+
+- `fetchSkills()` still wrote the current `/api/skills` catalog payload to the main WebConsole `state.skills` field after the request sequencing guard had already moved into `skillsViewState`.
+- The Skills catalog payload is a Skills view display cache derived from the backend skill catalog API; it is not durable skill-loading state, session store data, provider replay state, queue state, or WebConsole file-fact authority.
+- A focused frontend regression strengthened the stale skill-catalog response test to require a helper-backed Skills catalog store. Before the fix, the test failed because `state` still owned `skills`.
+
+Changes:
+
+- Moved the current Skills catalog payload into `skillsViewState.catalog`.
+- Added `currentSkills()` and `setCurrentSkills()` helpers while preserving stale catalog response suppression and rendering.
+- Extended frontend and embedded-asset regressions to reject `state.skills` while proving the stale first `/api/skills` response still cannot overwrite the current catalog rendering.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records the Skills catalog display-state slice.
+
+Validation:
+
+- `node --test --test-name-pattern "fetchSkills ignores stale skill catalog responses" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `state` still owned `skills`.
+- `node --test --test-name-pattern "fetchSkills ignores stale skill catalog responses" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `rg -n "state\\.skills" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs internal/webconsole/service_test.go`: passed with only the embedded-asset guard string.
+- `rg -n "state\\.skills" internal/webconsole/assets`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 88/88 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 ### FCA-20260529-113
 
 Slice: `fix(webconsole): isolate overview request guard`
