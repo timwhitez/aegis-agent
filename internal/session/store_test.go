@@ -4303,6 +4303,45 @@ func TestLoadBackgroundNotificationsRejectsMalformedSnapshot(t *testing.T) {
 	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "background notification status must be blocked, completed, or failed") {
 		t.Fatalf("expected running background result validation error, got %v", err)
 	}
+
+	completedWithFailedSession := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_completed_failed_session",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_completed_failed_session",
+		SessionStatus: StatusFailed,
+	})
+	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{completedWithFailedSession}); err != nil {
+		t.Fatalf("write completed notification with failed session: %v", err)
+	}
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "completed background notification session_status must be completed") {
+		t.Fatalf("expected completed/session_status mismatch validation error, got %v", err)
+	}
+
+	failedWithCompletedSession := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_failed_completed_session",
+		Status:        QueueStatusFailed,
+		SessionID:     "child_background_failed_completed_session",
+		SessionStatus: StatusCompleted,
+	})
+	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{failedWithCompletedSession}); err != nil {
+		t.Fatalf("write failed notification with completed session and no error: %v", err)
+	}
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "failed background notification session_status must be failed unless last_error is set") {
+		t.Fatalf("expected failed/session_status mismatch validation error, got %v", err)
+	}
+
+	blockedWithTerminalSession := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_blocked_completed_session",
+		Status:        QueueStatusBlocked,
+		SessionID:     "child_background_blocked_completed_session",
+		SessionStatus: StatusCompleted,
+	})
+	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{blockedWithTerminalSession}); err != nil {
+		t.Fatalf("write blocked notification with terminal session: %v", err)
+	}
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "blocked background notification session_status must be awaiting_input or paused") {
+		t.Fatalf("expected blocked/session_status mismatch validation error, got %v", err)
+	}
 }
 
 func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
@@ -4387,6 +4426,43 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 	if err := store.AppendBackgroundNotification(meta.ID, runningResult); err == nil || !strings.Contains(err.Error(), "background notification status must be blocked, completed, or failed") {
 		t.Fatalf("expected append to reject running background result, got %v", err)
 	}
+	completedWithFailedSession := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_completed_failed_session",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_completed_failed_session",
+		SessionStatus: StatusFailed,
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, completedWithFailedSession); err == nil || !strings.Contains(err.Error(), "completed background notification session_status must be completed") {
+		t.Fatalf("expected append to reject completed/session_status mismatch, got %v", err)
+	}
+	failedWithCompletedSession := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_failed_completed_session",
+		Status:        QueueStatusFailed,
+		SessionID:     "child_background_failed_completed_session",
+		SessionStatus: StatusCompleted,
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, failedWithCompletedSession); err == nil || !strings.Contains(err.Error(), "failed background notification session_status must be failed unless last_error is set") {
+		t.Fatalf("expected append to reject failed/session_status mismatch without last_error, got %v", err)
+	}
+	blockedWithRunningSession := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_blocked_running_session",
+		Status:        QueueStatusBlocked,
+		SessionID:     "child_background_blocked_running_session",
+		SessionStatus: StatusRunning,
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, blockedWithRunningSession); err == nil || !strings.Contains(err.Error(), "blocked background notification session_status must be awaiting_input or paused") {
+		t.Fatalf("expected append to reject blocked/running session mismatch, got %v", err)
+	}
+	failedAfterChildCompleted := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_failed_after_child_completed",
+		Status:        QueueStatusFailed,
+		SessionID:     "child_background_failed_after_child_completed",
+		SessionStatus: StatusCompleted,
+		LastError:     "queue handoff failed after child completed",
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, failedAfterChildCompleted); err != nil {
+		t.Fatalf("append failed notification with completed child and explicit queue error: %v", err)
+	}
 	duplicate := NewBackgroundNotification(QueueJob{
 		ID:            valid.QueueJobID,
 		Status:        QueueStatusCompleted,
@@ -4400,7 +4476,12 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load background notifications: %v", err)
 	}
-	if len(loaded) != 1 || loaded[0].QueueJobID != valid.QueueJobID || loaded[0].DeliveryStatus != BackgroundNotificationPending || loaded[0].AgentRole != "evaluator" {
+	if len(loaded) != 2 ||
+		loaded[0].QueueJobID != valid.QueueJobID ||
+		loaded[0].DeliveryStatus != BackgroundNotificationPending ||
+		loaded[0].AgentRole != "evaluator" ||
+		loaded[1].QueueJobID != failedAfterChildCompleted.QueueJobID ||
+		loaded[1].DeliveryStatus != BackgroundNotificationPending {
 		t.Fatalf("malformed background notification write changed durable queue: %#v", loaded)
 	}
 }

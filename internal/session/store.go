@@ -3584,6 +3584,9 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 			return fmt.Errorf("invalid background notification session_status %q", notification.SessionStatus)
 		}
 	}
+	if err := validateBackgroundNotificationResultStatus(notification); err != nil {
+		return err
+	}
 	switch notification.DeliveryStatus {
 	case BackgroundNotificationPending, BackgroundNotificationAccepted:
 	default:
@@ -3598,6 +3601,30 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 	for _, visiblePath := range notification.VisiblePaths {
 		if _, err := validateStoreRelativePath("background notification visible_paths", visiblePath); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateBackgroundNotificationResultStatus(notification BackgroundNotification) error {
+	sessionStatus := strings.TrimSpace(notification.SessionStatus)
+	if sessionStatus == "" {
+		return nil
+	}
+	switch notification.Status {
+	case QueueStatusCompleted:
+		if sessionStatus != StatusCompleted {
+			return fmt.Errorf("completed background notification session_status must be completed, got %q", notification.SessionStatus)
+		}
+	case QueueStatusFailed:
+		if strings.TrimSpace(notification.LastError) == "" && sessionStatus != StatusFailed {
+			return fmt.Errorf("failed background notification session_status must be failed unless last_error is set, got %q", notification.SessionStatus)
+		}
+	case QueueStatusBlocked:
+		switch sessionStatus {
+		case StatusAwaitingInput, StatusPaused:
+		default:
+			return fmt.Errorf("blocked background notification session_status must be awaiting_input or paused, got %q", notification.SessionStatus)
 		}
 	}
 	return nil

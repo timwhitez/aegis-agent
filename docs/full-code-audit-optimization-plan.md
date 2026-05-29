@@ -8772,7 +8772,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-307, FCA-20260528-330, FCA-20260529-385, FCA-20260529-437, and FCA-20260529-438. Earlier slices covered generic background notification shape/timestamps, Web display priority for failed queue handoffs, role validation, and missing blocked-result repair; this residual issue was that a syntactically valid `status=running` background notification could be accepted and then injected into the parent as a provider-visible background result.
 - Confirmed the minimal fix belongs in the shared `validateBackgroundNotification` boundary, not Web rendering or `drainBackground`: queue jobs themselves can still be `queued` or `running`, but background notifications are already result facts waiting for parent transcript acceptance.
 
+### Review 438
+
+- Confirmed FCA-20260529-440 against `spec/15-background-queue.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: parent background notifications are result facts derived from queue worker outcomes, so their queue `status` and linked child `session_status` must describe the same result class before the parent can accept them into provider-visible background output.
+- Confirmed this is distinct from FCA-20260529-439. That slice rejected pre-result queue statuses (`queued` / `running`) in `control/background.jsonl`; this residual issue was that result statuses could still carry contradictory child-session facts such as `completed` with `session_status=failed`, `blocked` with `session_status=completed`, or `failed` with a completed child but no queue/handoff error.
+- Confirmed the minimal fix belongs in `validateBackgroundNotification` rather than Web display or runtime drain: append, ensure, update, pending-load, parent completion gates, session summaries, checkpoints, and Web detail already flow through the same session-store validation boundary.
+
 ## Update Log
+
+### FCA-20260529-440
+
+Slice: `fix(session): validate background result status`
+
+Finding:
+
+- `spec/15-background-queue.md` maps child `completed` to queue `completed`, child `failed` to queue `failed`, and resumable `paused` / `awaiting_input` children to queue `blocked`.
+- `control/background.jsonl` is the parent-visible result notification channel, and `internal/runtime/engine.go` accepts pending notifications into `<background-agent-results>` provider-visible user messages at `drainBackground`.
+- After FCA-20260529-439, `validateBackgroundNotification` rejected active queue statuses, but it still allowed contradictory result/session combinations such as `status=completed` with `session_status=failed`, `status=failed` with `session_status=completed` and no `last_error`, or `status=blocked` with terminal/running child session status.
+- Focused pre-fix store regressions proved both already persisted `control/background.jsonl` snapshots and append-time writes accepted those inconsistent result facts.
+
+Impact:
+
+- Parent transcripts could accept a background result whose queue status and child session status disagreed about whether the child completed, failed, or remained resumable.
+- Web Background cards, session summaries, checkpoints, and recovery prompts could show misleading queue/child state even though the durable notification looked syntactically valid.
+- Completion gates relying on pending/accepted background notification state could lose the distinction between a resumable blocked child, a terminal child result, and a queue/handoff failure.
+
+Changes:
+
+- Added `validateBackgroundNotificationResultStatus` behind the shared background notification validator.
+- Required completed background notifications with a populated child status to carry `session_status=completed`.
+- Required failed background notifications with a populated child status to carry `session_status=failed` unless `last_error` records an explicit queue/handoff failure after the child reached another state.
+- Required blocked background notifications with a populated child status to carry `session_status=awaiting_input` or `session_status=paused`.
+- Extended load-time and append-time store validation tests, while preserving the known legal shape where the queue notification is `failed` because parent handoff failed after a child completed and `last_error` records that infrastructure failure.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'Test(LoadBackgroundNotificationsRejectsMalformedSnapshot|BackgroundNotificationWritesRejectMalformedFacts)' -count=1`: failed before the fix because mismatched background notification result/session statuses were accepted.
+- `go test -timeout 120s ./internal/session -run 'Test(LoadBackgroundNotificationsRejectsMalformedSnapshot|BackgroundNotificationWritesRejectMalformedFacts)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'Test(LoadBackgroundNotificationsRejectsMalformedSnapshot|BackgroundNotificationWritesRejectMalformedFacts|EnsureBackgroundNotificationRefreshesChangedQueueFacts|UpdateBackgroundNotificationsPreservesConcurrentFactRefresh|LoadJobRepairsBlockedParentNotificationAndEvent|LoadJobRepairsMissingTerminalBackgroundNotification)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ParentCoordinationGateBlocksPendingBackgroundAcceptanceBeforeFinish|CompletionControllerReportsPendingBackgroundEventError|ParentCoordinationGateReportsCorruptBackgroundNotifications|EngineReconcilesCompletedQueueChild|RunnerProcessNextJob|ProcessNextJob|RunnerQueueSubmit)' -count=1`: passed.
+- `gofmt -w internal/session/store.go internal/session/store_test.go`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check` for `internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-439
 
