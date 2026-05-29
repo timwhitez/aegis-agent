@@ -8910,7 +8910,57 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-457, FCA-20260530-460/461, FCA-20260530-463, and FCA-20260530-464. Those slices routed temp cleanup into the shared remover or hardened temp/recursive directory creation and deletion; this residual issue was inside `RemoveFileNoSymlink` itself, which still used raw `os.Remove(path)` after path prechecks and could delete through a parent that was replaced by a symlink before the file remove.
 - Confirmed the minimal fix belongs in the shared file remover: anchor the target parent with a no-follow descriptor, verify the descriptor still matches the parent path before deletion, validate the child with descriptor-relative `fstatat(AT_SYMLINK_NOFOLLOW)`, and remove it with `unlinkat` instead of path-based `os.Remove`.
 
+### Review 461
+
+- Confirmed FCA-20260530-466 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, `spec/14-multi-agent-and-isolation.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Web history rollback moves, Web skill upload backup/stage promotions, copy-isolation file promotion, session queue status moves, and atomic writes use the shared no-symlink rename helpers for local file facts.
+- Confirmed this is distinct from FCA-20260529-450, FCA-20260529-452, FCA-20260530-460, FCA-20260530-462/463, and FCA-20260530-465. Those slices routed callers to shared helpers or hardened temp/create/remove boundaries; this residual issue was inside the rename helpers themselves, which still used raw `os.Rename(oldPath, newPath)` after path prechecks and could move files or directories through a parent that was replaced by a symlink before rename.
+- Confirmed the minimal fix belongs in the shared rename boundary: anchor source and destination parents with no-follow descriptors, verify both descriptors still match their paths before rename, validate source/target children with descriptor-relative `fstatat(AT_SYMLINK_NOFOLLOW)`, use `renameat2(RENAME_NOREPLACE)` for non-replacing moves, and use anchored `renameat` only for the existing atomic-write regular-file replacement path.
+
 ## Update Log
+
+### FCA-20260530-466
+
+Slice: `fix(fileutil): harden rename helpers`
+
+Finding:
+
+- `AGENTS.md` requires filesystem safety to handle symlink escape rather than relying only on cleaned paths.
+- `fileutil.RenamePathNoSymlink`, `RenameDirNoSymlink`, and the atomic-write regular-file replacement helper rejected symlink ancestors and targets before rename, but then called raw `os.Rename(oldPath, newPath)`.
+- These helpers are the shared rename boundary for WebConsole history backup/rollback moves, Web skill upload stage/backup promotion and rollback, copy-isolation file promotion, session queue status moves, and atomic-write promotion.
+- A focused regression replaced an already-checked destination parent directory with a symlink immediately before `RenamePathNoSymlink`. Before the fix, the helper returned success after raw `os.Rename` moved the source file into the outside symlink target.
+
+Impact:
+
+- A local WebConsole, session-store, copy-isolation, or atomic-write path could move files or directories outside the intended local fact root when a checked source or destination parent was swapped for a symlink between validation and `os.Rename`.
+- That left the last shared file-mutation primitive with a path-based time-of-check/time-of-use gap after the earlier create, temp, remove, recursive mkdir, and recursive remove hardening slices.
+
+Changes:
+
+- Added a shared descriptor-relative rename helper that opens source and destination parents through no-follow traversal, validates source and destination children with `fstatat(AT_SYMLINK_NOFOLLOW)`, and requires both parent descriptors to still match their path before rename.
+- Replaced production raw `os.Rename` calls in `RenamePathNoSymlink`, `RenameDirNoSymlink`, and atomic regular-file replacement with anchored `renameat` / `renameat2` operations.
+- Preserved existing semantics: `RenamePathNoSymlink` and `RenameDirNoSymlink` still reject existing destination paths, while atomic write replacement still allows replacing an existing regular file and rejects symlink or non-regular targets.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -run TestRenamePathNoSymlinkRejectsSymlinkDestinationParentBeforeRename -count=1`: failed before the fix because raw `os.Rename` returned success after moving the file into the outside target directory.
+- `go test -timeout 120s ./internal/fileutil -run TestRenamePathNoSymlinkRejectsSymlinkDestinationParentBeforeRename -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestRename(Path|Dir).*NoSymlink|TestAtomicWriteFileNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/webconsole ./internal/session ./internal/isolation -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `rg -n "os\\.Rename\\(" cmd internal pkg validation/cmd -g '!**/*_test.go' -g '!validation/runs/**' -g '!workspace/**'`: passed with no production matches.
 
 ### FCA-20260530-465
 

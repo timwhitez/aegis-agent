@@ -700,6 +700,43 @@ func TestRenamePathNoSymlinkRenamesRegularFile(t *testing.T) {
 	}
 }
 
+func TestRenamePathNoSymlinkRejectsSymlinkDestinationParentBeforeRename(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "job.json")
+	if err := os.WriteFile(source, []byte(`{"id":"job"}`), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	targetParent := filepath.Join(root, "backup")
+	if err := os.MkdirAll(targetParent, 0o700); err != nil {
+		t.Fatalf("mkdir target parent: %v", err)
+	}
+	target := filepath.Join(targetParent, "job.json")
+	outside := t.TempDir()
+	outsideTarget := filepath.Join(outside, "job.json")
+
+	restore := beforeRenamePathNoSymlinkRename
+	beforeRenamePathNoSymlinkRename = func(oldPath, newPath string) error {
+		if oldPath != source || newPath != target {
+			return nil
+		}
+		if err := os.RemoveAll(targetParent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, targetParent)
+	}
+	defer func() {
+		beforeRenamePathNoSymlinkRename = restore
+	}()
+
+	err := RenamePathNoSymlink(source, target)
+	if err == nil {
+		t.Fatal("expected symlinked destination parent during rename to be rejected")
+	}
+	if _, statErr := os.Stat(outsideTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
+
 func TestRemoveFileNoSymlinkRemovesRegularFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "stale.json")

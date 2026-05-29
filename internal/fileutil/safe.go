@@ -22,6 +22,7 @@ var beforeMkdirTempNoSymlinkCreate func(parent string) error
 var beforeCreateTempNoSymlinkCreate func(parent string) error
 var beforeRemoveDirAllNoSymlinkRemove func(path string) error
 var beforeRemoveFileNoSymlinkRemove func(path string) error
+var beforeRenamePathNoSymlinkRename func(oldPath, newPath string) error
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -131,7 +132,15 @@ func renameRegularFileReplacingNoSymlink(oldPath, newPath string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.Rename(oldPath, newPath); err != nil {
+	if _, err := renameAtNoSymlink(oldPath, newPath, renameAtNoSymlinkOptions{
+		allowRegular:            true,
+		sourceSymlinkKind:       "path",
+		sourceUnsupportedFormat: "refusing to rename non-regular file path: %s",
+		replaceExisting:         true,
+		targetSymlinkKind:       "path",
+		targetExistingFormat:    "refusing to replace existing path: %s",
+		targetUnsupportedFormat: "refusing to replace non-regular file path: %s",
+	}); err != nil {
 		return err
 	}
 	if err := rejectExistingSymlinkAncestors(newPath); err != nil {
@@ -146,6 +155,124 @@ func renameRegularFileReplacingNoSymlink(oldPath, newPath string) error {
 	}
 	if !newInfo.Mode().IsRegular() {
 		return fmt.Errorf("renamed path is not a regular file: %s", newPath)
+	}
+	return nil
+}
+
+type renameAtNoSymlinkOptions struct {
+	allowRegular            bool
+	allowDir                bool
+	sourceSymlinkKind       string
+	sourceUnsupportedFormat string
+	replaceExisting         bool
+	targetSymlinkKind       string
+	targetExistingFormat    string
+	targetUnsupportedFormat string
+	beforeRename            func(oldPath, newPath string) error
+}
+
+func renameAtNoSymlink(oldPath, newPath string, opts renameAtNoSymlinkOptions) (unix.Stat_t, error) {
+	var zero unix.Stat_t
+	oldParent := filepath.Dir(oldPath)
+	newParent := filepath.Dir(newPath)
+	oldBase := filepath.Base(oldPath)
+	newBase := filepath.Base(newPath)
+	if oldBase == "." || oldBase == string(filepath.Separator) || newBase == "." || newBase == string(filepath.Separator) {
+		return zero, fmt.Errorf("invalid rename path: %s -> %s", oldPath, newPath)
+	}
+
+	oldParentFD, err := openDirNoSymlink(oldParent)
+	if err != nil {
+		return zero, err
+	}
+	defer func() {
+		_ = unix.Close(oldParentFD)
+	}()
+	newParentFD, err := openDirNoSymlink(newParent)
+	if err != nil {
+		return zero, err
+	}
+	defer func() {
+		_ = unix.Close(newParentFD)
+	}()
+
+	sourceStat, err := validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts)
+	if err != nil {
+		return zero, err
+	}
+	if err := validateRenameTargetAtNoSymlink(newParentFD, newBase, newPath, opts); err != nil {
+		return zero, err
+	}
+	if opts.beforeRename != nil {
+		if err := opts.beforeRename(oldPath, newPath); err != nil {
+			return zero, err
+		}
+	}
+	if err := ensureDirFDStillAtPath(oldParentFD, oldParent); err != nil {
+		return zero, err
+	}
+	if err := ensureDirFDStillAtPath(newParentFD, newParent); err != nil {
+		return zero, err
+	}
+	sourceStat, err = validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts)
+	if err != nil {
+		return zero, err
+	}
+	if err := validateRenameTargetAtNoSymlink(newParentFD, newBase, newPath, opts); err != nil {
+		return zero, err
+	}
+
+	if opts.replaceExisting {
+		if err := unix.Renameat(oldParentFD, oldBase, newParentFD, newBase); err != nil {
+			return zero, err
+		}
+	} else {
+		if err := unix.Renameat2(oldParentFD, oldBase, newParentFD, newBase, unix.RENAME_NOREPLACE); err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				return zero, fmt.Errorf(opts.targetExistingFormat, newPath)
+			}
+			return zero, err
+		}
+	}
+	return sourceStat, nil
+}
+
+func validateRenameSourceAtNoSymlink(parentFD int, name, path string, opts renameAtNoSymlinkOptions) (unix.Stat_t, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return stat, err
+	}
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFLNK:
+		return stat, fmt.Errorf("refusing to rename symlinked %s: %s", opts.sourceSymlinkKind, path)
+	case unix.S_IFREG:
+		if opts.allowRegular {
+			return stat, nil
+		}
+	case unix.S_IFDIR:
+		if opts.allowDir {
+			return stat, nil
+		}
+	}
+	return stat, fmt.Errorf(opts.sourceUnsupportedFormat, path)
+}
+
+func validateRenameTargetAtNoSymlink(parentFD int, name, path string, opts renameAtNoSymlinkOptions) error {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	if stat.Mode&unix.S_IFMT == unix.S_IFLNK {
+		return fmt.Errorf("refusing to replace symlinked %s: %s", opts.targetSymlinkKind, path)
+	}
+	if !opts.replaceExisting {
+		return fmt.Errorf(opts.targetExistingFormat, path)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf(opts.targetUnsupportedFormat, path)
 	}
 	return nil
 }
@@ -837,7 +964,14 @@ func RenameDirNoSymlink(oldPath, newPath string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.Rename(oldPath, newPath); err != nil {
+	if _, err := renameAtNoSymlink(oldPath, newPath, renameAtNoSymlinkOptions{
+		allowDir:                true,
+		sourceSymlinkKind:       "directory",
+		sourceUnsupportedFormat: "refusing to rename non-directory path: %s",
+		replaceExisting:         false,
+		targetSymlinkKind:       "directory",
+		targetExistingFormat:    "refusing to replace existing directory path: %s",
+	}); err != nil {
 		return err
 	}
 	if err := rejectExistingSymlinkAncestors(newPath); err != nil {
@@ -894,7 +1028,17 @@ func RenamePathNoSymlink(oldPath, newPath string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.Rename(oldPath, newPath); err != nil {
+	sourceStat, err := renameAtNoSymlink(oldPath, newPath, renameAtNoSymlinkOptions{
+		allowRegular:            true,
+		allowDir:                true,
+		sourceSymlinkKind:       "path",
+		sourceUnsupportedFormat: "refusing to rename unsupported path: %s",
+		replaceExisting:         false,
+		targetSymlinkKind:       "path",
+		targetExistingFormat:    "refusing to replace existing path: %s",
+		beforeRename:            beforeRenamePathNoSymlinkRename,
+	})
+	if err != nil {
 		return err
 	}
 	if err := rejectExistingSymlinkAncestors(newPath); err != nil {
@@ -907,10 +1051,10 @@ func RenamePathNoSymlink(oldPath, newPath string) error {
 	if newInfo.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("renamed path became symlinked: %s", newPath)
 	}
-	if info.IsDir() && !newInfo.IsDir() {
+	if sourceStat.Mode&unix.S_IFMT == unix.S_IFDIR && !newInfo.IsDir() {
 		return fmt.Errorf("renamed path is not a directory: %s", newPath)
 	}
-	if info.Mode().IsRegular() && !newInfo.Mode().IsRegular() {
+	if sourceStat.Mode&unix.S_IFMT == unix.S_IFREG && !newInfo.Mode().IsRegular() {
 		return fmt.Errorf("renamed path is not a regular file: %s", newPath)
 	}
 	return nil
