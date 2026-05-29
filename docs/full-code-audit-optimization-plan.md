@@ -8676,7 +8676,58 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-152 / the later `fix(tui): report corrupt selected facts` slice. That slice made selected-session fact load errors visible after a selected session had been resolved; this residual issue was the selection step itself silently falling back to index 0 when the requested session id was outside the current list window or absent.
 - Confirmed the minimal fix belongs in `internal/tui.BuildSnapshot`: when `selectedID` is provided and not present in the limited recent-session list, load that exact session's `session.json` / `state.json`, append its summary to the snapshot, select it, and return the metadata error if it does not exist.
 
+### Review 422
+
+- Confirmed FCA-20260529-424 against `spec/17-web-console.md`'s message-window requirements and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: `hasMoreMessages`, `oldestMessageId`, `loadedAllEarlierMessages`, and `messageGapAnchorId` are browser-local selected-session message-window paging projections derived from session detail and `/messages` page responses, not durable session, message, queue, provider, runtime, or backend facts.
+- Confirmed this is distinct from FCA-20260529-417. That slice moved the earlier-message page request sequence, loading flag, and one-render scroll-preservation height into `messagePagingViewState`; this residual issue was the loaded message-window availability/gap facts still flowing through the main `state` object.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: extend `messagePagingViewState` for message-window paging facts, add helper accessors, keep durable selected-session detail on `state`, and preserve load-earlier rendering, stale page suppression, gap filling, loaded-all behavior, and session-switch resets.
+
 ## Update Log
+
+### FCA-20260529-424
+
+Slice: `fix(webconsole): isolate message window paging state`
+
+Finding:
+
+- `app.js` still stored selected-session message-window paging facts on the main global `state`: `hasMoreMessages`, `oldestMessageId`, `loadedAllEarlierMessages`, and `messageGapAnchorId`.
+- `refreshCurrentSession`, `loadEarlierMessages`, `mergeLoadedMessagesIntoDetail`, `openSession`, `adoptSession`, and `resetChatSession` read or wrote those fields while projecting the currently loaded browser message window.
+- `session-view.js` rendered the `Load earlier messages` affordance directly from `state.hasMoreMessages`.
+- These fields are derived from session detail and `/api/sessions/{id}/messages` page responses for the currently selected browser view; they are not authoritative session-store files, provider replay facts, queue facts, or runtime state.
+
+Impact:
+
+- Browser-local message-window paging state remained mixed with selected durable session state after adjacent render-state isolation slices had already moved request sequencing, loading flags, scroll preservation, and many other UI projections out of the main global `state`.
+- Future frontend changes could treat these paging projections as durable app/session authority, weakening the Web-first boundary that the console only projects local file facts and runtime/session/queue stores rather than maintaining a second source of truth.
+- The stale frontend optimization plan also still described durable message paging facts as remaining in `state`, which could misdirect follow-up work after the implementation was updated.
+
+Changes:
+
+- Moved `hasMoreMessages`, `oldestMessageId`, `loadedAllEarlierMessages`, and `messageGapAnchorId` into `messagePagingViewState`.
+- Added helper accessors and reset logic for message-window paging state.
+- Updated session adoption, chat reset, session open, session refresh, earlier-message page loading, and loaded-window merge logic to use the helper-backed state.
+- Updated message-stream rendering to read load-earlier availability through `hasMoreMessagesToLoad()`.
+- Updated frontend Node harness coverage to assert the four message-window paging fields are absent from the main `state`, while preserving stale page suppression and helper-backed paging behavior.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so the P1 Render State Isolation baseline records message-window paging facts as isolated in `messagePagingViewState`.
+
+Validation:
+
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/app ./internal/session ./internal/runtime ./internal/tui -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-423
 

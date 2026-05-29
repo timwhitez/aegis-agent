@@ -62,7 +62,7 @@ vm.runInContext(`
   const queueJobViewState = { selectedJobId: '', selectedJobDetail: null };
   const inspectorViewState = { tab: 'tasks' };
   const stopActionViewState = { sessionIds: new Set() };
-  const messagePagingViewState = { loadingEarlier: false, preserveScrollAfterRender: null };
+  const messagePagingViewState = { loadingEarlier: false, preserveScrollAfterRender: null, hasMoreMessages: false };
   function selectedQueueJobId() {
     return queueJobViewState.selectedJobId || '';
   }
@@ -124,6 +124,18 @@ vm.runInContext(`
   }
   function isLoadingEarlierMessages() {
     return messagePagingViewState.loadingEarlier;
+  }
+  function hasMoreMessagesToLoad() {
+    return messagePagingViewState.hasMoreMessages === true;
+  }
+  function oldestLoadedMessageId() {
+    return messagePagingViewState.oldestMessageId || '';
+  }
+  function loadedAllEarlierMessages() {
+    return messagePagingViewState.loadedAllEarlierMessages === true;
+  }
+  function messageGapAnchorId() {
+    return messagePagingViewState.messageGapAnchorId || '';
   }
   function preserveScrollAfterRenderHeight() {
     return messagePagingViewState.preserveScrollAfterRender;
@@ -2450,8 +2462,8 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
       messages: [{ id: 'm8', role: 'assistant', text: 'tail' }],
       timeline: []
     };
-    state.hasMoreMessages = true;
-    state.oldestMessageId = 'm8';
+    setHasMoreMessagesToLoad(true);
+    setOldestLoadedMessageId('m8');
     loadEarlierMessages();
   `, appContext);
 
@@ -2466,8 +2478,8 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
       messages: [{ id: 'b1', role: 'assistant', text: 'current' }],
       timeline: []
     };
-    state.hasMoreMessages = false;
-    state.oldestMessageId = 'b1';
+    setHasMoreMessagesToLoad(false);
+    setOldestLoadedMessageId('b1');
   `, appContext);
 
   appContext.pendingRequests[0].resolve({
@@ -2483,17 +2495,25 @@ test('loadEarlierMessages ignores stale page responses after session changes', a
     stateHasMessagePageRequestSeq: Object.prototype.hasOwnProperty.call(state, 'messagePageRequestSeq'),
     stateHasLoadingEarlier: Object.prototype.hasOwnProperty.call(state, 'loadingEarlier'),
     stateHasPreserveScrollAfterRender: Object.prototype.hasOwnProperty.call(state, 'preserveScrollAfterRender'),
+    stateHasHasMoreMessages: Object.prototype.hasOwnProperty.call(state, 'hasMoreMessages'),
+    stateHasOldestMessageId: Object.prototype.hasOwnProperty.call(state, 'oldestMessageId'),
+    stateHasLoadedAllEarlierMessages: Object.prototype.hasOwnProperty.call(state, 'loadedAllEarlierMessages'),
+    stateHasMessageGapAnchorId: Object.prototype.hasOwnProperty.call(state, 'messageGapAnchorId'),
     selected: state.sessionId,
     detailID: state.sessionDetail?.metadata?.id,
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id),
-    hasMore: state.hasMoreMessages,
-    oldest: state.oldestMessageId,
+    hasMore: hasMoreMessagesToLoad(),
+    oldest: oldestLoadedMessageId(),
     loadingEarlier: isLoadingEarlierMessages(),
     preserveScrollAfterRender: preserveScrollAfterRenderHeight()
   })`, appContext)), {
     stateHasMessagePageRequestSeq: false,
     stateHasLoadingEarlier: false,
     stateHasPreserveScrollAfterRender: false,
+    stateHasHasMoreMessages: false,
+    stateHasOldestMessageId: false,
+    stateHasLoadedAllEarlierMessages: false,
+    stateHasMessageGapAnchorId: false,
     selected: 'session_fast_b',
     detailID: 'session_fast_b',
     messageIDs: ['b1'],
@@ -2522,8 +2542,8 @@ test('message paging in-flight view state is isolated from durable app state', a
       messages: [{ id: 'm8', role: 'assistant', text: 'tail' }],
       timeline: []
     };
-    state.hasMoreMessages = true;
-    state.oldestMessageId = 'm8';
+    setHasMoreMessagesToLoad(true);
+    setOldestLoadedMessageId('m8');
     loadEarlierMessages();
   `, appContext);
 
@@ -2533,21 +2553,29 @@ test('message paging in-flight view state is isolated from durable app state', a
     stateHasMessagePageRequestSeq: Object.prototype.hasOwnProperty.call(state, 'messagePageRequestSeq'),
     stateHasLoadingEarlier: Object.prototype.hasOwnProperty.call(state, 'loadingEarlier'),
     stateHasPreserveScrollAfterRender: Object.prototype.hasOwnProperty.call(state, 'preserveScrollAfterRender'),
+    stateHasHasMoreMessages: Object.prototype.hasOwnProperty.call(state, 'hasMoreMessages'),
+    stateHasOldestMessageId: Object.prototype.hasOwnProperty.call(state, 'oldestMessageId'),
+    stateHasLoadedAllEarlierMessages: Object.prototype.hasOwnProperty.call(state, 'loadedAllEarlierMessages'),
+    stateHasMessageGapAnchorId: Object.prototype.hasOwnProperty.call(state, 'messageGapAnchorId'),
     helperLoading: isLoadingEarlierMessages(),
     helperPreserveScrollAfterRender: preserveScrollAfterRenderHeight(),
-    durablePagingFacts: {
-      hasMoreMessages: state.hasMoreMessages,
-      oldestMessageId: state.oldestMessageId,
-      loadedAllEarlierMessages: state.loadedAllEarlierMessages,
-      messageGapAnchorId: state.messageGapAnchorId
+    messagePagingFacts: {
+      hasMoreMessages: hasMoreMessagesToLoad(),
+      oldestMessageId: oldestLoadedMessageId(),
+      loadedAllEarlierMessages: loadedAllEarlierMessages(),
+      messageGapAnchorId: messageGapAnchorId()
     }
   })`, appContext)), {
     stateHasMessagePageRequestSeq: false,
     stateHasLoadingEarlier: false,
     stateHasPreserveScrollAfterRender: false,
+    stateHasHasMoreMessages: false,
+    stateHasOldestMessageId: false,
+    stateHasLoadedAllEarlierMessages: false,
+    stateHasMessageGapAnchorId: false,
     helperLoading: true,
     helperPreserveScrollAfterRender: null,
-    durablePagingFacts: {
+    messagePagingFacts: {
       hasMoreMessages: true,
       oldestMessageId: 'm8',
       loadedAllEarlierMessages: false,
@@ -2571,18 +2599,21 @@ test('message paging in-flight view state is isolated from durable app state', a
     helperLoading: isLoadingEarlierMessages(),
     helperPreserveScrollAfterRender: preserveScrollAfterRenderHeight(),
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id),
-    hasMoreMessages: state.hasMoreMessages,
-    oldestMessageId: state.oldestMessageId,
-    loadedAllEarlierMessages: state.loadedAllEarlierMessages,
-    messageGapAnchorId: state.messageGapAnchorId,
+    stateOwnedPagingKeys: ['hasMoreMessages', 'oldestMessageId', 'loadedAllEarlierMessages', 'messageGapAnchorId']
+      .filter((key) => Object.prototype.hasOwnProperty.call(state, key)),
+    hasMoreMessages: hasMoreMessagesToLoad(),
+    oldestMessageId: oldestLoadedMessageId(),
+    loadedAllEarlierMessages: loadedAllEarlierMessages(),
+    messageGapAnchorId: messageGapAnchorId(),
     renderSnapshots
   })`, appContext)), {
     stateHasLoadingEarlier: false,
     stateHasPreserveScrollAfterRender: false,
-    messagePagingKeys: ['loadingEarlier', 'preserveScrollAfterRender', 'requestSeq'],
+    messagePagingKeys: ['hasMoreMessages', 'loadedAllEarlierMessages', 'loadingEarlier', 'messageGapAnchorId', 'oldestMessageId', 'preserveScrollAfterRender', 'requestSeq'],
     helperLoading: false,
     helperPreserveScrollAfterRender: null,
     messageIDs: ['m6', 'm7', 'm8'],
+    stateOwnedPagingKeys: [],
     hasMoreMessages: false,
     oldestMessageId: 'm6',
     loadedAllEarlierMessages: true,

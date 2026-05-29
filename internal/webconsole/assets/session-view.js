@@ -276,7 +276,7 @@ function renderMessageStream() {
     };
   }
 
-  const loadEarlierHTML = state.hasMoreMessages ? `
+  const loadEarlierHTML = hasMoreMessagesToLoad() ? `
     <div class="load-earlier-bar">
       <button class="load-earlier-btn" type="button" data-load-earlier ${isLoadingEarlierMessages() ? 'disabled' : ''}>
         ${isLoadingEarlierMessages() ? 'Loading...' : 'Load earlier messages'}
