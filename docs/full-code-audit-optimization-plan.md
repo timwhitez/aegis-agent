@@ -8736,7 +8736,49 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-430 and FCA-20260529-432. FCA-430 fixed the runtime `AgentList` parent lookup, and FCA-432 fixed Plan Mode / todo / task / feature-list tools; this residual issue was the adjacent `agent_spawn`, `agent_status`, and `agent_list` tool boundary entering the control plane before proving `execCtx.SessionID` existed.
 - Confirmed the minimal fix belongs at the tool boundary as a preflight, preserving runtime/control-plane defense-in-depth and existing valid child/queue status lookups.
 
+### Review 432
+
+- Confirmed FCA-20260529-434 against `spec/04-tools-and-skills.md` and `spec/14-multi-agent-and-isolation.md`: `agent_status` reads a child session or background job returned by `agent_spawn`, so the model-facing status lookup must be scoped to the current parent session rather than a global child/job id lookup.
+- Confirmed this is distinct from FCA-20260529-430 and FCA-20260529-433. FCA-430 made `agent_list` reject unknown parent sessions, and FCA-433 made agent tools prove the current `execCtx.SessionID` exists before entering the control plane; this residual issue was that a valid current session could still query a child session or queue job owned by another parent.
+- Confirmed the minimal fix belongs across the tool/control-plane boundary: `defAgentStatus` must pass the current session id as parent context, and `Runner.AgentStatus` must load that parent metadata and verify the requested child session or queue job is directly linked to it.
+
 ## Update Log
+
+### FCA-20260529-434
+
+Slice: `fix(tools): scope agent status to parent session`
+
+Finding:
+
+- `defAgentStatus` required current-session metadata after FCA-20260529-433, but it still called the control plane with only user-supplied `session_id` or `queue_job_id`.
+- `Runner.AgentStatus` loaded queue jobs by id through `LoadJob` and child sessions by id through `LoadMetadata` / `LoadState` without checking whether the requested object belonged to the current parent session.
+- Focused pre-fix regressions created two valid parent sessions, delegated a child / queued job under parent A, then queried status from parent B; before the fix, both lookups returned successful status facts.
+
+Impact:
+
+- A model running in one valid session could query `agent_status` for another session's child id or background queue job id and receive `final_text`, `last_error`, status, agent role/name, and effective workdir facts.
+- This made `agent_status` less scoped than `agent_list`, contradicted the documented "current parent session" multi-agent tool model, and weakened recovery/privacy boundaries between independent delegated work trees.
+
+Changes:
+
+- Added non-JSON parent context to `AgentStatusRequest` and populated it from `execCtx.SessionID` in `defAgentStatus` after the current session metadata preflight.
+- Made `Runner.AgentStatus` require and load `ParentSessionID` before reading target facts.
+- Verified queue-job status requests by `QueueJob.ParentSessionID == ParentSessionID` and child-session status requests by `SessionMetadata.ParentSessionID == ParentSessionID`.
+- Added runtime regressions for valid owned lookups plus cross-parent child and queue-job rejection, and added a tools-layer regression proving `agent_status` passes current session context to the control plane.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestAgentStatusRejects(Session|QueueJob)OutsideParent' -count=1`: failed before the fix because cross-parent child/session and queue-job lookups returned successful `AgentStatusResult` values.
+- `go test -timeout 120s ./internal/tools -run TestAgentStatusPassesCurrentSessionToControlPlane -count=1`: failed before the fix because `AgentStatusRequest.ParentSessionID` remained empty.
+- `go test -timeout 120s ./internal/runtime -run 'TestAgentStatusRejects(Session|QueueJob)OutsideParent|TestAgentListRejectsUnknownParentSession|TestRunnerDelegateCreatesChildSessionWithIsolation|TestRunnerQueueSubmit|TestRunnerProcessNextJob|TestProcessNextJob' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestAgentStatusPassesCurrentSessionToControlPlane|TestAgentToolsRejectMissingSessionMetadataBeforeControlPlane|TestAgentSpawnRejectsBlankPromptBeforeControlPlane|TestAgentToolsAreEnabledByDefaultAndCanBeDisabled|TestAgentToolsDescribeModelLedDelegation' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/runtime ./internal/tools -count=1`: passed.
+- `node --check` for `internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-433
 

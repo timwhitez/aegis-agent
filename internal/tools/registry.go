@@ -89,8 +89,9 @@ type AgentSpawnResult struct {
 }
 
 type AgentStatusRequest struct {
-	SessionID  string `json:"session_id,omitempty"`
-	QueueJobID string `json:"queue_job_id,omitempty"`
+	ParentSessionID string `json:"-"`
+	SessionID       string `json:"session_id,omitempty"`
+	QueueJobID      string `json:"queue_job_id,omitempty"`
 }
 
 type AgentStatusResult struct {
@@ -2961,6 +2962,7 @@ func defAgentStatus(control ControlPlane) Definition {
 			if err := requireToolSessionMetadata(execCtx); err != nil {
 				return errorResult("agent_status", err), nil
 			}
+			input.ParentSessionID = execCtx.SessionID
 			result, err := control.AgentStatus(ctx, input)
 			if err != nil {
 				return errorResult("agent_status", err), nil

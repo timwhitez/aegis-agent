@@ -15,6 +15,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/session"
+	"go-cli-agent/internal/tools"
 )
 
 func TestRunnerDelegateCreatesChildSessionWithIsolation(t *testing.T) {
@@ -67,6 +68,81 @@ func TestAgentListRejectsUnknownParentSession(t *testing.T) {
 	}
 	if !os.IsNotExist(err) {
 		t.Fatalf("expected missing parent session metadata error, got %v", err)
+	}
+}
+
+func TestAgentStatusRejectsSessionOutsideParent(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentWorkdir := t.TempDir()
+	parentID := createParentSession(t, runner.store, parentWorkdir)
+	otherParentID := createParentSession(t, runner.store, t.TempDir())
+	child, err := runner.Delegate(context.Background(), DelegateRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the delegated task",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+
+	ownedResult, err := runner.AgentStatus(context.Background(), tools.AgentStatusRequest{
+		ParentSessionID: parentID,
+		SessionID:       child.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("expected parent to read child status: %v", err)
+	}
+	if ownedResult.SessionID != child.SessionID || ownedResult.Status != session.StatusCompleted {
+		t.Fatalf("unexpected owned child status: %#v", ownedResult)
+	}
+
+	result, err := runner.AgentStatus(context.Background(), tools.AgentStatusRequest{
+		ParentSessionID: otherParentID,
+		SessionID:       child.SessionID,
+	})
+	if err == nil {
+		t.Fatalf("expected outside-parent child status rejection, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "not linked to parent session") {
+		t.Fatalf("expected parent linkage error, got %v", err)
+	}
+}
+
+func TestAgentStatusRejectsQueueJobOutsideParent(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	otherParentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "background child task",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+
+	ownedResult, err := runner.AgentStatus(context.Background(), tools.AgentStatusRequest{
+		ParentSessionID: parentID,
+		QueueJobID:      job.ID,
+	})
+	if err != nil {
+		t.Fatalf("expected parent to read queue job status: %v", err)
+	}
+	if ownedResult.QueueJobID != job.ID || ownedResult.Status != session.QueueStatusQueued {
+		t.Fatalf("unexpected owned queue job status: %#v", ownedResult)
+	}
+
+	result, err := runner.AgentStatus(context.Background(), tools.AgentStatusRequest{
+		ParentSessionID: otherParentID,
+		QueueJobID:      job.ID,
+	})
+	if err == nil {
+		t.Fatalf("expected outside-parent queue status rejection, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "not linked to parent session") {
+		t.Fatalf("expected parent linkage error, got %v", err)
 	}
 }
 

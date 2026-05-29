@@ -220,10 +220,22 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 }
 
 func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (tools.AgentStatusResult, error) {
+	parentSessionID := strings.TrimSpace(req.ParentSessionID)
+	if parentSessionID == "" {
+		return tools.AgentStatusResult{}, errors.New("parent session id is required")
+	}
+	parentMeta, err := r.store.LoadMetadata(parentSessionID)
+	if err != nil {
+		return tools.AgentStatusResult{}, err
+	}
+	parentSessionID = parentMeta.ID
 	if strings.TrimSpace(req.QueueJobID) != "" {
 		job, err := r.store.LoadJob(req.QueueJobID)
 		if err != nil {
 			return tools.AgentStatusResult{}, err
+		}
+		if strings.TrimSpace(job.ParentSessionID) != parentSessionID {
+			return tools.AgentStatusResult{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentSessionID)
 		}
 		return tools.AgentStatusResult{
 			QueueJobID:    job.ID,
@@ -237,11 +249,18 @@ func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (t
 			AgentRole:     job.AgentRole,
 		}, nil
 	}
-	meta, err := r.store.LoadMetadata(req.SessionID)
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		return tools.AgentStatusResult{}, errors.New("session_id or queue_job_id is required")
+	}
+	meta, err := r.store.LoadMetadata(sessionID)
 	if err != nil {
 		return tools.AgentStatusResult{}, err
 	}
-	state, err := r.store.LoadState(req.SessionID)
+	if strings.TrimSpace(meta.ParentSessionID) != parentSessionID {
+		return tools.AgentStatusResult{}, fmt.Errorf("child session %s is not linked to parent session %s", meta.ID, parentSessionID)
+	}
+	state, err := r.store.LoadState(sessionID)
 	if err != nil {
 		return tools.AgentStatusResult{}, err
 	}

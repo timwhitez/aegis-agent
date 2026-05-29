@@ -2608,6 +2608,49 @@ func TestAgentToolsRejectMissingSessionMetadataBeforeControlPlane(t *testing.T) 
 	}
 }
 
+func TestAgentStatusPassesCurrentSessionToControlPlane(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	control := &recordingControlPlane{}
+	registry, err := NewRegistry(cfg, nil, store, control)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	parentID := session.NewSessionID()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.Create(session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               parentID,
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    parentID,
+	}, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "agent_status", ExecContext{
+		SessionID: parentID,
+		Store:     store,
+		Config:    cfg,
+	}, json.RawMessage(`{"session_id":"child_from_tool"}`))
+	if err != nil {
+		t.Fatalf("agent_status execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected agent_status to reach control plane, got %#v", result)
+	}
+	if control.statusCalls != 1 {
+		t.Fatalf("expected one status control call, got %d", control.statusCalls)
+	}
+	if control.statusReq.ParentSessionID != parentID {
+		t.Fatalf("expected current session parent id %q, got %#v", parentID, control.statusReq)
+	}
+}
+
 func TestCoreToolDescriptionsGuideSelection(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
