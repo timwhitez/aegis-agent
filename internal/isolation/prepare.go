@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"go-cli-agent/internal/fileutil"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -27,6 +29,8 @@ type Result struct {
 	RootDir       string
 	GitRepoRoot   string
 }
+
+var beforeCopyFileRename func(tmpPath, dst string) error
 
 func Prepare(req Request) (Result, error) {
 	parentWorkdir, err := filepath.Abs(req.ParentWorkdir)
@@ -254,7 +258,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 		return err
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer fileutil.RemoveFileNoSymlink(tmpPath)
 
 	if _, err := io.Copy(tmp, in); err != nil {
 		_ = tmp.Close()
@@ -270,7 +274,12 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	if err := rejectSymlinkOrDirectory(dst); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, dst); err != nil {
+	if beforeCopyFileRename != nil {
+		if err := beforeCopyFileRename(tmpPath, dst); err != nil {
+			return err
+		}
+	}
+	if err := fileutil.RenamePathNoSymlink(tmpPath, dst); err != nil {
 		return err
 	}
 	return nil

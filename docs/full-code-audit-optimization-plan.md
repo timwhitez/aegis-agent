@@ -8820,7 +8820,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-148, FCA-20260528-313, FCA-20260529-441, and FCA-20260529-442. Earlier slices covered corrupt queue JSON, semantic queue validation, malformed queue write rejection, and status directory mismatches; this residual issue was the lower-level deletion primitive for queue job cleanup using raw `os.Remove` on queue status paths.
 - Confirmed the minimal fix belongs in the shared queue store deletion helpers: use `fileutil.RemoveFileNoSymlink` for duplicate queue-copy cleanup and `DeleteJob`, preserving best-effort stale-copy cleanup while making direct queue deletion fail closed on symlinked status directories.
 
+### Review 446
+
+- Confirmed FCA-20260529-451 against `spec/14-multi-agent-and-isolation.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md`: copy-mode worktree isolation is a large-project profile fact boundary for child session `workdir` / `isolation` metadata, and copied regular files must stay under the resolved isolation target/root rather than following a replaced destination ancestor.
+- Confirmed this is distinct from FCA-20260529-450. That slice hardened WebConsole history transaction renames through session/queue backup paths; this residual issue was the copy-mode isolation file writer's own final temp-file rename. A destination parent replaced by a symlink after the last local `rejectSymlinkOrDirectory(dst)` check could still make raw `os.Rename(tmpPath, dst)` follow the new ancestor.
+- Confirmed the minimal fix belongs in `internal/isolation.copyFile`: preserve ordinary copy semantics and symlink-shape preservation, but route the final temp-file promotion and cleanup through the shared no-symlink fileutil helpers so a replaced destination parent fails closed instead of writing outside the isolation target.
+
 ## Update Log
+
+### FCA-20260529-451
+
+Slice: `fix(isolation): harden copy file promotion`
+
+Finding:
+
+- `spec/14-multi-agent-and-isolation.md` requires `copy` isolation to create an independent child workdir with preserved directory structure, copied regular files, and source symlink shape, while `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md` treat child `workdir` / isolation metadata as durable session and checkpoint facts.
+- `internal/isolation/prepare.go` `copyFile` created the destination parent with no-symlink checks, opened the source with `O_NOFOLLOW`, wrote a temp file in the destination parent, then used raw `os.Rename(tmpPath, dst)` after a second destination-file symlink check.
+- A focused regression replaced the destination parent with a symlink after the temp file was written and before final promotion, then recreated the same temp filename under the symlink target. Before the fix, `copyFile` returned nil and created the final copied file outside the isolation target through the symlinked parent.
+
+Impact:
+
+- A local filesystem race or manual replacement of an isolation copy destination directory could make a child-session copy write outside the resolved isolation root while still returning success.
+- That weakened large-project profile isolation evidence: downstream session metadata, queue jobs, background notifications, session summaries, and checkpoints could report a separate copy workdir even though at least one copied regular file was promoted through an escaped destination ancestor.
+
+Changes:
+
+- Routed `copyFile` final temp-file promotion through `fileutil.RenamePathNoSymlink`, which rechecks the source path, destination parent, existing destination, and source type immediately before calling `os.Rename`.
+- Changed copy temp cleanup to `fileutil.RemoveFileNoSymlink` so failed paths do not clean up through a symlinked ancestor.
+- Added a package-private test hook only around the final promotion boundary, and a focused regression proving a symlinked destination parent during promotion is rejected and does not create the outside final file.
+
+Validation:
+
+- `go test -timeout 120s ./internal/isolation -run TestCopyFileRejectsSymlinkedDestinationParentDuringRename -count=1`: failed before the fix because `copyFile` returned nil through the symlinked destination parent.
+- `go test -timeout 120s ./internal/isolation -run TestCopyFileRejectsSymlinkedDestinationParentDuringRename -count=1`: passed.
+- `go test -timeout 120s ./internal/isolation -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'Test(RenamePathNoSymlink|RemoveFileNoSymlink)' -count=1`: passed.
 
 ### FCA-20260529-450
 

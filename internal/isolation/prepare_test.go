@@ -122,6 +122,42 @@ func TestPrepareCopyRejectsPreexistingOutputSymlink(t *testing.T) {
 	}
 }
 
+func TestCopyFileRejectsSymlinkedDestinationParentDuringRename(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "hello.txt")
+	if err := os.WriteFile(src, []byte("world"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	dstRoot := t.TempDir()
+	dstParent := filepath.Join(dstRoot, "target")
+	if err := os.MkdirAll(dstParent, 0o700); err != nil {
+		t.Fatalf("mkdir destination parent: %v", err)
+	}
+	outside := t.TempDir()
+
+	restore := beforeCopyFileRename
+	beforeCopyFileRename = func(tmpPath, dst string) error {
+		if err := os.RemoveAll(dstParent); err != nil {
+			return err
+		}
+		if err := os.Symlink(outside, dstParent); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(outside, filepath.Base(tmpPath)), []byte("outside"), 0o600)
+	}
+	defer func() {
+		beforeCopyFileRename = restore
+	}()
+
+	err := copyFile(src, filepath.Join(dstParent, "hello.txt"), 0o600)
+	if err == nil {
+		t.Fatal("expected symlinked destination parent to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "hello.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
+
 func TestPrepareCopyPreservesSourceSymlinkWithoutFollowing(t *testing.T) {
 	parent := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
