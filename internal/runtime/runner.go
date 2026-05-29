@@ -768,6 +768,15 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if modelOverride != "" {
 		meta.Model = modelOverride
 	}
+	if !req.CancelPlan {
+		mergedProviderOptions, err := r.mergedSessionProviderOptions(meta.Provider, meta.ProviderOptions)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if !reflect.DeepEqual(meta.ProviderOptions, mergedProviderOptions) {
+			meta.ProviderOptions = mergedProviderOptions
+		}
+	}
 	state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed)
 	if err != nil {
 		return RunResult{}, err
@@ -863,16 +872,6 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 				return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event after rolling back resume hint failed with %v: %w", rollbackErr, err))
 			}
 			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event: %w", err))
-		}
-	}
-	mergedProviderOptions, err := r.mergedSessionProviderOptions(meta.Provider, meta.ProviderOptions)
-	if err != nil {
-		return r.failBeforeRun(meta.ID, state, "prepare", err)
-	}
-	if !reflect.DeepEqual(meta.ProviderOptions, mergedProviderOptions) {
-		meta.ProviderOptions = mergedProviderOptions
-		if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
-			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
 	if stringsTrim(req.Message) != "" {

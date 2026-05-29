@@ -523,6 +523,63 @@ func TestRunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation(t 
 	}
 }
 
+func TestRunnerContinueRejectsStoredUnsupportedProviderOptionsBeforeClaim(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider: "openai-compatible",
+		APIKeyEnv:   "OPENAI_API_KEY",
+		BaseURL:     "http://provider.invalid/v1",
+		Model:       "gpt-5.4",
+		WireAPI:     "responses",
+	}
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions: session.ProviderOptions{
+			APIProvider: "not-real",
+		},
+	}
+	if err := runner.store.Create(meta, session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "awaiting_input",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Message:   "resume",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported api_provider") {
+		t.Fatalf("expected unsupported api_provider error, got %v", err)
+	}
+	loadedState, stateErr := runner.store.LoadState(meta.ID)
+	if stateErr != nil {
+		t.Fatalf("load state: %v", stateErr)
+	}
+	if loadedState.Status != session.StatusAwaitingInput {
+		t.Fatalf("stored bad provider options should not claim or fail the session, got %#v", loadedState)
+	}
+	messages, msgErr := runner.store.LoadMessages(meta.ID)
+	if msgErr != nil {
+		t.Fatalf("load messages: %v", msgErr)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("stored bad provider options should reject before appending resume message, got %#v", messages)
+	}
+}
+
 func TestRunnerRejectsDifferentConcurrentActiveSessionSlot(t *testing.T) {
 	runner := NewRunner(config.Default())
 	release, err := runner.acquireRunSlot("session_a")

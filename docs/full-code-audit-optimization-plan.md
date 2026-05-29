@@ -8592,7 +8592,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-408. That slice rejected unsupported adapter families supplied as explicit `ProviderOptions` overrides; this residual issue was a provider profile itself declaring `api_provider:"not-real"`, which could still pass through Start / QueueSubmit resolution because the default provider-options path did not validate the profile-derived family.
 - Confirmed the minimal fix belongs in runtime provider-option resolution and continue-time provider override handling: validate profile-derived adapter families through the same resolver used for explicit overrides, and reject explicit continue provider overrides before `ClaimSessionRun` or `SaveMetadata` can mutate durable session facts.
 
+### Review 408
+
+- Confirmed FCA-20260529-410 against `spec/01-runtime-architecture.md` and `spec/03-provider-contracts.md`'s resume contract: `continue` must validate replay-critical provider metadata before claiming a resumable session as running.
+- Confirmed this is distinct from FCA-20260529-409. That slice rejected invalid provider profiles before new Start / QueueSubmit / explicit-provider Continue facts were persisted; this residual issue was an existing session whose durable `provider_options.api_provider` was already unsupported. `Runner.Continue` still claimed the session and wrote a failed state before the provider-option resolver returned the adapter-family error.
+- Confirmed the minimal fix belongs in `Runner.Continue`: merge and validate stored provider options before `ClaimSessionRun`, then save the backfilled metadata after the session has been successfully claimed.
+
 ## Update Log
+
+### FCA-20260529-410
+
+Slice: `fix(runtime): validate continue provider options before claim`
+
+Finding:
+
+- `Runner.Continue` merged and validated stored `SessionMetadata.ProviderOptions` only after it had claimed the session as `running`.
+- A session with an existing unsupported `provider_options.api_provider:"not-real"` therefore changed from `awaiting_input` to `failed` during a validation failure that could be detected before execution.
+- The failed pre-run state also recorded a new `last_error`, making recovery facts look like a failed run attempt even though runtime never reached the provider boundary.
+
+Impact:
+
+- Corrupt or externally edited provider metadata could make a resumable session lose its recovery status during validation.
+- Web / CLI operators would see a failed session rather than a resumable session with a provider metadata error to fix before retrying.
+
+Changes:
+
+- Moved continue-time provider option merge and supported-adapter validation ahead of `ClaimSessionRun`.
+- Kept Plan Mode cancellation on its existing non-provider recovery path, because cancellation does not rebuild an adapter or execute another provider turn.
+- Preserved metadata backfill behavior by saving the merged provider options immediately after a successful claim.
+- Added a focused regression proving stored unsupported provider options reject before state claim, resume-message append, or provider execution.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerContinueRejectsStoredUnsupportedProviderOptionsBeforeClaim -count=1`: failed before the fix because the session was marked `failed`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinueRejectsStoredUnsupportedProviderOptionsBeforeClaim|TestRunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation|TestRunnerContinueBackfillsPartialProviderOptions|TestRunnerContinueBackfillsMissingProviderOptions' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -count=1`: initially exposed that Plan Mode cancellation must remain provider-independent; passed after preserving the cancellation path.
+- `go test -timeout 120s ./internal/runtime -run 'Test(RunnerContinueRejectsStoredUnsupportedProviderOptionsBeforeClaim|RunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation|RunnerContinueBackfillsPartialProviderOptions|RunnerContinueBackfillsMissingProviderOptions|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|CancelPlanModeRecordsAwaitingInputLifecycleEvent|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory)' -count=1`: passed after preserving the non-provider Plan Mode cancellation path.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ResolvedProviderOptionsRejectsUnsupported(APIProviderOverride|ConfigAPIProvider)|RunnerStartRejectsUnsupportedProvider(Options|Config)APIProviderBeforeCreate|RunnerContinueRejects(UnsupportedProviderConfigBeforeMetadataMutation|StoredUnsupportedProviderOptionsBeforeClaim)|RunnerQueueSubmitRejectsUnsupportedProvider(Options|Config)APIProviderBeforeEnqueue|RunnerQueueSubmitMergesPartialProviderOptions|RunnerContinueBackfillsPartialProviderOptions|RunnerContinueBackfillsMissingProviderOptions|RunnerStartPersistsProviderOptionsInSessionMetadata)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 80/80 tests.
+- `go test -timeout 120s ./internal/webconsole -run 'TestContinueREST(BackfillsMissingProviderOptions|CarriesRuntimeFields|ModelDefaultUsesProviderDefault)|TestServiceConfigRejectsUnsupported(APIProvider|RoleAPIProviderOverride)|TestServiceConfigTestRejectsUnsupportedAPIProvider' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-409
 
