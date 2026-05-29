@@ -1718,6 +1718,31 @@ func TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing(t *testing.T) {
 	}
 }
 
+func TestCheckWorkspaceWriteRejectsSymlinkedWorkspace(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside workspace target: %v", err)
+	}
+	workspace := filepath.Join(base, "workspace-link")
+	if err := os.Symlink(outside, workspace); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	check := checkWorkspaceWrite(workspace)
+	if check.Status != "fail" {
+		t.Fatalf("expected symlinked workspace write check to fail, got %#v", check)
+	}
+	if !strings.Contains(fmt.Sprint(check.Details["error"]), "symlink") {
+		t.Fatalf("expected symlink error detail, got %#v", check)
+	}
+	if entries, err := os.ReadDir(outside); err != nil {
+		t.Fatalf("read outside workspace target: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("workspace write check should not create artifacts under outside symlink target, got %d entries", len(entries))
+	}
+}
+
 func TestDoctorConfigFileCheckReportsUntrustedWorkspaceConfigSkipped(t *testing.T) {
 	cwd := t.TempDir()
 	configDir := filepath.Join(cwd, ".go-cli-agent")

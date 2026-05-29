@@ -1767,6 +1767,22 @@ func checkWorkspaceWrite(cwd string) doctorCheck {
 			"dir": cwd,
 		},
 	}
+	info, err := os.Lstat(cwd)
+	if err != nil {
+		check.Status = "fail"
+		check.Details["error"] = err.Error()
+		return check
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		check.Status = "fail"
+		check.Details["error"] = fmt.Sprintf("workspace must not be a symlink: %s", cwd)
+		return check
+	}
+	if !info.IsDir() {
+		check.Status = "fail"
+		check.Details["error"] = fmt.Sprintf("workspace is not a directory: %s", cwd)
+		return check
+	}
 	file, err := os.CreateTemp(cwd, ".doctor-write-*")
 	if err != nil {
 		check.Status = "fail"
@@ -1775,7 +1791,11 @@ func checkWorkspaceWrite(cwd string) doctorCheck {
 	}
 	path := file.Name()
 	_ = file.Close()
-	_ = os.Remove(path)
+	if err := fileutil.RemoveFileNoSymlink(path); err != nil {
+		check.Status = "fail"
+		check.Details["error"] = err.Error()
+		return check
+	}
 	check.Details["temp_file"] = filepath.Base(path)
 	return check
 }

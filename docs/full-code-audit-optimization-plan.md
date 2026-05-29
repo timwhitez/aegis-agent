@@ -8856,7 +8856,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-454. That slice hardened cleanup of the chmod probe directory after a real session root had already been selected; this residual issue was `probeSessionRootCandidate` itself using symlink-following `os.MkdirAll`, `os.Stat`, `os.CreateTemp`, and raw temp-file cleanup when evaluating candidate session roots.
 - Confirmed the minimal fix belongs in `probeSessionRootCandidate`: keep the candidate scoring and fallback recommendation behavior unchanged, but perform candidate creation/stat/temp cleanup through no-symlink helpers so a symlinked configured root is reported unusable instead of being marked ready through its outside target.
 
+### Review 452
+
+- Confirmed FCA-20260530-457 against `spec/09-phase-plan.md`, `spec/01-runtime-architecture.md`, and `AGENTS.md`: `doctor` is the default CLI fallback diagnostic, and its workspace write probe must verify the actual local workspace directory rather than following a symlinked workspace path into an outside target.
+- Confirmed this is distinct from FCA-20260529-454 and FCA-20260530-456. Those slices hardened session-dir mode probe cleanup and session-root candidate probing; this residual issue was the separate `workspace.write` diagnostic using symlink-following `os.CreateTemp(cwd, ".doctor-write-*")` plus raw cleanup without first validating the workspace root shape.
+- Confirmed the minimal fix belongs in `checkWorkspaceWrite`: keep the existing diagnostic write-probe behavior for ordinary directories, but reject symlinked/non-directory workspace roots and route temporary file cleanup through the shared no-symlink file remover.
+
 ## Update Log
+
+### FCA-20260530-457
+
+Slice: `fix(app): reject symlinked doctor workspaces`
+
+Finding:
+
+- `spec/09-phase-plan.md` includes `doctor` in the default Web-first v1 diagnostic surface, while `spec/01-runtime-architecture.md` and `AGENTS.md` require local workspace/session file facts to respect symlink boundaries.
+- `internal/app/app.go` `checkWorkspaceWrite` used `os.CreateTemp(cwd, ".doctor-write-*")` and raw `os.Remove(path)` without first checking whether `cwd` itself was a symlinked workspace path.
+- A focused regression passed a symlinked workspace path pointing at an outside directory. Before the fix, the probe followed the symlink, wrote the diagnostic temp file under the outside target, and returned `workspace.write` as `ok`.
+
+Impact:
+
+- `go-cli-agent doctor` could report workspace writeability as healthy while proving write access only to a symlink target outside the configured/current workspace path.
+- That weakened the CLI fallback diagnostic surface: a workspace symlink escape could be hidden behind an `ok` write probe, even though workspace and tool path safety depend on the real local workspace boundary.
+
+Changes:
+
+- Added a workspace-root `os.Lstat` check before the temp write probe.
+- Rejected symlinked and non-directory workspace roots with explicit diagnostic errors.
+- Replaced raw temp cleanup with `fileutil.RemoveFileNoSymlink`.
+- Added a focused regression proving a symlinked workspace path fails and no diagnostic artifacts are created under the outside target.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestCheckWorkspaceWriteRejectsSymlinkedWorkspace -count=1`: failed before the fix because the symlinked workspace was reported `ok`.
+- `go test -timeout 120s ./internal/app -run TestCheckWorkspaceWriteRejectsSymlinkedWorkspace -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestCheckWorkspaceWriteRejectsSymlinkedWorkspace|TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing|TestProbeSessionRootCandidateRejectsSymlinkedRoot|TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run TestRemoveFileNoSymlink -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
 
 ### FCA-20260530-456
 
