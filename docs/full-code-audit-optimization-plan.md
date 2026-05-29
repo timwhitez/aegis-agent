@@ -8838,7 +8838,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-449 and FCA-20260529-452. FCA-20260529-449 rolled back failed lease writes after a successful queued-to-running move, and FCA-20260529-452 hardened lower-level atomic write replacement; this residual issue was the claim promotion itself still using raw `os.Rename(from, to)`, so a replaced `_queue/running` ancestor could redirect the claimed job outside the session store before lease persistence.
 - Confirmed the minimal fix belongs in `Store.ClaimNextQueuedJob`: preserve the queue contract's atomic multi-worker claim semantics, keep `os.ErrNotExist` as the concurrent-claim skip path, and route only the queued-to-running promotion through the shared no-symlink rename helper before writing durable lease fields.
 
+### Review 449
+
+- Confirmed FCA-20260529-454 against `spec/09-phase-plan.md`, `spec/01-runtime-architecture.md`, and `AGENTS.md`: `doctor` is a default CLI fallback diagnostic surface, session directories are local file facts with owner-only expectations, and diagnostic probes must not weaken the same no-symlink session-root boundary they are checking.
+- Confirmed this is distinct from FCA-20260528-323 through FCA-20260528-353 and FCA-20260529-453. Earlier doctor slices validated existing session/queue facts and unsafe session roots, and the queue claim slice hardened queue promotion; this residual issue was the doctor session-dir mode probe's cleanup path using raw `os.RemoveAll(probeDir)` after creating a temporary probe directory under the configured session root.
+- Confirmed the minimal fix belongs in `probeSessionDirMode`: keep the chmod/mode probe behavior and warning classification unchanged, but route temporary probe cleanup through the shared no-symlink directory removal helper so a replaced probe parent fails closed instead of deleting through a symlinked session directory.
+
 ## Update Log
+
+### FCA-20260529-454
+
+Slice: `fix(app): harden doctor mode probe cleanup`
+
+Finding:
+
+- `spec/09-phase-plan.md` includes `doctor` in the Web-first v1 diagnostic validation surface, while `spec/01-runtime-architecture.md` and `AGENTS.md` require session directories and agent artifacts to respect local file-fact and owner-only boundaries.
+- `internal/app/app.go` `probeSessionDirMode` created a temporary `.doctor-mode-*` directory under the configured session dir, then deferred raw `os.RemoveAll(probeDir)` for cleanup.
+- A focused regression replaced the probe directory's parent with a symlink before cleanup and created an outside directory with the same probe basename. Before the fix, raw recursive cleanup could follow that replaced parent and remove the outside directory tree.
+
+Impact:
+
+- Running `go-cli-agent doctor` against a session directory under local filesystem race/manual replacement could delete outside paths while only performing a diagnostic permission probe.
+- That violated the Web-first fallback diagnostic boundary: doctor should surface unsafe session roots, not introduce a recursive-delete path that follows symlinked ancestors.
+
+Changes:
+
+- Routed `probeSessionDirMode` cleanup through `fileutil.RemoveDirAllNoSymlink`, preserving the existing chmod/mode probe behavior while rejecting symlinked probe parents during cleanup.
+- Added a package-private test hook at the cleanup boundary and a focused regression proving an outside same-basename probe alias is not removed when the original session dir is replaced by a symlink.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent -count=1`: failed before the fix because raw `os.RemoveAll` removed the outside probe alias.
+- `go test -timeout 120s ./internal/app -run TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent|TestCheckSessionDirMode(WarnsOnPermissionDrift|WarnsWhenFilesystemDoesNotHonorPOSIXPermissions|FailsForInvalidConfiguredMode)' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestRemoveDirAllNoSymlink|TestMkdirAllNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
 
 ### FCA-20260529-453
 

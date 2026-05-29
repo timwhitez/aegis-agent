@@ -2479,6 +2479,54 @@ func TestCheckSessionDirModeWarnsWhenFilesystemDoesNotHonorPOSIXPermissions(t *t
 	}
 }
 
+func TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	restoreHook := beforeSessionDirModeProbeCleanup
+	beforeSessionDirModeProbeCleanup = func(probeDir string) error {
+		outsideProbe := filepath.Join(outside, filepath.Base(probeDir))
+		if err := os.MkdirAll(outsideProbe, 0o700); err != nil {
+			t.Fatalf("mkdir outside probe alias: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(outsideProbe, "keep.txt"), []byte("outside"), 0o600); err != nil {
+			t.Fatalf("write outside probe file: %v", err)
+		}
+		if err := os.Rename(dir, dir+".real"); err != nil {
+			t.Fatalf("rename session dir before cleanup: %v", err)
+		}
+		if err := os.Symlink(outside, dir); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		return nil
+	}
+	defer func() {
+		beforeSessionDirModeProbeCleanup = restoreHook
+	}()
+
+	probe, err := probeSessionDirMode(dir, 0o700)
+	if err != nil {
+		t.Fatalf("probe session dir mode: %v", err)
+	}
+	if probe.ProbeDir == "" {
+		t.Fatalf("expected probe dir to be recorded")
+	}
+	outsideProbeFile := filepath.Join(outside, filepath.Base(probe.ProbeDir), "keep.txt")
+	if data, err := os.ReadFile(outsideProbeFile); err != nil || string(data) != "outside" {
+		t.Fatalf("outside probe alias should remain after cleanup, data=%q err=%v", string(data), err)
+	}
+	realProbe := filepath.Join(dir+".real", filepath.Base(probe.ProbeDir))
+	if _, err := os.Stat(realProbe); err != nil {
+		t.Fatalf("original probe dir should remain for diagnostics after rejected cleanup, got %v", err)
+	}
+}
+
 func TestCheckSessionDirModeFailsForInvalidConfiguredMode(t *testing.T) {
 	check := checkSessionDirMode(t.TempDir(), "not-octal")
 	if check.Status != "fail" {
