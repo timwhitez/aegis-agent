@@ -8706,7 +8706,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-127 and the later Web unknown-session subresource fix. Those slices made Web `/children`, `/tasks`, `/messages`, and goal subresources reject unknown session IDs; this residual issue was only the CLI Goal fallback path reading or mutating goal facts without first loading `session.json`.
 - Confirmed this is distinct from FCA-20260529-422. That slice fixed CLI `tasks` and `experimental children`; this slice covers `goal show`, status mutation, `goal plan show/check/approve`, and `goal validation show`.
 
+### Review 427
+
+- Confirmed FCA-20260529-429 against `spec/01-runtime-architecture.md`'s SDK facade/session-store fact-source boundary: runtime `State` and `Interrupt` must be scoped to a real session metadata fact, not a standalone `state.json`.
+- Confirmed this is distinct from FCA-20260529-422 and FCA-20260529-428. Those slices covered task/child views and CLI Goal views; this residual issue was the public runtime/SDK state surface itself accepting orphan state facts.
+- Confirmed the minimal fix belongs in `Runner.State` and `Runner.InterruptWithReason`, preserving `Store.LoadState` as a low-level fact loader for callers that already loaded metadata.
+
 ## Update Log
+
+### FCA-20260529-429
+
+Slice: `fix(runtime): reject orphan state facts`
+
+Finding:
+
+- `Runner.State` returned `Store.LoadState(sessionID)` directly.
+- A directory containing only `state.json` but no `session.json` could therefore be reported through the runtime/SDK facade as a valid session state.
+- `Runner.InterruptWithReason` used the same state-only read before deciding whether a session was running.
+- A focused pre-fix regression wrote `state.json` with `status:"running"` into an otherwise orphan session directory; before the fix, `Runner.State` returned that running state successfully.
+
+Impact:
+
+- SDK or adapter code could treat partial session directories as valid sessions, weakening the file-fact boundary that Web and CLI fallback routes now enforce.
+- Interrupt decisions could be based on orphan state facts rather than a complete session metadata/state pair.
+
+Changes:
+
+- Added `LoadMetadata` checks before `Runner.State` returns state facts.
+- Added the same metadata check before `Runner.InterruptWithReason` reads state and requests pause.
+- Added focused runtime coverage for orphan `state.json` facts while preserving the existing missing-session task-view regression.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerStateRejectsOrphanStateWithoutSessionMetadata -count=1`: failed before the fix because `Runner.State` loaded the orphan running `state.json`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunner(StateRejectsOrphanStateWithoutSessionMetadata|TasksRejectsUnknownSession)' -count=1`: passed.
+- `gofmt -l internal/runtime/runner.go internal/runtime/runner_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./pkg/... ./internal/runtime -count=1`: passed.
+- `git diff --check`: passed with no output.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-428
 

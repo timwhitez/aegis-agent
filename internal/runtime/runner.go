@@ -1867,6 +1867,9 @@ func (r *Runner) Interrupt(sessionID string) error {
 }
 
 func (r *Runner) InterruptWithReason(sessionID, reason string) error {
+	if _, err := r.store.LoadMetadata(sessionID); err != nil {
+		return err
+	}
 	state, err := r.store.LoadState(sessionID)
 	if err != nil {
 		return err
@@ -1879,6 +1882,9 @@ func (r *Runner) InterruptWithReason(sessionID, reason string) error {
 }
 
 func (r *Runner) State(sessionID string) (session.State, error) {
+	if _, err := r.store.LoadMetadata(sessionID); err != nil {
+		return session.State{}, err
+	}
 	return r.store.LoadState(sessionID)
 }
 

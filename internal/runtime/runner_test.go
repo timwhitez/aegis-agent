@@ -125,6 +125,37 @@ func TestRunnerTasksRejectsUnknownSession(t *testing.T) {
 	}
 }
 
+func TestRunnerStateRejectsOrphanStateWithoutSessionMetadata(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = filepath.Join(t.TempDir(), "sessions")
+	runner := NewRunner(cfg)
+	sessionID := "session_orphan_state_runtime"
+	sessionDir := runner.store.SessionDir(sessionID)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "state.json"), data, 0o600); err != nil {
+		t.Fatalf("write orphan state: %v", err)
+	}
+
+	loaded, err := runner.State(sessionID)
+	if err == nil {
+		t.Fatalf("expected missing session metadata error, loaded %#v", loaded)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected missing session metadata error, got %v", err)
+	}
+}
+
 func TestCustomAnthropicAPIProviderUsesAnthropicAdapter(t *testing.T) {
 	var seenPath string
 	var seenBody map[string]any
