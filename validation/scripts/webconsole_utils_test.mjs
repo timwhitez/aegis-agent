@@ -1111,7 +1111,6 @@ function createWorkspaceHarnessContext() {
         workspace_switch_supported: false
       },
       workspacePath: '',
-      selectedTreePath: '',
       fileTree: []
     },
     nodes: {
@@ -1131,7 +1130,7 @@ function createWorkspaceHarnessContext() {
   vm.createContext(workspaceContext);
   vm.runInContext(utilsSource, workspaceContext, { filename: 'utils.js' });
   vm.runInContext(workspaceViewSource, workspaceContext, { filename: 'workspace-view.js' });
-  vm.runInContext(`delete state.workspaceRequestSeq; workspaceViewState.requestSeq = 0;`, workspaceContext);
+  vm.runInContext(`delete state.workspaceRequestSeq; delete state.selectedTreePath; delete state.workspaceFilePreview; workspaceViewState.requestSeq = 0;`, workspaceContext);
   vm.runInContext(`
     const realRenderFileTree = renderFileTree;
     renderFileTree = function(tree, container, level) {
@@ -3201,7 +3200,8 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
   assert.deepEqual(sameRealm(vm.runInContext(`({
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText,
-    preview: state.workspaceFilePreview,
+    preview: workspaceFilePreview(),
+    stateHasWorkspaceFilePreview: Object.prototype.hasOwnProperty.call(state, 'workspaceFilePreview'),
     footerClass: nodes.editorContent.__children[1].className,
     buttonText: nodes.editorContent.__children[1].__children[1].innerText
   })`, workspaceContext)), {
@@ -3215,6 +3215,7 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
       size: 20,
       truncated: true
     },
+    stateHasWorkspaceFilePreview: false,
     footerClass: 'workspace-preview-footer',
     buttonText: 'Load more'
   });
@@ -3242,7 +3243,8 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
   assert.deepEqual(sameRealm(vm.runInContext(`({
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText,
-    preview: state.workspaceFilePreview
+    preview: workspaceFilePreview(),
+    stateHasWorkspaceFilePreview: Object.prototype.hasOwnProperty.call(state, 'workspaceFilePreview')
   })`, workspaceContext)), {
     filename: 'other.txt',
     content: 'other body',
@@ -3253,7 +3255,8 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
       nextOffset: 10,
       size: 10,
       truncated: false
-    }
+    },
+    stateHasWorkspaceFilePreview: false
   });
 });
 
@@ -3291,17 +3294,19 @@ test('workspace file click does not activate stale file selection', async () => 
 
   workspaceContext.pendingRequests[1].resolve({ content: 'current file' });
   await fastClick;
-  assert.equal(vm.runInContext(`state.selectedTreePath`, workspaceContext), 'fast.txt');
+  assert.equal(vm.runInContext(`selectedWorkspaceTreePath()`, workspaceContext), 'fast.txt');
 
   workspaceContext.pendingRequests[0].resolve({ content: 'stale file' });
   await slowClick;
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    selectedTreePath: state.selectedTreePath,
+    selectedTreePath: selectedWorkspaceTreePath(),
+    stateHasSelectedTreePath: Object.prototype.hasOwnProperty.call(state, 'selectedTreePath'),
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText
   })`, workspaceContext)), {
     selectedTreePath: 'fast.txt',
+    stateHasSelectedTreePath: false,
     filename: 'fast.txt',
     content: 'current file'
   });
@@ -3384,7 +3389,8 @@ test('workspace file tree keyboard activates and moves focus', async () => {
   await vm.runInContext(`handleFileTreeKeydown(keyEvent('ArrowLeft', treeButtons[1]))`, workspaceContext);
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
-    selectedTreePath: state.selectedTreePath,
+    selectedTreePath: selectedWorkspaceTreePath(),
+    stateHasSelectedTreePath: Object.prototype.hasOwnProperty.call(state, 'selectedTreePath'),
     filename: nodes.editorFilename.innerText,
     content: nodes.editorContent.innerText,
     secondFocused: Boolean(treeButtons[1].focused),
@@ -3392,6 +3398,7 @@ test('workspace file tree keyboard activates and moves focus', async () => {
     events: keyboardEvents
   })`, workspaceContext)), {
     selectedTreePath: 'src/main.go',
+    stateHasSelectedTreePath: false,
     filename: 'src/main.go',
     content: 'package main',
     secondFocused: true,

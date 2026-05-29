@@ -8562,6 +8562,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-403 and the earlier History / floating panel / Plan input view-state slices. Those slices moved queue job inspector selection, History row expansion, floating tracker preferences, and pending Plan Mode input selections; this residual issue was only the `inspectorTab` string that tab clicks, focus-to-inspector actions, queue job open actions, and `renderInspectorPanel()` still read or wrote through the main `state` object.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move inspector tab selection into a tiny `inspectorViewState`, expose helper reads/writes shared by app and renderer, preserve tab switching, selected queue job focus to Background, invalid-tab fallback to Tasks, and backend/session/queue facts unchanged.
 
+### Review 403
+
+- Confirmed FCA-20260529-405 against `spec/17-web-console.md`'s read-only Workspace browser and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: Workspace selected tree path and paged file preview are browser view state/cache, not durable workspace facts, session-store facts, runtime state, provider replay data, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260528-270, FCA-20260528-320, and FCA-20260529-111. Those slices fixed stale Workspace directory/file responses, stale file-click active selection, and Workspace request sequencing; this residual issue was only the selected tree path and file preview cache still living on the main `state` object after the request guard had moved into `workspaceViewState`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`, `internal/webconsole/assets/workspace-view.js`, and frontend regressions: move selected tree path and paged file preview into `workspaceViewState`, preserve stale response/click suppression, active file highlighting, paged preview continuation, and load-more error rendering without changing backend file read APIs or workspace path safety.
+
 ## Update Log
 
 ### FCA-20260529-126
@@ -8630,6 +8636,46 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260529-405
+
+Slice: `fix(webconsole): isolate workspace view cache`
+
+Finding:
+
+- The WebConsole main `state` object still stored `selectedTreePath` and `workspaceFilePreview`, which are used only by the local Workspace browser to highlight the selected file and cache the currently rendered paged file preview.
+- These fields are browser Workspace view state/cache. They are not durable workspace facts, session-store facts, runtime state, provider replay data, or WebConsole file-fact authority.
+- This contradicted the current P1 Render State Isolation plan after the adjacent Workspace request sequence guard had already moved into `workspaceViewState`.
+
+Changes:
+
+- Moved Workspace selected tree path and file preview cache into `workspaceViewState`, with small helper reads/writes.
+- Removed `selectedTreePath` from the main `state` object and stopped writing `workspaceFilePreview` onto `state`.
+- Preserved stale Workspace response suppression, stale file-click active selection suppression, active file highlighting, paged preview continuation, and load-more error rendering.
+- Updated focused frontend regressions so selected file path and file preview cache are proven absent from durable app state while existing Workspace browser behavior remains intact.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Workspace-view-cache slice and refreshed the frontend asset line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "loadFile renders paged preview|workspace file click does not activate stale|workspace file tree keyboard" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 80/80 tests.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `rg -n "state\\.selectedTreePath|state\\.workspaceFilePreview|selectedTreePath|workspaceFilePreview|selectedWorkspaceTreePath|workspaceFilePreview\\(" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs docs/webconsole-frontend-optimization-plan.md`: passed; production asset matches are helper/view-state references and no `state.selectedTreePath` / `state.workspaceFilePreview` references remain.
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
@@ -23247,7 +23293,7 @@ Changes:
 
 - Added a tiny `workspaceViewState` object in `workspace-view.js` to own Workspace request sequencing.
 - Updated directory, file, file-error, and paged-preview stale-response checks to compare against `workspaceViewState.requestSeq`.
-- Kept durable UI facts such as `state.workspacePath`, `state.fileTree`, `state.selectedTreePath`, and `state.workspaceFilePreview` unchanged.
+- Kept durable UI facts such as `state.workspacePath` and `state.fileTree` unchanged; later FCA-20260529-405 moved selected tree path and file preview cache into `workspaceViewState`.
 - Extended the stale Workspace directory response regression so it proves request sequencing stays out of the main app state while stale Workspace responses remain ignored.
 - Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this Workspace-local guard slice and narrows the remaining request-guard backlog.
 

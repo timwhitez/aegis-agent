@@ -1,7 +1,9 @@
 const WORKSPACE_FILE_PREVIEW_CHUNK_SIZE = 256 * 1024;
 
 const workspaceViewState = {
-  requestSeq: 0
+  requestSeq: 0,
+  selectedTreePath: '',
+  filePreview: null
 };
 
 async function fetchWorkspace() {
@@ -63,8 +65,8 @@ async function loadWorkspaceDirectory(path = '') {
   }
   state.workspacePath = normalized;
   state.fileTree = tree;
-  state.selectedTreePath = '';
-  state.workspaceFilePreview = null;
+  setSelectedWorkspaceTreePath('');
+  setWorkspaceFilePreview(null);
   renderFileTree(tree);
   updateWorkspaceMeta();
   nodes.editorFilename.innerText = workspaceDisplayName();
@@ -73,6 +75,22 @@ async function loadWorkspaceDirectory(path = '') {
 
 function nextWorkspaceRequestSeq() {
   return ++workspaceViewState.requestSeq;
+}
+
+function selectedWorkspaceTreePath() {
+  return workspaceViewState.selectedTreePath || '';
+}
+
+function setSelectedWorkspaceTreePath(path) {
+  workspaceViewState.selectedTreePath = String(path || '');
+}
+
+function workspaceFilePreview() {
+  return workspaceViewState.filePreview || null;
+}
+
+function setWorkspaceFilePreview(preview) {
+  workspaceViewState.filePreview = preview || null;
 }
 
 function normalizeWorkspacePath(path = '') {
@@ -126,7 +144,7 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     if (node.type === 'directory') {
       button.setAttribute('aria-expanded', 'false');
     }
-    if (state.selectedTreePath && node.type === 'file' && node.path === state.selectedTreePath) {
+    if (selectedWorkspaceTreePath() && node.type === 'file' && node.path === selectedWorkspaceTreePath()) {
       button.classList.add('active');
     }
     const icon = node.navigation === 'parent' ? 'corner-up-left' : node.type === 'directory' ? 'folder' : 'file-code';
@@ -281,14 +299,14 @@ function findParentTreeNode(button) {
 }
 
 function setActiveTreeNode(button, path) {
-  const previous = state.selectedTreePath;
+  const previous = selectedWorkspaceTreePath();
   if (previous && previous !== path) {
     const old = nodes.fileTree.querySelector(`.tree-node.active[data-path="${cssEscape(previous)}"]`);
     if (old) {
       old.classList.remove('active');
     }
   }
-  state.selectedTreePath = path;
+  setSelectedWorkspaceTreePath(path);
   button.classList.add('active');
 }
 
@@ -303,7 +321,7 @@ async function loadFile(path) {
   const requestSeq = nextWorkspaceRequestSeq();
   nodes.editorFilename.innerText = path;
   nodes.editorContent.innerText = 'Loading...';
-  state.workspaceFilePreview = null;
+  setWorkspaceFilePreview(null);
   return loadFilePreviewPage(path, requestSeq, 0, false);
 }
 
@@ -319,7 +337,8 @@ async function loadFilePreviewPage(path, requestSeq, offset, append) {
     const truncated = Boolean(data?.truncated);
     const nextOffset = truncated ? normalizePreviewNumber(data?.next_offset, nextOffsetFallback) : nextOffsetFallback;
     const size = Math.max(normalizePreviewNumber(data?.size, nextOffset), nextOffset);
-    const previousContent = append && state.workspaceFilePreview?.path === path ? state.workspaceFilePreview.content : '';
+    const previousPreview = workspaceFilePreview();
+    const previousContent = append && previousPreview?.path === path ? previousPreview.content : '';
     const preview = {
       path,
       content: `${previousContent}${contentChunk}`,
@@ -328,7 +347,7 @@ async function loadFilePreviewPage(path, requestSeq, offset, append) {
       size,
       truncated
     };
-    state.workspaceFilePreview = preview;
+    setWorkspaceFilePreview(preview);
     renderWorkspaceFilePreview(preview);
     return true;
   } catch (err) {
@@ -336,8 +355,9 @@ async function loadFilePreviewPage(path, requestSeq, offset, append) {
       return false;
     }
     const message = workspaceErrorMessage(err, `Failed to load file: ${path}`);
-    if (append && state.workspaceFilePreview?.path === path) {
-      renderWorkspaceFilePreview(state.workspaceFilePreview, message);
+    const preview = workspaceFilePreview();
+    if (append && preview?.path === path) {
+      renderWorkspaceFilePreview(preview, message);
     } else {
       nodes.editorContent.innerText = message;
     }
