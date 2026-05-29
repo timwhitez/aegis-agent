@@ -8568,7 +8568,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-270, FCA-20260528-320, and FCA-20260529-111. Those slices fixed stale Workspace directory/file responses, stale file-click active selection, and Workspace request sequencing; this residual issue was only the selected tree path and file preview cache still living on the main `state` object after the request guard had moved into `workspaceViewState`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`, `internal/webconsole/assets/workspace-view.js`, and frontend regressions: move selected tree path and paged file preview into `workspaceViewState`, preserve stale response/click suppression, active file highlighting, paged preview continuation, and load-more error rendering without changing backend file read APIs or workspace path safety.
 
+### Review 404
+
+- Confirmed FCA-20260529-406 against `spec/01-runtime-architecture.md`'s session store fact-source boundary and `spec/13-live-input-and-steering.md`'s durable `control/steer.jsonl` queue semantics: `state.json` pending steer count is an operator/recovery projection of the durable steer queue and must not be overwritten by a run claim with stale or synthetic data.
+- Confirmed this is distinct from FCA-20260525-033, FCA-20260527-219, FCA-20260527-259, FCA-20260527-344, and FCA-20260528-376. Those slices hardened pending-count refresh, steer acceptance ordering, accepted-request rollback, and refresh failures after acceptance; this residual issue was the separate `Store.ClaimSessionRun` path used by `Runner.Continue`, `AutoContinue`, and Web continue after a paused/awaiting/failed session is claimed back to `running`.
+- Confirmed the minimal fix belongs in `internal/session/store.go`: make `ClaimSessionRun` derive `PendingSteerCount` from the durable steer queue under the existing store/file locks, preserving status claim atomicity, resumable-status checks, live steer acceptance behavior, runtime workflow boundaries, and `SaveState`'s existing queue-derived counter behavior.
+
 ## Update Log
+
+### FCA-20260529-406
+
+Slice: `fix(session): preserve pending steer count on claim`
+
+Finding:
+
+- `Store.SaveState` already derived `PendingSteerCount` from durable `control/steer.jsonl` whenever the steer queue exists, but `Store.ClaimSessionRun` bypassed that helper and unconditionally wrote `PendingSteerCount = 0` while marking a paused / awaiting-input / failed session as `running`.
+- `Runner.Continue`, `AutoContinue`, and Web continue all use `ClaimSessionRun` before the engine has a chance to drain pending steer records.
+- A focused pre-fix regression created an `awaiting_input` session with one pending steer request, refreshed the pending counter to `1`, then called `ClaimSessionRun`; before the fix, both the returned state and `state.json` reported `pending_steer_count:0` while `control/steer.jsonl` still contained a pending request.
+
+Impact:
+
+- Web detail, session summaries, recovery hints, and continue-time operator diagnostics could temporarily or durably hide queued steer work during the resume claim window.
+- Runtime would still eventually drain `control/steer.jsonl`, so this was not queued-input loss; the bug was a session fact-source inconsistency between `state.json` and the durable steer queue at the exact continue/resume boundary.
+
+Changes:
+
+- Updated `Store.ClaimSessionRun` to derive `PendingSteerCount` from `control/steer.jsonl` under the same store lock and existing steer file lock before writing the claimed `running` state.
+- Preserved the existing behavior when no steer queue exists: the claimed state records zero pending steers.
+- Added `TestClaimSessionRunPreservesDurablePendingSteerCount` to prove both the returned claimed state and reloaded `state.json` preserve the queue-derived count.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestClaimSessionRunPreservesDurablePendingSteerCount -count=1`: failed before the fix because the claimed state reported `PendingSteerCount:0`.
+- `go test -timeout 120s ./internal/session -run TestClaimSessionRunPreservesDurablePendingSteerCount -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/session -run 'Test(RefreshPendingSteerCountUsesMergedDurableRequests|ClaimSessionRunPreservesDurablePendingSteerCount|StoreSaveStateRefreshesUpdatedAt|StoreSaveStatePreservesCurrentLoadedSkills)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinueClaimsSessionBeforeUserMessageHook|TestRunnerContinueBackfillsMissingProviderOptions|TestRunnerSteerQueuesRequestAndUpdatesPendingCount|TestEngineAcceptsPendingSteerBeforeProviderCall|TestEngineRefreshesPendingSteerCountAfterConcurrentAppend' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 80/80 tests.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-126
 

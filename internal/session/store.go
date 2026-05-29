@@ -307,9 +307,15 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 		if _, ok := allowed[claimed.Status]; !ok {
 			return errors.New("session is not resumable")
 		}
+		pendingSteerCount := 0
+		if count, ok, err := s.pendingSteerCountLocked(sessionID); err != nil {
+			return err
+		} else if ok {
+			pendingSteerCount = count
+		}
 		claimed.Status = StatusRunning
 		claimed.Phase = "prepare"
-		claimed.PendingSteerCount = 0
+		claimed.PendingSteerCount = pendingSteerCount
 		claimed.PauseReason = ""
 		claimed.ProviderAutoResumeCount = 0
 		claimed.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)

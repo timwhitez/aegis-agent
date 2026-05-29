@@ -3603,6 +3603,46 @@ func TestRefreshPendingSteerCountUsesMergedDurableRequests(t *testing.T) {
 	}
 }
 
+func TestClaimSessionRunPreservesDurablePendingSteerCount(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusAwaitingInput, Phase: "awaiting_input", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.AppendSteerRequest(meta.ID, NewSteerRequest("use queued evidence before continuing", false)); err != nil {
+		t.Fatalf("append steer request: %v", err)
+	}
+	if _, err := store.RefreshPendingSteerCount(meta.ID); err != nil {
+		t.Fatalf("refresh pending count: %v", err)
+	}
+
+	claimed, err := store.ClaimSessionRun(meta.ID, StatusAwaitingInput)
+	if err != nil {
+		t.Fatalf("claim session run: %v", err)
+	}
+	if claimed.PendingSteerCount != 1 {
+		t.Fatalf("expected claimed state to preserve pending steer count, got %#v", claimed)
+	}
+	loaded, err := store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load claimed state: %v", err)
+	}
+	if loaded.PendingSteerCount != 1 {
+		t.Fatalf("expected state.json to preserve pending steer count, got %#v", loaded)
+	}
+}
+
 func TestRestoreOpenSteerRequestsPreservesOtherFacts(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)
