@@ -8538,6 +8538,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-113. That earlier slice moved the Overview request sequence guard into `overviewViewState`; this residual issue was only the `refreshingOverview` / `needsOverviewRefresh` coalescing flags that `refreshOverview()` still read and wrote through the main `state`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the Overview in-flight and queued-refresh flags into `overviewViewState`, preserve stale overview suppression and queued refresh coalescing, and leave overview payloads, polling cadence, session detail refresh, queue facts, and backend APIs unchanged.
 
+### Review 399
+
+- Confirmed FCA-20260529-401 against `spec/17-web-console.md`'s Sessions list and polling-first local WebConsole model and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: History refresh in-flight and queued-refresh flags are browser request coordination for `/api/history`, not durable history data, session-store facts, queue facts, provider replay data, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-114 and FCA-20260529-126. Those slices moved the History request sequence guard and the Overview refresh flags; this residual issue was only the `refreshingHistory` / `needsHistoryRefresh` / `pendingHistoryRefreshOptions` coalescing fields that `fetchHistory()` still read and wrote through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the History in-flight and queued-refresh flags into `historyViewState`, preserve stale history suppression and queued page coalescing, and leave history payloads, pagination, session deletion, session opening, overview refresh, queue facts, and backend APIs unchanged.
+
 ## Update Log
 
 ### FCA-20260529-126
@@ -8606,6 +8612,46 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260529-401
+
+Slice: `fix(webconsole): isolate history refresh flags`
+
+Finding:
+
+- The WebConsole main `state` object still stored `refreshingHistory`, `needsHistoryRefresh`, and `pendingHistoryRefreshOptions`, which `fetchHistory()` used only to coalesce overlapping `/api/history` pagination requests and suppress stale responses.
+- These flags are browser request coordination. They are not durable history payload data, session-store facts, queue facts, provider replay data, runtime state, or WebConsole file-fact authority.
+- This contradicted the current P1 Render State Isolation plan after the History request sequence guard had already moved into `historyViewState`.
+
+Changes:
+
+- Moved History in-flight and queued-refresh flags into `historyViewState` next to the existing History request sequence guard.
+- Removed `refreshingHistory`, `needsHistoryRefresh`, and `pendingHistoryRefreshOptions` from the main `state` object.
+- Preserved queued page coalescing, stale history response suppression, history error handling, pagination state, render behavior, and the follow-up overview refresh.
+- Extended the frontend regression for queued History page refreshes to prove the refresh coordination flags are absent from `state` while the queued page request stays in flight and stale data remains ignored.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this History-refresh-local slice.
+
+Validation:
+
+- `node --test --test-name-pattern "fetchHistory queues the latest requested page and ignores stale in-flight history" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the main `state` still owned the History refresh flags.
+- `node --test --test-name-pattern "fetchHistory queues the latest requested page and ignores stale in-flight history" validation/scripts/webconsole_utils_test.mjs`: passed after moving the flags into `historyViewState`.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `rg -n "state\\.refreshingHistory|state\\.needsHistoryRefresh|state\\.pendingHistoryRefreshOptions|refreshingHistory|needsHistoryRefresh|pendingHistoryRefreshOptions" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs docs/webconsole-frontend-optimization-plan.md`: passed; remaining matches are the frontend regression assertions only.
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.

@@ -35,9 +35,6 @@ const state = {
   selectedQueueJobId: '',
   selectedQueueJobDetail: null,
   inspectorTab: 'tasks',
-  refreshingHistory: false,
-  needsHistoryRefresh: false,
-  pendingHistoryRefreshOptions: null,
   skills: [],
   fileTree: [],
   workspacePath: '',
@@ -86,7 +83,10 @@ const overviewViewState = {
 };
 
 const historyViewState = {
-  requestSeq: 0
+  requestSeq: 0,
+  refreshing: false,
+  needsRefresh: false,
+  pendingRefreshOptions: null
 };
 
 const historyExpansionViewState = {
@@ -2688,10 +2688,10 @@ function historyErrorMessage(err, fallback = 'Failed to load recent activity.') 
 
 async function fetchHistory(page = state.historyPage, options = {}) {
   const requestedPage = Math.max(1, Number(page) || 1);
-  if (state.refreshingHistory) {
+  if (historyViewState.refreshing) {
     state.historyPage = requestedPage;
-    state.needsHistoryRefresh = true;
-    state.pendingHistoryRefreshOptions = options;
+    historyViewState.needsRefresh = true;
+    historyViewState.pendingRefreshOptions = options;
     persistUIState();
     return;
   }
@@ -2700,9 +2700,9 @@ async function fetchHistory(page = state.historyPage, options = {}) {
   const silentError = options.silentError ?? false;
   const pageSize = state.historyPageSize;
   const requestSeq = ++historyViewState.requestSeq;
-  state.refreshingHistory = true;
-  state.needsHistoryRefresh = false;
-  state.pendingHistoryRefreshOptions = null;
+  historyViewState.refreshing = true;
+  historyViewState.needsRefresh = false;
+  historyViewState.pendingRefreshOptions = null;
   state.historyPage = requestedPage;
   persistUIState();
   if (showLoading) {
@@ -2710,7 +2710,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
   }
   try {
     const data = await requestJSON(`/api/history?page=${encodeURIComponent(requestedPage)}&page_size=${encodeURIComponent(pageSize)}`);
-    if (historyViewState.requestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || state.historyPage !== requestedPage) {
       return;
     }
     state.historyData = data;
@@ -2719,7 +2719,7 @@ async function fetchHistory(page = state.historyPage, options = {}) {
       console.error('overview refresh error', err);
     });
   } catch (err) {
-    if (historyViewState.requestSeq !== requestSeq || state.needsHistoryRefresh || state.historyPage !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || state.historyPage !== requestedPage) {
       return;
     }
     console.error('history error', err);
@@ -2734,12 +2734,12 @@ async function fetchHistory(page = state.historyPage, options = {}) {
       showToast(message, 'error');
     }
   } finally {
-    state.refreshingHistory = false;
-    if (state.needsHistoryRefresh) {
+    historyViewState.refreshing = false;
+    if (historyViewState.needsRefresh) {
       const nextPage = state.historyPage;
-      const nextOptions = state.pendingHistoryRefreshOptions || {};
-      state.needsHistoryRefresh = false;
-      state.pendingHistoryRefreshOptions = null;
+      const nextOptions = historyViewState.pendingRefreshOptions || {};
+      historyViewState.needsRefresh = false;
+      historyViewState.pendingRefreshOptions = null;
       fetchHistory(nextPage, nextOptions).catch((err) => {
         console.error('queued history refresh error', err);
       });
