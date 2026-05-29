@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"mime/multipart"
@@ -9607,6 +9608,62 @@ func TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit(t *testing.T) {
 	}
 }
 
+func TestProcessSkillZipRejectsSymlinkedManagedRootBeforeStaging(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	symlinkProbe := filepath.Join(base, "symlink-probe")
+	if err := os.Symlink(outside, symlinkProbe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(symlinkProbe); err != nil {
+		t.Fatalf("remove symlink probe: %v", err)
+	}
+
+	zipPath := filepath.Join(base, "skill.zip")
+	createSkillZip(t, zipPath, "demo-skill", "---\nname: demo-skill\n---\nbody\n")
+
+	beforeSkillUploadStagingRootCreate = func(globalDest string) error {
+		if globalDest != dest {
+			return fmt.Errorf("unexpected skill destination: %s", globalDest)
+		}
+		if err := os.Rename(dest, dest+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, dest)
+	}
+	defer func() {
+		beforeSkillUploadStagingRootCreate = nil
+	}()
+
+	if _, err := processSkillZip(zipPath, dest); err == nil {
+		t.Fatal("expected symlinked managed root to be rejected before staging")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".skill-upload-") {
+			t.Fatalf("upload staging must not be created through symlinked managed root, found %s", entry.Name())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outside, "demo-skill", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected outside skill not to be written, got %v", err)
+	}
+	if _, err := os.Stat(dest + ".real"); err != nil {
+		t.Fatalf("real managed root should remain available, got %v", err)
+	}
+}
+
 func TestReserveSkillBackupPathRejectsSymlinkedParentDuringCleanup(t *testing.T) {
 	base := t.TempDir()
 	parent := filepath.Join(base, "skills")
@@ -9658,6 +9715,35 @@ func TestReserveSkillBackupPathRejectsSymlinkedParentDuringCleanup(t *testing.T)
 	realBackupPath := filepath.Join(parent+".real", filepath.Base(originalBackupPath))
 	if _, err := os.Stat(realBackupPath); err != nil {
 		t.Fatalf("original reservation under real parent should remain after failed cleanup, got %v", err)
+	}
+}
+
+func TestReserveSkillBackupPathRejectsSymlinkedParentBeforeCreate(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "skills")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.Symlink(outside, parent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	backupPath, err := reserveSkillBackupPath(parent, "demo-skill")
+	if err == nil {
+		t.Fatalf("expected symlinked backup parent to fail, got %s", backupPath)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".demo-skill.backup-") {
+			t.Fatalf("backup reservation must not be created through symlinked parent, found %s", entry.Name())
+		}
 	}
 }
 

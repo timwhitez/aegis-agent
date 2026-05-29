@@ -8862,7 +8862,60 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-454 and FCA-20260530-456. Those slices hardened session-dir mode probe cleanup and session-root candidate probing; this residual issue was the separate `workspace.write` diagnostic using symlink-following `os.CreateTemp(cwd, ".doctor-write-*")` plus raw cleanup without first validating the workspace root shape.
 - Confirmed the minimal fix belongs in `checkWorkspaceWrite`: keep the existing diagnostic write-probe behavior for ordinary directories, but reject symlinked/non-directory workspace roots and route temporary file cleanup through the shared no-symlink file remover.
 
+### Review 453
+
+- Confirmed FCA-20260530-458 against `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, and `AGENTS.md`: WebConsole-uploaded skills are local managed skill artifacts, and upload/replace transactions must not create staging or backup reservation directories through a managed skill root that has become a symlink.
+- Confirmed this is distinct from FCA-20260529-455. That slice hardened backup reservation cleanup after a temporary reservation already existed; this residual issue was earlier creation of skill upload staging / backup temp directories through raw `os.MkdirTemp(parent, ...)`, which could follow a replaced managed skill root before the later no-symlink extract/rename/cleanup checks rejected the operation.
+- Confirmed the minimal fix belongs in the temp-directory creation boundary: add a shared no-symlink `MkdirTempNoSymlink` helper and use it for skill upload staging roots and skill backup reservations, preserving existing package validation, rollback, and commit semantics.
+
 ## Update Log
+
+### FCA-20260530-458
+
+Slice: `fix(webconsole): harden skill temp directories`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` keeps skills as local harness capabilities, while `spec/17-web-console.md` exposes `.zip` skill upload as a local WebConsole mutation and `spec/18-durable-contract-and-completion.md` requires local file facts to remain traceable instead of becoming browser/runtime side state.
+- `internal/webconsole/service.go` `processSkillZipTransaction` validated the managed skill destination with `prepareSkillZipDestination`, but then created the upload staging root with raw `os.MkdirTemp(globalDest, ".skill-upload-*")`.
+- `internal/webconsole/service.go` `reserveSkillBackupPath` similarly created backup reservations with raw `os.MkdirTemp(parent, "."+name+".backup-*")`.
+- Focused regressions replaced the managed skill root with a symlink immediately before staging creation, and created a symlinked backup parent before reservation. Before the fix, the raw temp-directory calls followed the symlink target and left `.skill-upload-*` or `.demo-skill.backup-*` directories outside the managed skill root before later no-symlink checks failed.
+
+Impact:
+
+- A failed WebConsole skill upload or replace path could still create local temp artifacts under an outside symlink target, even though later extraction, commit, rollback, and cleanup steps rejected the symlinked managed root.
+- That weakened the Web-first local skill artifact boundary: a rejected upload was not fully side-effect-free with respect to paths outside the resolved managed skill directory.
+
+Changes:
+
+- Added `fileutil.MkdirTempNoSymlink`, which rejects empty parents, symlinked ancestors, symlinked/non-directory parents, and invalid temp paths before returning a temporary directory.
+- Routed skill upload staging root creation through `fileutil.MkdirTempNoSymlink`.
+- Routed skill backup reservation creation through `fileutil.MkdirTempNoSymlink`.
+- Added focused fileutil coverage for rejecting symlinked temp parents and creating ordinary temp directories.
+- Added focused WebConsole regressions proving symlinked managed skill roots cannot create outside upload staging or backup reservation directories.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsSymlinkedManagedRootBeforeStaging -count=1`: failed before the fix because `.skill-upload-*` was created under the outside symlink target.
+- `go test -timeout 120s ./internal/fileutil -run 'TestMkdirTempNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZipRejectsSymlinkedManagedRootBeforeStaging|TestReserveSkillBackupPathRejectsSymlinkedParentBeforeCreate' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZipRejectsSymlinkedManagedRootBeforeStaging|TestReserveSkillBackupPathRejectsSymlinkedParentBeforeCreate|TestReserveSkillBackupPathRejectsSymlinkedParentDuringCleanup|TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit|TestProcessSkillZipRejectsSymlinkDestination' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestMkdirTempNoSymlink|TestRemoveDirAllNoSymlink|TestRenameDirNoSymlink' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-457
 

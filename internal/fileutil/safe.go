@@ -285,6 +285,54 @@ func MkdirAllNoSymlink(path string, mode os.FileMode) error {
 	return nil
 }
 
+func MkdirTempNoSymlink(parent, pattern string) (string, error) {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return "", errors.New("parent path is required")
+	}
+	parent = filepath.Clean(parent)
+	if err := rejectExistingSymlinkAncestors(parent); err != nil {
+		return "", err
+	}
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		return "", err
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to create temp directory under symlinked parent: %s", parent)
+	}
+	if !parentInfo.IsDir() {
+		return "", fmt.Errorf("temp parent is not a directory: %s", parent)
+	}
+	path, err := os.MkdirTemp(parent, pattern)
+	if err != nil {
+		return "", err
+	}
+	path = filepath.Clean(path)
+	if filepath.Dir(path) != parent {
+		_ = RemoveDirAllNoSymlink(path)
+		return "", fmt.Errorf("invalid temp directory path: %s", path)
+	}
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		_ = RemoveDirAllNoSymlink(path)
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		_ = RemoveDirAllNoSymlink(path)
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		_ = RemoveDirAllNoSymlink(path)
+		return "", fmt.Errorf("created temp directory became symlinked: %s", path)
+	}
+	if !info.IsDir() {
+		_ = RemoveDirAllNoSymlink(path)
+		return "", fmt.Errorf("created temp path is not a directory: %s", path)
+	}
+	return path, nil
+}
+
 func RemoveDirAllNoSymlink(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {

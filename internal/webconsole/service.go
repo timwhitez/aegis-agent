@@ -73,6 +73,9 @@ var (
 	// beforeReserveSkillBackupCleanup is set only by package tests to force a
 	// deterministic filesystem replacement between reservation and cleanup.
 	beforeReserveSkillBackupCleanup func(backupPath string) error
+	// beforeSkillUploadStagingRootCreate is set only by package tests to force
+	// a deterministic filesystem replacement before upload staging begins.
+	beforeSkillUploadStagingRootCreate func(globalDest string) error
 )
 
 type processOwner struct {
@@ -4365,7 +4368,12 @@ func processSkillZipTransaction(src string, globalDest string) (*skillZipInstall
 		plans = append(plans, skillZipPlan{Root: root, TargetPath: targetPath})
 	}
 
-	stagingRoot, err := os.MkdirTemp(globalDest, ".skill-upload-*")
+	if beforeSkillUploadStagingRootCreate != nil {
+		if err := beforeSkillUploadStagingRootCreate(globalDest); err != nil {
+			return nil, err
+		}
+	}
+	stagingRoot, err := fileutil.MkdirTempNoSymlink(globalDest, ".skill-upload-*")
 	if err != nil {
 		return nil, err
 	}
@@ -4549,7 +4557,7 @@ func finalizeCommittedSkillZipPlans(committed []committedSkillZipPlan) error {
 }
 
 func reserveSkillBackupPath(parent, name string) (string, error) {
-	backupPath, err := os.MkdirTemp(parent, "."+name+".backup-*")
+	backupPath, err := fileutil.MkdirTempNoSymlink(parent, "."+name+".backup-*")
 	if err != nil {
 		return "", err
 	}
