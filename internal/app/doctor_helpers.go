@@ -771,16 +771,28 @@ func probeSessionRootCandidate(path string, expected fs.FileMode) sessionRootPro
 	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
 		result.CreatedDuringProbe = true
 	}
-	if err := os.MkdirAll(path, expected); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(path, expected); err != nil {
 		result.Error = err.Error()
 		result.Reason = "mkdir_failed"
 		result.Advice = sessionRootCandidateAdvice(path, false)
 		return result
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		result.Error = err.Error()
 		result.Reason = "stat_failed"
+		result.Advice = sessionRootCandidateAdvice(path, false)
+		return result
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		result.Error = fmt.Sprintf("session root must not be a symlink: %s", path)
+		result.Reason = "symlinked_root"
+		result.Advice = sessionRootCandidateAdvice(path, false)
+		return result
+	}
+	if !info.IsDir() {
+		result.Error = fmt.Sprintf("session root is not a directory: %s", path)
+		result.Reason = "not_directory"
 		result.Advice = sessionRootCandidateAdvice(path, false)
 		return result
 	}
@@ -794,7 +806,7 @@ func probeSessionRootCandidate(path string, expected fs.FileMode) sessionRootPro
 	}
 	result.Writable = true
 	_ = file.Close()
-	_ = os.Remove(file.Name())
+	_ = fileutil.RemoveFileNoSymlink(file.Name())
 
 	probe, err := sessionDirModeProbe(path, expected)
 	if err != nil {

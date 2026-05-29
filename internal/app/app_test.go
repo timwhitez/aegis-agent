@@ -2527,6 +2527,31 @@ func TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent(t *testing.T) {
 	}
 }
 
+func TestProbeSessionRootCandidateRejectsSymlinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside root: %v", err)
+	}
+	root := filepath.Join(base, "sessions-link")
+	if err := os.Symlink(outside, root); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	result := probeSessionRootCandidate(root, 0o700)
+	if result.Writable || result.SupportsOwnerOnly || result.Reason == "ready" {
+		t.Fatalf("expected symlinked session root to be rejected, got %#v", result)
+	}
+	if !strings.Contains(result.Error, "symlink") {
+		t.Fatalf("expected symlink error detail, got %#v", result)
+	}
+	if entries, err := os.ReadDir(outside); err != nil {
+		t.Fatalf("read outside root: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("probe should not create files under outside symlink target, got %d entries", len(entries))
+	}
+}
+
 func TestCheckSessionDirModeFailsForInvalidConfiguredMode(t *testing.T) {
 	check := checkSessionDirMode(t.TempDir(), "not-octal")
 	if check.Status != "fail" {

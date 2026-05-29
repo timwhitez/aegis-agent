@@ -8850,7 +8850,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-450, FCA-20260529-452, and FCA-20260529-454. Earlier slices hardened Web history transaction renames, shared atomic write promotion, and doctor probe cleanup; this residual issue was the skill backup reservation helper creating a temporary directory under the managed skill root and then deleting the reservation with raw `os.Remove(backupPath)`.
 - Confirmed the minimal fix belongs in `reserveSkillBackupPath`: keep the existing temporary-name reservation behavior for collision avoidance, but route the reservation cleanup through the shared no-symlink directory remover so a replaced managed skill root fails closed before later install/uninstall renames.
 
+### Review 451
+
+- Confirmed FCA-20260530-456 against `spec/09-phase-plan.md`, `spec/01-runtime-architecture.md`, and `AGENTS.md`: `doctor` is a default Web-first v1 fallback diagnostic, and session roots are local file-fact directories that must not silently resolve through symlinked ancestors or roots.
+- Confirmed this is distinct from FCA-20260529-454. That slice hardened cleanup of the chmod probe directory after a real session root had already been selected; this residual issue was `probeSessionRootCandidate` itself using symlink-following `os.MkdirAll`, `os.Stat`, `os.CreateTemp`, and raw temp-file cleanup when evaluating candidate session roots.
+- Confirmed the minimal fix belongs in `probeSessionRootCandidate`: keep the candidate scoring and fallback recommendation behavior unchanged, but perform candidate creation/stat/temp cleanup through no-symlink helpers so a symlinked configured root is reported unusable instead of being marked ready through its outside target.
+
 ## Update Log
+
+### FCA-20260530-456
+
+Slice: `fix(app): reject symlinked doctor session roots`
+
+Finding:
+
+- `spec/09-phase-plan.md` includes `doctor` in the default Web-first v1 diagnostic surface, and `spec/01-runtime-architecture.md` / `AGENTS.md` require session directories and agent artifacts to remain local owner-only file facts.
+- `internal/app/doctor_helpers.go` `probeSessionRootCandidate` used `os.MkdirAll(path, expected)`, `os.Stat(path)`, `os.CreateTemp(path, ".doctor-session-root-*")`, and raw `os.Remove(file.Name())` when checking configured/home/temp session root candidates.
+- A focused regression created a configured session root as a symlink to an outside directory. Before the fix, the probe followed the symlink, created diagnostic artifacts under the outside target, and returned `Writable=true`, `SupportsOwnerOnly=true`, and `Reason=ready`.
+
+Impact:
+
+- `go-cli-agent doctor` could report a symlinked configured session root as ready, even though ordinary session facts are required to stay under a no-symlink local root.
+- That made the fallback diagnostic surface less reliable: it could recommend or accept a root that redirects session state, probes, and future durable files outside the configured directory.
+
+Changes:
+
+- Routed session-root candidate creation through `fileutil.MkdirAllNoSymlink`.
+- Switched the candidate root inspection to `os.Lstat` and explicitly rejected symlinked or non-directory roots with diagnostic reasons.
+- Routed the temporary write-probe cleanup through `fileutil.RemoveFileNoSymlink`.
+- Added a focused regression proving a symlinked candidate root is rejected and no probe artifacts are created under the outside target.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestProbeSessionRootCandidateRejectsSymlinkedRoot -count=1`: failed before the fix because the symlinked session root was reported `ready`.
+- `go test -timeout 120s ./internal/app -run TestProbeSessionRootCandidateRejectsSymlinkedRoot -count=1`: passed.
+- `go test -timeout 120s ./internal/app -run 'TestProbeSessionRootCandidateRejectsSymlinkedRoot|TestProbeSessionDirModeCleanupRejectsSymlinkedProbeParent|TestCheckSessionRootStrategyWarnsAndRecommendsPOSIXFallback|TestCheckSessionDirMode(WarnsOnPermissionDrift|WarnsWhenFilesystemDoesNotHonorPOSIXPermissions|FailsForInvalidConfiguredMode)' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestMkdirAllNoSymlink|TestRemoveFileNoSymlink' -count=1`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
 
 ### FCA-20260529-455
 
