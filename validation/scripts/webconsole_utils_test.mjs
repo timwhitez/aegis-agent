@@ -4397,6 +4397,56 @@ test('renderSettings ignores stale config responses', async () => {
   }
 });
 
+test('settings test ignores stale completions after settings view refresh', async () => {
+  const harness = await renderSettingsHarness({ hasKey: false });
+  const { elements, toasts, restore } = harness;
+  const pendingTests = [];
+  context.testConfig = () => new Promise((resolve) => {
+    pendingTests.push(resolve);
+  });
+  try {
+    const testRun = elements['settings-test-btn'].listeners.click();
+    assert.equal(pendingTests.length, 1);
+    assert.equal(elements['settings-test-btn'].disabled, true);
+
+    vm.runInContext(`settingsViewState.requestSeq += 1`, context);
+    pendingTests[0]({
+      success: true,
+      provider: 'openai',
+      model: 'gpt-stale',
+      reasoning_mode: 'default'
+    });
+    await testRun;
+
+    assert.deepEqual(toasts, []);
+  } finally {
+    restore();
+  }
+});
+
+test('settings save ignores stale completions after settings view refresh', async () => {
+  const harness = await renderSettingsHarness({ hasKey: false });
+  const { elements, toasts, restore } = harness;
+  const pendingSaves = [];
+  context.saveConfig = () => new Promise((resolve) => {
+    pendingSaves.push(resolve);
+  });
+  try {
+    const saveRun = elements['settings-save-btn'].listeners.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pendingSaves.length, 1);
+    assert.equal(elements['settings-save-btn'].disabled, true);
+
+    vm.runInContext(`settingsViewState.requestSeq += 1`, context);
+    pendingSaves[0]({ success: true });
+    await saveRun;
+
+    assert.deepEqual(toasts, []);
+  } finally {
+    restore();
+  }
+});
+
 function fakeRendererElement(initial = {}) {
   return {
     value: initial.value || '',

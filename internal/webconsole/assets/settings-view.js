@@ -202,6 +202,7 @@ async function renderSettings() {
     const testButton = document.getElementById('settings-test-btn');
     const saveButton = document.getElementById('settings-save-btn');
     const roleProviderPanels = Array.from(container.querySelectorAll('[data-role-provider]'));
+    const isCurrentSettingsRender = () => settingsViewState.requestSeq === requestSeq;
 
     const selectedAPIProvider = (provider) => apiProviderSelect.value || provider?.effective_api_provider || provider?.api_provider || '';
     const reasoningFamilyForAPIProvider = (value) => {
@@ -342,6 +343,9 @@ async function renderSettings() {
       testButton.disabled = true;
       try {
         const result = await testConfig(buildConfigPayload());
+        if (!isCurrentSettingsRender()) {
+          return;
+        }
         const selectedMode = modeLabel(result.reasoning_mode || reasoningModeSelect.value || 'default');
         const thinkingDetail = result.thinking_detail ? ` ${result.thinking_detail}.` : '';
         const thinkingStrategy = result.thinking_strategy ? ` Strategy: ${result.thinking_strategy}.` : '';
@@ -352,6 +356,9 @@ async function renderSettings() {
           lucide.createIcons({ root: testButton });
         }
       } catch (err) {
+        if (!isCurrentSettingsRender()) {
+          return;
+        }
         showToast(err.message || 'Provider test failed.', 'error');
         testButton.innerHTML = '<i data-lucide="activity"></i><span>Test Settings</span>';
         testButton.disabled = false;
@@ -369,7 +376,11 @@ async function renderSettings() {
             throw new Error('Hard max turns must be a positive integer, or disable the hard limit.');
           }
         }
-        if (!await confirmSettingsSave(apiKeyInput, maskedKey)) {
+        const confirmed = await confirmSettingsSave(apiKeyInput, maskedKey);
+        if (!isCurrentSettingsRender()) {
+          return;
+        }
+        if (!confirmed) {
           showToast('Settings save cancelled.', 'info');
           return;
         }
@@ -377,6 +388,9 @@ async function renderSettings() {
         saveButton.disabled = true;
         const submittedAPIKey = currentAPIKeyValue();
         await saveConfig(buildConfigPayload());
+        if (!isCurrentSettingsRender()) {
+          return;
+        }
         showToast('Settings saved.', 'success');
         saveButton.innerText = 'Saved';
         saveButton.disabled = false;
@@ -395,6 +409,9 @@ async function renderSettings() {
           }
         }, 1500);
       } catch (err) {
+        if (!isCurrentSettingsRender()) {
+          return;
+        }
         showToast(err.message || 'Failed to save configuration.', 'error');
         saveButton.innerText = 'Save Changes';
         saveButton.disabled = false;

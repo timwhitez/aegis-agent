@@ -9006,7 +9006,41 @@ Evidence gates:
 - Confirmed this is distinct from the existing stale-response coverage. Prior regressions covered page responses after changing to another session ID; this residual issue kept the same session ID but reset the message window, so the old `loadEarlierMessages()` response still passed the `state.sessionId === sessionID` guard and merged stale older rows into the fresh tail.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: advance the message paging request sequence whenever the message window is reset, so in-flight earlier-page requests are invalidated even when the user reopens the same durable session.
 
+### Review 477
+
+- Confirmed FCA-20260530-482 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/03-provider-contracts.md`: Settings provider tests are local-console observations of the current provider form and must not let an older in-flight probe result become the visible status for a newer Settings render.
+- Confirmed this is distinct from FCA-20260530-481 and the existing `renderSettings` stale-response coverage. The config fetch path already had `settingsViewState.requestSeq`, but the `Test Settings` and `Save Changes` async completion handlers captured old DOM/form state and did not re-check that their render epoch was still current before showing toasts or mutating button/API-key UI.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/settings-view.js`: reuse the Settings render request sequence inside action completions, suppress stale provider-test/save UI side effects after a newer Settings render starts, and keep the config/test request non-persistent as required by the WebConsole spec.
+
 ## Update Log
+
+### FCA-20260530-482
+
+Slice: `fix(webconsole): ignore stale settings actions`
+
+Finding:
+
+- `renderSettings()` guarded stale `/api/config` responses with `settingsViewState.requestSeq`.
+- The `Test Settings` click handler reused controls from the render that created it, but after `testConfig(...)` completed it always showed a success/failure toast and reset the old button without checking whether a newer Settings render had already started.
+- The `Save Changes` handler had the same stale completion shape after local confirmation and after `saveConfig(...)`, so a detached or outdated form could still publish visible save status or mutate stale API-key mask controls.
+
+Impact:
+
+- A provider probe result from an older Settings form could be shown as the current Settings status after the user navigated away/back or otherwise refreshed the Settings view.
+- The local WebConsole could mislead the operator about which provider/model/reasoning configuration was actually tested.
+- This weakened the Web-first boundary that browser view state is only a projection of current local facts and current form input; stale action completions were allowed to become visible UI facts.
+
+Changes:
+
+- Settings render now exposes a local `isCurrentSettingsRender()` closure backed by `settingsViewState.requestSeq`.
+- `Test Settings` suppresses toast/button side effects when its request resolves after a newer Settings render has advanced the epoch.
+- `Save Changes` suppresses stale save/cancel completion side effects after confirmation and after config persistence if the render is no longer current.
+- Added regressions that prove in-flight provider test and config save completions no longer emit stale success toasts after the Settings view epoch changes.
+
+Validation:
+
+- Pre-fix focused verification failed as expected: `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'settings test ignores stale completions'` emitted `Provider test passed: openai / gpt-stale / Provider default.`
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern 'settings test ignores stale completions|settings save ignores stale completions|renderSettings ignores stale config responses|settings save'`: passed.
 
 ### FCA-20260530-481
 
