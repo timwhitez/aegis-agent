@@ -1396,6 +1396,100 @@ test('deleteHistorySession cancellation uses local dialog and avoids delete requ
   assert.equal(appContext.pendingRequests.length, 0);
 });
 
+test('deleteHistorySession ignores stale confirmation after history refresh', async () => {
+  const appContext = createAppHarnessContext();
+  const confirmResolvers = [];
+  const toasts = [];
+  const requestURLs = [];
+
+  const action = vm.runInContext(`
+    requestJSON = async function(url) {
+      requestURLsRef.push(String(url));
+      if (String(url).startsWith('/api/history')) {
+        return {
+          items: [{ id: 'session_current_b', status: 'completed' }],
+          page: 1,
+          page_size: 8,
+          total: 1,
+          total_pages: 1
+        };
+      }
+      if (String(url) === '/api/overview') {
+        return {};
+      }
+      return { deleted: true };
+    };
+    confirmLocalAction = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    deleteHistorySession('session_delete_stale_a');
+  `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, toastsRef: toasts, requestURLsRef: requestURLs }));
+
+  assert.equal(confirmResolvers.length, 1);
+  assert.equal(appContext.pendingRequests.length, 0);
+
+  vm.runInContext(`invalidateHistoryRenderSeq()`, appContext);
+
+  confirmResolvers[0](true);
+  await action;
+
+  const deleteRequests = requestURLs.filter((url) => url.includes('/api/sessions/session_delete_stale_a'));
+  assert.equal(deleteRequests.length, 0);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
+test('clearHistory ignores stale confirmation after history refresh', async () => {
+  const appContext = createAppHarnessContext();
+  const confirmResolvers = [];
+  const toasts = [];
+  const requestURLs = [];
+
+  const action = vm.runInContext(`
+    requestJSON = async function(url) {
+      requestURLsRef.push(String(url));
+      if (String(url).startsWith('/api/history')) {
+        return {
+          items: [{ id: 'session_current_clear_b', status: 'completed' }],
+          page: 1,
+          page_size: 8,
+          total: 1,
+          total_pages: 1
+        };
+      }
+      if (String(url) === '/api/overview') {
+        return {};
+      }
+      return { cleared: true };
+    };
+    confirmLocalAction = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    clearHistory();
+  `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, toastsRef: toasts, requestURLsRef: requestURLs }));
+
+  assert.equal(confirmResolvers.length, 1);
+  assert.equal(appContext.pendingRequests.length, 0);
+
+  vm.runInContext(`invalidateHistoryRenderSeq()`, appContext);
+
+  confirmResolvers[0](true);
+  await action;
+
+  const clearRequests = requestURLs.filter((url) => url === '/api/sessions/clear');
+  assert.equal(clearRequests.length, 0);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 function installPlanModeAPITestWrappers(appContext) {
   vm.runInContext(`
     approvePlanMode = function(sessionID, payload = {}) {

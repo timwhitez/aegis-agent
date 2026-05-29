@@ -65,6 +65,7 @@ const historyViewState = {
   page: 1,
   pageSize: 8,
   requestSeq: 0,
+  renderSeq: 0,
   refreshing: false,
   needsRefresh: false,
   pendingRefreshOptions: null
@@ -373,6 +374,19 @@ function currentHistoryPageSize() {
 function resetHistoryViewData() {
   setHistoryData(null);
   setCurrentHistoryPage(1);
+  invalidateHistoryRenderSeq();
+}
+
+function invalidateHistoryRenderSeq() {
+  historyViewState.renderSeq += 1;
+}
+
+function currentHistoryRenderSeq() {
+  return historyViewState.renderSeq || 0;
+}
+
+function isCurrentHistoryRenderSeq(renderSeq) {
+  return currentHistoryRenderSeq() === renderSeq;
 }
 
 function currentViewName() {
@@ -2934,6 +2948,7 @@ async function fetchHistory(page = currentHistoryPage(), options = {}) {
   historyViewState.needsRefresh = false;
   historyViewState.pendingRefreshOptions = null;
   setCurrentHistoryPage(requestedPage);
+  invalidateHistoryRenderSeq();
   persistUIState();
   if (showLoading) {
     container.innerHTML = '<div class="view-loading">Loading sessions...</div>';
@@ -2978,6 +2993,7 @@ async function fetchHistory(page = currentHistoryPage(), options = {}) {
 }
 
 function renderHistory(data) {
+  invalidateHistoryRenderSeq();
   const container = nodes.views.history;
   const history = data || currentHistoryData();
   if (!history) {
@@ -3169,12 +3185,16 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
 }
 
 async function deleteHistorySession(sessionID) {
+  const actionRenderSeq = currentHistoryRenderSeq();
   if (!await confirmLocalAction({
     title: 'Delete session',
     message: `Delete session ${sessionID}?`,
     confirmLabel: 'Delete',
     tone: 'danger'
   })) {
+    return;
+  }
+  if (!isCurrentHistoryRenderSeq(actionRenderSeq)) {
     return;
   }
   try {
@@ -3197,12 +3217,16 @@ async function deleteHistorySession(sessionID) {
 }
 
 async function clearHistory() {
+  const actionRenderSeq = currentHistoryRenderSeq();
   if (!await confirmLocalAction({
     title: 'Clear saved sessions',
     message: 'Clear all saved sessions? This will remove sessions and queue history.',
     confirmLabel: 'Clear all',
     tone: 'danger'
   })) {
+    return;
+  }
+  if (!isCurrentHistoryRenderSeq(actionRenderSeq)) {
     return;
   }
   try {

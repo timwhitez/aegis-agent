@@ -9030,7 +9030,49 @@ Evidence gates:
 - Confirmed this is distinct from the existing provider failure, incomplete-no-finish, cancellation, and provider stop-reason failure event coverage. Those paths already append `session.failed` or report event append failure; the hard turn limit branch returned immediately after saving `state.Status=failed` and `LastError=max_turns_hard_exceeded`.
 - Confirmed the minimal fix belongs in `internal/runtime/engine.go`: set a dedicated `turn_limit` phase, append `session.failed` with `reason=max_turns_hard_exceeded` and the effective hard limit, and surface event append failures instead of silently accepting a state-only terminal failure.
 
+### Review 481
+
+- Confirmed FCA-20260530-486 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: session history delete and clear-all are destructive local WebConsole actions and must be authorized against the current History projection, not against a stale confirmation dialog captured before the projection refreshed.
+- Confirmed this is distinct from FCA-20260530-481, FCA-20260530-483, and FCA-20260530-484. Those slices covered message paging resets, stale skill catalog confirmations, and stale coverage override confirmations; this residual issue was the History delete/clear confirmation path, where `fetchHistory()` already ignored stale responses but `deleteHistorySession()` and `clearHistory()` did not re-check a History render epoch after `confirmLocalAction()` returned.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: add a History render epoch, invalidate it on History refresh/render/reset, and abandon stale delete/clear confirmation continuations before sending destructive API requests or showing stale toasts.
+
 ## Update Log
+
+### FCA-20260530-486
+
+Slice: `fix(webconsole): ignore stale history actions`
+
+Finding:
+
+- `fetchHistory()` already used request sequencing to avoid stale History data replacing the current session list.
+- `deleteHistorySession()` and `clearHistory()` opened `confirmLocalAction()` and then issued destructive API requests without checking whether the History projection had changed while the dialog was open.
+- Focused frontend regressions reproduced that stale confirmations still sent `DELETE /api/sessions/{old-id}` or `POST /api/sessions/clear`.
+
+Impact:
+
+- Operators could delete a session tree or clear all saved sessions from a stale History projection after the visible list had refreshed.
+- This weakened the WebConsole contract that risky local mutations apply to the current browser projection over durable session facts.
+
+Changes:
+
+- Added a History render epoch in `historyViewState`.
+- Invalidated it when History refresh/render/reset changes the projection.
+- `deleteHistorySession()` and `clearHistory()` now abandon stale confirmation continuations if the epoch changed before the dialog resolves.
+- Added focused frontend regressions for stale delete and clear confirmations.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 98 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
 
 ### FCA-20260530-485
 
