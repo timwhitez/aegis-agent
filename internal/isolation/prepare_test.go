@@ -214,6 +214,48 @@ func TestCopyFileRejectsSymlinkedDestinationParentBeforeTempCreate(t *testing.T)
 	}
 }
 
+func TestCopyFileRejectsSymlinkedSourceParentBeforeOpen(t *testing.T) {
+	srcRoot := t.TempDir()
+	srcParent := filepath.Join(srcRoot, "source")
+	if err := os.MkdirAll(srcParent, 0o700); err != nil {
+		t.Fatalf("mkdir source parent: %v", err)
+	}
+	src := filepath.Join(srcParent, "secret.txt")
+	if err := os.WriteFile(src, []byte("inside-secret"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside-secret"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "secret.txt")
+
+	restore := beforeCopyFileSourceOpen
+	beforeCopyFileSourceOpen = func(path string) error {
+		if path != src {
+			t.Fatalf("unexpected copy source %s", path)
+		}
+		if err := os.RemoveAll(srcParent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, srcParent)
+	}
+	defer func() {
+		beforeCopyFileSourceOpen = restore
+	}()
+
+	err := copyFile(src, dst, 0o600)
+	if err == nil {
+		t.Fatal("expected symlinked source parent to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink path error, got %v", err)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("destination should not be created from outside source, stat err=%v", statErr)
+	}
+}
+
 func TestPrepareCopyPreservesSourceSymlinkWithoutFollowing(t *testing.T) {
 	parent := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")

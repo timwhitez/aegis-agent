@@ -10,8 +10,6 @@ import (
 	"strings"
 
 	"go-cli-agent/internal/fileutil"
-
-	"golang.org/x/sys/unix"
 )
 
 type Request struct {
@@ -33,6 +31,7 @@ type Result struct {
 var (
 	beforeCopyFileTempCreate func(parent string) error
 	beforeCopyFileRename     func(tmpPath, dst string) error
+	beforeCopyFileSourceOpen func(src string) error
 )
 
 func Prepare(req Request) (Result, error) {
@@ -242,11 +241,15 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	if err := rejectSymlinkOrDirectory(dst); err != nil {
 		return err
 	}
-	fd, err := unix.Open(src, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if beforeCopyFileSourceOpen != nil {
+		if err := beforeCopyFileSourceOpen(src); err != nil {
+			return err
+		}
+	}
+	in, err := fileutil.OpenFileNoSymlink(src, os.O_RDONLY, 0)
 	if err != nil {
 		return err
 	}
-	in := os.NewFile(uintptr(fd), src)
 	defer in.Close()
 	srcInfo, err := in.Stat()
 	if err != nil {

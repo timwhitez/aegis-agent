@@ -8958,7 +8958,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-472. That slice hardened session store fact opens; this residual issue was `openAuditLogNoSymlink` still doing audit-specific symlink prechecks and then path-based `unix.Open(path, O_NOFOLLOW)`, leaving the audit log parent replacement window open.
 - Confirmed the minimal fix belongs in `openAuditLogNoSymlink`: keep the existing audit parent creation, symlink/path validation, existing-log validation, and batch append logic, but use the shared descriptor-relative `fileutil.OpenFileNoSymlink` for the final audit log open.
 
+### Review 469
+
+- Confirmed FCA-20260530-474 against `AGENTS.md`, `spec/09-phase-plan.md`, `spec/14-multi-agent-and-isolation.md`, and `spec/18-durable-contract-and-completion.md`: copy isolation is part of the advanced local worktree profile, and copied file contents must come from the requested parent workdir rather than a source path redirected through a replaced symlink ancestor.
+- Confirmed this is distinct from FCA-20260530-460, FCA-20260530-462, FCA-20260530-463, FCA-20260530-466, and FCA-20260530-471. Those slices hardened destination temp creation, recursive directory creation, temp helpers, rename promotion, and shared read helpers; this residual issue was the isolation copy source open still calling `unix.Open(src, O_RDONLY|O_NOFOLLOW)`, where `O_NOFOLLOW` protects only the final source path component.
+- Confirmed the minimal fix belongs in `internal/isolation/prepare.go` `copyFile`: preserve the existing source symlink-copy behavior for entries discovered as symlinks, but open regular-file copy sources through the shared descriptor-relative `fileutil.OpenFileNoSymlink` before streaming bytes into the isolated workdir.
+
 ## Update Log
+
+### FCA-20260530-474
+
+Slice: `fix(isolation): harden copy source opens`
+
+Finding:
+
+- Copy isolation uses `copyTree` / `copyFile` to materialize an isolated child workdir for the large-project profile.
+- `copyTree` correctly preserves source symlinks as symlinks and `copyFile` already hardened destination parents, temp creation, and rename promotion.
+- The source regular-file open still used path-based `unix.Open(src, O_RDONLY|O_NOFOLLOW, 0)`.
+- On Linux, `O_NOFOLLOW` protects only the final component. If the source file's parent directory is replaced by a symlink after traversal and before source open, `copyFile` can read an outside same-name regular file and write those bytes into the isolated workdir.
+
+Impact:
+
+- A copied child workspace could contain file contents that did not come from the requested parent workdir, while isolation preparation reported success.
+- That weakens the Phase 11 copy-isolation contract and the durable child-session workdir evidence because the resulting isolated workdir is no longer a faithful copy of the local source facts.
+
+Changes:
+
+- Added a deterministic test hook around the source-open race point.
+- Switched `copyFile` source opens to `fileutil.OpenFileNoSymlink`, reusing the shared descriptor-relative no-symlink file open boundary.
+- Added a regression that replaces the source parent with a symlink to an outside directory containing the same filename and proves the destination file is not created from the outside source.
+- Preserved existing source symlink handling in `copyTree`: entries observed as symlinks are still copied as symlinks rather than followed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/isolation -run TestCopyFileRejectsSymlinkedSourceParentBeforeOpen -count=1`: passed.
+- `go test -timeout 120s ./internal/isolation -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/fileutil ./internal/isolation ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-473
 
