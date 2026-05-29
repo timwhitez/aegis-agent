@@ -20,6 +20,7 @@ var beforeAtomicWriteRename func(tmpPath, path string) error
 var beforeMkdirAllNoSymlinkMkdir func(path string) error
 var beforeMkdirTempNoSymlinkCreate func(parent string) error
 var beforeCreateTempNoSymlinkCreate func(parent string) error
+var beforeRemoveDirAllNoSymlinkRemove func(path string) error
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -626,6 +627,11 @@ func RemoveDirAllNoSymlink(path string) error {
 	if filepath.Dir(path) == path {
 		return fmt.Errorf("refusing to remove filesystem root: %s", path)
 	}
+	parent := filepath.Dir(path)
+	base := filepath.Base(path)
+	if base == "." || base == string(filepath.Separator) {
+		return fmt.Errorf("invalid directory path: %s", path)
+	}
 	if err := rejectExistingSymlinkAncestors(path); err != nil {
 		return err
 	}
@@ -642,10 +648,154 @@ func RemoveDirAllNoSymlink(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("refusing to remove non-directory path: %s", path)
 	}
-	if err := rejectExistingSymlinkAncestors(path); err != nil {
+	parentFD, err := openDirNoSymlink(parent)
+	if err != nil {
 		return err
 	}
-	return os.RemoveAll(path)
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if beforeRemoveDirAllNoSymlinkRemove != nil {
+		if err := beforeRemoveDirAllNoSymlinkRemove(path); err != nil {
+			return err
+		}
+	}
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		return err
+	}
+	return removeDirAllAtNoSymlink(parentFD, base, path)
+}
+
+func removeDirAllAtNoSymlink(parentFD int, name, path string) error {
+	dirFD, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		if errors.Is(err, unix.ELOOP) {
+			return fmt.Errorf("refusing to remove symlinked path: %s", path)
+		}
+		if ancestorErr := rejectExistingSymlinkAncestors(path); ancestorErr != nil {
+			return ancestorErr
+		}
+		return mkdirAllNoSymlinkOpenError(path, err)
+	}
+	closed := false
+	closeDir := func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+		return unix.Close(dirFD)
+	}
+	defer func() {
+		_ = closeDir()
+	}()
+
+	if err := ensureDirFDStillAtPath(dirFD, path); err != nil {
+		return err
+	}
+	if err := removeDirContentsAtNoSymlink(dirFD, path); err != nil {
+		return err
+	}
+	if err := ensureDirFDStillAtPath(dirFD, path); err != nil {
+		return err
+	}
+	if err := closeDir(); err != nil {
+		return err
+	}
+	if err := unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	return nil
+}
+
+func removeDirContentsAtNoSymlink(dirFD int, dirPath string) error {
+	names, err := readDirNamesFromFD(dirFD)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if name == "" || name == "." || name == ".." {
+			continue
+		}
+		if err := removeChildAtNoSymlink(dirFD, dirPath, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readDirNamesFromFD(fd int) ([]string, error) {
+	dupFD, err := unix.Dup(fd)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(dupFD), "go-cli-agent-remove-dir")
+	if file == nil {
+		_ = unix.Close(dupFD)
+		return nil, errors.New("duplicate directory fd is invalid")
+	}
+	names, readErr := file.Readdirnames(-1)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return names, nil
+}
+
+func removeChildAtNoSymlink(parentFD int, parentPath, name string) error {
+	childPath := filepath.Join(parentPath, name)
+	childFD, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err == nil {
+		closed := false
+		closeChild := func() error {
+			if closed {
+				return nil
+			}
+			closed = true
+			return unix.Close(childFD)
+		}
+		defer func() {
+			_ = closeChild()
+		}()
+		if err := ensureDirFDStillAtPath(childFD, childPath); err != nil {
+			return err
+		}
+		if err := removeDirContentsAtNoSymlink(childFD, childPath); err != nil {
+			return err
+		}
+		if err := ensureDirFDStillAtPath(childFD, childPath); err != nil {
+			return err
+		}
+		if err := closeChild(); err != nil {
+			return err
+		}
+		if err := unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
+			return err
+		}
+		return nil
+	}
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	var stat unix.Stat_t
+	if statErr := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); statErr != nil {
+		if errors.Is(statErr, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	if stat.Mode&unix.S_IFMT == unix.S_IFDIR {
+		return err
+	}
+	if unlinkErr := unix.Unlinkat(parentFD, name, 0); unlinkErr != nil && !errors.Is(unlinkErr, unix.ENOENT) {
+		return unlinkErr
+	}
+	return nil
 }
 
 func RenameDirNoSymlink(oldPath, newPath string) error {

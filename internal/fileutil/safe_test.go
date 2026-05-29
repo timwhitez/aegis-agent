@@ -311,6 +311,78 @@ func TestRemoveDirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	}
 }
 
+func TestRemoveDirAllNoSymlinkRejectsSymlinkParentBeforeRemove(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "sessions")
+	target := filepath.Join(parent, "session-1")
+	if err := os.MkdirAll(filepath.Join(target, "artifacts"), 0o700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "artifacts", "local.txt"), []byte("local"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	outside := t.TempDir()
+	outsideTarget := filepath.Join(outside, "session-1")
+	if err := os.MkdirAll(filepath.Join(outsideTarget, "artifacts"), 0o700); err != nil {
+		t.Fatalf("mkdir outside target: %v", err)
+	}
+	outsideFile := filepath.Join(outsideTarget, "artifacts", "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	restore := beforeRemoveDirAllNoSymlinkRemove
+	beforeRemoveDirAllNoSymlinkRemove = func(path string) error {
+		if path != target {
+			return nil
+		}
+		if err := os.RemoveAll(parent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, parent)
+	}
+	defer func() {
+		beforeRemoveDirAllNoSymlinkRemove = restore
+	}()
+
+	err := RemoveDirAllNoSymlink(target)
+	if err == nil {
+		t.Fatal("expected symlinked parent during recursive remove to be rejected")
+	}
+	if _, statErr := os.Stat(outsideFile); statErr != nil {
+		t.Fatalf("outside target should not be removed, got %v", statErr)
+	}
+}
+
+func TestRemoveDirAllNoSymlinkRemovesNestedDirectoryWithoutFollowingChildSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "session-1")
+	if err := os.MkdirAll(filepath.Join(target, "artifacts", "nested"), 0o700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "artifacts", "nested", "local.txt"), []byte("local"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(target, "artifacts", "outside-link")); err != nil {
+		t.Fatalf("symlink child: %v", err)
+	}
+
+	if err := RemoveDirAllNoSymlink(target); err != nil {
+		t.Fatalf("remove nested directory: %v", err)
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("target should be removed, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(outsideFile); statErr != nil {
+		t.Fatalf("outside file should remain, got %v", statErr)
+	}
+}
+
 func TestMkdirTempNoSymlinkRejectsSymlinkParent(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(root, "outside")
