@@ -26,7 +26,6 @@ const SHORTCUTS = {
 const state = {
   currentView: 'chat',
   isGenerating: false,
-  launchInFlight: false,
   meta: null,
   sessionId: nextEphemeralSessionId(),
   sessionBacked: false,
@@ -153,6 +152,10 @@ const connectionViewState = {
   liveRelayConnected: false
 };
 
+const launchViewState = {
+  inFlight: false
+};
+
 function currentLiveActivity() {
   return activityViewState.liveActivity || DEFAULT_LIVE_ACTIVITY;
 }
@@ -246,6 +249,14 @@ function isLiveRelayConnected() {
 
 function setLiveRelayConnected(connected) {
   connectionViewState.liveRelayConnected = Boolean(connected);
+}
+
+function isLaunchInFlight() {
+  return launchViewState.inFlight;
+}
+
+function setLaunchInFlight(inFlight) {
+  launchViewState.inFlight = Boolean(inFlight);
 }
 
 function syncPageVisibilityHidden() {
@@ -1127,7 +1138,7 @@ async function sendMessage() {
   if (!text) {
     return;
   }
-  if (state.launchInFlight && !hasDurableSession()) {
+  if (isLaunchInFlight() && !hasDurableSession()) {
     showToast('Session launch is already in progress.', 'info');
     return;
   }
@@ -1254,7 +1265,7 @@ async function sendMessage() {
     const agentDraft = collectAgentDraft();
     const launchClientSessionID = state.sessionId;
     try {
-      state.launchInFlight = true;
+      setLaunchInFlight(true);
       setGenerating(true, {
         title: 'Launching session',
         copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
@@ -1274,7 +1285,7 @@ async function sendMessage() {
       }
       setComposerMode(null);
       adoptSession(resp.session_id, true);
-      state.launchInFlight = false;
+      setLaunchInFlight(false);
       setGenerating(true, {
         title: 'Launching session',
         copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
@@ -1288,7 +1299,7 @@ async function sendMessage() {
       }
       removeOptimisticMessage(optimisticID);
       state.isGenerating = false;
-      state.launchInFlight = false;
+      setLaunchInFlight(false);
       showToast(err.message || 'Failed to start session.', 'error');
       updateUI();
       renderCurrentSession();
@@ -1489,7 +1500,7 @@ function adoptSession(sessionID, backed) {
   state.sessionId = sessionID;
   state.sessionBacked = backed;
   if (backed) {
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
   }
   updateSessionId();
   persistUIState();
@@ -1520,7 +1531,7 @@ function resetChatSession() {
     tone: 'neutral'
   });
   state.isGenerating = false;
-  state.launchInFlight = false;
+  setLaunchInFlight(false);
   syncComposerInputEmpty();
   updateSessionId();
   persistUIState();
@@ -1565,11 +1576,12 @@ function updateSessionId() {
 
 function updateUI() {
   const hasDraft = nodes.chatInput.value.trim().length > 0;
-  const launchPendingWithoutSession = state.launchInFlight && !hasDurableSession();
+  const launchPending = isLaunchInFlight();
+  const launchPendingWithoutSession = launchPending && !hasDurableSession();
   nodes.sendBtn.disabled = !hasDraft || launchPendingWithoutSession;
-  nodes.sendBtn.classList.toggle('is-loading', (state.isGenerating || state.launchInFlight) && hasDraft);
+  nodes.sendBtn.classList.toggle('is-loading', (state.isGenerating || launchPending) && hasDraft);
   nodes.sendBtn.classList.toggle('is-interrupt', isNextSendInterruptArmed() && state.isGenerating && hasDurableSession());
-  nodes.inputContainer.classList.toggle('is-busy', state.isGenerating || state.launchInFlight);
+  nodes.inputContainer.classList.toggle('is-busy', state.isGenerating || launchPending);
   nodes.inputContainer.classList.toggle('is-offline', !isLiveRelayConnected());
   nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
   const directSessionControlAvailable = canUseDirectSessionControl();

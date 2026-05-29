@@ -583,6 +583,63 @@ test('live relay connection status is isolated from durable app state', () => {
   });
 });
 
+test('launch pending guard is isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    selectedWorkspaceWorkdir = function() { return ''; };
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = false;
+    setLaunchInFlight(false);
+    setLiveRelayConnected(true);
+    setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
+    state.sessionDetail = null;
+    nodes.chatInput.value = 'start a slow session';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/start');
+
+  const pending = vm.runInContext(`(() => {
+    nodes.chatInput.value = 'duplicate launch';
+    updateUI();
+    const beforeDuplicate = {
+      stateHasLaunchInFlight: Object.prototype.hasOwnProperty.call(state, 'launchInFlight'),
+      launchInFlight: isLaunchInFlight(),
+      sendDisabled: nodes.sendBtn.disabled,
+      inputBusy: nodes.inputContainer.classList.contains('is-busy')
+    };
+    sendMessage();
+    return beforeDuplicate;
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(pending), {
+    stateHasLaunchInFlight: false,
+    launchInFlight: true,
+    sendDisabled: true,
+    inputBusy: true
+  });
+  assert.equal(appContext.pendingRequests.length, 1);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_created_from_launch', status: 'accepted' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    backed: state.sessionBacked,
+    stateHasLaunchInFlight: Object.prototype.hasOwnProperty.call(state, 'launchInFlight'),
+    launchInFlight: isLaunchInFlight()
+  })`, appContext)), {
+    selected: 'session_created_from_launch',
+    backed: true,
+    stateHasLaunchInFlight: false,
+    launchInFlight: false
+  });
+});
+
 test('toast id counter is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
@@ -939,7 +996,7 @@ test('composer Goal and Plan Mode toggles are isolated from durable app state', 
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
     state.isGenerating = false;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     setComposerMode('goal');
@@ -965,7 +1022,7 @@ test('composer Goal and Plan Mode toggles are isolated from durable app state', 
     state.sessionId = '0xB22CE0';
     state.sessionBacked = false;
     state.isGenerating = false;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     setComposerMode('plan');
@@ -2568,7 +2625,7 @@ test('start completion does not replace a session selected while launch is pendi
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
     state.isGenerating = false;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start a slow session';
@@ -2582,7 +2639,7 @@ test('start completion does not replace a session selected while launch is pendi
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = false;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -2598,7 +2655,7 @@ test('start completion does not replace a session selected while launch is pendi
     selected: state.sessionId,
     backed: state.sessionBacked,
     generating: state.isGenerating,
-    launchInFlight: state.launchInFlight,
+    launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
@@ -2618,7 +2675,7 @@ test('new session start includes role-aware composer fields', async () => {
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
     state.isGenerating = false;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start an evaluator session';
@@ -2644,7 +2701,7 @@ test('start completion does not clear a newer pending launch', async () => {
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
     state.isGenerating = false;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start first slow session';
@@ -2658,7 +2715,7 @@ test('start completion does not clear a newer pending launch', async () => {
     state.sessionId = '0xB22CE0';
     state.sessionBacked = false;
     state.isGenerating = true;
-    state.launchInFlight = true;
+    setLaunchInFlight(true);
     setLiveActivity({ title: 'Launching second session', copy: '', tone: 'live' });
     state.sessionDetail = null;
   `, appContext);
@@ -2670,7 +2727,7 @@ test('start completion does not clear a newer pending launch', async () => {
     selected: state.sessionId,
     backed: state.sessionBacked,
     generating: state.isGenerating,
-    launchInFlight: state.launchInFlight,
+    launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: '0xB22CE0',
@@ -2688,7 +2745,7 @@ test('openSession clears pending launch state for the newly selected durable ses
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
     state.isGenerating = true;
-    state.launchInFlight = true;
+    setLaunchInFlight(true);
     setLiveActivity({ title: 'Launching session', copy: '', tone: 'live' });
     openSession('session_fast_b', { switchToChat: false });
   `, appContext);
@@ -2699,7 +2756,7 @@ test('openSession clears pending launch state for the newly selected durable ses
     selected: state.sessionId,
     backed: state.sessionBacked,
     generating: state.isGenerating,
-    launchInFlight: state.launchInFlight,
+    launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
@@ -2726,7 +2783,7 @@ test('start failure does not clear generating state after another session is sel
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
     state.isGenerating = false;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
     nodes.chatInput.value = 'start a slow session';
@@ -2740,7 +2797,7 @@ test('start failure does not clear generating state after another session is sel
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
     state.isGenerating = true;
-    state.launchInFlight = false;
+    setLaunchInFlight(false);
     setLiveActivity({ title: 'Session B running', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -2756,7 +2813,7 @@ test('start failure does not clear generating state after another session is sel
     selected: state.sessionId,
     backed: state.sessionBacked,
     generating: state.isGenerating,
-    launchInFlight: state.launchInFlight,
+    launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',

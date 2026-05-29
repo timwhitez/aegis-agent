@@ -5620,7 +5620,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "function earlierMessagesErrorMessage") || !strings.Contains(jsBody, "const message = earlierMessagesErrorMessage(err)") || !strings.Contains(jsBody, "Failed to load earlier messages.") || !strings.Contains(jsBody, "showToast(message, 'error')") {
 		t.Fatalf("expected load-earlier message failures to surface backend API errors, got app.js body: %s", jsBody)
 	}
-	if !strings.Contains(jsBody, "launchInFlight") || !strings.Contains(jsBody, "Session launch is already in progress") || !strings.Contains(jsBody, "launchPendingWithoutSession") {
+	if !strings.Contains(jsBody, "isLaunchInFlight()") || !strings.Contains(jsBody, "setLaunchInFlight(true)") || !strings.Contains(jsBody, "Session launch is already in progress") || !strings.Contains(jsBody, "launchPendingWithoutSession") {
 		t.Fatalf("expected initial session launch to have a pending-submit guard, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "STOP_FALLBACK_STEER_MESSAGE") || !strings.Contains(jsBody, "requestStopViaBestAvailablePath") || !strings.Contains(jsBody, "data-stop-session-id") {

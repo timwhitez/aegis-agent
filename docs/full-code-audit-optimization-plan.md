@@ -8622,7 +8622,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-412. That slice moved the capped WebSocket relay event buffer out of `state`; this residual issue was the boolean live relay connection state still driving connection copy, offline styling, fallback polling, interval selection, and visible-tab reconnect through the main `state` object.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: move the relay connection boolean into a tiny `connectionViewState`, keep durable session detail and message paging facts on `state`, and preserve existing polling / reconnect behavior.
 
+### Review 413
+
+- Confirmed FCA-20260529-415 against `spec/17-web-console.md`'s local Web-first operator surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: new-session launch pending state is a browser-local start-request guard before the durable session id is known, not a durable session, message, queue, provider, or runtime fact.
+- Confirmed this is distinct from FCA-20260528-290 and related stale async launch slices. Those slices fixed stale launch completion paths mutating the wrong selected session; this residual issue was the launch pending guard itself still living on the main `state` object.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: move the pending launch guard into a tiny `launchViewState`, keep durable selected-session and message paging facts on `state`, and preserve duplicate-start suppression, pending control rendering, durable-session adoption cleanup, and stale launch completion behavior.
+
 ## Update Log
+
+### FCA-20260529-415
+
+Slice: `fix(webconsole): isolate launch pending state`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `launchInFlight`, the browser-only pending guard used after a start request is submitted and before a durable session id is returned.
+- `app.js` used that flag to suppress duplicate new-session starts, render pending button/input styling, clear pending state when a durable session is adopted, and protect stale start completion paths.
+- Durable session, message, queue, provider, and runtime facts still come from the session store and REST detail APIs; launch pending state is only local browser request coordination before a durable session exists.
+
+Impact:
+
+- A browser-only start-request guard remained mixed with durable selected-session, message-window, and session-detail facts after adjacent render-state isolation work had moved similar transient state into view-local stores.
+- Future launch or session-selection changes could mistake this pending guard for durable agent/session state, weakening the WebConsole boundary that UI state must project local file facts rather than become a second authority.
+
+Changes:
+
+- Added `launchViewState` with `isLaunchInFlight()` and `setLaunchInFlight()` helpers.
+- Removed `launchInFlight` from the main `state` object.
+- Updated duplicate-start suppression, pending button/input styling, durable-session adoption cleanup, reset-session cleanup, start success cleanup, and start error cleanup to use the helper path.
+- Updated existing stale launch regressions to use the helper path instead of mutating `state`.
+- Added a frontend Node harness regression proving launch pending state is not stored on `state`, duplicate start submission is suppressed while pending, pending controls render correctly, and durable-session adoption clears the pending guard.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "launch pending guard"`: failed before the fix because `setLaunchInFlight` was undefined.
+- `rg -n "state\\.launchInFlight" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs`: passed with no matches after the fix.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "launch pending guard"`: passed, 85/85 tests.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 85/85 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed after updating the embedded asset smoke assertion to the new helper path.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-414
 
