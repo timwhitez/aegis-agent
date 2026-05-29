@@ -59,9 +59,7 @@ const state = {
   loadingEarlier: false,
   loadedAllEarlierMessages: false,
   messageGapAnchorId: '',
-  preserveScrollAfterRender: null,
-  goalEnabled: false,
-  planModeEnabled: false
+  preserveScrollAfterRender: null
 };
 
 const renderState = {
@@ -126,7 +124,8 @@ const composerViewState = {
 };
 
 const composerControlViewState = {
-  nextSendInterrupt: false
+  nextSendInterrupt: false,
+  mode: ''
 };
 
 const pageLifecycleViewState = {
@@ -161,6 +160,22 @@ function isNextSendInterruptArmed() {
 
 function setNextSendInterruptArmed(armed) {
   composerControlViewState.nextSendInterrupt = Boolean(armed);
+}
+
+function composerMode() {
+  return composerControlViewState.mode || '';
+}
+
+function isGoalComposerEnabled() {
+  return composerMode() === 'goal';
+}
+
+function isPlanModeComposerEnabled() {
+  return composerMode() === 'plan';
+}
+
+function setComposerMode(mode) {
+  composerControlViewState.mode = mode === 'goal' || mode === 'plan' ? mode : '';
 }
 
 function isPageVisibilityHidden() {
@@ -1134,7 +1149,7 @@ async function sendMessage() {
           return;
         }
         if (planDraft) {
-          state.planModeEnabled = false;
+          setComposerMode(null);
         }
         showToast(planDraft ? 'Plan Mode started.' : 'Session continued.', 'success');
       }
@@ -1195,8 +1210,7 @@ async function sendMessage() {
       if (state.sessionId !== launchClientSessionID || state.sessionBacked) {
         return;
       }
-      state.goalEnabled = false;
-      state.planModeEnabled = false;
+      setComposerMode(null);
       adoptSession(resp.session_id, true);
       state.launchInFlight = false;
       setGenerating(true, {
@@ -1430,8 +1444,7 @@ function resetChatSession() {
   state.selectedQueueJobId = '';
   state.selectedQueueJobDetail = null;
   clearPlanInputSelections();
-  state.goalEnabled = false;
-  state.planModeEnabled = false;
+  setComposerMode(null);
   state.hasMoreMessages = false;
   state.oldestMessageId = '';
   state.loadingEarlier = false;
@@ -1533,7 +1546,7 @@ function chatInputPlaceholder() {
   if (planMode?.status === 'awaiting_approval') {
     return 'Ask for changes to the submitted plan...';
   }
-  if (state.planModeEnabled) {
+  if (isPlanModeComposerEnabled()) {
     return 'Describe the objective to plan before execution...';
   }
   return 'Ask anything...';
@@ -1551,7 +1564,7 @@ function inputActionLabel() {
   if (planMode?.status === 'awaiting_user_input') {
     return 'Plan Mode is waiting for your answer in the Plan inspector.';
   }
-  if (state.planModeEnabled) {
+  if (isPlanModeComposerEnabled()) {
     return 'Plan Mode enabled: next send starts a planning gate before execution.';
   }
   if (state.isGenerating && hasDurableSession()) {
@@ -1585,7 +1598,7 @@ function toggleGoalMode() {
   if (!canShowGoalComposer()) {
     return;
   }
-  setComposerMode(state.goalEnabled ? null : 'goal');
+  setComposerMode(isGoalComposerEnabled() ? null : 'goal');
   renderGoalComposer();
   updateDynamicLayoutMetrics();
 }
@@ -1594,25 +1607,18 @@ function togglePlanMode() {
   if (!canShowPlanComposer()) {
     return;
   }
-  setComposerMode(state.planModeEnabled ? null : 'plan');
+  setComposerMode(isPlanModeComposerEnabled() ? null : 'plan');
   renderGoalComposer();
   updateDynamicLayoutMetrics();
 }
 
-function setComposerMode(mode) {
-  state.goalEnabled = mode === 'goal';
-  state.planModeEnabled = mode === 'plan';
-}
-
 function normalizeComposerMode(goalVisible, planVisible) {
-  if (state.goalEnabled && state.planModeEnabled) {
-    setComposerMode(goalVisible ? 'goal' : 'plan');
+  const mode = composerMode();
+  if (mode === 'goal' && !goalVisible) {
+    setComposerMode(null);
   }
-  if (state.goalEnabled && !goalVisible) {
-    state.goalEnabled = false;
-  }
-  if (state.planModeEnabled && !planVisible) {
-    state.planModeEnabled = false;
+  if (mode === 'plan' && !planVisible) {
+    setComposerMode(null);
   }
 }
 
@@ -1624,11 +1630,11 @@ function renderGoalComposer() {
   const planVisible = canShowPlanComposer();
   normalizeComposerMode(goalVisible, planVisible);
   nodes.goalToggleBtn.hidden = !goalVisible;
-  nodes.goalToggleBtn.classList.toggle('is-active', state.goalEnabled && goalVisible);
-  nodes.goalToggleBtn.setAttribute('aria-pressed', state.goalEnabled && goalVisible ? 'true' : 'false');
+  nodes.goalToggleBtn.classList.toggle('is-active', isGoalComposerEnabled() && goalVisible);
+  nodes.goalToggleBtn.setAttribute('aria-pressed', isGoalComposerEnabled() && goalVisible ? 'true' : 'false');
   nodes.planToggleBtn.hidden = !planVisible;
-  nodes.planToggleBtn.classList.toggle('is-active', state.planModeEnabled && planVisible);
-  nodes.planToggleBtn.setAttribute('aria-pressed', state.planModeEnabled && planVisible ? 'true' : 'false');
+  nodes.planToggleBtn.classList.toggle('is-active', isPlanModeComposerEnabled() && planVisible);
+  nodes.planToggleBtn.setAttribute('aria-pressed', isPlanModeComposerEnabled() && planVisible ? 'true' : 'false');
   if (nodes.goalComposerPanel) {
     nodes.goalComposerPanel.hidden = true;
     nodes.goalComposerPanel.innerHTML = '';
@@ -1636,7 +1642,7 @@ function renderGoalComposer() {
 }
 
 function collectGoalDraft(promptText) {
-  if (!state.goalEnabled) {
+  if (!isGoalComposerEnabled()) {
     return null;
   }
   const objective = String(promptText || '').trim();
@@ -1651,7 +1657,7 @@ function collectGoalDraft(promptText) {
 }
 
 function collectPlanModeDraft(promptText) {
-  if (!state.planModeEnabled) {
+  if (!isPlanModeComposerEnabled()) {
     return null;
   }
   const objective = String(promptText || '').trim();

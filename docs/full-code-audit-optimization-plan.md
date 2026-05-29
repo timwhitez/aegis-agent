@@ -8526,7 +8526,45 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-275 and FCA-20260529-122. Those slices fixed stale running-session steer completion side effects and isolated composer empty/nonempty render throttling; this residual issue was only the `nextSendInterrupt` intent bit that `sendMessage()`, `toggleInterruptArm()`, `updateUI()`, `chatInputPlaceholder()`, `inputActionLabel()`, and `renderPendingStageCard()` read through the main `state`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move the intent bit into a tiny `composerControlViewState`, expose helper reads/writes for the app and renderer, and preserve the `interrupt: true` steer payload, interrupt-armed label, placeholder, button classes, and success-path cleanup without changing backend steer, session, queue, provider, Goal, or Plan Mode facts.
 
+### Review 397
+
+- Confirmed FCA-20260529-125 against `spec/17-web-console.md`'s Goal / Plan Mode composer controls, `spec/11-spec-audit-and-traceability.md`'s Goal and Plan Mode source-of-truth boundaries, and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: Goal and Plan Mode composer toggle intent is browser submit intent, not durable `goal.json`, `planmode.json`, session metadata, message history, provider replay data, queue facts, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-120, FCA-20260529-122, and FCA-20260529-124. Those slices isolated pending Plan Mode input answers, composer empty-state throttling, and interrupt steer intent; this residual issue was the mutually exclusive `goalEnabled` / `planModeEnabled` composer-mode bits that `sendMessage()`, `toggleGoalMode()`, `togglePlanMode()`, `renderGoalComposer()`, `collectGoalDraft()`, `collectPlanModeDraft()`, `chatInputPlaceholder()`, and `inputActionLabel()` read through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: replace the two main-state booleans with a tiny `composerControlViewState.mode`, expose helper reads/writes for Goal and Plan Mode composer intent, and preserve mutually exclusive toggle rendering plus the `goal` and `planMode` start/continue payloads without changing backend Goal, Plan Mode, session, queue, provider, or runtime facts.
+
 ## Update Log
+
+### FCA-20260529-125
+
+Slice: `fix(webconsole): isolate composer mode state`
+
+Finding:
+
+- The WebConsole's main `state` object still stored `goalEnabled` and `planModeEnabled`, two booleans used only by the Session composer to decide whether the next start/continue submit should include a Goal draft or a Plan Mode draft.
+- These flags are browser submit intent. They are not durable `goal.json`, `planmode.json`, session metadata, message history, provider replay data, queue/child state, or WebConsole file-fact authority.
+- Source evidence showed `sendMessage()`, `toggleGoalMode()`, `togglePlanMode()`, `renderGoalComposer()`, `collectGoalDraft()`, `collectPlanModeDraft()`, `chatInputPlaceholder()`, and `inputActionLabel()` reading or mutating `state.goalEnabled` / `state.planModeEnabled`, coupling transient composer intent to the same state object that carries selected session, history, queue, and message facts.
+
+Changes:
+
+- Added `composerControlViewState.mode` with `composerMode()`, `isGoalComposerEnabled()`, `isPlanModeComposerEnabled()`, and `setComposerMode()` helpers.
+- Removed `goalEnabled` and `planModeEnabled` from the main `state` object and updated composer toggles, mode normalization, button rendering, draft collection, placeholder/action-label logic, session reset, and successful start/continue cleanup to use the helper path.
+- Preserved Goal / Plan Mode submit semantics: Goal mode still posts a `goal` draft with `enabled`, `mode`, and `objective`; Plan Mode still posts a `planMode` draft with `enabled` and `objective`.
+- Added a frontend regression proving `goalEnabled` and `planModeEnabled` are absent from `state`, Goal and Plan Mode start payloads are unchanged, and composer mode clears after successful session start.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this composer-mode-local slice and current resource sizes.
+
+Validation:
+
+- `node --test --test-name-pattern "composer Goal and Plan Mode toggles are isolated" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 78/78 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-124
 

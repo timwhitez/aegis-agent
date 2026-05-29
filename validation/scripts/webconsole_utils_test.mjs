@@ -823,6 +823,63 @@ test('composer interrupt steer intent is isolated from durable app state', async
   assert.equal(afterResolve.inputLabel, 'Steer running session: next send queues guidance into the current run.');
 });
 
+test('composer Goal and Plan Mode toggles are isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const goalSend = vm.runInContext(`
+    selectedWorkspaceWorkdir = function() { return ''; };
+    state.sessionId = '0xA11CE0';
+    state.sessionBacked = false;
+    state.isGenerating = false;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    state.sessionDetail = null;
+    setComposerMode('goal');
+    nodes.chatInput.value = 'ship the full audit goal';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/start');
+  assert.deepEqual(sameRealm(appContext.pendingRequests[0].payload.payload.goal), {
+    enabled: true,
+    mode: 'goal',
+    objective: 'ship the full audit goal'
+  });
+  assert.equal(vm.runInContext(`Object.prototype.hasOwnProperty.call(state, 'goalEnabled')`, appContext), false);
+  assert.equal(vm.runInContext(`Object.prototype.hasOwnProperty.call(state, 'planModeEnabled')`, appContext), false);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_goal_start', status: 'accepted' });
+  await goalSend;
+  assert.equal(vm.runInContext(`composerMode()`, appContext), '');
+
+  const planSend = vm.runInContext(`
+    state.sessionId = '0xB22CE0';
+    state.sessionBacked = false;
+    state.isGenerating = false;
+    state.launchInFlight = false;
+    state.liveActivity = { title: 'Ready', copy: '', tone: 'neutral' };
+    state.sessionDetail = null;
+    setComposerMode('plan');
+    nodes.chatInput.value = 'plan before changing files';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.equal(appContext.pendingRequests[1].url, '/api/sessions/start');
+  assert.deepEqual(sameRealm(appContext.pendingRequests[1].payload.payload.planMode), {
+    enabled: true,
+    objective: 'plan before changing files'
+  });
+  assert.equal(vm.runInContext(`Object.prototype.hasOwnProperty.call(state, 'goalEnabled')`, appContext), false);
+  assert.equal(vm.runInContext(`Object.prototype.hasOwnProperty.call(state, 'planModeEnabled')`, appContext), false);
+
+  appContext.pendingRequests[1].resolve({ session_id: 'session_plan_start', status: 'accepted' });
+  await planSend;
+  assert.equal(vm.runInContext(`composerMode()`, appContext), '');
+});
+
 test('plan input selections are isolated from durable app state', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);
