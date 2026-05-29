@@ -5611,7 +5611,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "queueJobViewState") || !strings.Contains(jsBody, "setSelectedQueueJob") || !strings.Contains(sessionBody, "selectedQueueJobId()") {
 		t.Fatalf("expected selected queue job inspector state to stay out of durable app state, got app.js body: %s", jsBody)
 	}
-	if !strings.Contains(jsBody, "overviewErrorMessage") || !strings.Contains(jsBody, "state.overviewError = message") || !strings.Contains(jsBody, "showToast(message, 'error')") {
+	if !strings.Contains(jsBody, "overviewErrorMessage") || !strings.Contains(jsBody, "setOverviewError(message)") || !strings.Contains(jsBody, "showToast(message, 'error')") || strings.Contains(jsBody, "state.overviewError") {
 		t.Fatalf("expected initial overview failures to surface backend API errors, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "async function refreshCurrentSession(options = {})") || !strings.Contains(jsBody, "if (options.surfaceError)") || !strings.Contains(jsBody, "showSessionLoadError(err, { toast: options.toastError !== false })") || !strings.Contains(jsBody, "refreshCurrentSession({ surfaceError: true })") {
@@ -5644,7 +5644,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(sessionBody, "Click to open queue job") || !strings.Contains(sessionBody, "data-open-job") {
 		t.Fatalf("expected orphan background jobs to open queue jobs instead of child sessions, got session-view.js body: %s", sessionBody)
 	}
-	if !strings.Contains(sessionBody, "state.overviewError") || !strings.Contains(sessionBody, "No durable sessions yet.") {
+	if !strings.Contains(sessionBody, "currentOverviewError()") || !strings.Contains(sessionBody, "No durable sessions yet.") {
 		t.Fatalf("expected session rail to distinguish overview load errors from an empty session list, got session-view.js body: %s", sessionBody)
 	}
 	if !strings.Contains(sessionBody, "collectShellRedirectPaths(parsed?.command)") {

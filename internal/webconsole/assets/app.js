@@ -30,7 +30,6 @@ const state = {
   sessionBacked: false,
   sessionDetail: null,
   overview: null,
-  overviewError: '',
   historyData: null,
   historyPage: 1,
   historyPageSize: 8,
@@ -66,7 +65,8 @@ const skillsViewState = {
 const overviewViewState = {
   requestSeq: 0,
   refreshing: false,
-  needsRefresh: false
+  needsRefresh: false,
+  error: ''
 };
 
 const historyViewState = {
@@ -294,6 +294,14 @@ function setPreserveScrollAfterRenderHeight(height) {
 function resetMessagePagingRenderState() {
   setLoadingEarlierMessages(false);
   setPreserveScrollAfterRenderHeight(null);
+}
+
+function currentOverviewError() {
+  return overviewViewState.error || '';
+}
+
+function setOverviewError(message) {
+  overviewViewState.error = String(message || '');
 }
 
 function syncPageVisibilityHidden() {
@@ -2392,7 +2400,7 @@ async function refreshOverview() {
       return;
     }
     state.overview = overview;
-    state.overviewError = '';
+    setOverviewError('');
     if (state.currentView === 'chat') {
       renderCurrentSession();
     }
@@ -2403,7 +2411,7 @@ async function refreshOverview() {
     console.error('overview error', err);
     if (!state.overview) {
       const message = overviewErrorMessage(err);
-      state.overviewError = message;
+      setOverviewError(message);
       if (state.currentView === 'chat') {
         showToast(message, 'error');
         renderCurrentSession();

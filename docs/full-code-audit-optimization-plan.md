@@ -8640,7 +8640,65 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-115 and FCA-20260529-416. FCA-20260529-115 moved the earlier-message page request sequence out of `state`; FCA-20260529-416 moved the selected-session generating affordance out of `state`; this residual issue was the load-earlier disabled/loading state and prepend scroll restoration value still flowing through the main `state` object.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: extend `messagePagingViewState` for in-flight/render scroll state, keep durable message-window facts such as `hasMoreMessages`, `oldestMessageId`, `loadedAllEarlierMessages`, and `messageGapAnchorId` on `state`, and preserve stale page suppression plus scroll restoration.
 
+### Review 416
+
+- Confirmed FCA-20260529-418 against `spec/17-web-console.md`'s Session rail and local Web-first fact-source requirements: an initial `/api/overview` load error is browser-local display copy for the rail and toast, not a durable overview snapshot, session-store fact, queue fact, provider fact, or runtime state.
+- Confirmed this is distinct from FCA-20260527-242 and FCA-20260529-113 / FCA-20260529-398. FCA-20260527-242 added overview error surfacing so failed initial loads did not look like an empty session list; FCA-20260529-113 moved Overview request sequencing into `overviewViewState`; FCA-20260529-398 moved Overview in-flight / queued-refresh flags into `overviewViewState`. This residual issue was the error copy itself still flowing through the main `state` object.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: keep the durable `/api/overview` payload on `state.overview`, move the display-only error copy into `overviewViewState`, and preserve quiet later polling failures when a previous overview snapshot exists.
+
 ## Update Log
+
+### FCA-20260529-418
+
+Slice: `fix(webconsole): isolate overview error state`
+
+Finding:
+
+- `refreshOverview()` still wrote initial overview load failures to `state.overviewError`.
+- `session-view.js` read `state.overviewError` to distinguish an initial `/api/overview` failure from a genuinely empty Session rail.
+- The error string is browser-local display state derived from a failed REST request; the durable overview payload remains `state.overview`, and session / queue facts still come from the backend API and local stores.
+
+Impact:
+
+- A browser-only rail error message remained mixed with durable overview payload and selected-session facts after adjacent Overview request sequencing and queued-refresh state had already moved into `overviewViewState`.
+- Future frontend work could treat an API error string as a durable overview fact, weakening the WebConsole boundary that it only projects runtime/session/queue/file facts.
+
+Changes:
+
+- Extended `overviewViewState` with an `error` field and helper functions `currentOverviewError()` / `setOverviewError()`.
+- Removed `overviewError` from the main `state` object.
+- Updated `refreshOverview()` to clear or set the helper-backed error while preserving the existing rule that later polling failures stay quiet when a previous overview snapshot is available.
+- Updated `renderSessionRail()` to read the helper-backed error while preserving the empty-session copy when no error exists.
+- Added a frontend Node harness regression proving overview error copy is not stored on `state`, still renders after an initial load failure, and clears after a successful overview refresh.
+- Updated the embedded asset smoke test to reject `state.overviewError` in served `app.js`.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "overview load error view state" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `currentOverviewError()` did not exist and the production path still depended on main `state`.
+- `node --test --test-name-pattern "overview load error view state|refreshOverview queues" validation/scripts/webconsole_utils_test.mjs`: passed after the fix.
+- `rg -n "state\\.overviewError|overviewError|currentOverviewError|setOverviewError" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs internal/webconsole/service_test.go`: passed with only helper usage and service smoke negative assertions.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 88/88 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed after adding the embedded asset smoke guard for overview error state.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-417
 

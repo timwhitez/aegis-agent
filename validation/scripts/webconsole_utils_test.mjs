@@ -119,6 +119,9 @@ vm.runInContext(`
   function isStoppingSession(sessionID) {
     return stopActionViewState.sessionIds.has(sessionID);
   }
+  function currentOverviewError() {
+    return '';
+  }
   function isLoadingEarlierMessages() {
     return messagePagingViewState.loadingEarlier;
   }
@@ -3181,6 +3184,61 @@ test('refreshOverview queues the latest refresh and ignores stale in-flight over
     stateHasNeedsOverviewRefresh: false,
     refreshing: false,
     needsRefresh: false
+  });
+});
+
+test('overview load error view state is isolated from durable app state', async () => {
+  const appContext = createAppHarnessContext();
+  const renderCalls = vm.runInContext(`
+    const renderCalls = [];
+    state.currentView = 'chat';
+    renderCurrentSession = () => {
+      renderCalls.push({
+        overviewError: currentOverviewError(),
+        overviewPresent: Boolean(state.overview)
+      });
+    };
+    renderCalls;
+  `, appContext);
+
+  const firstRefresh = vm.runInContext(`refreshOverview()`, appContext);
+  assert.equal(appContext.pendingRequests.length, 1);
+  appContext.pendingRequests[0].reject(new Error('overview store unavailable'));
+  await firstRefresh;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasOverviewError: Object.prototype.hasOwnProperty.call(state, 'overviewError'),
+    overviewError: currentOverviewError(),
+    overviewPresent: Boolean(state.overview),
+    refreshing: overviewViewState.refreshing,
+    needsRefresh: overviewViewState.needsRefresh
+  })`, appContext)), {
+    stateHasOverviewError: false,
+    overviewError: 'overview store unavailable',
+    overviewPresent: false,
+    refreshing: false,
+    needsRefresh: false
+  });
+  assert.deepEqual(sameRealm(renderCalls), [
+    { overviewError: 'overview store unavailable', overviewPresent: false }
+  ]);
+
+  const secondRefresh = vm.runInContext(`refreshOverview()`, appContext);
+  assert.equal(appContext.pendingRequests.length, 2);
+  appContext.pendingRequests[1].resolve({
+    recent_sessions: [{ id: 'session_after_error' }],
+    queue_counters: { queued: 0 }
+  });
+  await secondRefresh;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasOverviewError: Object.prototype.hasOwnProperty.call(state, 'overviewError'),
+    overviewError: currentOverviewError(),
+    overviewIDs: maybeArray(state.overview?.recent_sessions).map((item) => item.id)
+  })`, appContext)), {
+    stateHasOverviewError: false,
+    overviewError: '',
+    overviewIDs: ['session_after_error']
   });
 });
 

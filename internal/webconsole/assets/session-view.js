@@ -1590,7 +1590,7 @@ function renderActivityFloat() {
 
 function renderSessionRail() {
   const currentID = state.sessionBacked ? state.sessionId : '';
-  const overviewError = state.overviewError || '';
+  const overviewError = currentOverviewError();
   const recent = maybeArray(state.overview?.recent_sessions);
   const pinned = state.sessionDetail?.metadata
     ? [sessionSummaryFromDetail(state.sessionDetail)]
