@@ -32,7 +32,6 @@ const state = {
   historyData: null,
   historyPage: 1,
   historyPageSize: 8,
-  inspectorTab: 'tasks',
   skills: [],
   fileTree: [],
   workspacePath: '',
@@ -93,6 +92,10 @@ const sessionViewState = {
 const queueJobViewState = {
   selectedJobId: '',
   selectedJobDetail: null
+};
+
+const inspectorViewState = {
+  tab: 'tasks'
 };
 
 const historyExpansionViewState = {
@@ -231,6 +234,14 @@ function setSelectedQueueJob(id, detail = null) {
 
 function setSelectedQueueJobDetail(detail) {
   queueJobViewState.selectedJobDetail = detail || null;
+}
+
+function activeInspectorTab() {
+  return inspectorViewState.tab || 'tasks';
+}
+
+function setInspectorTab(tab) {
+  inspectorViewState.tab = String(tab || 'tasks');
 }
 
 function createEmptyChatRenderCache() {
@@ -825,7 +836,7 @@ function setupEventListeners() {
 
     const inspectorTab = event.target.closest('[data-inspector-tab], [data-focus-inspector-tab]');
     if (inspectorTab) {
-      state.inspectorTab = inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks';
+      setInspectorTab(inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks');
       renderCurrentSession();
       return;
     }
@@ -833,7 +844,7 @@ function setupEventListeners() {
     const queueJobButton = event.target.closest('[data-open-job]');
     if (queueJobButton) {
       setSelectedQueueJob(queueJobButton.getAttribute('data-open-job') || '');
-      state.inspectorTab = 'agents';
+      setInspectorTab('agents');
       await refreshSelectedQueueJobDetail();
       renderCurrentSession();
       return;

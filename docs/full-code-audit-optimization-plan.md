@@ -8556,6 +8556,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-269, FCA-20260528-324, and FCA-20260529-402. Those slices fixed stale async selected job responses, stale selected-job enrichment during a queued session refresh, and session detail refresh flags; this residual issue was only the selected job id/detail projection still living on the main `state` object and being read by `app.js` and `session-view.js`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move selected queue job id/detail into a tiny `queueJobViewState`, expose helper reads/writes, preserve selected job rendering, stale async detail suppression, active-descendant polling, session reset/open cleanup, and backend queue APIs unchanged.
 
+### Review 402
+
+- Confirmed FCA-20260529-404 against `spec/17-web-console.md`'s current-session inspector tab surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: the selected inspector tab is browser view selection state, not durable session state, session-store facts, queue facts, provider replay data, runtime state, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260529-403 and the earlier History / floating panel / Plan input view-state slices. Those slices moved queue job inspector selection, History row expansion, floating tracker preferences, and pending Plan Mode input selections; this residual issue was only the `inspectorTab` string that tab clicks, focus-to-inspector actions, queue job open actions, and `renderInspectorPanel()` still read or wrote through the main `state` object.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` and `internal/webconsole/assets/session-view.js`: move inspector tab selection into a tiny `inspectorViewState`, expose helper reads/writes shared by app and renderer, preserve tab switching, selected queue job focus to Background, invalid-tab fallback to Tasks, and backend/session/queue facts unchanged.
+
 ## Update Log
 
 ### FCA-20260529-126
@@ -8624,6 +8630,46 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260529-404
+
+Slice: `fix(webconsole): isolate inspector tab state`
+
+Finding:
+
+- The WebConsole main `state` object still stored `inspectorTab`, which is used only to choose the currently visible right-side current-session inspector tab.
+- This tab selection is browser view state. It is not durable session state, session-store data, message history, queue facts, provider replay data, runtime state, or WebConsole file-fact authority.
+- This contradicted the current P1 Render State Isolation plan after adjacent Background inspector selection and other view-local preferences had already moved into local view-state objects.
+
+Changes:
+
+- Added `inspectorViewState` to own the selected inspector tab, with helper reads/writes shared by `app.js` and `session-view.js`.
+- Removed `inspectorTab` from the main `state` object.
+- Preserved ordinary inspector tab switching, selected queue job focus to the Background tab, invalid-tab fallback to Tasks, and current-session rendering behavior.
+- Added a focused frontend renderer regression proving inspector tab selection is absent from durable app state while timeline tab rendering and invalid-tab fallback continue to work.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this inspector-tab-local slice and refreshed the frontend asset line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "inspector tab selection is isolated" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 80/80 tests.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `rg -n "state\\.inspectorTab|inspectorTab|inspectorViewState|activeInspectorTab|setInspectorTab" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs docs/webconsole-frontend-optimization-plan.md`: passed; production asset matches are helper-based and no `state.inspectorTab` references remain.
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.

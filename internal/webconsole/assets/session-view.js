@@ -1641,7 +1641,8 @@ function renderInspectorPanel() {
     ['agents', 'Background'],
     ['timeline', 'Timeline']
   ];
-  const active = tabs.some(([key]) => key === state.inspectorTab) ? state.inspectorTab : 'tasks';
+  const selectedTab = activeInspectorTab();
+  const active = tabs.some(([key]) => key === selectedTab) ? selectedTab : 'tasks';
   const panel = active === 'summary'
     ? renderSummaryPanel(detail)
     : active === 'goal'

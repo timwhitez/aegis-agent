@@ -59,6 +59,7 @@ vm.runInContext(utilsSource, context, { filename: 'utils.js' });
 vm.runInContext(`
   const state = {};
   const queueJobViewState = { selectedJobId: '', selectedJobDetail: null };
+  const inspectorViewState = { tab: 'tasks' };
   const stopActionViewState = { sessionIds: new Set() };
   function selectedQueueJobId() {
     return queueJobViewState.selectedJobId || '';
@@ -69,6 +70,12 @@ vm.runInContext(`
   function setSelectedQueueJob(id, detail = null) {
     queueJobViewState.selectedJobId = String(id || '');
     queueJobViewState.selectedJobDetail = detail || null;
+  }
+  function activeInspectorTab() {
+    return inspectorViewState.tab || 'tasks';
+  }
+  function setInspectorTab(tab) {
+    inspectorViewState.tab = String(tab || 'tasks');
   }
   function agentLabel(name, role) {
     if (name && role) return name + ' · ' + role;
@@ -1703,6 +1710,53 @@ test('selected queue job detail from another parent does not keep chat polling a
   });
 });
 
+test('inspector tab selection is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    state.sessionId = 'session_inspector_tab';
+    state.sessionBacked = true;
+    setInspectorTab('timeline');
+    state.sessionDetail = {
+      metadata: { id: 'session_inspector_tab' },
+      state: { status: 'running' },
+      timeline: [
+        { kind: 'event', event_type: 'session.started', event_id: 'evt_inspector', time: '2026-05-29T00:00:00Z' }
+      ]
+    };
+    renderTimelineItem = function renderTimelineItem(item) {
+      return '<span data-event="' + item.event_id + '">' + item.event_id + '</span>';
+    };
+    const timelinePanel = renderInspectorPanel();
+    setInspectorTab('invalid');
+    state.sessionDetail = {
+      metadata: { id: 'session_inspector_tab' },
+      state: { status: 'running' },
+      task_board: {
+        todo: [{ content: 'Review tab state', status: 'pending' }],
+        tasks: []
+      }
+    };
+    const fallbackPanel = renderInspectorPanel();
+    return {
+      stateHasInspectorTab: Object.prototype.hasOwnProperty.call(state, 'inspectorTab'),
+      activeTab: activeInspectorTab(),
+      timelineActive: timelinePanel.includes('data-inspector-tab="timeline"') && timelinePanel.includes('inspector-tab active'),
+      timelineRendered: timelinePanel.includes('evt_inspector'),
+      fallbackRenderedTasks: fallbackPanel.includes('Review tab state')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    stateHasInspectorTab: false,
+    activeTab: 'invalid',
+    timelineActive: true,
+    timelineRendered: true,
+    fallbackRenderedTasks: true
+  });
+});
+
 test('flow lane renders the latest compact timeline events from newest-first detail timelines', () => {
   const previousIsCompactFlowEvent = context.isCompactFlowEvent;
   const previousRenderTimelineItem = context.renderTimelineItem;
@@ -1809,7 +1863,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
   const slowRefresh = vm.runInContext(`
     state.sessionId = 'session_slow_queue_a';
     state.sessionBacked = true;
-    state.inspectorTab = 'agents';
+    setInspectorTab('agents');
     setSelectedQueueJob('job_slow_queue_a');
     state.liveEvents = [];
     refreshCurrentSession();
@@ -1879,7 +1933,7 @@ test('refreshCurrentSession skips stale queue detail when a newer same-session r
   const firstRefresh = vm.runInContext(`
     state.sessionId = 'session_same_enrich';
     state.sessionBacked = true;
-    state.inspectorTab = 'agents';
+    setInspectorTab('agents');
     setSelectedQueueJob('job_same_enrich');
     state.liveEvents = [];
     refreshCurrentSession();
