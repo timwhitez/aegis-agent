@@ -2990,9 +2990,15 @@ func (s *Store) ensureBlockedQueueJobParentState(job QueueJob) error {
 	}
 	notificationSnapshot, err := s.SnapshotBackgroundNotification(job.ParentSessionID, job.ID)
 	if err != nil {
+		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+			return fmt.Errorf("snapshot background notification failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
 		return err
 	}
 	if err := s.ensureBackgroundNotification(job); err != nil {
+		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure background notification failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
 		return err
 	}
 	if err := s.ensureQueueLifecycleEvent(job, "queue.job.notified"); err != nil {
@@ -3005,6 +3011,12 @@ func (s *Store) ensureBlockedQueueJobParentState(job QueueJob) error {
 		return err
 	}
 	if err := s.ensureQueueLifecycleEvent(job, "queue.job.blocked"); err != nil {
+		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure queue blocked event failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
+		if restoreErr := s.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure queue blocked event failed with %v; restore background notification: %w", err, restoreErr)
+		}
 		return err
 	}
 	return nil
@@ -3023,9 +3035,15 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 	}
 	notificationSnapshot, err := s.SnapshotBackgroundNotification(job.ParentSessionID, job.ID)
 	if err != nil {
+		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+			return fmt.Errorf("snapshot background notification failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
 		return err
 	}
 	if err := s.ensureBackgroundNotification(job); err != nil {
+		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure background notification failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
 		return err
 	}
 	if err := s.ensureQueueLifecycleEvent(job, "queue.job.notified"); err != nil {
@@ -3042,6 +3060,9 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 			if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
 				return fmt.Errorf("ensure queue failed event failed with %v; restore parent coordination: %w", err, restoreErr)
 			}
+			if restoreErr := s.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
+				return fmt.Errorf("ensure queue failed event failed with %v; restore background notification: %w", err, restoreErr)
+			}
 			return err
 		}
 		return nil
@@ -3049,6 +3070,9 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 	if err := s.ensureQueueLifecycleEvent(job, "queue.job.completed"); err != nil {
 		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
 			return fmt.Errorf("ensure queue completed event failed with %v; restore parent coordination: %w", err, restoreErr)
+		}
+		if restoreErr := s.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
+			return fmt.Errorf("ensure queue completed event failed with %v; restore background notification: %w", err, restoreErr)
 		}
 		return err
 	}

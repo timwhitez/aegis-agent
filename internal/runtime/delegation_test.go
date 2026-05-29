@@ -741,6 +741,84 @@ func TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError(t *testing.T)
 	}
 }
 
+func TestRunnerProcessNextJobRollsBackNotificationWhenLifecycleEventFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{"type":"message","content":[{"type":"output_text","text":"Need more input."}]}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIKeyEnv:  "OPENAI_API_KEY",
+		BaseURL:    server.URL,
+		Model:      "gpt-5.4",
+		TimeoutSec: 30,
+		WireAPI:    "responses",
+	}
+	cfg.Session.Dir = t.TempDir()
+	cfg.Runtime.Isolation.RootDir = t.TempDir()
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		Mode:            session.ModeRun,
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	blockedNotification := session.NewBackgroundNotification(session.QueueJob{
+		ID:            job.ID,
+		Status:        session.QueueStatusBlocked,
+		SessionStatus: session.StatusAwaitingInput,
+		LastError:     "child session is resumable: awaiting_input",
+	})
+	if err := runner.store.EnsureBackgroundNotification(parentID, blockedNotification); err != nil {
+		t.Fatalf("prewrite blocked notification: %v", err)
+	}
+	runner.beforeQueueLifecycleEvent = func(job session.QueueJob, eventType string) {
+		if eventType == "queue.job.blocked" {
+			blockRuntimeEventsPath(t, runner.store, parentID)
+		}
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected parent queue lifecycle event append error, got job=%#v ok=%v err=%v", processed, ok, err)
+	}
+	if !ok || processed.ID != job.ID {
+		t.Fatalf("expected claimed job to be returned, got job=%#v ok=%v", processed, ok)
+	}
+	if processed.Status != session.QueueStatusBlocked ||
+		processed.SessionStatus != session.StatusAwaitingInput ||
+		processed.LastError != "child session is resumable: awaiting_input" {
+		t.Fatalf("expected lifecycle event failure not to rewrite queue result, got %#v", processed)
+	}
+	notifications, loadErr := runner.store.LoadBackgroundNotifications(parentID)
+	if loadErr != nil {
+		t.Fatalf("load notifications after failed lifecycle event: %v", loadErr)
+	}
+	if len(notifications) != 1 ||
+		notifications[0].Status != session.QueueStatusBlocked ||
+		notifications[0].SessionStatus != session.StatusAwaitingInput ||
+		notifications[0].LastError != "child session is resumable: awaiting_input" {
+		t.Fatalf("failed queue lifecycle event should roll back background notification, got %#v", notifications)
+	}
+}
+
 func TestRunnerProcessNextJobSkipsDuplicateTerminalLifecycleEvents(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
@@ -987,6 +1065,58 @@ func TestRunnerProcessNextJobReportsParentCoordinationError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parent-coordination.json") {
 		t.Fatalf("expected parent coordination path in error, got %v", err)
+	}
+}
+
+func TestRunnerProcessNextJobRollsBackNotificationWhenParentCoordinationFails(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "finish the queued task",
+		AgentName:       "batch",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	blockedNotification := session.NewBackgroundNotification(session.QueueJob{
+		ID:            job.ID,
+		Status:        session.QueueStatusBlocked,
+		SessionStatus: session.StatusAwaitingInput,
+		LastError:     "child session is resumable: awaiting_input",
+	})
+	if err := runner.store.EnsureBackgroundNotification(parentID, blockedNotification); err != nil {
+		t.Fatalf("prewrite blocked notification: %v", err)
+	}
+	coordinationPath := filepath.Join(runner.store.SessionDir(parentID), "parent-coordination.json")
+	if err := os.Remove(coordinationPath); err != nil {
+		t.Fatalf("remove parent coordination: %v", err)
+	}
+	if err := os.Mkdir(coordinationPath, 0o700); err != nil {
+		t.Fatalf("block parent coordination path: %v", err)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err == nil {
+		t.Fatalf("expected parent coordination error, got ok=%t job %#v", ok, processed)
+	}
+	if !strings.Contains(err.Error(), "parent-coordination.json") {
+		t.Fatalf("expected parent coordination path in error, got %v", err)
+	}
+	if err := os.Remove(coordinationPath); err != nil {
+		t.Fatalf("unblock parent coordination: %v", err)
+	}
+	notifications, loadErr := runner.store.LoadBackgroundNotifications(parentID)
+	if loadErr != nil {
+		t.Fatalf("load notifications after failed parent coordination: %v", loadErr)
+	}
+	if len(notifications) != 1 ||
+		notifications[0].Status != session.QueueStatusBlocked ||
+		notifications[0].SessionStatus != session.StatusAwaitingInput ||
+		notifications[0].LastError != "child session is resumable: awaiting_input" {
+		t.Fatalf("failed parent coordination should not refresh background notification, got %#v", notifications)
 	}
 }
 

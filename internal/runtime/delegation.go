@@ -529,29 +529,6 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		return job, true, nil
 	}
 	if job.ParentSessionID != "" {
-		notification := session.NewBackgroundNotification(job)
-		notificationSnapshot, snapshotErr := r.store.SnapshotBackgroundNotification(job.ParentSessionID, job.ID)
-		if snapshotErr != nil {
-			return job, true, snapshotErr
-		}
-		if err := retryQueuePersistence("append background notification for job "+job.ID, func() error {
-			return r.store.EnsureBackgroundNotification(job.ParentSessionID, notification)
-		}); err != nil {
-			return job, true, err
-		}
-		if err := retryQueuePersistence("append queue notified event for job "+job.ID, func() error {
-			return r.appendEvent(job.ParentSessionID, "queue.job.notified", "queue", map[string]any{
-				"job_id":     job.ID,
-				"session_id": job.SessionID,
-				"status":     job.Status,
-				"agent_role": job.AgentRole,
-			})
-		}); err != nil {
-			if restoreErr := r.store.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
-				return job, true, fmt.Errorf("append queue notified event for job %s failed with %v; restore background notification after failed queue notified event: %w", job.ID, err, restoreErr)
-			}
-			return job, true, err
-		}
 		var terminalCoordinationSnapshot session.ParentCoordinationSnapshot
 		var restoreTerminalCoordination bool
 		if isTerminalQueueStatus(job.Status) {
@@ -564,6 +541,44 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			if err := resolveParentQueueJob(r.store, job.ParentSessionID, job.ID, job.Status); err != nil {
 				return job, true, err
 			}
+		}
+		notification := session.NewBackgroundNotification(job)
+		notificationSnapshot, snapshotErr := r.store.SnapshotBackgroundNotification(job.ParentSessionID, job.ID)
+		if snapshotErr != nil {
+			if restoreTerminalCoordination {
+				if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, terminalCoordinationSnapshot); restoreErr != nil {
+					return job, true, fmt.Errorf("snapshot background notification for job %s failed with %v; restore parent coordination: %w", job.ID, snapshotErr, restoreErr)
+				}
+			}
+			return job, true, snapshotErr
+		}
+		if err := retryQueuePersistence("append background notification for job "+job.ID, func() error {
+			return r.store.EnsureBackgroundNotification(job.ParentSessionID, notification)
+		}); err != nil {
+			if restoreTerminalCoordination {
+				if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, terminalCoordinationSnapshot); restoreErr != nil {
+					return job, true, fmt.Errorf("append background notification for job %s failed with %v; restore parent coordination: %w", job.ID, err, restoreErr)
+				}
+			}
+			return job, true, err
+		}
+		if err := retryQueuePersistence("append queue notified event for job "+job.ID, func() error {
+			return r.appendEvent(job.ParentSessionID, "queue.job.notified", "queue", map[string]any{
+				"job_id":     job.ID,
+				"session_id": job.SessionID,
+				"status":     job.Status,
+				"agent_role": job.AgentRole,
+			})
+		}); err != nil {
+			if restoreTerminalCoordination {
+				if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, terminalCoordinationSnapshot); restoreErr != nil {
+					return job, true, fmt.Errorf("append queue notified event for job %s failed with %v; restore parent coordination after failed queue notified event: %w", job.ID, err, restoreErr)
+				}
+			}
+			if restoreErr := r.store.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
+				return job, true, fmt.Errorf("append queue notified event for job %s failed with %v; restore background notification after failed queue notified event: %w", job.ID, err, restoreErr)
+			}
+			return job, true, err
 		}
 		eventType := "queue.job.blocked"
 		if job.Status == session.QueueStatusCompleted {
@@ -587,6 +602,9 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 				if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, terminalCoordinationSnapshot); restoreErr != nil {
 					return job, true, fmt.Errorf("append queue lifecycle event %s for job %s failed with %v; restore parent coordination after failed queue lifecycle event: %w", eventType, job.ID, err, restoreErr)
 				}
+			}
+			if restoreErr := r.store.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
+				return job, true, fmt.Errorf("append queue lifecycle event %s for job %s failed with %v; restore background notification after failed queue lifecycle event: %w", eventType, job.ID, err, restoreErr)
 			}
 			return job, true, err
 		}

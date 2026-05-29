@@ -8982,7 +8982,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-474 and FCA-20260530-476. Those slices hardened copy-isolation source opens and shell workdir execution; this residual issue was the child/queue handoff layer silently dropping visible-output sync failures, while the linked queue repair path could also copy visible paths before the parent-side handoff check and then reclassify a failed handoff as completed because the child session itself completed.
 - Confirmed the minimal fix belongs across `internal/runtime/delegation.go`, `internal/session/store.go`, and `internal/runtime/parent_coordination.go`: return visible-output sync errors to the delegate/queue handoff caller, prevent queue repair from writing through destination symlink aliases, preserve explicit failed handoff terminal jobs even when the linked child session completed, and move parent coordination ids between terminal sets instead of allowing the same job/child to remain completed and failed.
 
+### Review 473
+
+- Confirmed FCA-20260530-478 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/14-multi-agent-and-isolation.md`, and `spec/18-durable-contract-and-completion.md`: parent queue repair/worker handoff facts are a transactional projection across `parent-coordination.json`, `control/background.jsonl`, and parent `events.jsonl`; a failed lifecycle event or parent fact write must not leave a newer notification or terminal coordination state without the required durable event.
+- Confirmed this is distinct from FCA-20260530-477. That slice made failed visible-output handoffs terminally failed and resolved completed/failed coordination conflicts; this residual issue was the parent-state materialization transaction itself. `ProcessNextJob` and `LoadJob` repair could update parent notification/coordination first, then return an error after `queue.job.blocked` / `queue.job.completed` / `queue.job.failed` or a later parent-state write failed, leaving stale or overly advanced parent facts.
+- Confirmed the minimal fix belongs in `internal/runtime/delegation.go` and `internal/session/store.go`: snapshot parent coordination before terminal transition, write/refresh notifications only after terminal coordination succeeds, and restore both parent coordination and background notification snapshots whenever notified/lifecycle event persistence or parent notification writes fail.
+
 ## Update Log
+
+### FCA-20260530-478
+
+Slice: `fix(queue): roll back parent handoff facts`
+
+Finding:
+
+- Queue worker and store repair paths materialize parent-visible queue state across three durable files: `parent-coordination.json`, `control/background.jsonl`, and parent `events.jsonl`.
+- `Runner.ProcessNextJob` refreshed parent `control/background.jsonl` before resolving terminal parent coordination. If `resolveParentQueueJob` failed, the worker returned an error but could leave a refreshed completed/failed notification in the parent background queue.
+- Both `Runner.ProcessNextJob` and `Store.ensureTerminalQueueJobParentState` / `ensureBlockedQueueJobParentState` restored background notifications when `queue.job.notified` failed, and restored parent coordination when terminal lifecycle events failed, but they did not restore the full sibling side effect set. A failed `queue.job.completed`, `queue.job.failed`, or `queue.job.blocked` append could leave the refreshed background notification behind; a failed background notification write after coordination repair could leave coordination advanced without a notification or lifecycle event.
+
+Impact:
+
+- Web/CLI/session-summary observers could see completed, failed, or blocked background notification facts even though the required queue lifecycle event was not durable.
+- Parent completion gates could see coordination as resolved while the parent notification/event materialization had failed, or see a refreshed notification while parent coordination remained unresolved after an error.
+- Recovery could then make contradictory decisions from partially updated parent facts instead of retrying a clean parent handoff repair.
+
+Changes:
+
+- In `ProcessNextJob`, terminal parent coordination is snapshotted and resolved before notification refresh. If snapshotting/writing the notification or appending `queue.job.notified` fails, terminal coordination is restored.
+- In `ProcessNextJob`, failures appending `queue.job.blocked`, `queue.job.completed`, or `queue.job.failed` restore the background notification snapshot, and terminal paths also restore parent coordination.
+- In session-store queue repair, notification snapshot/write failures after parent coordination changes now restore parent coordination.
+- In session-store blocked and terminal repair, lifecycle event append failures now restore both parent coordination and background notification snapshots.
+- Added focused regressions covering runtime parent-coordination failure rollback, runtime lifecycle-event notification rollback, store notification-write coordination rollback, store terminal lifecycle notification rollback, and store blocked lifecycle rollback.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestLoadJob(RollsBackParentCoordinationWhenNotificationWriteFails|RollsBackBackgroundNotificationWhenLifecycleEventFails|RollsBackBlockedParentStateWhenLifecycleEventFails|RollsBackParentCoordinationWhenLifecycleEventFails|RepairsBlockedParentNotificationAndEvent|RepairsMissingTerminalBackgroundNotification)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerProcessNextJob(RollsBackNotificationWhenParentCoordinationFails|RollsBackNotificationWhenLifecycleEventFails|ReportsParentCoordinationError|ReportsQueueLifecycleEventAppendError)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/session -run 'TestRunnerProcessNextJob(RollsBackNotificationWhenParentCoordinationFails|RollsBackNotificationWhenLifecycleEventFails|ReportsParentCoordinationError|ReportsQueueLifecycleEventAppendError|SkipsDuplicateTerminalLifecycleEvents|RollsBackClaimWhenClaimedEventFails|FailsWhenVisibleOutputCannotSync)|TestLoadJob(RollsBackParentCoordinationWhenNotificationWriteFails|RollsBackBackgroundNotificationWhenLifecycleEventFails|RollsBackBlockedParentStateWhenLifecycleEventFails|RollsBackParentCoordinationWhenLifecycleEventFails|RollsBackBackgroundNotificationWhenNotifiedEventFails|ReportsTerminalParentEventAppendError|ReportsTerminalParentNotificationAppendError|RepairsMissingTerminalBackgroundNotification|RepairsBlockedParentNotificationAndEvent)|TestReconcilePreservesFailedHandoffAfterCompletedChild' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
 
 ### FCA-20260530-477
 
