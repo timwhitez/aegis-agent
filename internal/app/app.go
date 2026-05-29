@@ -1666,7 +1666,7 @@ func doctorProviderConfigDetails(providerName string, providerCfg config.Provide
 		"retry_policy":           doctorRetryPolicyDetails(providerCfg),
 	}
 	if effectiveAPIProvider == "openai-compatible" {
-		storeValue, storeSource := doctorStoreDetails(providerName, providerCfg.Store)
+		storeValue, storeSource := doctorStoreDetails(effectiveAPIProvider, providerCfg.Store)
 		sendMetadataValue, sendMetadataSource := doctorSendMetadataDetails(providerCfg.SendMetadata)
 		details["store"] = storeValue
 		details["store_source"] = storeSource
@@ -1703,11 +1703,11 @@ func doctorRetryPolicyDetails(providerCfg config.Provider) map[string]any {
 	}
 }
 
-func doctorStoreDetails(providerName string, configured *bool) (bool, string) {
+func doctorStoreDetails(effectiveAPIProvider string, configured *bool) (bool, string) {
 	if configured != nil {
 		return *configured, "config"
 	}
-	if isOpenAIResponsesLikeProvider(providerName) {
+	if strings.TrimSpace(effectiveAPIProvider) == "openai-compatible" {
 		return false, "provider_default"
 	}
 	return false, "unset"
@@ -1718,15 +1718,6 @@ func doctorSendMetadataDetails(configured *bool) (bool, string) {
 		return *configured, "config"
 	}
 	return true, "provider_default"
-}
-
-func isOpenAIResponsesLikeProvider(name string) bool {
-	switch name {
-	case "openai", "openai-compatible":
-		return true
-	default:
-		return false
-	}
 }
 
 func hasDoctorFailure(checks []doctorCheck) bool {

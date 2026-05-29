@@ -1826,6 +1826,59 @@ func TestDoctorCommandJSONIncludesEffectiveOpenAICompatibleSettings(t *testing.T
 	}
 }
 
+func TestDoctorCommandJSONReportsCustomOpenAICompatibleStoreDefault(t *testing.T) {
+	fake := newFakeRunner()
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		cfg := config.Default()
+		cfg.DefaultProvider = "gateway"
+		cfg.Providers["gateway"] = config.Provider{
+			APIProvider: "openai-compatible",
+			APIKeyEnv:   "TEST_PRESENT_KEY",
+			BaseURL:     "http://gateway.example/v1",
+			Model:       "gateway-model",
+		}
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+	t.Setenv("TEST_PRESENT_KEY", "present")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"doctor", "--provider", "gateway", "--json", "--skip-probe"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	var providerCheck *doctorCheck
+	for i := range report.Checks {
+		if report.Checks[i].Name == "provider.config" {
+			providerCheck = &report.Checks[i]
+			break
+		}
+	}
+	if providerCheck == nil {
+		t.Fatalf("provider.config check missing: %#v", report.Checks)
+	}
+	if got := providerCheck.Details["effective_api_provider"]; got != "openai-compatible" {
+		t.Fatalf("expected effective_api_provider=openai-compatible, got %#v", got)
+	}
+	if got := providerCheck.Details["store"]; got != false {
+		t.Fatalf("expected custom openai-compatible provider to report store=false, got %#v", got)
+	}
+	if got := providerCheck.Details["store_source"]; got != "provider_default" {
+		t.Fatalf("expected custom openai-compatible provider store source to match runtime default, got %#v", got)
+	}
+	if got := providerCheck.Details["send_metadata"]; got != true {
+		t.Fatalf("expected send_metadata=true, got %#v", got)
+	}
+	if got := providerCheck.Details["send_metadata_source"]; got != "provider_default" {
+		t.Fatalf("expected send_metadata_source=provider_default, got %#v", got)
+	}
+}
+
 func TestTrustedExtensionStatusAppearsInDoctor(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {

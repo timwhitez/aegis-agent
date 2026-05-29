@@ -8688,7 +8688,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260522-007 and FCA-20260529-406. Those slices fixed durable run claiming and pending steer count preservation for `Continue` / `AutoContinue`; this residual issue was only the Ralph loop event writes still using best-effort `Runner.emit` after mutating state or before reporting exhaustion.
 - Confirmed the minimal fix belongs in `Runner.AutoContinue`: use checked event appends for `ralph_loop.exhausted`, `ralph_loop.triggered`, and `ralph_loop.completed`, and roll back the just-incremented `RalphLoopCount` if the triggered event cannot be persisted before re-entering `Continue`.
 
+### Review 424
+
+- Confirmed FCA-20260529-426 against `spec/02-cli-and-config.md`'s doctor requirement and `spec/03-provider-contracts.md`'s provider option traceability: `doctor` must explain the effective OpenAI-compatible `store` default the same way runtime provider-option resolution applies it.
+- Confirmed this is distinct from FCA-20260529-407 through FCA-20260529-410. Those slices fixed runtime provider-option merging and unsupported API provider validation for Start / Continue / Queue paths; this residual issue was only the CLI doctor projection reporting a custom `api_provider: openai-compatible` profile's `store=false` source as `unset` instead of `provider_default`.
+- Confirmed the minimal fix belongs in the app adapter's doctor report only: compute store default provenance from the effective API provider, not the profile name, while preserving configured `store` overrides and the existing `send_metadata` default reporting.
+
 ## Update Log
+
+### FCA-20260529-426
+
+Slice: `fix(doctor): report custom provider store default`
+
+Finding:
+
+- `doctorProviderConfigDetails` correctly detected that a custom provider profile with `api_provider: openai-compatible` used the OpenAI-compatible adapter family.
+- It then passed the profile name into `doctorStoreDetails`, whose default-source check only recognized literal provider names `openai` and `openai-compatible`.
+- As a result, `go-cli-agent doctor --json --provider <custom-openai-compatible> --skip-probe` reported `store:false` with `store_source:"unset"`, while runtime `providerOptionsFromConfig` / `resolvedProviderOptions` treat the same effective adapter family as `store:false` from provider default.
+
+Impact:
+
+- Operator diagnostics could disagree with the actual durable provider options that Start / Continue / Queue / probe paths use.
+- This weakened preflight traceability for custom OpenAI-compatible gateways because the doctor output implied the local-store contract was merely absent rather than deliberately defaulted to `store:false`.
+
+Changes:
+
+- Changed doctor store provenance calculation to use `effective_api_provider` instead of the provider profile name.
+- Removed the name-based OpenAI provider helper that could not recognize custom provider profiles.
+- Added a focused doctor JSON regression for a custom `api_provider: openai-compatible` profile with no explicit `store` override.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestDoctorCommandJSONReportsCustomOpenAICompatibleStoreDefault -count=1`: failed before the fix because `store_source` was `unset`.
+- `go test -timeout 120s ./internal/app -run TestDoctorCommandJSONReportsCustomOpenAICompatibleStoreDefault -count=1`: passed after the fix.
+- `gofmt -l internal/app/app.go internal/app/app_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorCommandJSON(ReportsCustomOpenAICompatibleStoreDefault|IncludesEffectiveOpenAICompatibleSettings)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestProviderOptionsFromConfigDefaultsStoreFalseForCustomOpenAICompatible|TestProbeDefaultsStoreFalseForCustomOpenAICompatible|TestRunnerStartPersistsProviderOptionsInSessionMetadata' -count=1`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-425
 
