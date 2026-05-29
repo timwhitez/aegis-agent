@@ -514,6 +514,75 @@ test('page visibility tracking is isolated from durable app state', () => {
   assert.equal(result.visible.runLoop, true);
 });
 
+test('live relay connection status is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    state.currentView = 'chat';
+    state.sessionId = 'session_connection_view';
+    state.sessionBacked = true;
+    state.overview = { sessions: [] };
+    state.sessionDetail = {
+      metadata: { id: 'session_connection_view' },
+      state: { status: 'awaiting_input' },
+      messages: []
+    };
+    nodes.chatInput.value = 'draft prompt';
+    setPageVisibilityHidden(false);
+
+    setLiveRelayConnected(false);
+    updateConnectionStatus();
+    updateUI();
+    const disconnected = {
+      connected: isLiveRelayConnected(),
+      connectionStatus: nodes.connectionStatus.innerText,
+      connectionDotClass: nodes.connectionDot.className,
+      inputOffline: nodes.inputContainer.classList.contains('is-offline'),
+      runLoop: shouldRunPollingLoop(),
+      interval: pollingIntervalForState(),
+      label: inputActionLabel()
+    };
+
+    setLiveRelayConnected(true);
+    updateConnectionStatus();
+    updateUI();
+    const connected = {
+      connected: isLiveRelayConnected(),
+      connectionStatus: nodes.connectionStatus.innerText,
+      connectionDotClass: nodes.connectionDot.className,
+      inputOffline: nodes.inputContainer.classList.contains('is-offline'),
+      runLoop: shouldRunPollingLoop(),
+      interval: pollingIntervalForState(),
+      label: inputActionLabel()
+    };
+
+    return {
+      stateHasIsConnected: Object.prototype.hasOwnProperty.call(state, 'isConnected'),
+      disconnected,
+      connected
+    };
+  })()`, appContext);
+
+  assert.equal(result.stateHasIsConnected, false);
+  assert.deepEqual(sameRealm(result.disconnected), {
+    connected: false,
+    connectionStatus: 'Disconnected',
+    connectionDotClass: 'dot',
+    inputOffline: true,
+    runLoop: true,
+    interval: 1600,
+    label: 'Live event relay reconnecting; REST session actions remain available.'
+  });
+  assert.deepEqual(sameRealm(result.connected), {
+    connected: true,
+    connectionStatus: 'Agent Connected',
+    connectionDotClass: 'dot online',
+    inputOffline: false,
+    runLoop: false,
+    interval: 5000,
+    label: 'Continue Awaiting input session: next send resumes this durable session.'
+  });
+});
+
 test('toast id counter is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
@@ -820,7 +889,7 @@ test('composer interrupt steer intent is isolated from durable app state', async
     state.sessionId = 'session_interrupt_steer';
     state.sessionBacked = true;
     state.isGenerating = true;
-    state.isConnected = true;
+    setLiveRelayConnected(true);
     setLiveActivity({ title: 'Running session', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_interrupt_steer' },
@@ -1733,7 +1802,7 @@ test('selected current-session queue job detail keeps chat polling active while 
   const result = vm.runInContext(`(() => {
     state.currentView = 'chat';
     setPageVisibilityHidden(false);
-    state.isConnected = true;
+    setLiveRelayConnected(true);
     state.isGenerating = false;
     state.sessionId = 'parent_polling';
     state.sessionBacked = true;
@@ -1775,7 +1844,7 @@ test('selected queue job detail from another parent does not keep chat polling a
   const result = vm.runInContext(`(() => {
     state.currentView = 'chat';
     setPageVisibilityHidden(false);
-    state.isConnected = true;
+    setLiveRelayConnected(true);
     state.isGenerating = false;
     state.sessionId = 'parent_current';
     state.sessionBacked = true;

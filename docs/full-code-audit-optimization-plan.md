@@ -8616,7 +8616,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-290 and related stale-launch slices. Those slices fixed stale async completion paths that could clear or mutate the wrong selected session; this residual issue was only the pending optimistic-message buffer still living on the main `state` object and being consumed by `session-view.js`.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: move the pending optimistic-message buffer into a tiny `optimisticMessagesViewState`, keep durable session detail and message paging facts on `state`, preserve pending message rendering, reset-on-session-switch behavior, and reconciliation against durable messages / steer requests.
 
+### Review 412
+
+- Confirmed FCA-20260529-414 against `spec/17-web-console.md`'s local Web-first operator surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: WebSocket live relay connection status is a browser-local transport/display fact, not a durable session, event, message, queue, provider, or runtime fact.
+- Confirmed this is distinct from FCA-20260529-412. That slice moved the capped WebSocket relay event buffer out of `state`; this residual issue was the boolean live relay connection state still driving connection copy, offline styling, fallback polling, interval selection, and visible-tab reconnect through the main `state` object.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: move the relay connection boolean into a tiny `connectionViewState`, keep durable session detail and message paging facts on `state`, and preserve existing polling / reconnect behavior.
+
 ## Update Log
+
+### FCA-20260529-414
+
+Slice: `fix(webconsole): isolate live relay connection state`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `isConnected`, the browser-only WebSocket live relay connection flag.
+- `app.js` used that flag for connection text, input offline styling, fallback polling, active polling interval selection, and visible-tab reconnect decisions.
+- Durable session, message, event, queue, and runtime facts still come from the session store and REST detail APIs; a browser WebSocket transport health flag is only a view/transport coordination detail.
+
+Impact:
+
+- Browser relay connectivity remained mixed with durable selected-session, message-window, and session-detail facts after adjacent render-state isolation work had moved similar transient state into view-local stores.
+- Future live-refresh or polling changes could mistake the relay transport flag for durable agent/session state, weakening the WebConsole boundary that UI state must project local file facts rather than become a second authority.
+
+Changes:
+
+- Added `connectionViewState` with `isLiveRelayConnected()` and `setLiveRelayConnected()` helpers.
+- Removed `isConnected` from the main `state` object.
+- Updated WebSocket open/close, visible-tab reconnect, connection display, offline styling, input helper copy, and polling interval logic to use the helper path.
+- Updated frontend regressions that need connected-state setup to use the helper path instead of mutating `state`.
+- Added a frontend Node harness regression proving live relay connection status is not stored on `state`, and that disconnected / connected UI copy, offline styling, fallback polling, and polling interval selection still work.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "live relay connection status"`: failed before the fix because `setLiveRelayConnected` was undefined.
+- `rg -n "state\\.isConnected" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs`: passed with no matches after the fix.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "live relay connection status"`: passed, 84/84 tests.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 84/84 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-413
 

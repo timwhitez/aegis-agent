@@ -27,7 +27,6 @@ const state = {
   currentView: 'chat',
   isGenerating: false,
   launchInFlight: false,
-  isConnected: false,
   meta: null,
   sessionId: nextEphemeralSessionId(),
   sessionBacked: false,
@@ -150,6 +149,10 @@ const pageLifecycleViewState = {
   visibilityHidden: false
 };
 
+const connectionViewState = {
+  liveRelayConnected: false
+};
+
 function currentLiveActivity() {
   return activityViewState.liveActivity || DEFAULT_LIVE_ACTIVITY;
 }
@@ -235,6 +238,14 @@ function isPageVisibilityHidden() {
 
 function setPageVisibilityHidden(hidden) {
   pageLifecycleViewState.visibilityHidden = Boolean(hidden);
+}
+
+function isLiveRelayConnected() {
+  return connectionViewState.liveRelayConnected;
+}
+
+function setLiveRelayConnected(connected) {
+  connectionViewState.liveRelayConnected = Boolean(connected);
 }
 
 function syncPageVisibilityHidden() {
@@ -489,7 +500,7 @@ function setupWebSocket() {
       ws.close();
       return;
     }
-    state.isConnected = true;
+    setLiveRelayConnected(true);
     runtimeHandles.wsReconnectAttempts = 0;
     // WS is currently a health/relay channel; keep REST polling only while a run needs snapshots.
     clearPendingRefreshes();
@@ -526,7 +537,7 @@ function setupWebSocket() {
     if (runtimeHandles.ws !== ws) {
       return;
     }
-    state.isConnected = false;
+    setLiveRelayConnected(false);
     runtimeHandles.ws = null;
     updateConnectionStatus();
     if (state.isGenerating) {
@@ -579,7 +590,7 @@ function setupVisibilityHandler() {
       return;
     }
     syncPollingForState();
-    if (!state.isConnected) {
+    if (!isLiveRelayConnected()) {
       // Tab visible again: restart fallback polling and try a faster reconnect.
       if (runtimeHandles.wsReconnectTimer) {
         window.clearTimeout(runtimeHandles.wsReconnectTimer);
@@ -1535,7 +1546,7 @@ function updateConnectionStatus() {
   if (!nodes.connectionStatus) {
     return;
   }
-  if (!state.isConnected) {
+  if (!isLiveRelayConnected()) {
     nodes.connectionStatus.innerText = 'Disconnected';
     return;
   }
@@ -1559,7 +1570,7 @@ function updateUI() {
   nodes.sendBtn.classList.toggle('is-loading', (state.isGenerating || state.launchInFlight) && hasDraft);
   nodes.sendBtn.classList.toggle('is-interrupt', isNextSendInterruptArmed() && state.isGenerating && hasDurableSession());
   nodes.inputContainer.classList.toggle('is-busy', state.isGenerating || state.launchInFlight);
-  nodes.inputContainer.classList.toggle('is-offline', !state.isConnected);
+  nodes.inputContainer.classList.toggle('is-offline', !isLiveRelayConnected());
   nodes.newSessionBtn?.classList.toggle('is-busy', state.isGenerating);
   const directSessionControlAvailable = canUseDirectSessionControl();
   nodes.stopSessionBtn?.classList.toggle('is-visible', directSessionControlAvailable);
@@ -1578,7 +1589,7 @@ function updateUI() {
   nodes.inputStatusText.textContent = inputActionLabel();
   renderGoalComposer();
 
-  if (!state.isConnected) {
+  if (!isLiveRelayConnected()) {
     nodes.connectionDot.className = 'dot';
     return;
   }
@@ -1602,7 +1613,7 @@ function chatInputPlaceholder() {
 }
 
 function inputActionLabel() {
-  if (!state.isConnected) {
+  if (!isLiveRelayConnected()) {
     return 'Live event relay reconnecting; REST session actions remain available.';
   }
   const status = state.sessionDetail?.state?.status || '';
@@ -2085,7 +2096,7 @@ function shouldRunPollingLoop() {
   if (state.currentView !== 'chat') {
     return false;
   }
-  if (!state.isConnected) {
+  if (!isLiveRelayConnected()) {
     return true;
   }
   if (state.isGenerating) {
@@ -2098,7 +2109,7 @@ function pollingIntervalForState() {
   if (state.currentView === 'history') {
     return POLL_INTERVAL_MS;
   }
-  if (!state.isConnected || state.isGenerating || sessionDetailHasActiveDescendants(state.sessionDetail)) {
+  if (!isLiveRelayConnected() || state.isGenerating || sessionDetailHasActiveDescendants(state.sessionDetail)) {
     return POLL_INTERVAL_ACTIVE_MS;
   }
   return POLL_INTERVAL_MS;
