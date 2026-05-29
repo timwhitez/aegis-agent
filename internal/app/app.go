@@ -1477,6 +1477,16 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		providerCfg.Model = *model
 	}
 
+	if err := doctorValidateProviderConfig(selectedProvider, providerCfg); err != nil {
+		details := doctorProviderConfigDetails(selectedProvider, providerCfg)
+		details["error"] = err.Error()
+		report.Checks = append(report.Checks, doctorCheck{
+			Name:    "provider.config",
+			Status:  "fail",
+			Details: details,
+		})
+		return renderDoctorReport(stdout, report, *jsonMode, true)
+	}
 	report.Checks = append(report.Checks, doctorCheck{
 		Name:    "provider.config",
 		Status:  "ok",
@@ -1674,6 +1684,19 @@ func doctorProviderConfigDetails(providerName string, providerCfg config.Provide
 		details["send_metadata_source"] = sendMetadataSource
 	}
 	return details
+}
+
+func doctorValidateProviderConfig(providerName string, providerCfg config.Provider) error {
+	apiProvider, err := config.EffectiveAPIProvider(providerName, providerCfg)
+	if err != nil {
+		return err
+	}
+	switch apiProvider {
+	case "openai-compatible", "anthropic-compatible", "google":
+		return nil
+	default:
+		return fmt.Errorf("unsupported api_provider for %s: %s", providerName, apiProvider)
+	}
 }
 
 func doctorRequestTimeoutSec(providerCfg config.Provider) int {

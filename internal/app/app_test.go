@@ -1879,6 +1879,78 @@ func TestDoctorCommandJSONReportsCustomOpenAICompatibleStoreDefault(t *testing.T
 	}
 }
 
+func TestDoctorCommandJSONRejectsInvalidAPIProviderConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		providerCfg config.Provider
+		wantError   string
+	}{
+		{
+			name: "custom-missing",
+			providerCfg: config.Provider{
+				APIKeyEnv: "TEST_PRESENT_KEY",
+				BaseURL:   "http://gateway.example/v1",
+				Model:     "gateway-model",
+			},
+			wantError: "requires api_provider",
+		},
+		{
+			name: "unsupported-explicit",
+			providerCfg: config.Provider{
+				APIProvider: "not-real",
+				APIKeyEnv:   "TEST_PRESENT_KEY",
+				BaseURL:     "http://gateway.example/v1",
+				Model:       "gateway-model",
+			},
+			wantError: "unsupported api_provider",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeRunner()
+			restore := runnerLoader
+			runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+				cfg := config.Default()
+				cfg.DefaultProvider = tc.name
+				cfg.Providers[tc.name] = tc.providerCfg
+				return fake, cfg, nil
+			}
+			defer func() { runnerLoader = restore }()
+			t.Setenv("TEST_PRESENT_KEY", "present")
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			err := Run(context.Background(), []string{"doctor", "--provider", tc.name, "--json", "--skip-probe"}, &stdout, &stderr)
+			var exitErr ExitError
+			if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+				t.Fatalf("expected doctor exit 1, got %T %[1]v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+			}
+			var report doctorReport
+			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+				t.Fatalf("unmarshal report: %v output=%s", err, stdout.String())
+			}
+			var providerCheck *doctorCheck
+			for i := range report.Checks {
+				if report.Checks[i].Name == "provider.config" {
+					providerCheck = &report.Checks[i]
+					break
+				}
+			}
+			if providerCheck == nil {
+				t.Fatalf("provider.config check missing: %#v", report.Checks)
+			}
+			if providerCheck.Status != "fail" {
+				t.Fatalf("expected provider.config to fail, got %#v", providerCheck)
+			}
+			if got, _ := providerCheck.Details["error"].(string); !strings.Contains(got, tc.wantError) {
+				t.Fatalf("expected provider config error containing %q, got %#v", tc.wantError, providerCheck.Details)
+			}
+			if len(fake.probeCalls) != 0 {
+				t.Fatalf("invalid provider config should skip probe, got %#v", fake.probeCalls)
+			}
+		})
+	}
+}
+
 func TestTrustedExtensionStatusAppearsInDoctor(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {

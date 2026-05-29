@@ -8694,7 +8694,45 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-407 through FCA-20260529-410. Those slices fixed runtime provider-option merging and unsupported API provider validation for Start / Continue / Queue paths; this residual issue was only the CLI doctor projection reporting a custom `api_provider: openai-compatible` profile's `store=false` source as `unset` instead of `provider_default`.
 - Confirmed the minimal fix belongs in the app adapter's doctor report only: compute store default provenance from the effective API provider, not the profile name, while preserving configured `store` overrides and the existing `send_metadata` default reporting.
 
+### Review 425
+
+- Confirmed FCA-20260529-427 against `spec/02-cli-and-config.md` and `spec/03-provider-contracts.md`: `doctor` is a CLI fallback/provider diagnostic surface and must reject provider profiles whose effective adapter family cannot be used by runtime (`openai-compatible`, `anthropic-compatible`, or `google`).
+- Confirmed this is distinct from FCA-20260529-409 and FCA-20260529-410. Those slices fixed runtime Start / Continue / Queue validation before durable execution facts are created or claimed; this residual issue was a doctor-only projection that still reported invalid provider config as `provider.config ok`.
+- Confirmed this is distinct from FCA-20260529-426. That slice corrected `store:false` provenance for valid custom OpenAI-compatible profiles; this slice rejects invalid custom profiles with no `api_provider` and explicit unsupported adapter families before API-key/session/skill/probe checks can make the report look otherwise usable.
+
 ## Update Log
+
+### FCA-20260529-427
+
+Slice: `fix(doctor): reject invalid provider config`
+
+Finding:
+
+- `doctorCommand` loaded the selected provider profile, applied CLI overrides, and immediately appended `provider.config` as `ok`.
+- `doctorProviderConfigDetails` called `config.EffectiveAPIProvider` but ignored its error, so a custom provider with no `api_provider` was rendered with an empty `effective_api_provider`.
+- `config.EffectiveAPIProvider` returns unknown explicit adapter-family strings as normalized values; runtime rejects those later, but `doctor` reported `api_provider:"not-real"` as `provider.config ok`.
+- Focused regressions showed both invalid profiles returned a successful doctor command and skipped no probe only because `--skip-probe` was set, leaving the provider config check green.
+
+Impact:
+
+- Operators could use `doctor --skip-probe` and see an invalid provider profile reported as usable even though Start / Continue / Queue / probe adapter construction would reject it.
+- This weakened CLI fallback diagnostics and made custom-provider repair harder because the first invalid fact was hidden behind later session/root/skill checks.
+
+Changes:
+
+- Added a doctor provider-config validator that reuses `config.EffectiveAPIProvider` for built-in/custom profile semantics and rejects adapter families outside `openai-compatible`, `anthropic-compatible`, and `google`.
+- `doctor` now records `provider.config` as `fail` with the config error and exits before API-key, session, skill, hook, or probe checks when the provider profile cannot resolve to a supported adapter family.
+- Added focused JSON coverage for a custom provider missing `api_provider` and a provider with explicit unsupported `api_provider:"not-real"`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestDoctorCommandJSONRejectsInvalidAPIProviderConfig -count=1`: failed before the fix because both subtests reported `provider.config` as `ok` and returned success.
+- `go test -timeout 120s ./internal/app -run 'TestDoctorCommandJSON(RejectsInvalidAPIProviderConfig|ReportsCustomOpenAICompatibleStoreDefault|IncludesEffectiveOpenAICompatibleSettings)' -count=1`: passed.
+- `gofmt -l internal/app/app.go internal/app/app_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(ResolvedProviderOptionsRejectsUnsupportedConfigAPIProvider|RunnerStartRejectsUnsupportedProviderConfigAPIProviderBeforeCreate|RunnerContinueRejectsUnsupportedProviderConfigBeforeMetadataMutation)' -count=1`: passed.
+- `git diff --check`: passed with no output.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-426
 
