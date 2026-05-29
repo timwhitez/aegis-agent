@@ -1881,7 +1881,17 @@ test('refreshCurrentSession skips stale queue detail when a newer same-session r
   assert.match(appContext.pendingRequests[1].url, /job_same_enrich/);
 
   await vm.runInContext(`refreshCurrentSession()`, appContext);
-  assert.equal(vm.runInContext(`state.needsSessionRefresh`, appContext), true);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasRefreshingSession: Object.prototype.hasOwnProperty.call(state, 'refreshingSession'),
+    stateHasNeedsSessionRefresh: Object.prototype.hasOwnProperty.call(state, 'needsSessionRefresh'),
+    refreshing: sessionViewState.refreshing,
+    needsRefresh: sessionViewState.needsRefresh
+  })`, appContext)), {
+    stateHasRefreshingSession: false,
+    stateHasNeedsSessionRefresh: false,
+    refreshing: true,
+    needsRefresh: true
+  });
 
   appContext.pendingRequests[1].resolve({ id: 'job_same_enrich', prompt: 'stale enriched detail' });
   await firstRefresh;
@@ -1937,10 +1947,18 @@ test('refreshCurrentSession skips stale same-session detail when a newer refresh
   assert.equal(appContext.pendingRequests.length, 2);
   assert.match(appContext.pendingRequests[1].url, /session_same_refresh/);
   assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasRefreshingSession: Object.prototype.hasOwnProperty.call(state, 'refreshingSession'),
+    stateHasNeedsSessionRefresh: Object.prototype.hasOwnProperty.call(state, 'needsSessionRefresh'),
+    refreshing: sessionViewState.refreshing,
+    needsRefresh: sessionViewState.needsRefresh,
     status: state.sessionDetail?.state?.status,
     generating: state.isGenerating,
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
   })`, appContext)), {
+    stateHasRefreshingSession: false,
+    stateHasNeedsSessionRefresh: false,
+    refreshing: true,
+    needsRefresh: false,
     status: 'running',
     generating: true,
     messageIDs: ['m_current']
@@ -1955,10 +1973,18 @@ test('refreshCurrentSession skips stale same-session detail when a newer refresh
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
+    stateHasRefreshingSession: Object.prototype.hasOwnProperty.call(state, 'refreshingSession'),
+    stateHasNeedsSessionRefresh: Object.prototype.hasOwnProperty.call(state, 'needsSessionRefresh'),
+    refreshing: sessionViewState.refreshing,
+    needsRefresh: sessionViewState.needsRefresh,
     status: state.sessionDetail?.state?.status,
     generating: state.isGenerating,
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
   })`, appContext)), {
+    stateHasRefreshingSession: false,
+    stateHasNeedsSessionRefresh: false,
+    refreshing: false,
+    needsRefresh: false,
     status: 'running',
     generating: true,
     messageIDs: ['m_current', 'm_updated']

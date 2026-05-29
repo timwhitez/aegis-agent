@@ -8544,6 +8544,12 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-114 and FCA-20260529-126. Those slices moved the History request sequence guard and the Overview refresh flags; this residual issue was only the `refreshingHistory` / `needsHistoryRefresh` / `pendingHistoryRefreshOptions` coalescing fields that `fetchHistory()` still read and wrote through the main `state`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the History in-flight and queued-refresh flags into `historyViewState`, preserve stale history suppression and queued page coalescing, and leave history payloads, pagination, session deletion, session opening, overview refresh, queue facts, and backend APIs unchanged.
 
+### Review 400
+
+- Confirmed FCA-20260529-402 against `spec/17-web-console.md`'s Session workspace and polling-first local WebConsole model and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: session detail refresh in-flight and queued-refresh flags are browser request coordination for `/api/sessions/{id}`, not durable session detail data, session-store facts, message facts, queue facts, provider replay data, or WebConsole file-fact authority.
+- Confirmed this is distinct from FCA-20260528-270, FCA-20260528-282, FCA-20260528-286, and the History/Overview refresh slices. Those slices fixed stale detail application, same-session stale detail suppression, queue-detail enrichment races, and other refresh surfaces; this residual issue was only the `refreshingSession` / `needsSessionRefresh` coalescing flags that `refreshCurrentSession()` still read and wrote through the main `state`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: move the session detail in-flight and queued-refresh flags into `sessionViewState`, preserve stale detail suppression, stale selected queue-job enrichment suppression, message-window merging, generation/activity updates, polling sync, session detail payloads, and backend APIs unchanged.
+
 ## Update Log
 
 ### FCA-20260529-126
@@ -8612,6 +8618,48 @@ Validation:
 - `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
 - `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
 - `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260529-402
+
+Slice: `fix(webconsole): isolate session refresh flags`
+
+Finding:
+
+- The WebConsole main `state` object still stored `refreshingSession` and `needsSessionRefresh`, which `refreshCurrentSession()` used only to coalesce overlapping `/api/sessions/{id}` detail requests and suppress stale same-session detail or selected queue-job enrichment responses.
+- These flags are browser request coordination. They are not durable session detail data, session-store facts, message facts, queue facts, provider replay data, runtime state, or WebConsole file-fact authority.
+- This contradicted the current P1 Render State Isolation plan after nearby request coordination had already moved into view-local state objects.
+
+Changes:
+
+- Added `sessionViewState` to own session detail refresh in-flight and queued-refresh flags.
+- Removed `refreshingSession` and `needsSessionRefresh` from the main `state` object.
+- Preserved queued refresh coalescing, stale same-session detail suppression, stale selected queue-job enrichment suppression, message-window merge behavior, generation/activity updates, polling synchronization, and backend request shape.
+- Extended the existing same-session detail and queue-detail race regressions to prove the refresh flags are absent from `state` while queued refresh behavior remains intact.
+- Updated `docs/webconsole-frontend-optimization-plan.md` so P1 Render State Isolation records this session-refresh-local slice and refreshed the frontend asset line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "refreshCurrentSession skips stale same-session detail when a newer refresh is queued" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `sessionViewState` did not exist and the main `state` still owned the session refresh flags.
+- `node --test --test-name-pattern "refreshCurrentSession skips stale same-session detail when a newer refresh is queued" validation/scripts/webconsole_utils_test.mjs`: passed after moving the flags into `sessionViewState`.
+- `node --test --test-name-pattern "refreshCurrentSession skips stale (queue detail|same-session detail) when a newer" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 79/79 tests.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `rg -n "state\\.refreshingSession|state\\.needsSessionRefresh|refreshingSession|needsSessionRefresh" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs docs/webconsole-frontend-optimization-plan.md`: passed; remaining matches are the frontend regression assertions only.
 - `git diff --check`: passed.
 - `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.

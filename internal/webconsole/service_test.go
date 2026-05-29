@@ -5605,7 +5605,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "shouldInsertChatNewline") || !strings.Contains(jsBody, "insertChatInputNewline") {
 		t.Fatalf("expected explicit Ctrl+Enter newline helpers, got app.js body: %s", jsBody)
 	}
-	if !strings.Contains(jsBody, "sessionDetailHasActiveDescendants") || !strings.Contains(jsBody, "needsSessionRefresh") {
+	if !strings.Contains(jsBody, "sessionDetailHasActiveDescendants") || !strings.Contains(jsBody, "sessionViewState.needsRefresh") {
 		t.Fatalf("expected current session polling to track active descendants and coalesced refreshes, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "overviewErrorMessage") || !strings.Contains(jsBody, "state.overviewError = message") || !strings.Contains(jsBody, "showToast(message, 'error')") {

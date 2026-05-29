@@ -46,8 +46,6 @@ const state = {
     copy: 'Send a prompt to start a durable session. Tool activity will appear here as it runs.',
     tone: 'neutral'
   },
-  refreshingSession: false,
-  needsSessionRefresh: false,
   hasMoreMessages: false,
   oldestMessageId: '',
   loadingEarlier: false,
@@ -87,6 +85,11 @@ const historyViewState = {
   refreshing: false,
   needsRefresh: false,
   pendingRefreshOptions: null
+};
+
+const sessionViewState = {
+  refreshing: false,
+  needsRefresh: false
 };
 
 const historyExpansionViewState = {
@@ -2294,24 +2297,24 @@ async function refreshCurrentSession(options = {}) {
     return;
   }
   const sessionID = state.sessionId;
-  if (state.refreshingSession) {
-    state.needsSessionRefresh = true;
+  if (sessionViewState.refreshing) {
+    sessionViewState.needsRefresh = true;
     return;
   }
-  state.refreshingSession = true;
-  state.needsSessionRefresh = false;
+  sessionViewState.refreshing = true;
+  sessionViewState.needsRefresh = false;
   try {
     const detail = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}?limit=40`);
-    if (state.sessionId !== sessionID || state.needsSessionRefresh) {
+    if (state.sessionId !== sessionID || sessionViewState.needsRefresh) {
       return;
     }
     mergeLoadedMessagesIntoDetail(detail);
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
     await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs), {
-      isCurrent: () => state.sessionId === sessionID && !state.needsSessionRefresh
+      isCurrent: () => state.sessionId === sessionID && !sessionViewState.needsRefresh
     });
-    if (state.sessionId !== sessionID || state.needsSessionRefresh) {
+    if (state.sessionId !== sessionID || sessionViewState.needsRefresh) {
       return;
     }
     updateSessionId();
@@ -2339,7 +2342,7 @@ async function refreshCurrentSession(options = {}) {
     updateUI();
     syncPollingForState();
   } catch (err) {
-    if (state.sessionId !== sessionID || state.needsSessionRefresh) {
+    if (state.sessionId !== sessionID || sessionViewState.needsRefresh) {
       return;
     }
     console.error('session detail error', err);
@@ -2349,9 +2352,9 @@ async function refreshCurrentSession(options = {}) {
       }
     }
   } finally {
-    state.refreshingSession = false;
-    if (state.needsSessionRefresh) {
-      state.needsSessionRefresh = false;
+    sessionViewState.refreshing = false;
+    if (sessionViewState.needsRefresh) {
+      sessionViewState.needsRefresh = false;
       queueSessionRefresh(80);
     }
   }
