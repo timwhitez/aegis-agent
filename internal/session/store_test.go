@@ -13,6 +13,7 @@ import (
 
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/fileutil"
+	"golang.org/x/sys/unix"
 )
 
 func TestStoreEnsureRootReappliesOwnerOnlyMode(t *testing.T) {
@@ -384,6 +385,67 @@ func TestStoreAppendMessageRejectsSymlinkJSONL(t *testing.T) {
 	}
 	if string(data) != "keep\n" {
 		t.Fatalf("outside symlink target was modified: %q", string(data))
+	}
+}
+
+func TestStoreAppendMessageRejectsReplacedParent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sessionDir := store.SessionDir(meta.ID)
+	outside := filepath.Join(t.TempDir(), "outside-session")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	outsideMessages := filepath.Join(outside, "messages.jsonl")
+	if err := os.WriteFile(outsideMessages, []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write outside messages: %v", err)
+	}
+
+	restore := beforeOpenNoSymlink
+	swapped := false
+	beforeOpenNoSymlink = func(openPath string, flags int) error {
+		if swapped ||
+			flags&unix.O_WRONLY == 0 ||
+			filepath.Clean(openPath) != filepath.Join(sessionDir, "messages.jsonl") {
+			return nil
+		}
+		swapped = true
+		if err := os.Rename(sessionDir, sessionDir+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, sessionDir)
+	}
+	defer func() {
+		beforeOpenNoSymlink = restore
+	}()
+
+	err := store.AppendMessage(meta.ID, NewMessage("user", "hello"))
+	if err == nil {
+		t.Fatal("expected replaced parent append to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") && !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("expected symlink/path-change error, got %v", err)
+	}
+	data, readErr := os.ReadFile(outsideMessages)
+	if readErr != nil {
+		t.Fatalf("read outside messages: %v", readErr)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("outside messages should not be modified, got %q", string(data))
 	}
 }
 

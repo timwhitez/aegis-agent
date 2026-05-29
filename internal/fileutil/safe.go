@@ -436,9 +436,6 @@ func ReadRegularFileRangeNoSymlink(path string, offset, limit int64) ([]byte, os
 }
 
 func openRegularFileForReadNoSymlink(path string) (*os.File, error) {
-	if err := rejectExistingSymlinkAncestors(path); err != nil {
-		return nil, err
-	}
 	parent := filepath.Dir(path)
 	base := filepath.Base(path)
 	if base == "." || base == string(filepath.Separator) {
@@ -476,6 +473,55 @@ func openRegularFileForReadNoSymlink(path string) (*os.File, error) {
 	if file == nil {
 		_ = unix.Close(fd)
 		return nil, errors.New("failed to open regular file")
+	}
+	return file, nil
+}
+
+// OpenFileNoSymlink opens path without following symlinks in the final file or
+// its existing ancestors. The parent directory is opened by descriptor and the
+// file itself is opened with openat so parent replacement cannot redirect the
+// open through a new path.
+func OpenFileNoSymlink(path string, flags int, mode os.FileMode) (*os.File, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("path is required")
+	}
+	path = filepath.Clean(path)
+	if err := rejectExistingSymlinkAncestors(path); err != nil {
+		return nil, err
+	}
+	parent := filepath.Dir(path)
+	base := filepath.Base(path)
+	if base == "." || base == string(filepath.Separator) {
+		return nil, fmt.Errorf("invalid file path: %s", path)
+	}
+	parentFD, err := openDirNoSymlink(parent)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
+			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+		}
+		return nil, err
+	}
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		return nil, err
+	}
+	fd, err := unix.Openat(parentFD, base, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode.Perm()))
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("refusing to open symlinked file: %s", path)
+		}
+		if errors.Is(err, unix.ENOENT) {
+			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+		}
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("failed to open file")
 	}
 	return file, nil
 }

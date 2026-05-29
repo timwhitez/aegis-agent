@@ -8946,7 +8946,59 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-463, FCA-20260530-467, FCA-20260530-468, and FCA-20260530-470. Those slices hardened temp creation, atomic write chmod, session chmod, and Web upload spooling; this residual issue was the shared read helper still doing a precheck plus path-based `os.OpenFile(path, O_NOFOLLOW)`. `O_NOFOLLOW` protects only the final component, so a parent replaced by a symlink after precheck could redirect reads to an outside same-name file.
 - Confirmed the minimal fix belongs in `fileutil.ReadRegularFileNoSymlink` and `ReadRegularFileRangeNoSymlink`: open the parent directory through no-follow descriptor traversal, verify the descriptor still matches the path after the deterministic race point, then open the child with descriptor-relative `openat(O_NOFOLLOW)`.
 
+### Review 467
+
+- Confirmed FCA-20260530-472 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/04-tools-and-skills.md`, `spec/09-phase-plan.md`, `spec/13-live-input-and-steering.md`, and `spec/18-durable-contract-and-completion.md`: session `messages.jsonl`, `events.jsonl`, control queues, contract history, goal history, Plan Mode history, provider attempts, background notifications, and lock files are local file facts and must not be append-opened through a replaceable path.
+- Confirmed this is distinct from FCA-20260530-471. That slice hardened shared regular-file reads; this residual issue was session store append/open still calling path-based `unix.Open(path, O_NOFOLLOW)`. As with reads, `O_NOFOLLOW` only protects the final component, so a session parent replaced by a symlink after validation could redirect append writes to an outside same-name file.
+- Confirmed the minimal fix belongs in the shared session open boundary and reusable fileutil helper: expose descriptor-relative `fileutil.OpenFileNoSymlink`, keep existing session validation and JSONL semantics, and make session store append/read/lock opens go through parent-descriptor `openat(O_NOFOLLOW)`.
+
 ## Update Log
+
+### FCA-20260530-472
+
+Slice: `fix(session): harden file opens`
+
+Finding:
+
+- Session store `openNoSymlink` was used for append/read/lock file opens behind durable facts such as `messages.jsonl`, `events.jsonl`, `control/steer.jsonl`, `control/background.jsonl`, contract history, provider attempts, Goal history, Plan Mode history, background notifications, and control lock files.
+- The helper called path-based `unix.Open(path, flags|O_NOFOLLOW, mode)`.
+- On Linux, `O_NOFOLLOW` protects the final path component only. A session directory replaced by a symlink after the earlier read/validation step and before append open could redirect writes to an outside directory containing the same file name.
+- A focused regression replaced the session directory with a symlink to an outside directory after existing-log validation and immediately before the append open. Before the fix, `AppendMessage` succeeded and wrote through the symlinked parent.
+
+Impact:
+
+- Session facts are the runtime authority for provider replay, Web/CLI timeline state, live steer/control queues, Goal/Plan Mode history, completion evidence, and recovery.
+- A local path race could append durable facts outside the intended session root while the store reported success, weakening session fact authority and recovery consistency.
+- Final-file symlinks were already rejected, but parent replacement remained a gap for append/read/lock opens that still used a path-based open.
+
+Changes:
+
+- Added `fileutil.OpenFileNoSymlink`, which opens the parent directory through no-symlink descriptor traversal, verifies the descriptor still matches the path, then opens the final file with descriptor-relative `openat(O_NOFOLLOW)`.
+- Updated session store `openNoSymlink` to use the shared descriptor-relative helper for append, read, and lock opens.
+- Added a regression proving `AppendMessage` rejects a replaced session parent and leaves the outside `messages.jsonl` unchanged.
+- Kept existing JSONL validation, owner-only chmod best effort, lock-file, and missing-file behavior intact.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestStoreAppendMessageRejectsReplacedParent -count=1`: failed before the fix because `AppendMessage` succeeded after the parent was replaced.
+- `go test -timeout 120s ./internal/session -run 'Test(StoreAppendMessageRejectsSymlinkJSONL|StoreAppendMessageRejectsReplacedParent|StoreLoadMessagesRejectsSymlinkJSONL|AppendSteerRequestRejectsSymlinkLockFile|AppendBackgroundNotificationRejectsSymlinkLockFile|AppendSteerRequestRejectsSymlinkControlDir|AppendMessageRejectsMalformedExistingLog|AppendEventRejectsMalformedExistingLog)' -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestReadRegularFile|TestAtomicWriteFileNoSymlink|TestCreateTempNoSymlink|TestMkdirTempNoSymlink' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole ./internal/app ./internal/tools ./internal/config ./internal/skills ./internal/review -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-471
 

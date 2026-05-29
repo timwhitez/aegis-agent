@@ -44,6 +44,7 @@ const invalidStoreIDPathSegment = ".invalid-id"
 var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)
 var beforeChmodBestEffort func(path string, mode os.FileMode) error
+var beforeOpenNoSymlink func(path string, flags int) error
 
 func NewStore(root string) *Store {
 	return NewStoreWithDirMode(root, 0o700)
@@ -2579,16 +2580,12 @@ func openAppendNoSymlink(path string, mode fs.FileMode) (*os.File, error) {
 }
 
 func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
-	fd, err := unix.Open(path, flags|unix.O_NOFOLLOW, uint32(mode))
-	if err != nil {
-		return nil, err
+	if beforeOpenNoSymlink != nil {
+		if err := beforeOpenNoSymlink(path, flags); err != nil {
+			return nil, err
+		}
 	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New("failed to open session file")
-	}
-	return file, nil
+	return fileutil.OpenFileNoSymlink(path, flags, os.FileMode(mode))
 }
 
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
