@@ -5025,7 +5025,11 @@ func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error)
 			continue
 		}
 		fullPath := filepath.Join(current, entry.Name())
-		if webFileBrowserPathDenied(browseRoot, fullPath) {
+		resolvedPath, err := tools.ResolveWorkspacePath(browseRoot, fullPath)
+		if err != nil {
+			continue
+		}
+		if webFileBrowserPathDenied(browseRoot, resolvedPath) {
 			continue
 		}
 		relPath, _ := filepath.Rel(root, fullPath)

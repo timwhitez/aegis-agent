@@ -8649,12 +8649,18 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("ROOT_SECRET=1"), 0o600); err != nil {
 		t.Fatalf("write root env file: %v", err)
 	}
+	if err := os.Symlink(filepath.Join(root, ".env"), filepath.Join(workspaceRoot, "root-env-alias")); err != nil {
+		t.Fatalf("symlink root env alias: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "deploy.pem"), []byte("ROOT_PRIVATE_KEY=1"), 0o600); err != nil {
 		t.Fatalf("write root private key: %v", err)
 	}
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
 	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
 		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspaceRoot, "outside-alias.txt")); err != nil {
+		t.Fatalf("symlink outside alias: %v", err)
 	}
 
 	cfg := testConfig(t, "")
@@ -8687,6 +8693,12 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		}
 		if item["name"] == ".oci" {
 			t.Fatalf("workspace listing leaked cloud credential directory: %#v", tree)
+		}
+		if item["name"] == "root-env-alias" {
+			t.Fatalf("workspace listing leaked sensitive symlink alias: %#v", tree)
+		}
+		if item["name"] == "outside-alias.txt" {
+			t.Fatalf("workspace listing leaked escaping symlink alias: %#v", tree)
 		}
 	}
 	if firstType, _ := tree[0]["type"].(string); firstType != "directory" {

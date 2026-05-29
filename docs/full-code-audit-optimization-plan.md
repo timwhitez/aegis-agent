@@ -8964,7 +8964,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-460, FCA-20260530-462, FCA-20260530-463, FCA-20260530-466, and FCA-20260530-471. Those slices hardened destination temp creation, recursive directory creation, temp helpers, rename promotion, and shared read helpers; this residual issue was the isolation copy source open still calling `unix.Open(src, O_RDONLY|O_NOFOLLOW)`, where `O_NOFOLLOW` protects only the final source path component.
 - Confirmed the minimal fix belongs in `internal/isolation/prepare.go` `copyFile`: preserve the existing source symlink-copy behavior for entries discovered as symlinks, but open regular-file copy sources through the shared descriptor-relative `fileutil.OpenFileNoSymlink` before streaming bytes into the isolated workdir.
 
+### Review 470
+
+- Confirmed FCA-20260530-475 against `AGENTS.md`, `spec/00-product.md`, `spec/09-phase-plan.md`, and `spec/17-web-console.md`: the WebConsole workspace panel is a local read-only browser, not an IDE, but it still must not expose sensitive credential aliases or paths that resolve outside the local browse root.
+- Confirmed this is distinct from FCA-20260529-226 and FCA-20260529-106. Those slices denied sensitive workspace read paths and paged file-preview reads through the backend no-symlink reader; this residual issue was the directory listing projection still classifying and rendering entries from their lexical names without checking the resolved symlink target.
+- Confirmed the minimal fix belongs in `Service.listDirectory`: before rendering a child entry, resolve it through the same workspace-root boundary used by read/list requests and apply the sensitive-path filter to the resolved path, while keeping existing read and request-time denial logic unchanged.
+
 ## Update Log
+
+### FCA-20260530-475
+
+Slice: `fix(webconsole): hide resolved workspace aliases`
+
+Finding:
+
+- The WebConsole workspace browser already denied direct reads of sensitive names such as `.env`, private key patterns, cloud credential directories, and symlink aliases that resolve to those denied paths.
+- `listDirectory` still filtered only the entry's lexical name and `fullPath` before rendering the file tree.
+- A symlink with a harmless name such as `root-env-alias` pointing at the server cwd `.env`, or `outside-alias.txt` pointing outside the browse root, could still appear in the workspace listing even though opening it would later be denied.
+
+Impact:
+
+- The read-only workspace panel could leak or misrepresent sensitive local file facts by showing aliases to credential files or outside paths as ordinary workspace entries.
+- This weakened the Web-first local console boundary: the browser view should expose inspectable workspace facts, not dead-end aliases to denied or escaping files.
+
+Changes:
+
+- Updated `listDirectory` to resolve each child through `tools.ResolveWorkspacePath(browseRoot, fullPath)` before rendering it.
+- Applied `webFileBrowserPathDenied` to the resolved child path rather than only the lexical child path.
+- Added workspace route coverage proving harmless-named symlink aliases to the root `.env` and to a file outside the browse root are omitted from listings.
+- Kept existing request-time read/list denial and paged file read behavior unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 89/89 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-474
 
