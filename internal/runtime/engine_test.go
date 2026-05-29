@@ -1858,6 +1858,77 @@ func TestEngineBlocksEscapingFinalArtifactPathBeforeToolExecution(t *testing.T) 
 	}
 }
 
+func TestEngineToolBlockedReportsEventAppendErrorWithReplayResult(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	rootDir := t.TempDir()
+	workdir := filepath.Join(rootDir, "workspace")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	meta.Workdir = workdir
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Audit the repo and write reports/final-audit.md with findings and finish.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "tool.blocked" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	outsidePath := filepath.Join(rootDir, "escape.md")
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:        "call_write",
+					Name:      "write_file",
+					Arguments: json.RawMessage(`{"path":"../escape.md","content":"escape"}`),
+				},
+				{
+					ID:        "call_finish",
+					Name:      "finish",
+					Arguments: json.RawMessage(`{"message":"done"}`),
+				},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "tool.blocked") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected tool.blocked events.jsonl error, result=%#v err=%v", result, err)
+	}
+	if _, err := os.Stat(outsidePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected escaping file not to be written, got err=%v", err)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	var toolMessages []session.Message
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			toolMessages = append(toolMessages, msg)
+		}
+	}
+	if len(toolMessages) != 1 {
+		t.Fatalf("expected one replay-complete tool message, got %#v", toolMessages)
+	}
+	results := toolMessages[0].ToolResults
+	if len(results) != 2 {
+		t.Fatalf("expected blocked write result plus synthetic finish result, got %#v", results)
+	}
+	if results[0].ToolCallID != "call_write" || !results[0].IsError || !strings.Contains(results[0].LLMOutput, "Artifact path") {
+		t.Fatalf("expected blocked write result, got %#v", results[0])
+	}
+	if results[1].ToolCallID != "call_finish" || !results[1].IsError || !strings.Contains(results[1].LLMOutput, "tool.blocked event failed before this call ran") {
+		t.Fatalf("expected synthetic later result for finish, got %#v", results[1])
+	}
+}
+
 func TestEngineArtifactTrackingFailureWritesReplayCompleteToolResult(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Write reports/final.md with the final implementation summary.")); err != nil {

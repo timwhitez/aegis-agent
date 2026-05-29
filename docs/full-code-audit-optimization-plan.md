@@ -8796,7 +8796,44 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-209, FCA-20260527-210, FCA-20260528-347, and FCA-20260529-407 through FCA-20260529-410. Earlier slices required `assistant.message` / `turn.stopped`, fixed provider-native replay facts, and hardened durable provider option resolution; this residual issue was that the runtime could still call the adapter after losing the request-prepared trace event that proves the effective request options and metadata surface.
 - Confirmed the minimal fix belongs in `Engine.Run` at the event boundary just before `adapter.RunTurn`: require `provider.request.prepared` persistence before sending the provider request, while leaving the earlier `provider.call` event as best-effort coarse telemetry and preserving adapter-owned retry / response handling.
 
+### Review 442
+
+- Confirmed FCA-20260529-444 against `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: guard-blocked tool calls are part of the tool lifecycle and Web timeline/live-activity surface, so a blocked tool result should not advance past the missing `tool.blocked` event and later report the wrong event boundary.
+- Confirmed this is distinct from FCA-20260527-200, FCA-20260527-201, and FCA-20260527-202. Earlier slices required `tool.before`, `tool.interrupted`, and `tool.after`; this residual issue was the guard-block branch between required completion-gate events and the replayed blocked tool result.
+- Confirmed the minimal fix belongs in `Engine.Run`: require `tool.blocked` persistence when a guard blocks a provider tool call, preserve a replay-complete blocked tool result plus synthetic skipped results on event append failure, and keep generic non-contract `ExecContext.Emit` telemetry best-effort.
+
 ## Update Log
+
+### FCA-20260529-444
+
+Slice: `fix(runtime): require tool blocked events`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` defines the tool lifecycle around `tool.before`, execution, `tool.after`, and persisted tool results, while `spec/18-durable-contract-and-completion.md` centralizes tool/finish guard decisions and `spec/17-web-console.md` promotes `tool.blocked` into the Web timeline/live-activity refresh surface.
+- `internal/runtime/engine.go` evaluated guard decisions, built the blocked tool result, and emitted `tool.blocked` through best-effort `e.emit`.
+- If `events.jsonl` became unwritable at that boundary, the runtime swallowed the missing `tool.blocked` event, then reported a later `tool.after` append error after the blocked result path had already moved on.
+- A focused regression blocked `events.jsonl` exactly at `tool.blocked`; before the fix, the run failed at `tool.after` instead of the missing guard-block event.
+
+Impact:
+
+- A guard-blocked provider tool call could appear in `messages.jsonl` without the Web/operator event that explains which guard blocked it and why.
+- Recovery diagnostics could point at the later `tool.after` boundary, obscuring the actual missing durable guard trace.
+- Same-turn later tool calls needed explicit synthetic results on this event-failure path so provider replay remains complete without executing additional side effects after the missing guard event.
+
+Changes:
+
+- Switched `tool.blocked` recording from best-effort `emit` to checked `appendEvent`.
+- On `tool.blocked` append failure, persist the current blocked tool result and synthetic skipped results for remaining same-turn calls before returning the event error.
+- Extended the package test event hook to cover best-effort emits so regressions can deterministically block legacy emit-only boundaries.
+- Preserved existing successful `tool.blocked` payload shape (`tool_name`, `reason`) and guard result metadata.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineToolBlockedReportsEventAppendErrorWithReplayResult -count=1`: failed before the fix because the returned error referenced `tool.after` instead of `tool.blocked`.
+- `go test -timeout 120s ./internal/runtime -run TestEngineToolBlockedReportsEventAppendErrorWithReplayResult -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(BlocksEscapingFinalArtifactPathBeforeToolExecution|ToolBlockedReportsEventAppendErrorWithReplayResult|ToolBeforeReportsEventAppendErrorBeforeExecution|ToolAfterReportsEventAppendErrorWithReplayResult|ToolInterruptedReportsEventAppendErrorWithReplayResult)' -count=1`: passed.
+- Broader validation recorded with this slice before commit.
 
 ### FCA-20260529-443
 

@@ -563,10 +563,6 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						}
 						return RunResult{}, decision.Err
 					}
-					e.emit(meta.ID, "tool.blocked", "tool_execute", map[string]any{
-						"tool_name": call.Name,
-						"reason":    guardKind,
-					})
 					toolResult = session.ToolResult{
 						ToolCallID:    call.ID,
 						Name:          call.Name,
@@ -576,6 +572,19 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						Metadata: map[string]any{
 							"guard": guardKind,
 						},
+					}
+					if err := e.appendEvent(meta.ID, "tool.blocked", "tool_execute", map[string]any{
+						"tool_name": call.Name,
+						"reason":    guardKind,
+					}); err != nil {
+						toolResults = append(toolResults, toolResult)
+						if callIndex+1 < len(result.ToolCalls) {
+							toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.blocked event failed before this call ran: "+err.Error())...)
+						}
+						if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+							return RunResult{}, fmt.Errorf("record blocked tool result after tool.blocked event failure for %s (%v): %w", call.Name, err, appendErr)
+						}
+						return RunResult{}, fmt.Errorf("record tool.blocked event for %s: %w", call.Name, err)
 					}
 				} else {
 					toolCtx, cancel := context.WithCancel(ctx)
@@ -1040,6 +1049,9 @@ func isLinkedQueueJobReconcileError(err error) bool {
 
 func (e *Engine) emit(sessionID, eventType, phase string, data map[string]any) {
 	evt := events.New(sessionID, eventType, phase, data)
+	if e.beforeAppendEvent != nil {
+		e.beforeAppendEvent(evt)
+	}
 	_ = e.store.AppendEvent(sessionID, evt)
 	e.bus.Publish(evt)
 }
