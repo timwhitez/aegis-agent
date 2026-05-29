@@ -5623,6 +5623,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "isLaunchInFlight()") || !strings.Contains(jsBody, "setLaunchInFlight(true)") || !strings.Contains(jsBody, "Session launch is already in progress") || !strings.Contains(jsBody, "launchPendingWithoutSession") {
 		t.Fatalf("expected initial session launch to have a pending-submit guard, got app.js body: %s", jsBody)
 	}
+	if !strings.Contains(jsBody, "runViewState") || !strings.Contains(jsBody, "isGenerating()") || !strings.Contains(jsBody, "setGeneratingViewState") || strings.Contains(jsBody, "state.isGenerating") {
+		t.Fatalf("expected current-run generating view state to stay out of durable app state, got app.js body: %s", jsBody)
+	}
 	if !strings.Contains(jsBody, "STOP_FALLBACK_STEER_MESSAGE") || !strings.Contains(jsBody, "requestStopViaBestAvailablePath") || !strings.Contains(jsBody, "data-stop-session-id") {
 		t.Fatalf("expected inline session stop handling with interrupt-steer fallback, got app.js body: %s", jsBody)
 	}

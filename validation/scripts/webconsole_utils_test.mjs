@@ -591,7 +591,7 @@ test('launch pending guard is isolated from durable app state', async () => {
     selectedWorkspaceWorkdir = function() { return ''; };
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveRelayConnected(true);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
@@ -640,6 +640,84 @@ test('launch pending guard is isolated from durable app state', async () => {
   });
 });
 
+test('generating view state is isolated from durable app state', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const running = vm.runInContext(`(() => {
+    renderCurrentSession = function() {};
+    state.sessionId = 'session_generating_view';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_generating_view' },
+      state: { status: 'running', phase: 'provider_call' },
+      active_handle: true,
+      active_handle_owner: { owned_by_current_process: true },
+      messages: []
+    };
+    setLiveRelayConnected(true);
+    nodes.chatInput.value = 'steer while running';
+    setGenerating(true, {
+      title: 'Provider call',
+      copy: 'The provider turn is running.',
+      tone: 'live'
+    });
+    const stream = renderMessageStream();
+    return {
+      stateHasIsGenerating: Object.prototype.hasOwnProperty.call(state, 'isGenerating'),
+      generating: isGenerating(),
+      sendLoading: nodes.sendBtn.classList.contains('is-loading'),
+      inputBusy: nodes.inputContainer.classList.contains('is-busy'),
+      interruptVisible: nodes.interruptToggleBtn.classList.contains('is-visible'),
+      controlVisible: nodes.stopSessionBtn.classList.contains('is-visible'),
+      actionLabel: nodes.inputStatusText.textContent,
+      pendingHasRunning: stream.pending.includes('Running'),
+      activityHasRunningStatus: stream.activity.includes('Running')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(running), {
+    stateHasIsGenerating: false,
+    generating: true,
+    sendLoading: true,
+    inputBusy: true,
+    interruptVisible: true,
+    controlVisible: true,
+    actionLabel: 'Steer running session: next send queues guidance into the current run.',
+    pendingHasRunning: true,
+    activityHasRunningStatus: true
+  });
+
+  const settled = vm.runInContext(`(() => {
+    setNextSendInterruptArmed(true);
+    setGenerating(false, {
+      title: 'Awaiting input',
+      copy: 'The session is ready for a follow-up.',
+      tone: 'queued'
+    });
+    const stream = renderMessageStream();
+    return {
+      stateHasIsGenerating: Object.prototype.hasOwnProperty.call(state, 'isGenerating'),
+      generating: isGenerating(),
+      interruptArmed: isNextSendInterruptArmed(),
+      inputBusy: nodes.inputContainer.classList.contains('is-busy'),
+      interruptVisible: nodes.interruptToggleBtn.classList.contains('is-visible'),
+      controlVisible: nodes.stopSessionBtn.classList.contains('is-visible'),
+      pendingEmpty: stream.pending === ''
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(settled), {
+    stateHasIsGenerating: false,
+    generating: false,
+    interruptArmed: false,
+    inputBusy: false,
+    interruptVisible: false,
+    controlVisible: false,
+    pendingEmpty: true
+  });
+});
+
 test('toast id counter is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
@@ -671,7 +749,7 @@ test('stop action pending sessions are isolated from durable app state', async (
     state.currentView = 'chat';
     state.sessionId = 'session_stop_pending';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     state.sessionDetail = {
       metadata: { id: 'session_stop_pending' },
       state: { status: 'running' },
@@ -945,7 +1023,7 @@ test('composer interrupt steer intent is isolated from durable app state', async
   const send = vm.runInContext(`
     state.sessionId = 'session_interrupt_steer';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     setLiveRelayConnected(true);
     setLiveActivity({ title: 'Running session', copy: '', tone: 'live' });
     state.sessionDetail = {
@@ -995,7 +1073,7 @@ test('composer Goal and Plan Mode toggles are isolated from durable app state', 
     selectedWorkspaceWorkdir = function() { return ''; };
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
@@ -1021,7 +1099,7 @@ test('composer Goal and Plan Mode toggles are isolated from durable app state', 
   const planSend = vm.runInContext(`
     state.sessionId = '0xB22CE0';
     state.sessionBacked = false;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
@@ -1051,7 +1129,7 @@ test('live activity is isolated from durable app state', () => {
   const result = vm.runInContext(`(() => {
     state.sessionId = 'session_activity_view';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     state.sessionDetail = {
       metadata: { id: 'session_activity_view' },
       state: { status: 'running' },
@@ -1118,7 +1196,7 @@ test('optimistic message buffer is isolated from durable app state', () => {
     resetOptimisticMessages();
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     state.sessionDetail = null;
     appendOptimisticMessage('user', 'pending launch prompt', { source: 'user' });
     const rendered = renderMessageStream();
@@ -1860,7 +1938,7 @@ test('selected current-session queue job detail keeps chat polling active while 
     state.currentView = 'chat';
     setPageVisibilityHidden(false);
     setLiveRelayConnected(true);
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     state.sessionId = 'parent_polling';
     state.sessionBacked = true;
     state.overview = { sessions: [] };
@@ -1902,7 +1980,7 @@ test('selected queue job detail from another parent does not keep chat polling a
     state.currentView = 'chat';
     setPageVisibilityHidden(false);
     setLiveRelayConnected(true);
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     state.sessionId = 'parent_current';
     state.sessionBacked = true;
     state.overview = { sessions: [] };
@@ -2120,7 +2198,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
       state: { status: 'completed' },
       messages: []
     };
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Fast selected', copy: '', tone: 'neutral' });
   `, appContext);
 
@@ -2131,7 +2209,7 @@ test('refreshCurrentSession rechecks selected session after queue detail enrichm
     selected: state.sessionId,
     detailID: state.sessionDetail?.metadata?.id,
     status: state.sessionDetail?.state?.status,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     activityTitle: currentLiveActivity().title,
     renderCount: state.renderCount || 0,
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
@@ -2226,7 +2304,7 @@ test('refreshCurrentSession skips stale same-session detail when a newer refresh
   const firstRefresh = vm.runInContext(`
     state.sessionId = 'session_same_refresh';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     state.sessionDetail = {
       metadata: { id: 'session_same_refresh' },
       state: { status: 'running' },
@@ -2257,7 +2335,7 @@ test('refreshCurrentSession skips stale same-session detail when a newer refresh
     refreshing: sessionViewState.refreshing,
     needsRefresh: sessionViewState.needsRefresh,
     status: state.sessionDetail?.state?.status,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
   })`, appContext)), {
     stateHasRefreshingSession: false,
@@ -2283,7 +2361,7 @@ test('refreshCurrentSession skips stale same-session detail when a newer refresh
     refreshing: sessionViewState.refreshing,
     needsRefresh: sessionViewState.needsRefresh,
     status: state.sessionDetail?.state?.status,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id)
   })`, appContext)), {
     stateHasRefreshingSession: false,
@@ -2362,7 +2440,7 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
   const approval = vm.runInContext(`
     state.sessionId = 'session_plan_slow_a';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded plan A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_plan_slow_a' },
@@ -2378,7 +2456,7 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -2392,7 +2470,7 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
@@ -2523,7 +2601,7 @@ test('running-session steer completion does not mark a newly selected session as
   const send = vm.runInContext(`
     state.sessionId = 'session_steer_slow_a';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     setNextSendInterruptArmed(true);
     setLiveActivity({ title: 'Running A', copy: '', tone: 'live' });
     state.sessionDetail = {
@@ -2541,7 +2619,7 @@ test('running-session steer completion does not mark a newly selected session as
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setNextSendInterruptArmed(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
@@ -2556,7 +2634,7 @@ test('running-session steer completion does not mark a newly selected session as
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     interruptArmed: isNextSendInterruptArmed(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
@@ -2574,7 +2652,7 @@ test('continue completion does not mark a newly selected session as generating',
   const send = vm.runInContext(`
     state.sessionId = 'session_continue_slow_a';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_continue_slow_a' },
@@ -2592,7 +2670,7 @@ test('continue completion does not mark a newly selected session as generating',
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -2607,7 +2685,7 @@ test('continue completion does not mark a newly selected session as generating',
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
@@ -2624,7 +2702,7 @@ test('start completion does not replace a session selected while launch is pendi
     selectedWorkspaceWorkdir = function() { return ''; };
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
@@ -2638,7 +2716,7 @@ test('start completion does not replace a session selected while launch is pendi
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
@@ -2654,7 +2732,7 @@ test('start completion does not replace a session selected while launch is pendi
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     backed: state.sessionBacked,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
@@ -2674,7 +2752,7 @@ test('new session start includes role-aware composer fields', async () => {
     selectedWorkspaceWorkdir = function() { return ''; };
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
@@ -2700,7 +2778,7 @@ test('start completion does not clear a newer pending launch', async () => {
     selectedWorkspaceWorkdir = function() { return ''; };
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
@@ -2714,7 +2792,7 @@ test('start completion does not clear a newer pending launch', async () => {
   vm.runInContext(`
     state.sessionId = '0xB22CE0';
     state.sessionBacked = false;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     setLaunchInFlight(true);
     setLiveActivity({ title: 'Launching second session', copy: '', tone: 'live' });
     state.sessionDetail = null;
@@ -2726,7 +2804,7 @@ test('start completion does not clear a newer pending launch', async () => {
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     backed: state.sessionBacked,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
@@ -2744,7 +2822,7 @@ test('openSession clears pending launch state for the newly selected durable ses
   const open = vm.runInContext(`
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     setLaunchInFlight(true);
     setLiveActivity({ title: 'Launching session', copy: '', tone: 'live' });
     openSession('session_fast_b', { switchToChat: false });
@@ -2755,7 +2833,7 @@ test('openSession clears pending launch state for the newly selected durable ses
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     backed: state.sessionBacked,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
@@ -2782,7 +2860,7 @@ test('start failure does not clear generating state after another session is sel
     selectedWorkspaceWorkdir = function() { return ''; };
     state.sessionId = '0xA11CE0';
     state.sessionBacked = false;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
@@ -2796,7 +2874,7 @@ test('start failure does not clear generating state after another session is sel
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Session B running', copy: '', tone: 'live' });
     state.sessionDetail = {
@@ -2812,7 +2890,7 @@ test('start failure does not clear generating state after another session is sel
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
     backed: state.sessionBacked,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     launchInFlight: isLaunchInFlight(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
@@ -2837,7 +2915,7 @@ test('inline continue action does not refresh a newly selected session after sta
   const action = vm.runInContext(`
     state.sessionId = 'session_inline_continue_slow_a';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_inline_continue_slow_a' },
@@ -2853,7 +2931,7 @@ test('inline continue action does not refresh a newly selected session after sta
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -3073,7 +3151,7 @@ test('plan revision completion does not mark a newly selected session as generat
   const send = vm.runInContext(`
     state.sessionId = 'session_revision_slow_a';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded plan A', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_revision_slow_a' },
@@ -3091,7 +3169,7 @@ test('plan revision completion does not mark a newly selected session as generat
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -3106,7 +3184,7 @@ test('plan revision completion does not mark a newly selected session as generat
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
@@ -3122,7 +3200,7 @@ test('interrupt completion does not update a newly selected session', async () =
   const interrupt = vm.runInContext(`
     state.sessionId = 'session_interrupt_slow_a';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     setLiveActivity({ title: 'Running A', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_interrupt_slow_a' },
@@ -3138,7 +3216,7 @@ test('interrupt completion does not update a newly selected session', async () =
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -3152,7 +3230,7 @@ test('interrupt completion does not update a newly selected session', async () =
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     activityTitle: currentLiveActivity().title
   })`, appContext)), {
     selected: 'session_fast_b',
@@ -3168,7 +3246,7 @@ test('stop completion does not update a newly selected session', async () => {
   const stop = vm.runInContext(`
     state.sessionId = 'session_stop_slow_a';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     setLiveActivity({ title: 'Running A', copy: '', tone: 'live' });
     state.sessionDetail = {
       metadata: { id: 'session_stop_slow_a' },
@@ -3184,7 +3262,7 @@ test('stop completion does not update a newly selected session', async () => {
   vm.runInContext(`
     state.sessionId = 'session_fast_b';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Loaded session B', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'session_fast_b' },
@@ -3198,7 +3276,7 @@ test('stop completion does not update a newly selected session', async () => {
 
   assert.deepEqual(sameRealm(vm.runInContext(`({
     selected: state.sessionId,
-    generating: state.isGenerating,
+    generating: isGenerating(),
     activityTitle: currentLiveActivity().title,
     stoppingA: isStoppingSession('session_stop_slow_a')
   })`, appContext)), {
@@ -3234,7 +3312,7 @@ test('top-level stop and interrupt controls hide for running sessions not owned 
     nodes.interruptSessionBtn = interruptButton;
     state.sessionId = 'session_external_owner_ui';
     state.sessionBacked = true;
-    state.isGenerating = true;
+    setGeneratingViewState(true);
     state.sessionDetail = {
       metadata: { id: 'session_external_owner_ui' },
       state: { status: 'running' },
@@ -3287,7 +3365,7 @@ test('child stop completion refreshes selected parent session', async () => {
     state.currentView = 'chat';
     state.sessionId = 'parent_session_stop';
     state.sessionBacked = true;
-    state.isGenerating = false;
+    setGeneratingViewState(false);
     setLiveActivity({ title: 'Parent loaded', copy: '', tone: 'neutral' });
     state.sessionDetail = {
       metadata: { id: 'parent_session_stop' },

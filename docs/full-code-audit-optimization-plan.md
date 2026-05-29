@@ -8628,7 +8628,66 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-290 and related stale async launch slices. Those slices fixed stale launch completion paths mutating the wrong selected session; this residual issue was the launch pending guard itself still living on the main `state` object.
 - Confirmed the minimal fix belongs in frontend render-state isolation only: move the pending launch guard into a tiny `launchViewState`, keep durable selected-session and message paging facts on `state`, and preserve duplicate-start suppression, pending control rendering, durable-session adoption cleanup, and stale launch completion behavior.
 
+### Review 414
+
+- Confirmed FCA-20260529-416 against `spec/17-web-console.md`'s local Web-first operator surface and the current P1 Render State Isolation plan in `docs/webconsole-frontend-optimization-plan.md`: current selected-session generating/pending-run affordance state is browser-local UI coordination derived from durable session detail, status events, and local start/continue/Plan approval actions, not a durable session, message, queue, provider, or runtime fact.
+- Confirmed this is distinct from FCA-20260529-415 and earlier stale async completion slices. Those slices fixed or isolated launch-pending request coordination before a durable session id exists; this residual issue was the selected-session running affordance flag still driving steer routing, interrupt controls, stop controls, pending-stage rendering, composer labels, and active polling through the main `state` object.
+- Confirmed the minimal fix belongs in frontend render-state isolation only: move the generating flag into a tiny `runViewState`, keep durable selected-session detail and message paging facts on `state`, and preserve UI behavior that projects runtime/session facts without creating a second authority.
+
 ## Update Log
+
+### FCA-20260529-416
+
+Slice: `fix(webconsole): isolate generating view state`
+
+Finding:
+
+- The WebConsole's main global `state` object still carried `isGenerating`, the browser-only selected-session generating/pending-run affordance flag.
+- `app.js` and `session-view.js` used that flag to choose steer vs normal send behavior, expose interrupt / stop controls, render pending-stage and activity cards, control composer labels, and keep active polling while the selected session appears to be running.
+- Durable run status still comes from session store facts, session detail REST responses, status events, and queue / child facts; `isGenerating` is only the current browser projection used to render controls before or between durable refreshes.
+
+Impact:
+
+- A browser-only selected-session affordance remained mixed with durable selected-session, message-window, and session-detail facts after adjacent render-state isolation work moved launch-pending, live relay, live event, optimistic-message, and activity-copy state into view-local stores.
+- Future frontend changes could mistake the affordance flag for durable runtime state and let WebConsole become a second status authority instead of projecting the local session store.
+
+Changes:
+
+- Added `runViewState` with `isGenerating()` and `setGeneratingViewState()` helpers.
+- Removed `isGenerating` from the main `state` object.
+- Updated start / continue / steer routing, interrupt and stop guards, keyboard shortcuts, pending control styling, connection dot styling, composer visibility, active polling, session refresh projection, session load errors, session reset, and session open paths to use the helper path.
+- Updated `session-view.js` pending-stage and activity renderers to read `isGenerating()` instead of the main app state.
+- Updated existing stale async and UI regressions to seed and assert generating state through helper functions instead of mutating `state`.
+- Added a frontend Node harness regression proving generating view state is not stored on `state`, still drives running controls / pending-stage rendering / composer copy, and clears interrupt intent plus pending UI when it settles.
+- Updated the embedded asset smoke test to reject `state.isGenerating` in served `app.js`.
+- Updated the WebConsole frontend optimization plan to record this render-state isolation slice and refresh the current line-count baseline.
+
+Validation:
+
+- `node --test --test-name-pattern "generating view state" validation/scripts/webconsole_utils_test.mjs`: failed before the fix because `isGenerating` was undefined.
+- `rg -n "state\\.isGenerating" internal/webconsole/assets validation/scripts/webconsole_utils_test.mjs internal/webconsole/service_test.go`: passed after the fix with only the service smoke's negative assertion.
+- `node --test --test-name-pattern "generating view state" validation/scripts/webconsole_utils_test.mjs`: passed after moving the flag into `runViewState`.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 86/86 tests.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceServesEmbeddedShellAndAssets -count=1`: passed after adding the embedded asset smoke guard for `runViewState`.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-415
 

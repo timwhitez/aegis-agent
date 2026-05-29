@@ -269,10 +269,10 @@ function renderMessageStream() {
 
   if (!displayStream.length) {
     return {
-      activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
+      activity: hasDurableSession() || isGenerating() ? renderSessionActivityCard() : '',
       flow: renderFlowLane(),
       body: renderEmptySessionState(),
-      pending: state.isGenerating ? renderPendingStageCard() : ''
+      pending: isGenerating() ? renderPendingStageCard() : ''
     };
   }
 
@@ -287,10 +287,10 @@ function renderMessageStream() {
   const bodyHTML = loadEarlierHTML + displayStream.map((message) => renderMessage(message)).join('');
 
   return {
-    activity: hasDurableSession() || state.isGenerating ? renderSessionActivityCard() : '',
+    activity: hasDurableSession() || isGenerating() ? renderSessionActivityCard() : '',
     flow: renderFlowLane(),
     body: bodyHTML,
-    pending: state.isGenerating ? renderPendingStageCard() : ''
+    pending: isGenerating() ? renderPendingStageCard() : ''
   };
 }
 
@@ -389,7 +389,7 @@ function renderSessionActivityCard() {
   const detail = state.sessionDetail;
   const liveActivity = currentLiveActivity();
   const counters = summarizeCurrentSession();
-  const status = detail?.state?.status || (state.isGenerating ? 'running' : 'idle');
+  const status = detail?.state?.status || (isGenerating() ? 'running' : 'idle');
   const goal = detail?.goal || null;
   const planMode = detail?.plan_mode || null;
   const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : liveActivity.title;
@@ -983,7 +983,7 @@ function renderPendingStageCard() {
         <div class="pending-stage-indicator" aria-hidden="true"></div>
         <div class="pending-stage-body">
           <div class="pending-stage-topline">
-            <span class="status-badge ${liveActivity.tone || 'neutral'}">${escapeHTML(state.isGenerating ? 'Running' : 'Settling')}</span>
+            <span class="status-badge ${liveActivity.tone || 'neutral'}">${escapeHTML(isGenerating() ? 'Running' : 'Settling')}</span>
             <span class="pending-stage-title">${escapeHTML(liveActivity.title)}</span>
             ${isNextSendInterruptArmed() ? '<span class="status-badge queued">Interrupt armed</span>' : ''}
           </div>
