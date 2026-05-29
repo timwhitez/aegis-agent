@@ -24,6 +24,56 @@ func TestAtomicWriteFileNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteFileNoSymlinkRejectsSymlinkParentDuringRename(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "skills")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	outside := t.TempDir()
+
+	restore := beforeAtomicWriteRename
+	beforeAtomicWriteRename = func(tmpPath, path string) error {
+		if err := os.RemoveAll(parent); err != nil {
+			return err
+		}
+		if err := os.Symlink(outside, parent); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(outside, filepath.Base(tmpPath)), []byte("outside"), 0o600)
+	}
+	defer func() {
+		beforeAtomicWriteRename = restore
+	}()
+
+	err := AtomicWriteFileNoSymlink(filepath.Join(parent, "SKILL.md"), []byte("body"), 0o600)
+	if err == nil {
+		t.Fatal("expected symlinked parent during rename to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "SKILL.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
+
+func TestAtomicWriteFileNoSymlinkReplacesRegularFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.json")
+	if err := os.WriteFile(path, []byte(`{"old":true}`), 0o600); err != nil {
+		t.Fatalf("write original file: %v", err)
+	}
+
+	if err := AtomicWriteFileNoSymlink(path, []byte(`{"new":true}`), 0o600); err != nil {
+		t.Fatalf("replace regular file: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read replaced file: %v", err)
+	}
+	if string(data) != `{"new":true}` {
+		t.Fatalf("unexpected replaced content: %q", data)
+	}
+}
+
 func TestChmodAfterAtomicRenameRetriesTransientMissingPath(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "session.json")

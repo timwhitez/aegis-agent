@@ -8826,7 +8826,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-450. That slice hardened WebConsole history transaction renames through session/queue backup paths; this residual issue was the copy-mode isolation file writer's own final temp-file rename. A destination parent replaced by a symlink after the last local `rejectSymlinkOrDirectory(dst)` check could still make raw `os.Rename(tmpPath, dst)` follow the new ancestor.
 - Confirmed the minimal fix belongs in `internal/isolation.copyFile`: preserve ordinary copy semantics and symlink-shape preservation, but route the final temp-file promotion and cleanup through the shared no-symlink fileutil helpers so a replaced destination parent fails closed instead of writing outside the isolation target.
 
+### Review 447
+
+- Confirmed FCA-20260529-452 against `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, `spec/14-multi-agent-and-isolation.md`, and `spec/01-runtime-architecture.md`: `fileutil.AtomicWriteFileNoSymlink` is the shared owner-only atomic writer used by Web settings/skill writes and runtime visible-output sync, so it must preserve the no-symlink destination boundary through the final temp-file promotion, not just before temp creation.
+- Confirmed this is distinct from FCA-20260529-451. That slice hardened `internal/isolation.copyFile`; this residual issue was the lower-level shared helper itself still using raw `os.Rename(tmpPath, path)` after the final destination check. Any caller of the helper could inherit the same replaced-parent escape window.
+- Confirmed the minimal fix belongs in `internal/fileutil.AtomicWriteFileNoSymlink`: keep the existing parent creation, safe replacement of existing regular files, mode/chmod behavior, and caller-visible API, but use a no-symlink replacement promotion plus no-symlink cleanup for the temp path.
+
 ## Update Log
+
+### FCA-20260529-452
+
+Slice: `fix(fileutil): harden atomic write promotion`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` requires agent writes to use atomic replacement and owner-only default permissions, while `spec/17-web-console.md`, `spec/14-multi-agent-and-isolation.md`, and `spec/01-runtime-architecture.md` route several Web/runtime filesystem facts through the shared `fileutil.AtomicWriteFileNoSymlink` helper.
+- `internal/fileutil/safe.go` `AtomicWriteFileNoSymlink` checked the destination parent for symlink ancestors, created the parent, rejected a symlinked destination file, wrote a temp file in that parent, then used raw `os.Rename(tmpPath, path)` after one more destination-file check.
+- A focused regression replaced the destination parent with a symlink after the temp file was written and before final promotion, then recreated the same temp filename under the symlink target. Before the fix, `AtomicWriteFileNoSymlink` returned nil and created the final destination file outside the originally checked parent through the symlinked parent.
+
+Impact:
+
+- A local filesystem race or manual replacement of a destination directory could make shared atomic writes escape the previously validated path boundary while still returning success.
+- This affected every caller that relies on the helper for local Web/runtime writes, including WebConsole transaction snapshots and skill writes plus runtime visible-output synchronization, weakening the same file-fact and workspace path-safety boundary those callers delegated to `fileutil`.
+
+Changes:
+
+- Routed `AtomicWriteFileNoSymlink` final temp-file promotion through a no-symlink regular-file replacement helper, rechecking the temp source, destination parent, existing destination, and source type immediately before `os.Rename` while preserving the helper's existing ability to atomically replace an existing regular file.
+- Changed temp cleanup to `RemoveFileNoSymlink` so failed writes do not clean up through a symlinked ancestor.
+- Added a package-private test hook around the final promotion boundary, a focused regression proving a symlinked destination parent during promotion is rejected and does not create the outside final file, and an adjacent regression preserving regular-file replacement behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/fileutil -run TestAtomicWriteFileNoSymlinkRejectsSymlinkParentDuringRename -count=1`: failed before the fix because `AtomicWriteFileNoSymlink` returned nil through the symlinked destination parent.
+- `go test -timeout 120s ./internal/fileutil -run TestAtomicWriteFileNoSymlinkRejectsSymlinkParentDuringRename -count=1`: passed.
+- `go test -timeout 120s ./internal/fileutil -run 'TestAtomicWriteFileNoSymlink(RejectsSymlinkParentDuringRename|ReplacesRegularFile)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole ./internal/runtime -count=1`: passed after preserving regular-file replacement semantics.
 
 ### FCA-20260529-451
 

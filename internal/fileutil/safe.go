@@ -14,6 +14,8 @@ import (
 
 const MaxRegularFileReadBytes int64 = 16 << 20
 
+var beforeAtomicWriteRename func(tmpPath, path string) error
+
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -54,7 +56,7 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 	}
 	tmpPath := tmp.Name()
 	closed := false
-	defer os.Remove(tmpPath)
+	defer RemoveFileNoSymlink(tmpPath)
 
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
@@ -74,10 +76,71 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 	if !closed {
 		_ = tmp.Close()
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if beforeAtomicWriteRename != nil {
+		if err := beforeAtomicWriteRename(tmpPath, path); err != nil {
+			return err
+		}
+	}
+	if err := renameRegularFileReplacingNoSymlink(tmpPath, path); err != nil {
 		return err
 	}
 	return chmodAfterAtomicRename(path, mode)
+}
+
+func renameRegularFileReplacingNoSymlink(oldPath, newPath string) error {
+	oldPath = strings.TrimSpace(oldPath)
+	newPath = strings.TrimSpace(newPath)
+	if oldPath == "" || newPath == "" {
+		return errors.New("source and destination paths are required")
+	}
+	oldPath = filepath.Clean(oldPath)
+	newPath = filepath.Clean(newPath)
+	if filepath.Dir(oldPath) == oldPath || filepath.Dir(newPath) == newPath {
+		return fmt.Errorf("refusing to rename filesystem root: %s -> %s", oldPath, newPath)
+	}
+	if err := rejectExistingSymlinkAncestors(oldPath); err != nil {
+		return err
+	}
+	if err := rejectExistingSymlinkAncestors(filepath.Dir(newPath)); err != nil {
+		return err
+	}
+	info, err := os.Lstat(oldPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to rename symlinked path: %s", oldPath)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to rename non-regular file path: %s", oldPath)
+	}
+	if targetInfo, err := os.Lstat(newPath); err == nil {
+		if targetInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to replace symlinked path: %s", newPath)
+		}
+		if !targetInfo.Mode().IsRegular() {
+			return fmt.Errorf("refusing to replace non-regular file path: %s", newPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return err
+	}
+	if err := rejectExistingSymlinkAncestors(newPath); err != nil {
+		return err
+	}
+	newInfo, err := os.Lstat(newPath)
+	if err != nil {
+		return err
+	}
+	if newInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("renamed file became symlinked: %s", newPath)
+	}
+	if !newInfo.Mode().IsRegular() {
+		return fmt.Errorf("renamed path is not a regular file: %s", newPath)
+	}
+	return nil
 }
 
 func chmodAfterAtomicRename(path string, mode os.FileMode) error {
