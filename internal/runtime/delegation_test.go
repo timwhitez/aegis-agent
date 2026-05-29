@@ -57,6 +57,19 @@ func TestRunnerDelegateCreatesChildSessionWithIsolation(t *testing.T) {
 	}
 }
 
+func TestAgentListRejectsUnknownParentSession(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+
+	result, err := runner.AgentList(context.Background(), "missing_parent_agent_list")
+	if err == nil {
+		t.Fatalf("expected missing parent session metadata error, got result %#v", result)
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("expected missing parent session metadata error, got %v", err)
+	}
+}
+
 func TestRunnerDelegateReportsParentCoordinationError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

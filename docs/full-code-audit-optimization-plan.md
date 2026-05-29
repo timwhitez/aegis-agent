@@ -8712,7 +8712,45 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-422 and FCA-20260529-428. Those slices covered task/child views and CLI Goal views; this residual issue was the public runtime/SDK state surface itself accepting orphan state facts.
 - Confirmed the minimal fix belongs in `Runner.State` and `Runner.InterruptWithReason`, preserving `Store.LoadState` as a low-level fact loader for callers that already loaded metadata.
 
+### Review 428
+
+- Confirmed FCA-20260529-430 against `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, and `spec/14-multi-agent-and-isolation.md`: `agent_list` is a runtime/tool recovery surface for a current parent session and must not treat an unknown parent id as a valid parent with no children.
+- Confirmed this is distinct from FCA-20260529-422. That slice fixed CLI `experimental children`; this residual issue was the model-facing `agent_list` runtime control-plane method returning empty child/job facts for an unknown parent.
+- Confirmed the minimal fix belongs in `Runner.AgentList`, before calling optional child/session and queue-job readers.
+
 ## Update Log
+
+### FCA-20260529-430
+
+Slice: `fix(runtime): reject unknown agent-list parents`
+
+Finding:
+
+- Tool `agent_list` delegates to runtime `AgentList(ctx, parentSessionID)`.
+- `Runner.AgentList` called `ListChildren(parentSessionID, 100)` and `ListJobsByParent(parentSessionID, 100)` directly.
+- Both readers can naturally return empty lists when no child or queue facts reference that parent id, so an unknown parent session was indistinguishable from a real parent with no delegated work.
+- A focused pre-fix regression called `runner.AgentList(context.Background(), "missing_parent_agent_list")`; before the fix, it returned `Sessions:[]` and `Jobs:[]` with no error.
+
+Impact:
+
+- A model recovering delegated work through `agent_list` could incorrectly conclude that there were no child sessions or background jobs when the parent session id itself was wrong or missing.
+- This weakened the model-facing counterpart of the CLI/Web parent-session fact-source boundary.
+
+Changes:
+
+- `Runner.AgentList` now loads parent session metadata before listing child sessions or parent queue jobs.
+- Added focused runtime coverage for unknown parent ids while preserving existing delegation behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestAgentListRejectsUnknownParentSession -count=1`: failed before the fix because the unknown parent returned empty child/job lists.
+- `go test -timeout 120s ./internal/runtime -run 'TestAgentListRejectsUnknownParentSession|TestRunnerDelegateCreatesChildSessionWithIsolation' -count=1`: passed.
+- `gofmt -l internal/runtime/delegation.go internal/runtime/delegation_test.go`: passed with no output.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/tools ./internal/runtime -run 'Test(AgentListRejectsUnknownParentSession|BuiltinToolSchemasDisallowUnknownProperties|AgentToolDescriptionsGuideDelegatedRecovery)' -count=1`: passed.
+- `git diff --check`: passed with no output.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260529-429
 

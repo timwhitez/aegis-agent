@@ -258,6 +258,9 @@ func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (t
 }
 
 func (r *Runner) AgentList(_ context.Context, parentSessionID string) (tools.AgentListResult, error) {
+	if _, err := r.store.LoadMetadata(parentSessionID); err != nil {
+		return tools.AgentListResult{}, err
+	}
 	sessions, err := r.store.ListChildren(parentSessionID, 100)
 	if err != nil {
 		return tools.AgentListResult{}, err
