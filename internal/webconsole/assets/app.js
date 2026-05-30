@@ -2289,7 +2289,12 @@ async function handlePlanInputAction(button) {
     const isOther = button.getAttribute('data-other') === '1';
     let value = button.getAttribute('data-value') || label;
     if (isOther) {
-      value = window.prompt('Enter a custom answer for this Plan Mode question:', '') || '';
+      value = await promptLocalAction({
+        title: 'Custom Plan Mode Answer',
+        message: 'Enter a custom answer for this Plan Mode question.',
+        inputLabel: 'Answer',
+        confirmLabel: 'Use Answer'
+      }) || '';
       if (!value.trim()) {
         return;
       }

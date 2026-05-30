@@ -148,6 +148,113 @@ function confirmLocalAction(options = {}) {
   });
 }
 
+function promptLocalAction(options = {}) {
+  const title = String(options.title || 'Enter value').trim();
+  const message = String(options.message || '').trim();
+  const inputLabel = String(options.inputLabel || 'Value').trim();
+  const initialValue = String(options.initialValue || '');
+  const confirmLabel = String(options.confirmLabel || 'Use value').trim();
+  const cancelLabel = String(options.cancelLabel || 'Cancel').trim();
+  if (!document?.body || typeof document.createElement !== 'function') {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'confirm-dialog-backdrop';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'confirm-dialog prompt-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'prompt-dialog-title');
+    dialog.setAttribute('aria-describedby', 'prompt-dialog-message');
+
+    const header = document.createElement('div');
+    header.className = 'confirm-dialog-header';
+    const heading = document.createElement('h2');
+    heading.className = 'confirm-dialog-title';
+    heading.id = 'prompt-dialog-title';
+    heading.textContent = title;
+    header.appendChild(heading);
+
+    const body = document.createElement('p');
+    body.className = 'confirm-dialog-message';
+    body.id = 'prompt-dialog-message';
+    body.textContent = message || title;
+
+    const field = document.createElement('label');
+    field.className = 'prompt-dialog-field';
+    const label = document.createElement('span');
+    label.className = 'prompt-dialog-label';
+    label.textContent = inputLabel || 'Value';
+    const input = document.createElement('input');
+    input.className = 'prompt-dialog-input';
+    input.type = 'text';
+    input.value = initialValue;
+    field.appendChild(label);
+    field.appendChild(input);
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-dialog-actions';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'confirm-dialog-cancel';
+    cancel.textContent = cancelLabel || 'Cancel';
+
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'confirm-dialog-confirm';
+    confirm.textContent = confirmLabel || 'Use value';
+
+    actions.appendChild(cancel);
+    actions.appendChild(confirm);
+    dialog.appendChild(header);
+    dialog.appendChild(body);
+    dialog.appendChild(field);
+    dialog.appendChild(actions);
+    backdrop.appendChild(dialog);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      document.removeEventListener?.('keydown', onKeydown);
+      backdrop.remove();
+      previousFocus?.focus?.();
+      resolve(value);
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault?.();
+        finish(null);
+      }
+    };
+
+    cancel.addEventListener('click', () => finish(null));
+    confirm.addEventListener('click', () => finish(input.value));
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault?.();
+        finish(input.value);
+      }
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) {
+        finish(null);
+      }
+    });
+
+    document.body.appendChild(backdrop);
+    document.addEventListener?.('keydown', onKeydown);
+    input.focus?.();
+  });
+}
+
 function setSkillUploadPending(root, pending) {
   const doc = root || document;
   const uploadInput = doc.getElementById?.('skill-upload');

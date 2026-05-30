@@ -441,6 +441,55 @@ test('confirmLocalAction resolves from local dialog controls without native conf
   }
 });
 
+test('promptLocalAction resolves from local dialog controls without native prompt', async () => {
+  const previousDocument = context.document;
+  const previousPrompt = context.window.prompt;
+  const appended = [];
+  let nativePromptCalls = 0;
+
+  context.window.prompt = () => {
+    nativePromptCalls += 1;
+    throw new Error('native prompt should not be used');
+  };
+  context.document = {
+    activeElement: null,
+    createElement() {
+      return fakeAppElement();
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    body: {
+      appendChild(node) {
+        appended.push(node);
+      }
+    }
+  };
+
+  try {
+    const submitted = context.promptLocalAction({
+      title: 'Custom Plan Mode Answer',
+      message: 'Enter a custom answer.',
+      inputLabel: 'Answer',
+      confirmLabel: 'Use Answer'
+    });
+    assert.equal(appended.length, 1);
+    collectFakeElementsByClass(appended[0], 'prompt-dialog-input')[0].value = 'Browser smoke';
+    collectFakeElementsByClass(appended[0], 'confirm-dialog-confirm')[0].listeners.click();
+    assert.equal(await submitted, 'Browser smoke');
+
+    const cancelled = context.promptLocalAction({
+      title: 'Custom Plan Mode Answer'
+    });
+    assert.equal(appended.length, 2);
+    collectFakeElementsByClass(appended[1], 'confirm-dialog-cancel')[0].listeners.click();
+    assert.equal(await cancelled, null);
+    assert.equal(nativePromptCalls, 0);
+  } finally {
+    context.document = previousDocument;
+    context.window.prompt = previousPrompt;
+  }
+});
+
 test('chat render cache is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   const initial = vm.runInContext(`({
@@ -1366,6 +1415,63 @@ test('plan input selections are isolated from durable app state', async () => {
   })`, appContext)), {
     stateHasPlanInputSelections: false,
     requestSelections: null
+  });
+});
+
+test('plan input Other answer uses local prompt dialog', async () => {
+  const appContext = createAppHarnessContext();
+  const promptCalls = [];
+  appContext.planInputOtherButton = fakeActionButton({
+    'data-plan-input-action': 'select',
+    'data-request-id': 'request_plan_input',
+    'data-question-id': 'validation',
+    'data-label': 'Other',
+    'data-other': '1'
+  });
+
+  await vm.runInContext(`
+    const request = {
+      request_id: 'request_plan_input',
+      questions: [
+        { id: 'validation', options: [{ label: 'Unit tests' }, { label: 'Browser smoke' }] }
+      ]
+    };
+    state.sessionId = 'session_plan_input_other';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_input_other' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        status: 'awaiting_user_input',
+        pending_request: request
+      }
+    };
+    promptLocalAction = async function(options) {
+      promptCallsRef.push(options);
+      return 'Manual browser smoke';
+    };
+    window.prompt = function() {
+      throw new Error('native prompt should not be used');
+    };
+    renderCurrentSession = function() {};
+    handlePlanInputAction(planInputOtherButton);
+  `, Object.assign(appContext, { promptCallsRef: promptCalls }));
+
+  assert.deepEqual(sameRealm(promptCalls), [
+    {
+      title: 'Custom Plan Mode Answer',
+      message: 'Enter a custom answer for this Plan Mode question.',
+      inputLabel: 'Answer',
+      confirmLabel: 'Use Answer'
+    }
+  ]);
+  assert.deepEqual(sameRealm(vm.runInContext(`
+    getPlanInputSelections(currentPlanMode().pending_request).validation
+  `, appContext)), {
+    question_id: 'validation',
+    label: 'Other',
+    value: 'Manual browser smoke',
+    is_other: true
   });
 });
 

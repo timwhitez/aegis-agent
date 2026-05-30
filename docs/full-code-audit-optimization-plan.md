@@ -9138,7 +9138,46 @@ Evidence gates:
 - Confirmed this is a residual issue after FCA-20260530-502. That slice rejected symlink entries specifically; named pipe, device, socket, and other non-regular entry types still reached extraction and were written as regular managed files through `AtomicWriteFileNoSymlink(...)`.
 - Confirmed the minimal fix belongs next to the symlink-entry check in `processSkillZipReader(...)`: reject non-directory entries whose ZIP mode has any non-regular type bits, while preserving ordinary ZIP entries that do not carry POSIX mode metadata and preserving valid directory entries.
 
+### Review 499
+
+- Confirmed FCA-20260530-504 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and the current frontend assets: Plan Mode pending input is part of the Web-first control surface and should not use blocking native browser prompts for the `Other` answer path.
+- Confirmed this is distinct from FCA-20260529-107. That earlier slice replaced native `window.confirm` for risk and destructive actions; this residual issue was `handlePlanInputAction(...)` still calling `window.prompt(...)` for custom Plan Mode answers.
+- Confirmed the minimal fix belongs in the frontend utility layer and Plan Mode input handler: add a reusable local prompt dialog, use it for `Other` answers, keep request-scoped selection state unchanged, and add Node harness coverage proving the native prompt path is not used.
+
 ## Update Log
+
+### FCA-20260530-504
+
+Slice: `fix(webconsole): replace Plan Mode native prompt`
+
+Finding:
+
+- `handlePlanInputAction(...)` used `window.prompt(...)` when the operator selected `Other` for a pending Plan Mode question.
+- Native browser prompts are blocking, not styled with the local WebConsole surface, hard to test, and inconsistent with the existing local confirmation dialog pattern.
+
+Impact:
+
+- The Plan Mode input workflow could still escape the local Web-first interaction model for one answer path.
+- This left a browser-native modal in the default local control surface even though other confirmation paths had already moved to testable local dialogs.
+
+Changes:
+
+- Added `promptLocalAction(...)`, a local promise-based prompt dialog with cancel / confirm controls, Escape and backdrop cancellation, focus return, and Enter-to-submit behavior.
+- Replaced the Plan Mode `Other` answer `window.prompt(...)` call with `promptLocalAction(...)`.
+- Added focused frontend harness coverage for the prompt helper and for Plan Mode `Other` selection without using native `window.prompt`.
+- Added CSS for the prompt dialog input field using the existing local dialog visual system.
+
+Validation:
+
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js && node --check internal/webconsole/assets/workspace-view.js && node --check internal/webconsole/assets/events.js && node --check internal/webconsole/assets/settings-view.js && node --check internal/webconsole/assets/api.js && node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 112/112 tests.
+- `rg -n "window\\.prompt|[^A-Za-z]prompt\\(" internal/webconsole/assets`: passed with no matches.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-503
 

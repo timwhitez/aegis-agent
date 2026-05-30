@@ -2587,6 +2587,35 @@ textarea {
   line-height: 1.55;
 }
 
+.prompt-dialog-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.prompt-dialog-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.prompt-dialog-input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text-main);
+  font: inherit;
+}
+
+.prompt-dialog-input:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.65);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
 .confirm-dialog-actions {
   display: flex;
   justify-content: flex-end;
