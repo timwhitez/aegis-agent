@@ -3108,6 +3108,70 @@ test('Goal plan approval override ignores stale confirmation after session chang
   assert.deepEqual(sameRealm(toasts), []);
 });
 
+test('Goal plan approval override ignores stale confirmation after same-session refresh', async () => {
+  const appContext = createAppHarnessContext();
+  installGoalAPITestWrappers(appContext);
+  const confirmResolvers = [];
+  const toasts = [];
+  appContext.goalApprovePlanButton = fakeActionButton({ 'data-goal-action': 'approve-plan' });
+
+  const approval = vm.runInContext(`
+    confirmCoverageOverride = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_goal_override_same_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_override_same_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_old', status: 'active', objective: 'old mission', updated_at: '2026-05-30T01:00:00Z' }
+    };
+    handleGoalAction(goalApprovePlanButton);
+  `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_goal_override_same_a\/mission\/plan\/approve$/);
+  appContext.pendingRequests[0].reject({
+    status: 409,
+    message: 'validation coverage blocks approval'
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(confirmResolvers.length, 1);
+
+  vm.runInContext(`
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_override_same_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_new', status: 'active', objective: 'new mission', updated_at: '2026-05-30T01:01:00Z' }
+    };
+  `, appContext);
+
+  confirmResolvers[0](true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({ session_id: 'session_goal_override_same_a', status: 'accepted' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (appContext.pendingRequests[2]) {
+    appContext.pendingRequests[2].resolve({
+      metadata: { id: 'session_goal_override_same_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_new', status: 'active', objective: 'new mission', updated_at: '2026-05-30T01:01:00Z' },
+      messages: [],
+      timeline: []
+    });
+  }
+  await approval;
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('running-session steer completion does not mark a newly selected session as queued', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);

@@ -2204,7 +2204,7 @@ async function handleGoalAction(button) {
           }
           return;
         }
-        if (state.sessionId !== sessionID) {
+        if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
           return;
         }
         response = await approveMissionPlan(sessionID, { override_coverage: true });

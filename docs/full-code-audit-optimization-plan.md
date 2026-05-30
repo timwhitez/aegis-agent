@@ -9042,7 +9042,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-484 and FCA-20260530-486. Those slices covered stale coverage override confirmations across selected-session changes and History delete/clear actions across History projection changes; this residual issue was same-session Goal refresh, where `handleGoalAction(clear)` rechecked only `state.sessionId` after `confirmGoalClear()` and could clear a refreshed replacement Goal for the same session.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture a compact Goal action identity from the currently rendered Goal snapshot before opening the clear confirmation, then abandon the clear continuation if the selected session or Goal identity changed before confirmation returns.
 
+### Review 483
+
+- Confirmed FCA-20260530-488 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Goal mission-plan coverage override is an explicit risk action over the current durable Goal/Mission projection, so a confirmation dialog opened for one Goal snapshot must not authorize `?override=1` for a refreshed replacement Goal in the same session.
+- Confirmed this is distinct from FCA-20260530-484 and FCA-20260530-487. FCA-484 rechecked selected-session changes around coverage override confirmations, while FCA-487 tied Goal clear to the same-session Goal identity. This residual branch reused only the selected-session guard after `confirmCoverageOverride()` returned in `handleGoalAction(approve-plan)`, so a same-session Goal refresh could still send the override approval for the newer Goal.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: reuse the compact Goal action identity captured at Goal action start, and abandon the override continuation if either the selected session or the rendered Goal identity changed before the coverage override confirmation returns.
+
 ## Update Log
+
+### FCA-20260530-488
+
+Slice: `fix(webconsole): ignore stale goal override`
+
+Finding:
+
+- `handleGoalAction(approve-plan)` first calls `approveMissionPlan(sessionID)`.
+- When the backend returns a validation coverage conflict, the frontend opens `confirmCoverageOverride()` and then only rechecks `state.sessionId` before retrying `approveMissionPlan(sessionID, { override_coverage: true })`.
+- A focused regression reproduced that if the same session's Goal snapshot changed while the override confirmation was open, confirming the old dialog still sent `/api/sessions/{id}/mission/plan/approve?override=1` for the refreshed Goal.
+
+Impact:
+
+- Operators could override validation coverage for a Goal/Mission snapshot they did not actually confirm if the selected session refreshed from one Goal to another while the risk dialog was pending.
+- This weakened the WebConsole contract that risky local mutations apply to the current confirmed browser projection over durable session facts.
+
+Changes:
+
+- Reused the compact Goal action identity captured at the start of `handleGoalAction()`.
+- `handleGoalAction(approve-plan)` now abandons the coverage override continuation if the selected session or Goal identity changed before the override confirmation returns.
+- Added a focused frontend regression for stale same-session Goal plan override confirmation.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "Goal plan approval override ignores stale confirmation after same-session refresh"`: failed before the fix because the stale confirmation produced three requests instead of only the initial approval request.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "Goal plan approval override ignores stale confirmation after same-session refresh"`: passed after the fix, 100 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 100 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
 
 ### FCA-20260530-487
 
