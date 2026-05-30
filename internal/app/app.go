@@ -816,6 +816,35 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 			return nil
 		case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput:
 			return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
+		case session.PlanModeStatusExecuting:
+			if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
+				return errors.New("plan mode has no approved plan")
+			}
+			approvedAt := ""
+			if goal.Mission != nil {
+				approvedAt = goal.Mission.ApprovedAt
+			}
+			if approvedAt == "" {
+				approvedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			}
+			approved, err := approveCLIMissionPlanWithEvent(store, sessionID, goal, session.MissionPlanApprovalInput{
+				Source:           session.GoalSourceCLI,
+				ApprovedAt:       approvedAt,
+				CoverageOverride: overrideCoverage,
+				PlanModeID:       planMode.PlanModeID,
+				ApprovedVersion:  planMode.ApprovedVersion,
+			}, map[string]any{
+				"plan_mode_id":     planMode.PlanModeID,
+				"approved_version": planMode.ApprovedVersion,
+			})
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				return json.NewEncoder(stdout).Encode(approved)
+			}
+			_, _ = fmt.Fprintf(stdout, "goal plan approved: %s\n", approved.GoalID)
+			return nil
 		}
 	} else if planModeErr != nil && !errors.Is(planModeErr, fs.ErrNotExist) {
 		return planModeErr
@@ -844,32 +873,13 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		}
 		return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
 	}
-	previousHistory, err := store.LoadGoalHistory(sessionID)
-	if err != nil {
-		return err
-	}
-	previousGoal := goal
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	goal, err = store.ApproveMissionPlan(sessionID, session.MissionPlanApprovalInput{
+	goal, err = approveCLIMissionPlanWithEvent(store, sessionID, goal, session.MissionPlanApprovalInput{
 		Source:           session.GoalSourceCLI,
 		ApprovedAt:       approvedAt,
 		CoverageOverride: overrideCoverage,
-	})
+	}, nil)
 	if err != nil {
-		return err
-	}
-	if err := store.AppendEvent(sessionID, events.New(sessionID, "mission.plan.approved", "goal", map[string]any{
-		"goal_id":           goal.GoalID,
-		"plan_status":       goal.Mission.PlanStatus,
-		"approved_at":       approvedAt,
-		"coverage_override": overrideCoverage,
-	})); err != nil {
-		if restoreErr := store.SaveGoal(sessionID, previousGoal); restoreErr != nil {
-			return fmt.Errorf("restore goal after mission approval event error %v: %w", err, restoreErr)
-		}
-		if restoreErr := store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
-			return fmt.Errorf("restore goal history after mission approval event error %v: %w", err, restoreErr)
-		}
 		return err
 	}
 	if jsonMode {
@@ -877,6 +887,37 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 	}
 	_, _ = fmt.Fprintf(stdout, "goal plan approved: %s\n", goal.GoalID)
 	return nil
+}
+
+func approveCLIMissionPlanWithEvent(store *session.Store, sessionID string, goal session.SessionGoal, input session.MissionPlanApprovalInput, extra map[string]any) (session.SessionGoal, error) {
+	previousHistory, err := store.LoadGoalHistory(sessionID)
+	if err != nil {
+		return session.SessionGoal{}, err
+	}
+	previousGoal := goal
+	approved, err := store.ApproveMissionPlan(sessionID, input)
+	if err != nil {
+		return session.SessionGoal{}, err
+	}
+	eventData := map[string]any{
+		"goal_id":           approved.GoalID,
+		"plan_status":       approved.Mission.PlanStatus,
+		"approved_at":       input.ApprovedAt,
+		"coverage_override": input.CoverageOverride,
+	}
+	for key, value := range extra {
+		eventData[key] = value
+	}
+	if err := store.AppendEvent(sessionID, events.New(sessionID, "mission.plan.approved", "goal", eventData)); err != nil {
+		if restoreErr := store.SaveGoal(sessionID, previousGoal); restoreErr != nil {
+			return session.SessionGoal{}, fmt.Errorf("restore goal after mission approval event error %v: %w", err, restoreErr)
+		}
+		if restoreErr := store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+			return session.SessionGoal{}, fmt.Errorf("restore goal history after mission approval event error %v: %w", err, restoreErr)
+		}
+		return session.SessionGoal{}, err
+	}
+	return approved, nil
 }
 
 func appendCLIPlanModeLinkEvent(store *session.Store, sessionID string, previous session.PlanModeSnapshot, planMode session.PlanModeState, created bool) error {

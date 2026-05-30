@@ -711,6 +711,111 @@ func TestGoalPlanApproveRejectsGoalWithoutMissionPlan(t *testing.T) {
 	}
 }
 
+func TestGoalPlanApproveCommandPreservesLinkedExecutingPlanMode(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "session_goal_plan_executing_cli",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		RootSessionID:    "session_goal_plan_executing_cli",
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusFailed, Phase: "plan_execution", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:             true,
+		Mode:                session.GoalModeMission,
+		Objective:           "Approve executing CLI mission plan",
+		ValidationPlan:      []string{"go test ./internal/app"},
+		Features:            []string{"CLI executing plan"},
+		Milestones:          []string{"CLI executing validation"},
+		RequirePlanApproval: true,
+		Source:              session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal.Mission.Features[0].ClaimedAssertions = []string{"validation_0001"}
+	goal.Mission.Milestones[0].ValidationIDs = []string{"validation_0001"}
+	if err := store.SaveGoal(meta.ID, goal); err != nil {
+		t.Fatalf("save goal: %v", err)
+	}
+	planMode, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Approve executing CLI mission plan",
+		Source:    session.PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	planMode.LinkedGoalID = goal.GoalID
+	if err := store.SavePlanMode(meta.ID, planMode); err != nil {
+		t.Fatalf("link plan mode: %v", err)
+	}
+	if _, err := store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Executing CLI plan",
+		Summary:      "Already approved and executing.",
+		PlanMarkdown: "# Plan\n\nExecute.",
+		Verification: []string{"go test ./internal/app"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	if _, err := store.ApprovePlanMode(meta.ID, session.PlanModeSourceCLI); err != nil {
+		t.Fatalf("approve plan mode: %v", err)
+	}
+	if _, err := store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceCLI); err != nil {
+		t.Fatalf("mark plan mode executing: %v", err)
+	}
+	fake := newFakeRunner()
+	fake.store = store
+	restore := storeRunnerLoader
+	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { storeRunnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"goal", "plan", "approve", meta.ID, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("goal plan approve should accept linked executing Plan Mode: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	approved, err := store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load approved goal: %v", err)
+	}
+	if approved.Mission == nil || approved.Mission.PlanStatus != session.MissionPlanStatusApproved {
+		t.Fatalf("expected approved mission plan, got %#v", approved.Mission)
+	}
+	afterPlanMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if afterPlanMode.PlanModeID != planMode.PlanModeID || afterPlanMode.Status != session.PlanModeStatusExecuting {
+		t.Fatalf("approval should preserve linked executing Plan Mode, before=%#v after=%#v", planMode, afterPlanMode)
+	}
+	eventsList, err := store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	var foundPlanModeID bool
+	for _, evt := range eventsList {
+		if evt.Type == "mission.plan.approved" && fmt.Sprint(evt.Data["plan_mode_id"]) == planMode.PlanModeID {
+			foundPlanModeID = true
+		}
+	}
+	if !foundPlanModeID {
+		t.Fatalf("expected mission approval event to retain linked plan mode id, got %#v", eventsList)
+	}
+}
+
 func TestGoalPlanApproveCommandReportsEventAppendError(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	now := time.Now().UTC().Format(time.RFC3339Nano)

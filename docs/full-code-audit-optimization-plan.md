@@ -9540,7 +9540,50 @@ Evidence gates:
 - Confirmed this is distinct from the stale-handle pruning slices. Those covered failed/completed in-memory handles blocking recovered input/cancel/stop/interrupt paths; this residual gap was a Web service preflight rejecting durable `executing` Plan Mode before the runtime's idempotent approve recovery path could run.
 - Confirmed the minimal fix belongs in the Web service preflight boundary: align `ensurePlanModeApprovalPreflight` with runtime approve preflight by allowing `executing` only when an approved version and plan markdown are present, while keeping planning/input/cancelled states rejected.
 
+### Review 566
+
+- Confirmed FCA-20260530-571 against `spec/09-phase-plan.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: CLI `goal plan approve` is the fallback for Web goal plan approval and must read/update the same durable goal and linked Plan Mode facts instead of creating a second pending gate.
+- Confirmed this is distinct from FCA-20260530-570. That slice fixed the direct Web Plan Mode approve endpoint; this residual gap was the CLI mission approval path falling through on linked `executing` Plan Mode and calling `EnsurePlanModeForGoal`, which created a fresh pending Plan Mode instead of preserving the already-approved execution fact.
+- Confirmed the minimal fix belongs in the CLI app adapter, not the session store: the store already represents linked executing Plan Mode and Web already has an executing branch; the CLI adapter needed to handle that state before the generic "ensure pending gate" fallback.
+
 ## Update Log
+
+### FCA-20260530-571
+
+Slice: `fix(cli): preserve executing goal plan gate`
+
+Finding:
+
+- `spec/09-phase-plan.md` makes CLI `goal plan show/check/approve` the fallback for the Web-first mission controls over the same session store facts.
+- `spec/18-durable-contract-and-completion.md` says mission plan approval must reuse linked Plan Mode facts and must not treat an already approved/executing plan as a missing pending gate.
+- `internal/webconsole/service.go` already handled a linked `PlanModeStatusExecuting` mission approval by approving the mission against that plan mode id/version.
+- `internal/app/app.go` only routed linked `awaiting_approval` / `approved` Plan Mode through runtime continue. For linked `executing`, it fell through to `EnsurePlanModeForGoal`, which created a new pending gate and returned `linked Plan Mode is not awaiting approval`.
+- A focused CLI regression reproduced a mission goal with `plan_status=needs_approval` and a linked approved/executing Plan Mode; before the fix, `goal plan approve --json` failed and did not preserve the existing executing gate.
+
+Impact:
+
+- CLI fallback could strand a recoverable mission approval state or create a second pending Plan Mode over an already-approved execution fact.
+- Web and CLI disagreed on the same durable `goal.json` / `planmode.json` state, weakening recovery parity for Web-first v1.
+
+Changes:
+
+- Added a CLI `goal plan approve` branch for linked `PlanModeStatusExecuting`.
+- Required the executing plan to have an approved version and plan markdown before mission approval.
+- Preserved the linked plan mode id/version in the `mission.plan.approved` event.
+- Refactored CLI mission approval event append and rollback into a shared helper so the normal approval path and executing linked-plan path use the same rollback behavior.
+- Added `TestGoalPlanApproveCommandPreservesLinkedExecutingPlanMode`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/app -run TestGoalPlanApproveCommandPreservesLinkedExecutingPlanMode -count=1`: failed before the fix with `linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan`.
+- `go test -timeout 120s ./internal/app -run 'TestGoalPlanApprove(CommandPreservesLinkedExecutingPlanMode|CommandReportsEventAppendError|RejectsGoalWithoutMissionPlan)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/app -count=1`: passed.
+- `gofmt -l internal/app/app.go internal/app/app_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServicePlanModeApproveAcceptsExecutingRecovery -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-570
 
