@@ -771,6 +771,10 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if modelOverride != "" {
 		meta.Model = modelOverride
 	}
+	req.PlanInputRequestID = strings.TrimSpace(req.PlanInputRequestID)
+	if err := r.preflightPlanModeControl(meta.ID, req); err != nil {
+		return RunResult{}, err
+	}
 	if !req.CancelPlan {
 		mergedProviderOptions, err := r.mergedSessionProviderOptions(meta.Provider, meta.ProviderOptions)
 		if err != nil {
@@ -890,6 +894,66 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest) error {
+	if req.ApprovePlan {
+		planMode, err := r.store.LoadPlanMode(sessionID)
+		if err != nil {
+			return err
+		}
+		switch planMode.Status {
+		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
+			if planMode.PlanVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
+				return errors.New("plan mode has no submitted plan")
+			}
+		case session.PlanModeStatusExecuting:
+			if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
+				return errors.New("plan mode has no approved plan")
+			}
+		default:
+			return fmt.Errorf("plan mode is not awaiting approval: %s", planMode.Status)
+		}
+	}
+	if req.CancelPlan {
+		if _, err := r.store.LoadPlanMode(sessionID); err != nil {
+			return err
+		}
+	}
+	if len(req.PlanInputAnswers) > 0 {
+		if req.PlanInputRequestID == "" {
+			return errors.New("plan input request_id is required")
+		}
+		planMode, err := r.store.LoadPlanMode(sessionID)
+		if err != nil {
+			return err
+		}
+		if planMode.PendingRequest == nil {
+			recoverable, err := r.hasRecoverablePlanInputAnswer(sessionID, req.PlanInputRequestID, req.PlanInputAnswers)
+			if err != nil {
+				return err
+			}
+			if recoverable {
+				return nil
+			}
+			return errors.New("plan mode has no pending input request")
+		}
+		if planMode.PendingRequest.RequestID != req.PlanInputRequestID {
+			return fmt.Errorf("plan input request mismatch: %s", req.PlanInputRequestID)
+		}
+		if err := session.ValidatePlanModeAnswers(*planMode.PendingRequest, req.PlanInputAnswers); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) hasRecoverablePlanInputAnswer(sessionID, requestID string, answers []session.PlanModeInputAnswer) (bool, error) {
+	answer, ok, err := r.matchingPlanInputAnswerHistory(sessionID, requestID, answers)
+	if err != nil || !ok {
+		return false, err
+	}
+	return r.hasToolResult(sessionID, answer.ToolCallID, "request_user_input")
 }
 
 func (r *Runner) ensurePlanModeCreatedForContinue(sessionID string, draft session.PlanModeDraft) (session.PlanModeState, error) {

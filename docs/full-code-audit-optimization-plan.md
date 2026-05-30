@@ -9384,7 +9384,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-541. That slice rejected duplicate names; this residual slice covers syntactically invalid names such as spaces, dots, Unicode, digit-prefixed names, and overlong names that would make provider tool schemas fail after registry construction.
 - Confirmed the minimal fix belongs in `NewRegistry` before `commandToolDefinition` registration. Provider adapters should keep their thin name pass-through, while the local registry rejects incompatible trusted skill command names before exposing them to the model.
 
+### Review 540
+
+- Confirmed FCA-20260530-545 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Plan Mode approve/cancel/recovered-input controls must be checked against the durable `planmode.json` fact before runtime claims a resumable session as running.
+- Confirmed this is distinct from earlier Web input/approve preflight and Plan Mode event/history idempotency slices. The remaining gap was the lower-level `Runner.Continue` boundary, plus Web's inactive cancel path, where malformed or missing Plan Mode control facts could still reach the runtime after only a generic resumable-state check.
+- Confirmed the minimal fix belongs at the runtime/session boundary: preflight current Plan Mode state and pending input `request_id` before `ClaimSessionRun`, keep already-answered recovered input retry idempotent, and require exact non-empty request IDs in `Store.AnswerPlanModeInput`.
+
 ## Update Log
+
+### FCA-20260530-545
+
+Slice: `fix(runtime): preflight plan mode controls before claim`
+
+Finding:
+
+- `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md` define Plan Mode controls as durable `planmode.json` operations, with recovered input answers tied to a stored pending request and `tool_call_id`.
+- `internal/runtime/runner.go` `Continue` checked only that `state.status` was resumable, then called `ClaimSessionRun` before recovered input answer, cancel, or approval validation ran.
+- `internal/webconsole/service.go` already preflighted Plan Mode input and approve, but the inactive `/planmode/cancel` path delegated directly to `Runner.Continue{CancelPlan:true}`. SDK/CLI/runtime callers could also reach the same lower-level boundary.
+- `internal/session/planmode.go` `AnswerPlanModeInput` treated an empty `requestID` as "answer whichever request is pending", even though the Web/API contract requires a `request_id`.
+
+Impact:
+
+- Calling Plan Mode cancel on a resumable session without a current `planmode.json`, or sending recovered input answers without a request id, could turn an otherwise resumable session into `failed` through `failBeforeRun`.
+- A stale or malformed recovered input answer could be applied to the current pending request without proving it targeted the stored request. That weakens the `request_user_input` replay boundary and makes invalid Plan Mode controls mutate session state before returning an error.
+- The Web inactive cancel endpoint could surface this as a user-facing failed session rather than a clean 404/conflict for the invalid Plan Mode action.
+
+Changes:
+
+- Added `preflightPlanModeControl` in `Runner.Continue` before `ClaimSessionRun`.
+- Preflight now loads current `planmode.json` for approve/cancel/recovered-input controls, validates approval-ready or idempotent executing states, requires an existing Plan Mode for cancel, and validates recovered input `request_id` plus answers against the stored pending request.
+- Preserved idempotent recovered input-answer retry when the pending request was already answered and the matching history/tool result exists but the runtime event still needs repair.
+- Changed `Store.AnswerPlanModeInput` to reject empty `request_id` instead of treating it as a wildcard pending request.
+- Added runtime, session, and WebConsole regressions proving invalid Plan Mode controls do not claim the session, append replay results, clear pending input, launch a Web handle, or mark the session failed.
+- Updated Plan Mode specs to document the runtime preclaim validation boundary.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeWithoutPlanModeDoesNotClaimSession|ContinuePlanInputWithoutRequestIDDoesNotClaimSession|PlanInputAnswerRetryAfterEventFailureRestoresEvent)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run TestPlanModeInputValidationAndAnswer -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServicePlanModeCancelWithoutPlanModeDoesNotFailSession -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanMode|PlanInput|ApprovePlanMode|RevisePlanMode|ContinuePlanMode)' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -run 'TestPlanMode|TestApprovePlanMode|TestValidatePlanModeAnswers|TestSubmitPlanMode' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServicePlanMode' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/session ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-544
 

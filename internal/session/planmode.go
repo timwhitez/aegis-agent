@@ -761,6 +761,10 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 
 func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers []PlanModeInputAnswer) (PlanModeState, PlanModeInputRequest, error) {
 	var request PlanModeInputRequest
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return PlanModeState{}, PlanModeInputRequest{}, errors.New("plan input request_id is required")
+	}
 	rollback, err := s.planModeRollbackSnapshot(sessionID)
 	if err != nil {
 		return PlanModeState{}, PlanModeInputRequest{}, err
@@ -773,7 +777,7 @@ func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers
 			return errors.New("plan mode has no pending input request")
 		}
 		request = *state.PendingRequest
-		if strings.TrimSpace(requestID) != "" && request.RequestID != requestID {
+		if request.RequestID != requestID {
 			return fmt.Errorf("plan input request mismatch: %s", requestID)
 		}
 		if err := ValidatePlanModeAnswers(request, answers); err != nil {

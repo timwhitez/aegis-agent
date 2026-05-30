@@ -927,6 +927,115 @@ func TestCancelPlanModeRecordsAwaitingInputLifecycleEvent(t *testing.T) {
 	}
 }
 
+func TestCancelPlanModeWithoutPlanModeDoesNotClaimSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	original := session.State{Status: session.StatusAwaitingInput, Phase: "idle", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, original); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, CancelPlan: true, Source: session.PlanModeSourceCLI})
+	if err == nil {
+		t.Fatalf("expected missing plan mode error, got result=%#v", result)
+	}
+	state, loadErr := runner.store.LoadState(sessionID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if state.Status != original.Status || state.Phase != original.Phase || state.LastError != "" {
+		t.Fatalf("invalid cancel should not claim or fail session, before=%#v after=%#v", original, state)
+	}
+}
+
+func TestContinuePlanInputWithoutRequestIDDoesNotClaimSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	original := session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, original); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Answer plan input"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	request := session.PlanModeInputRequest{
+		RequestID:  "pmq_missing_request_id",
+		ToolCallID: "call_missing_request_id",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := runner.store.SetPlanModePendingRequest(sessionID, request, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: sessionID,
+		PlanInputAnswers: []session.PlanModeInputAnswer{{
+			QuestionID: "scope_choice",
+			Label:      "Narrow (Recommended)",
+			Value:      "Narrow (Recommended)",
+		}},
+		Source: session.PlanModeSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "request_id") {
+		t.Fatalf("expected missing request_id error, got result=%#v err=%v", result, err)
+	}
+	state, loadErr := runner.store.LoadState(sessionID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if state.Status != original.Status || state.Phase != original.Phase || state.LastError != "" {
+		t.Fatalf("invalid input should not claim or fail session, before=%#v after=%#v", original, state)
+	}
+	planMode, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil || planMode.PendingRequest.RequestID != request.RequestID {
+		t.Fatalf("invalid input should keep pending request, got %#v", planMode)
+	}
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, request.ToolCallID, "request_user_input"); count != 0 {
+		t.Fatalf("invalid input should not append replay result, got %d messages=%#v", count, messages)
+	}
+}
+
 func TestPlanInputCancelReturnsHistoryAppendError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

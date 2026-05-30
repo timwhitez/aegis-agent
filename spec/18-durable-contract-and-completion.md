@@ -75,6 +75,8 @@ Plan Mode is an execution gate, not a workflow engine. Pending Plan Mode suppres
 
 Approval must leave a replayable fact: the runtime appends a user message with `meta.source=planmode_approval` before execution resumes. Answering or cancelling pending `request_user_input` must append the matching tool result using the stored `tool_call_id`.
 
+Runtime `continue` Plan Mode controls must preflight the current `planmode.json` fact before claiming the session as running. Approve requires an approval-ready or idempotent executing Plan Mode, cancel requires an existing Plan Mode, and recovered input answers require a non-empty matching `request_id` plus answers that validate against the stored pending request. Invalid controls must return an error without changing `state.json`, appending replay messages, or advancing Plan Mode facts.
+
 ## 2. Session Contract
 
 Each session may write:

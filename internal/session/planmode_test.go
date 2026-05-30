@@ -739,6 +739,20 @@ func TestPlanModeInputValidationAndAnswer(t *testing.T) {
 	if pending.Status != PlanModeStatusAwaitingUserInput || pending.PendingRequest == nil || !pending.PendingRequest.Questions[0].IsOther {
 		t.Fatalf("unexpected pending state: %#v", pending)
 	}
+	if _, _, err := store.AnswerPlanModeInput(sessionID, "", PlanModeSourceWeb, []PlanModeInputAnswer{{
+		QuestionID: "scope_choice",
+		Label:      "Narrow (Recommended)",
+		Value:      "Narrow (Recommended)",
+	}}); err == nil || !strings.Contains(err.Error(), "request_id") {
+		t.Fatalf("expected missing request_id error, got %v", err)
+	}
+	stillPending, err := store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode after invalid answer: %v", err)
+	}
+	if stillPending.Status != PlanModeStatusAwaitingUserInput || stillPending.PendingRequest == nil || stillPending.PendingRequest.RequestID != request.RequestID {
+		t.Fatalf("missing request_id should keep pending request, got %#v", stillPending)
+	}
 	answered, answeredRequest, err := store.AnswerPlanModeInput(sessionID, request.RequestID, PlanModeSourceWeb, []PlanModeInputAnswer{{
 		QuestionID: "scope_choice",
 		Label:      "Narrow (Recommended)",

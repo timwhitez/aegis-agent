@@ -554,6 +554,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 `POST /api/sessions/{id}/planmode/cancel`
 
 - 取消 pending Plan Mode；如果正在等待 active `request_user_input`，先唤醒 active runner 写入取消 tool result；如果 active handle 已丢失，则由 continue path 根据 pending `tool_call_id` 补偿 tool result
+- 缺少 current Plan Mode 或 recovered input `request_id` 不匹配这类无效控制必须在 runtime claim session 前失败，不能把可恢复 session 标成 failed
 
 `POST /api/sessions/{id}/planmode/input`
 

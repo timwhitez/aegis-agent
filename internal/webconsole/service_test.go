@@ -3119,6 +3119,40 @@ func TestServicePlanModeReviseRejectsPendingInputBeforeLaunch(t *testing.T) {
 	}
 }
 
+func TestServicePlanModeCancelWithoutPlanModeDoesNotFailSession(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_planmode_cancel_missing")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	original := session.State{Status: session.StatusAwaitingInput, Phase: "idle", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := svc.store.Create(meta, original); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/cancel", map[string]any{}, http.StatusNotFound)
+	if strings.TrimSpace(errResp.Error) == "" {
+		t.Fatalf("expected missing plan mode error, got %#v", errResp)
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != original.Status || state.Phase != original.Phase || state.LastError != "" {
+		t.Fatalf("missing plan mode cancel should not claim or fail session, before=%#v after=%#v", original, state)
+	}
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatalf("missing plan mode cancel should not launch background continue")
+	}
+}
+
 func TestServicePlanModeReviseInputAndCancelControls(t *testing.T) {
 	server := newSubmitPlanServer()
 	defer server.Close()
