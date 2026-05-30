@@ -9054,7 +9054,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-484 and FCA-20260530-488. FCA-484 rechecked selected-session changes around Plan/Goal coverage override confirmations, while FCA-488 tied Goal mission-plan override to the same-session Goal identity. This residual branch was Plan Mode's own approval path: `handlePlanModeAction(approve)` still rechecked only `state.sessionId` after `confirmCoverageOverride()` returned.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture a compact Plan Mode action identity from the rendered `plan_mode` snapshot, then abandon stale approval/override UI continuations if either the selected session or Plan Mode identity changed before the async action settles.
 
+### Review 485
+
+- Confirmed FCA-20260530-490 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Goal mission-plan approval completion updates the current WebConsole activity/generating UI for the durable `goal.json` projection, so a response for one Goal snapshot must not mark a refreshed replacement Goal in the same session as executing.
+- Confirmed this is distinct from FCA-20260530-488. FCA-488 tied the explicit coverage override confirmation to the same-session Goal identity before sending `?override=1`; this residual issue was the ordinary first approval response path, where `handleGoalAction(approve-plan)` still rechecked only `state.sessionId` before setting `Executing approved plan`, showing success, and refreshing the session.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: reuse the compact Goal action identity captured at Goal action start for ordinary action completions, stale errors, refreshes, and render side effects, not only for clear / override confirmations.
+
 ## Update Log
+
+### FCA-20260530-490
+
+Slice: `fix(webconsole): ignore stale goal approval`
+
+Finding:
+
+- `handleGoalAction(approve-plan)` captured the current Goal identity for clear / override continuations, but after the ordinary first `approveMissionPlan(sessionID)` response it still checked only `state.sessionId`.
+- A focused regression reproduced that if the same session's Goal snapshot changed while the approval request was in flight, the old response still called `setGenerating(...)` and changed the current activity card to `Executing approved plan` for the refreshed Goal.
+
+Impact:
+
+- The WebConsole could show a refreshed replacement Goal as executing an approved mission plan that belonged to an older Goal projection.
+- This weakened the local Web UI contract that action completion, success copy, error copy, refreshes, and render side effects should correspond to the Goal snapshot the operator acted on.
+
+Changes:
+
+- Reused the compact Goal action identity across Goal action completion branches.
+- Suppressed stale same-session success, error, refresh, render, and generating UI side effects when the rendered Goal identity changed before an async Goal action settled.
+- Added a focused frontend regression for same-session Goal plan approval completion.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "Goal plan approval does not mark a refreshed same-session goal as generating"`: failed before the fix because the stale response set `generating: true` and activity title `Executing approved plan`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "Goal plan approval does not mark a refreshed same-session goal as generating"`: passed after the fix, 102 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 102 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-489
 

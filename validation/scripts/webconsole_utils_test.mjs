@@ -3078,6 +3078,61 @@ test('Goal actions do not refresh a newly selected session after stale completio
   ]);
 });
 
+test('Goal plan approval does not mark a refreshed same-session goal as generating', async () => {
+  const appContext = createAppHarnessContext();
+  installGoalAPITestWrappers(appContext);
+  appContext.goalApprovePlanButton = fakeActionButton({ 'data-goal-action': 'approve-plan' });
+
+  const approval = vm.runInContext(`
+    state.sessionId = 'session_goal_approve_same_a';
+    state.sessionBacked = true;
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded old goal', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_approve_same_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_old', status: 'active', objective: 'old mission', updated_at: '2026-05-30T02:00:00Z' }
+    };
+    handleGoalAction(goalApprovePlanButton);
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_goal_approve_same_a\/mission\/plan\/approve$/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded new goal', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_approve_same_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_new', status: 'active', objective: 'new mission', updated_at: '2026-05-30T02:01:00Z' }
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_goal_approve_same_a', status: 'accepted' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({
+      metadata: { id: 'session_goal_approve_same_a' },
+      state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_new', status: 'active', objective: 'new mission', updated_at: '2026-05-30T02:01:00Z' },
+      messages: [],
+      timeline: []
+    });
+  }
+  await approval;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: isGenerating(),
+    activityTitle: currentLiveActivity().title
+  })`, appContext)), {
+    selected: 'session_goal_approve_same_a',
+    generating: false,
+    activityTitle: 'Loaded new goal'
+  });
+});
+
 test('Goal clear ignores stale confirmation after same-session refresh', async () => {
   const appContext = createAppHarnessContext();
   installGoalAPITestWrappers(appContext);

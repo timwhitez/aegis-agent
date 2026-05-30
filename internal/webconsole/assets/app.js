@@ -2181,25 +2181,25 @@ async function handleGoalAction(button) {
   try {
     if (action === 'pause') {
       await pauseGoal(sessionID);
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
         return;
       }
       showToast('Goal paused.', 'success');
     } else if (action === 'resume') {
       await resumeGoal(sessionID);
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
         return;
       }
       showToast('Goal resumed.', 'success');
     } else if (action === 'complete') {
       await completeGoal(sessionID);
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
         return;
       }
       showToast('Goal marked complete.', 'success');
     } else if (action === 'clear') {
       if (!await confirmGoalClear()) {
-        if (state.sessionId === sessionID) {
+        if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
           showToast('Goal clear cancelled.', 'info');
         }
         return;
@@ -2208,7 +2208,7 @@ async function handleGoalAction(button) {
         return;
       }
       await deleteGoal(sessionID);
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
         return;
       }
       showToast('Goal cleared.', 'success');
@@ -2223,8 +2223,11 @@ async function handleGoalAction(button) {
         if (!isCoverageApprovalBlock(err)) {
           throw err;
         }
+        if (!isCurrentGoalActionIdentity(actionGoalIdentity)) {
+          return;
+        }
         if (!await confirmCoverageOverride()) {
-          if (state.sessionId === sessionID) {
+          if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
             showToast('Goal plan approval was not overridden.', 'info');
           }
           return;
@@ -2234,7 +2237,7 @@ async function handleGoalAction(button) {
         }
         response = await approveMissionPlan(sessionID, { override_coverage: true });
       }
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
         return;
       }
       if (isAcceptedLaunchResponse(response)) {
@@ -2246,19 +2249,19 @@ async function handleGoalAction(button) {
       }
       showToast('Goal plan approved.', 'success');
     }
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
       await refreshCurrentSession();
       queueOverviewRefresh(160);
     }
   } catch (err) {
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
       showToast(err.message || 'Goal action failed.', 'error');
     }
   } finally {
     if (document.body.contains(button)) {
       button.disabled = false;
     }
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
       renderCurrentSession();
     }
   }
