@@ -1497,9 +1497,10 @@ async function requestInterrupt() {
     return;
   }
   const sessionID = state.sessionId;
+  const actionInterruptIdentity = currentInterruptActionIdentity();
   try {
     await interruptSession(sessionID);
-    if (state.sessionId !== sessionID) {
+    if (state.sessionId !== sessionID || !isCurrentInterruptActionIdentity(actionInterruptIdentity)) {
       return;
     }
     setLiveActivity({
@@ -1510,11 +1511,11 @@ async function requestInterrupt() {
     showToast('Interrupt requested.', 'success');
     queueSessionRefresh(120);
   } catch (err) {
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentInterruptActionIdentity(actionInterruptIdentity)) {
       showToast(err.message || 'Failed to request interrupt.', 'error');
     }
   }
-  if (state.sessionId === sessionID) {
+  if (state.sessionId === sessionID && isCurrentInterruptActionIdentity(actionInterruptIdentity)) {
     renderCurrentSession();
   }
 }
@@ -1536,10 +1537,16 @@ async function requestStopSession(sessionID, options = {}) {
     return;
   }
   const selectedSessionID = state.sessionId || '';
+  const stoppingSelectedSession = selectedSessionID === sessionID;
+  const actionStopIdentity = stoppingSelectedSession ? currentStopActionIdentity() : '';
   const refreshSelectedSession = currentViewName() === 'chat' &&
     selectedSessionID &&
     selectedSessionID !== sessionID &&
     currentSessionReferencesSession(sessionID);
+  const selectedStoppedSessionStillCurrent = () => (
+    state.sessionId === sessionID &&
+    (!stoppingSelectedSession || isCurrentStopActionIdentity(actionStopIdentity))
+  );
   const selectedContextStillCurrent = () => state.sessionId === selectedSessionID && hasDurableSession();
   stopActionViewState.sessionIds.add(sessionID);
   const button = options.button || null;
@@ -1548,7 +1555,7 @@ async function requestStopSession(sessionID, options = {}) {
   }
   try {
     const result = await requestStopViaBestAvailablePath(sessionID);
-    if (state.sessionId === sessionID) {
+    if (selectedStoppedSessionStillCurrent()) {
       setLiveActivity({
         title: 'Stopping run',
         copy: result.via === 'steer'
@@ -1568,7 +1575,7 @@ async function requestStopSession(sessionID, options = {}) {
       await fetchHistory(currentHistoryPage(), { showLoading: false, silentError: true });
     }
   } catch (err) {
-    if (state.sessionId === sessionID) {
+    if (selectedStoppedSessionStillCurrent()) {
       showToast(err.message || 'Failed to stop the session.', 'error');
     } else if (refreshSelectedSession && selectedContextStillCurrent()) {
       showToast(err.message || 'Failed to stop the session.', 'error');
@@ -1581,7 +1588,7 @@ async function requestStopSession(sessionID, options = {}) {
     if (currentViewName() === 'history') {
       renderHistory();
     }
-    if (state.sessionId === sessionID || (refreshSelectedSession && selectedContextStillCurrent())) {
+    if (selectedStoppedSessionStillCurrent() || (refreshSelectedSession && selectedContextStillCurrent())) {
       renderCurrentSession();
     }
   }
@@ -2083,6 +2090,22 @@ function currentSteerActionIdentity() {
 
 function isCurrentSteerActionIdentity(identity) {
   return currentSteerActionIdentity() === identity;
+}
+
+function currentInterruptActionIdentity() {
+  return currentContinueActionIdentity();
+}
+
+function isCurrentInterruptActionIdentity(identity) {
+  return currentInterruptActionIdentity() === identity;
+}
+
+function currentStopActionIdentity() {
+  return currentContinueActionIdentity();
+}
+
+function isCurrentStopActionIdentity(identity) {
+  return currentStopActionIdentity() === identity;
 }
 
 async function handlePlanModeAction(button) {

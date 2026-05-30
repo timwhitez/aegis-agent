@@ -4367,6 +4367,55 @@ test('interrupt completion does not update a newly selected session', async () =
   });
 });
 
+test('interrupt completion ignores refreshed same-session state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+
+  const interrupt = vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_interrupt_same_a';
+    state.sessionBacked = true;
+    setGeneratingViewState(true);
+    setLiveActivity({ title: 'Running old state', copy: '', tone: 'live' });
+    state.sessionDetail = {
+      metadata: { id: 'session_interrupt_same_a', updated_at: '2026-05-30T07:00:00Z' },
+      state: { status: 'running', updated_at: '2026-05-30T07:00:00Z' },
+      messages: []
+    };
+    requestInterrupt();
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_interrupt_same_a\/interrupt/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded completed session', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_interrupt_same_a', updated_at: '2026-05-30T07:01:00Z' },
+      state: { status: 'completed', updated_at: '2026-05-30T07:01:00Z' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await interrupt;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: isGenerating(),
+    activityTitle: currentLiveActivity().title
+  })`, appContext)), {
+    selected: 'session_interrupt_same_a',
+    generating: false,
+    activityTitle: 'Loaded completed session'
+  });
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('stop completion does not update a newly selected session', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
@@ -4413,6 +4462,57 @@ test('stop completion does not update a newly selected session', async () => {
     activityTitle: 'Loaded session B',
     stoppingA: false
   });
+});
+
+test('stop completion ignores refreshed same-session state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+
+  const stop = vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_stop_same_a';
+    state.sessionBacked = true;
+    setGeneratingViewState(true);
+    setLiveActivity({ title: 'Running old state', copy: '', tone: 'live' });
+    state.sessionDetail = {
+      metadata: { id: 'session_stop_same_a', updated_at: '2026-05-30T07:30:00Z' },
+      state: { status: 'running', updated_at: '2026-05-30T07:30:00Z' },
+      messages: []
+    };
+    requestStop();
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_stop_same_a\/stop/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded completed session', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_stop_same_a', updated_at: '2026-05-30T07:31:00Z' },
+      state: { status: 'completed', updated_at: '2026-05-30T07:31:00Z' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await stop;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: isGenerating(),
+    activityTitle: currentLiveActivity().title,
+    stoppingA: isStoppingSession('session_stop_same_a')
+  })`, appContext)), {
+    selected: 'session_stop_same_a',
+    generating: false,
+    activityTitle: 'Loaded completed session',
+    stoppingA: false
+  });
+  assert.deepEqual(sameRealm(toasts), []);
 });
 
 test('top-level stop and interrupt controls hide for running sessions not owned by this web process', () => {

@@ -9084,7 +9084,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-493 and the older cross-session steer guard. FCA-493 covered ordinary continue, and the existing `running-session steer completion does not mark a newly selected session as queued` regression covered selected-session changes; this residual issue kept using only `state.sessionId` after `steerSession(...)`, so a same-session refresh from running to completed could still clear the current interrupt intent and replace the current activity card with the old steer completion.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: reuse the compact session-state action identity for running steer, then abandon stale same-session success/error/render continuations when the session state projection changes while `/steer` is in flight.
 
+### Review 490
+
+- Confirmed FCA-20260530-495 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: top-level WebConsole interrupt and stop are local controls over the current durable running session projection, so stale `/interrupt` or `/stop` responses must not overwrite a same-session refresh that already shows a newer terminal or otherwise changed state.
+- Confirmed this is distinct from FCA-20260530-494 and existing cross-session interrupt/stop coverage. FCA-494 covered composer steer completion, while the existing `interrupt completion does not update a newly selected session` and `stop completion does not update a newly selected session` regressions covered selected-session changes; this residual issue kept using only `state.sessionId` after `interruptSession(...)` and selected-session stop completion, so a same-session refresh from running to completed could still replace the activity with `Interrupt requested` or `Stopping run`.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: reuse the compact session-state action identity for top-level interrupt and selected-session stop, then abandon stale same-session success/error/render continuations when that projection changes while `/interrupt` or `/stop` is in flight.
+
 ## Update Log
+
+### FCA-20260530-495
+
+Slice: `fix(webconsole): ignore stale run control completions`
+
+Finding:
+
+- `requestInterrupt()` and selected-session `requestStopSession(...)` guarded async completions by selected `state.sessionId` only.
+- Focused regressions reproduced that if the same session refreshed from running to completed while `/interrupt` or `/stop` was in flight, the old response still replaced the current activity card with `Interrupt requested` or `Stopping run`.
+
+Impact:
+
+- The WebConsole could show a completed or otherwise refreshed same-session projection as if an older direct run-control action had just been accepted.
+- This weakened the local Web UI contract that interrupt/stop UI side effects belong to the durable running state snapshot the operator acted on, not merely to the selected session id.
+
+Changes:
+
+- Added top-level interrupt and selected-session stop action identities that reuse the compact session-state identity already used for steer and continue.
+- `requestInterrupt()` now suppresses stale same-session success, error, refresh, and render side effects when the session projection changes while `/interrupt` is in flight.
+- Selected-session `requestStopSession(...)` now suppresses stale same-session success, error, and render side effects when the session projection changes while `/stop` or stop-fallback steer is in flight.
+- Added focused frontend regressions for stale same-session interrupt and stop completions.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "(interrupt|stop) completion ignores refreshed same-session state"`: failed before the fix because stale completions changed activity to `Interrupt requested` and `Stopping run`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "(interrupt|stop) completion ignores refreshed same-session state"`: passed after the fix, 108 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 108 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-494
 
