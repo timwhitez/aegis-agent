@@ -9528,7 +9528,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-567. That slice made the runtime fail normalized `StopReason:"cancelled"` correctly; this residual adapter slice covers upstream cancellation fields still being normalized as generic `error` before runtime can see the provider-cancellation boundary.
 - Confirmed the minimal fix belongs in each adapter's stop mapping: map cancellation responses to `cancelled` while still suppressing any unsafe tool/function calls that arrive under non-success cancellation boundaries, and preserve raw provider stop metadata for diagnostics.
 
+### Review 564
+
+- Confirmed FCA-20260530-569 against `spec/03-provider-contracts.md`: OpenAI Responses parsing explicitly consumes `incomplete_details`, and `incomplete_details.reason=max_output_tokens` is the source fact for internal `max_tokens`.
+- Confirmed this is distinct from FCA-20260530-568. That slice fixed cancellation stop mapping; this residual telemetry gap was that OpenAI max-token incomplete responses got the right internal stop reason but preserved only `status:"incomplete"` as the raw provider stop source.
+- Confirmed the minimal fix belongs in the OpenAI adapter raw-provider envelope: when `incomplete_details.reason` is present, use it as `provider_stop_reason_source` / `provider_stop_reason` and keep the original `status` alongside it for diagnostics.
+
 ## Update Log
+
+### FCA-20260530-569
+
+Slice: `fix(provider): preserve OpenAI incomplete reason`
+
+Finding:
+
+- `spec/03-provider-contracts.md` says OpenAI `incomplete_details.reason=max_output_tokens` maps to internal `max_tokens`, and raw provider diagnostics should preserve the provider stop source.
+- `internal/provider/openai.go` correctly returned `StopReason:"max_tokens"` for `incomplete_details.reason:"max_output_tokens"`.
+- The same path still built `RawProvider` from `status`, so the durable diagnostic envelope recorded `provider_stop_reason_source:"status"` and `provider_stop_reason:"incomplete"` while dropping the actual `max_output_tokens` reason.
+- A focused regression showed the max-token incomplete response returned the correct internal stop reason but lacked `raw_provider["incomplete_details.reason"]` and the correct raw stop source.
+
+Impact:
+
+- Provider-attempt and Web diagnostics could explain an OpenAI `max_tokens` failure only as generic `status=incomplete`, losing the actionable upstream reason.
+- Auditing provider stop boundaries required inferring the reason from internal normalization instead of reading the raw provider source fact.
+
+Changes:
+
+- Changed the OpenAI raw-provider envelope to use `incomplete_details.reason` as the raw stop source whenever the provider supplies it.
+- Preserved the original `status` field in the same raw envelope.
+- Added a focused regression for OpenAI max-token incomplete telemetry.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run TestOpenAIAdapterPreservesIncompleteDetailsReasonTelemetry -count=1`: failed before the fix because raw provider telemetry used `status:"incomplete"` and dropped `incomplete_details.reason`.
+- `go test -timeout 120s ./internal/provider -run 'TestOpenAIAdapterPreservesIncompleteDetailsReasonTelemetry|TestOpenAIAdapterMapsCancelledStatusToCancelledStop' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderStopReasonFailuresAreResumable|TestEngineProviderStopFailureWinsOverBudgetStop' -count=1`: passed.
+- `gofmt -l internal/provider/openai.go internal/provider/provider_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-568
 

@@ -340,6 +340,42 @@ func TestOpenAIAdapterMapsCancelledStatusToCancelledStop(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapterPreservesIncompleteDetailsReasonTelemetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_incomplete_max_tokens",
+			"status":"incomplete",
+			"incomplete_details":{"reason":"max_output_tokens"},
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}
+			],
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "max_tokens" {
+		t.Fatalf("expected max_tokens stop reason, got %#v", result)
+	}
+	if result.RawProvider["provider_stop_reason_source"] != "incomplete_details.reason" ||
+		result.RawProvider["provider_stop_reason"] != "max_output_tokens" ||
+		result.RawProvider["incomplete_details.reason"] != "max_output_tokens" ||
+		result.RawProvider["status"] != "incomplete" {
+		t.Fatalf("expected raw incomplete_details reason and status to be preserved, got %#v", result.RawProvider)
+	}
+}
+
 func TestOpenAIAdapterDoesNotExecuteFunctionCallsWithoutCompletedStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

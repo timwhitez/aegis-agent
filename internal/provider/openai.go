@@ -188,6 +188,24 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case status == "":
 		stopReason = "error"
 	}
+	rawStopSource := "status"
+	rawStopReason := resp.Status
+	rawExtras := map[string]any{
+		"reasoning_summary_count":     reasoningSummaryCount,
+		"reasoning_text_count":        reasoningTextCount,
+		"reasoning_encrypted_count":   reasoningEncryptedCount,
+		"reasoning_tokens":            resp.Usage.OutputTokensDetails.ReasoningTokens,
+		"cache_creation_input_tokens": resp.Usage.InputTokensDetails.CacheWriteTokens,
+		"cache_read_input_tokens":     resp.Usage.InputTokensDetails.CachedTokens,
+		"thinking_visible_observed":   len(thinkingParts) > 0,
+		"thinking_replay_observed":    reasoningEncryptedCount > 0,
+		"thinking_strategy":           thinkingStrategy,
+	}
+	if incompleteReason := strings.TrimSpace(resp.IncompleteDetails.Reason); incompleteReason != "" {
+		rawStopSource = "incomplete_details.reason"
+		rawStopReason = resp.IncompleteDetails.Reason
+		rawExtras["status"] = resp.Status
+	}
 	return TurnResult{
 		Text:                  text,
 		Thinking:              thinking,
@@ -201,17 +219,7 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			CacheCreationInputTokens: resp.Usage.InputTokensDetails.CacheWriteTokens,
 			CacheReadInputTokens:     resp.Usage.InputTokensDetails.CachedTokens,
 		},
-		RawProvider: rawProviderEnvelope("status", resp.Status, map[string]any{
-			"reasoning_summary_count":     reasoningSummaryCount,
-			"reasoning_text_count":        reasoningTextCount,
-			"reasoning_encrypted_count":   reasoningEncryptedCount,
-			"reasoning_tokens":            resp.Usage.OutputTokensDetails.ReasoningTokens,
-			"cache_creation_input_tokens": resp.Usage.InputTokensDetails.CacheWriteTokens,
-			"cache_read_input_tokens":     resp.Usage.InputTokensDetails.CachedTokens,
-			"thinking_visible_observed":   len(thinkingParts) > 0,
-			"thinking_replay_observed":    reasoningEncryptedCount > 0,
-			"thinking_strategy":           thinkingStrategy,
-		}),
+		RawProvider: rawProviderEnvelope(rawStopSource, rawStopReason, rawExtras),
 	}, nil
 }
 
