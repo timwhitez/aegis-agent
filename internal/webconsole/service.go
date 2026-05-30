@@ -4336,6 +4336,9 @@ func processSkillZipReader(r *zip.Reader, globalDest string) (*skillZipInstallTr
 	if len(skillRoots) == 0 {
 		return nil, wrapSkillZipPackageError(errors.New("no SKILL.md found in zip, not a valid skill package"))
 	}
+	if err := validateSkillZipRootsNotNested(skillRoots); err != nil {
+		return nil, wrapSkillZipPackageError(err)
+	}
 
 	plans := make([]skillZipPlan, 0, len(skillRoots))
 	seenTargets := make(map[string]string, len(skillRoots))
@@ -4651,6 +4654,29 @@ func validateSkillZipRootEntries(cleanNames map[*zip.File]string, files []*zip.F
 	for fileRel, fileName := range filesSeen {
 		if dirName, ok := dirsSeen[fileRel]; ok {
 			return fmt.Errorf("skill zip path conflict: %s is both file and directory entry via %s", fileName, dirName)
+		}
+	}
+	return nil
+}
+
+func validateSkillZipRootsNotNested(roots []string) error {
+	cleaned := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = path.Clean(root)
+		if root == "" || root == "/" {
+			root = "."
+		}
+		cleaned = append(cleaned, root)
+	}
+	sort.Strings(cleaned)
+	for i, outer := range cleaned {
+		for _, inner := range cleaned[i+1:] {
+			if outer == inner {
+				continue
+			}
+			if outer == "." || strings.HasPrefix(inner, outer+"/") {
+				return fmt.Errorf("nested skill root %s is inside %s", inner, outer)
+			}
 		}
 	}
 	return nil

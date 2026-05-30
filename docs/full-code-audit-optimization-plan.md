@@ -9108,7 +9108,47 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-053, FCA-20260527-211, FCA-20260527-222, FCA-20260527-224, and the existing traversal/symlink/file-directory conflict coverage. Those slices covered duplicate target directories, replacement timing, extraction rollback, and audit rollback; this residual issue was inside a single accepted root where two file entries such as `tools/run.sh` and `tools/./run.sh` normalized to the same relative path, plus mode inheritance where uploaded files and directories could keep overly broad zip permission bits.
 - Confirmed the minimal fix belongs in `internal/webconsole/service.go`: reject duplicate normalized file paths during `validateSkillZipRootEntries(...)`, create uploaded skill subdirectories owner-only, and sanitize uploaded file modes to owner read/write plus owner execute only when the package marks the file executable.
 
+### Review 494
+
+- Confirmed FCA-20260530-499 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, and the runtime `internal/skills` catalog: WebConsole skill upload must not accept a zip layout that installs local skill artifacts which the recursive runtime catalog then interprets as extra or duplicate skills.
+- Confirmed this is distinct from FCA-20260530-498 and the earlier duplicate target / file-directory conflict slices. Those slices handled ambiguous file paths or target directories; this residual issue was ambiguity between skill roots themselves, where `outer/SKILL.md` and `outer/inner/SKILL.md` made the outer installed skill contain the inner manifest while also installing the inner skill as a separate target.
+- Confirmed the minimal fix belongs in `processSkillZipReader(...)` before staging or target replacement: reject nested skill roots as malformed packages, while preserving valid sibling skill packages and the existing per-root path, size, symlink, mode, and rollback checks.
+
 ## Update Log
+
+### FCA-20260530-499
+
+Slice: `fix(webconsole): reject nested skill roots`
+
+Finding:
+
+- `processSkillZipReader(...)` discovered every zip entry named `SKILL.md` and treated each containing directory as an install root.
+- If a package contained `outer/SKILL.md` and `outer/inner/SKILL.md`, the outer extraction root copied `outer/inner/SKILL.md` into the installed outer skill, while the inner root could also install as its own managed skill target.
+- A focused regression proved the package was accepted before the fix. That leaves an installed directory shape where `/api/skills` only lists direct managed children, but the runtime `internal/skills.Scan(...)` recursively sees the nested manifest as another skill, potentially producing duplicate skill names or unexpected loaded skills.
+
+Impact:
+
+- A malformed local skill upload could poison the runtime skill catalog even though the Web Skills view appeared to show only the direct managed skills.
+- Because uploaded skills can add local agent capability descriptions and command tools, accepting ambiguous nested roots weakens traceability between the browser upload, installed file facts, and the runtime catalog that later builds the model tool surface.
+
+Changes:
+
+- Added `validateSkillZipRootsNotNested(...)` and call it immediately after `SKILL.md` discovery, before staging directories, backups, or target mutations.
+- Reject any skill root that is nested inside another skill root, including a top-level `SKILL.md` package that also contains deeper `SKILL.md` entries.
+- Added focused coverage that proves nested-root rejection happens before replacing an existing skill, leaves the runtime skill catalog scannable, and still allows sibling skill roots.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsNestedSkillRootsBeforeMutation -count=1`: failed before the fix because nested skill roots were accepted.
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsNestedSkillRootsBeforeMutation -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZipRejectsNestedSkillRootsBeforeMutation|TestProcessSkillZipAllowsSiblingSkillRoots|TestProcessSkillZipRejectsDuplicateNormalizedEntryPathsBeforeMutation|TestProcessSkillZipSanitizesUploadedFileModes' -count=1`: passed.
+- `go test -timeout 120s ./internal/skills -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Skill|TestProcessSkillZip|TestReserveSkillBackupPath|TestListSkills' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-498
 

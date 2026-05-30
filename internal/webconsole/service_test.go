@@ -25,6 +25,7 @@ import (
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
+	skillcatalog "go-cli-agent/internal/skills"
 
 	"github.com/gorilla/websocket"
 )
@@ -10060,6 +10061,70 @@ func TestProcessSkillZipRejectsDuplicateNormalizedEntryPathsBeforeMutation(t *te
 	}
 	if _, err := os.Stat(filepath.Join(existing, "tools", "run.sh")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("duplicate normalized entry should not be extracted, got %v", err)
+	}
+}
+
+func TestProcessSkillZipRejectsNestedSkillRootsBeforeMutation(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	existing := filepath.Join(dest, "outer-skill")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "SKILL.md"), []byte("---\nname: outer-skill\n---\nexisting body\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+	zipPath := filepath.Join(base, "nested-skill-roots.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "outer/SKILL.md", content: "---\nname: outer-skill\n---\nouter body\n"},
+		{name: "outer/tools/run.sh", content: "#!/bin/sh\n"},
+		{name: "outer/inner/SKILL.md", content: "---\nname: inner-skill\n---\ninner body\n"},
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "nested skill root") {
+		t.Fatalf("expected nested skill roots to be rejected, got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(existing, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("existing skill should remain after rejected upload: %v", err)
+	}
+	if !strings.Contains(string(data), "existing body") {
+		t.Fatalf("existing skill was unexpectedly modified: %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(dest, "inner-skill")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inner skill should not be installed after rejected upload, got %v", err)
+	}
+	if catalog, err := skillcatalog.Scan([]string{dest}); err != nil {
+		t.Fatalf("rejected upload must leave runtime skill catalog scannable, got catalog=%#v err=%v", catalog, err)
+	}
+}
+
+func TestProcessSkillZipAllowsSiblingSkillRoots(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	zipPath := filepath.Join(base, "sibling-skill-roots.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "one/SKILL.md", content: "---\nname: one-skill\n---\none body\n"},
+		{name: "one/references/a.md", content: "one reference\n"},
+		{name: "two/SKILL.md", content: "---\nname: two-skill\n---\ntwo body\n"},
+		{name: "two/references/b.md", content: "two reference\n"},
+	})
+
+	count, err := processSkillZip(zipPath, dest)
+	if err != nil {
+		t.Fatalf("process sibling skill roots: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected two installed skills, got %d", count)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "one-skill", "references", "a.md")); err != nil {
+		t.Fatalf("expected first sibling skill reference: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "two-skill", "references", "b.md")); err != nil {
+		t.Fatalf("expected second sibling skill reference: %v", err)
+	}
+	if catalog, err := skillcatalog.Scan([]string{dest}); err != nil {
+		t.Fatalf("sibling roots should leave runtime skill catalog scannable, got catalog=%#v err=%v", catalog, err)
 	}
 }
 
