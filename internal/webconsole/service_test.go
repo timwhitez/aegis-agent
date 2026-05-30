@@ -4977,6 +4977,34 @@ func TestUpdateConfigRejectsNullBodyBeforeConfigWrite(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRejectsEmptyRequestBeforeConfigWrite(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(cwd, "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "settings update must include at least one field") {
+		t.Fatalf("expected empty settings update error, got %#v", errResp)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty config update should not persist config; stat err=%v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.config.write") {
+		t.Fatalf("empty config update should not append config audit event, got %s", string(data))
+	}
+}
+
 func TestUpdateConfigRejectsUnsupportedGuardrailsModeBeforeConfigWrite(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)

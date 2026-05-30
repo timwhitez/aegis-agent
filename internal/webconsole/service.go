@@ -3356,6 +3356,10 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if !configRequestHasSettingsMutation(req) {
+		writeError(w, http.StatusBadRequest, errors.New("settings update must include at least one field"))
+		return
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3577,6 +3581,15 @@ func configRequestHasProviderScopedFields(req UpdateConfigRequest) bool {
 		(req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey) ||
 		(req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "") ||
 		(req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "")
+}
+
+func configRequestHasSettingsMutation(req UpdateConfigRequest) bool {
+	return strings.TrimSpace(req.Provider) != "" ||
+		strings.TrimSpace(req.GuardrailsMode) != "" ||
+		req.MaxTurnsHard != nil ||
+		req.DisableHardTurnLimit ||
+		configRequestHasProviderScopedFields(req) ||
+		len(req.RoleProviders) > 0
 }
 
 type webAPIKeyUpdate struct {

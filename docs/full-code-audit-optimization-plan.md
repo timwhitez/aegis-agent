@@ -9474,7 +9474,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-558. That slice covered JSON body shape before request decoding; the residual gap was a syntactically valid object with a misspelled semantic field value (`guardrails_mode:"standrad"`) that reached handler logic and changed the effective runtime setting.
 - Confirmed the minimal fix belongs in the Web service adapter, not in config file normalization. Config-file loading can keep compatibility fallback for old or hand-edited files, while the Web mutation boundary should accept only the explicit `standard` / `yolo` values used by the Settings UI.
 
+### Review 555
+
+- Confirmed FCA-20260530-560 against `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md`: Settings writes are guarded local WebConsole mutations over durable local config and audit facts, so a syntactically valid empty object must not produce a config file or audit event.
+- Confirmed this is distinct from FCA-20260530-558 and FCA-20260530-559. Those slices covered top-level JSON shape and invalid guardrails values; the residual gap was an object-shaped request with no semantic Settings fields at all.
+- Confirmed the minimal fix belongs in `handleUpdateConfig`: reject empty Settings update requests before locking, cloning config, resolving cwd, writing config, appending audit events, or refreshing worker config, while preserving normal full-form Settings saves and explicit field-clearing requests.
+
 ## Update Log
+
+### FCA-20260530-560
+
+Slice: `fix(webconsole): reject empty config updates`
+
+Finding:
+
+- `spec/17-web-console.md` treats Settings provider/model/guardrails configuration as part of the default Web-first local console, and risky local config writes require explicit operator intent.
+- `internal/webconsole/service.go` decoded `{}` into a zero-value `UpdateConfigRequest`, then still cloned the current config, wrote `config.yaml`, appended `web.config.write`, refreshed worker config, and returned HTTP 200.
+- A focused regression posted `{}` to `/api/config`. Before the fix, the route returned `{"success":true}` and persisted a config file even though no Settings field was supplied.
+
+Impact:
+
+- Direct API clients and recovery scripts could create durable config/audit facts for an empty request that did not express a provider, guardrails, hard-turn-limit, role-provider, API-key, or reasoning setting.
+- The audit trail could claim a Settings write happened when the operator supplied no semantic Settings update, weakening local-console traceability.
+
+Changes:
+
+- Added a Settings mutation-shape check that requires at least one supported semantic field before any config, env, audit, worker, or active-config mutation.
+- Kept normal frontend Settings saves valid because the browser submits provider, guardrails, hard-turn-limit, provider defaults, reasoning controls, role providers, and API-key state.
+- Preserved explicit provider-scoped field clearing, hard-turn-limit updates, and role override updates by checking field presence rather than semantic diff against the current config.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigRejectsEmptyRequestBeforeConfigWrite -count=1`: failed before the fix because the empty object returned HTTP 200 and persisted config.
+- `go test -timeout 120s ./internal/webconsole -run 'TestUpdateConfigRejectsEmptyRequestBeforeConfigWrite|TestUpdateConfigRejectsNullBodyBeforeConfigWrite|TestUpdateConfigRejectsUnsupportedGuardrailsModeBeforeConfigWrite|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestUpdateConfigRejectsEmptyRequestBeforeConfigWrite|TestUpdateConfigRejectsNullBodyBeforeConfigWrite|TestUpdateConfigRejectsUnsupportedGuardrailsModeBeforeConfigWrite|TestUpdateConfigRejectsUnknownProvider|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceInterruptUsesManualPauseReason -count=1`: passed after an earlier full-suite run hit a transient timeout in this unrelated interrupt timing test.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed on rerun after the unrelated transient WebConsole timeout.
 
 ### FCA-20260530-559
 
