@@ -4866,6 +4866,10 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("no skill directory configured"))
 		return
 	}
+	if r.Body == nil || r.Body == http.NoBody {
+		writeError(w, http.StatusBadRequest, errors.New("skill upload request body is required"))
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxSkillUploadBytes)
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, err)

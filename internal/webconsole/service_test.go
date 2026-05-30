@@ -10013,6 +10013,29 @@ func TestServiceSkillActionRoutesRejectNonJSONBodies(t *testing.T) {
 	}
 }
 
+func TestServiceSkillUploadRejectsMissingBody(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Skills.Dirs = []string{filepath.Join(t.TempDir(), "skills")}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/skills/upload", nil)
+	req.Body = nil
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing-body")
+	req.Header.Set(webMutationHeader, "1")
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing upload body to be rejected, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "request body is required") {
+		t.Fatalf("expected missing body error, got body=%s", recorder.Body.String())
+	}
+}
+
 func TestSkillUploadUsesOriginalTempFileWhenPathIsReplaced(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")

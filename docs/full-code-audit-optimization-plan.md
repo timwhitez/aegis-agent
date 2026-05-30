@@ -9426,7 +9426,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260527-230 and FCA-20260530-550. FCA-20260527-230 preserved truly bodyless controls without requiring dummy JSON, and FCA-20260530-550 covered dynamic skill actions; the residual gap was no-input session/goal/plan controls that accepted malformed non-empty bodies while continuing to clear/delete/complete/cancel or enter stop/interrupt ownership handling.
 - Confirmed the minimal fix belongs in the Web service adapter: classify these no-input controls as optional-empty JSON routes, call the existing empty-shape optional decoder before side effects, and preserve empty-body plus JSON `{}` compatibility for frontend and CLI-style local-console callers.
 
+### Review 547
+
+- Confirmed FCA-20260530-552 against `AGENTS.md` and `spec/17-web-console.md`: skill upload is the multipart exception to JSON mutation handling, but it still must reject missing request bodies through a controlled Web error instead of panicking in the local service adapter.
+- Confirmed this is distinct from FCA-20260530-550 and FCA-20260530-551. Those slices covered optional JSON action/control bodies; the residual gap was the multipart upload path wrapping a nil `r.Body` in `http.MaxBytesReader` and then letting `ParseMultipartForm` read it.
+- Confirmed the minimal fix belongs in `handleUploadSkill`: preflight `nil` / `http.NoBody` before the multipart parser, preserving existing multipart size caps, zip entry limits, managed-root safety, audit behavior, and malformed multipart errors.
+
 ## Update Log
+
+### FCA-20260530-552
+
+Slice: `fix(webconsole): reject missing skill upload bodies`
+
+Finding:
+
+- `spec/17-web-console.md` treats skill upload as the explicit multipart exception to JSON mutation handling, but still requires request body limits and controlled local-console validation.
+- `internal/webconsole/service.go` `handleUploadSkill` called `http.MaxBytesReader(w, r.Body, maxSkillUploadBytes)` before checking whether `r.Body` existed.
+- A focused regression constructed `POST /api/skills/upload` with a multipart Content-Type, the local mutation header, and `r.Body = nil`. Before the fix, `ParseMultipartForm` read from the `MaxBytesReader` wrapping a nil reader and panicked with a nil pointer dereference instead of returning a Web API error.
+
+Impact:
+
+- A malformed local service request could crash the WebConsole handler path for skill upload instead of returning a structured 400 response.
+- This weakened the local skill-management mutation boundary even though ordinary multipart uploads, zip entry count limits, per-entry size limits, total decompressed size limits, managed-root safety, and install rollback paths remained intact.
+
+Changes:
+
+- Added a focused WebConsole regression for missing skill upload request bodies.
+- Added a `nil` / `http.NoBody` preflight in `handleUploadSkill` before wrapping the body or parsing multipart form data.
+- Preserved existing multipart behavior for real request bodies, including the upload size cap, zip package validation, staging/rollback, and audit path.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillUploadRejectsMissingBody -count=1`: failed before the fix with a nil pointer panic in `net/http.(*maxBytesReader).Read`.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillUploadRejectsMissingBody -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(SkillUploadRejectsMissingBody|SkillRoutesUploadListUninstallAndInstallUnsupported|SkillActionRoutesRejectNonJSONBodies)' -count=1`: passed.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-551
 
