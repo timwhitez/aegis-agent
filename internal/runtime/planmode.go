@@ -14,6 +14,7 @@ const (
 	planModeTerminalKey           = "planmode_terminal"
 	planModeTerminalPlanSubmitted = "plan_submitted"
 	planModeTerminalPlanCancelled = "plan_cancelled"
+	planModeInputPendingKey       = "plan_input_pending"
 )
 
 var planModePlanningAllowedTools = map[string]struct{}{
@@ -135,6 +136,14 @@ func terminalPlanModeAction(result session.ToolResult) string {
 		return ""
 	}
 	value, _ := result.Metadata[planModeTerminalKey].(string)
+	return value
+}
+
+func isPendingPlanModeInputResult(result session.ToolResult) bool {
+	if result.Metadata == nil {
+		return false
+	}
+	value, _ := result.Metadata[planModeInputPendingKey].(bool)
 	return value
 }
 

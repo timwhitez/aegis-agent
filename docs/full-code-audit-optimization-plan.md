@@ -9258,7 +9258,56 @@ Evidence gates:
 - Confirmed this is distinct from the cancellation metadata slices. Recovered `/planmode/input` replay results already carried `plan_mode_id` and `recovered=true`, while the live `request_user_input` answer result emitted by the active tool path only carried `planmode=true` and `request_id`.
 - Confirmed the minimal fix belongs in `internal/tools/registry.go` `request_user_input`: add `plan_mode_id` to successful live answer result metadata, preserving responder delivery, pending-request persistence, answered history/event rollback behavior, and recovered replay semantics.
 
+### Review 519
+
+- Confirmed FCA-20260530-524 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/11-spec-audit-and-traceability.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: an active Plan Mode input request whose responder becomes unavailable must stop at the durable `plan_input` recovery boundary without appending a provider replay result.
+- Confirmed this is distinct from answered/cancelled replay metadata consistency. Answered and cancelled inputs have final operator decisions and must append matching tool results; a generic responder error after `pending_request.tool_call_id` is persisted has no answer or cancellation yet, so appending an error tool result consumes the same tool call that Web/CLI recovery still needs to answer later.
+- Confirmed the minimal fix spans `internal/tools/registry.go` and `internal/runtime/engine.go`: mark this recoverable pending-input condition in the tool result metadata and have the engine stop at `awaiting_input` / `plan_input` before `tool.after`, tool-result append, or another provider turn, preserving cancellation, explicit context interruption, recovered answer/cancel, and provider adapter boundaries.
+
 ## Update Log
+
+### FCA-20260530-524
+
+Slice: `fix(runtime): stop at pending plan input`
+
+Finding:
+
+- The live `request_user_input` tool persisted `planmode.json.pending_request`, saved `state.status=awaiting_input` / `phase=plan_input`, and emitted `planmode.input_requested` before waiting for the active responder.
+- If the responder returned a generic error such as a lost Web input handle, the tool returned a normal error result. The engine appended that result for the original `tool_call_id` and continued to another provider turn even though the Plan Mode pending request remained recoverable for Web/CLI answer or cancellation.
+- A focused failing engine test reproduced the issue: after the responder error, the run continued instead of stopping at `plan_input`, eventually failing as `incomplete_no_finish` and leaving a replay result for an unanswered `request_user_input`.
+
+Impact:
+
+- Recovery could later answer the same pending request using `pending_request.tool_call_id`, causing the session to contain two tool results for one provider tool call: an earlier generic error and the real recovered answer.
+- The session could briefly or permanently leave the durable `plan_input` boundary and continue provider execution while `planmode.json` still showed an unanswered pending request.
+- This weakened Web-first Plan Mode recovery and provider replay correctness because an unavailable active responder is not the same operator action as an explicit cancellation or answer.
+
+Changes:
+
+- Added a runtime regression proving responder-unavailable Plan Mode input stops with `state.phase=plan_input`, keeps the pending request recoverable, and does not append a `request_user_input` tool result.
+- Marked generic responder errors after pending-request persistence with internal `plan_input_pending` metadata while continuing to propagate explicit context cancellation as an interrupted tool path.
+- Added engine handling for that marker so the run stops at the `plan_input` awaiting-input boundary before `tool.after`, tool-result append, or another provider turn.
+- Preserved existing answered/cancelled result append behavior, same-batch cancellation semantics, recovered answer/cancel paths, and Plan Mode provider schema filtering.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEnginePlanInputResponderErrorStopsWithoutReplayResult -count=1`: failed before the fix because the run continued and failed as `incomplete_no_finish` instead of stopping at `plan_input`.
+- `go test -timeout 120s ./internal/runtime -run TestEnginePlanInputResponderErrorStopsWithoutReplayResult -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'Test(EnginePlanInputResponderErrorStopsWithoutReplayResult|EnginePlanInputCancelStopsTurnAndCompletesLaterToolResults|PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputAnswerRollsBackWhenToolResultAppendFails|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|CancelPlanModeRecordsAwaitingInputLifecycleEvent)' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput|TestSubmitPlan' -count=1`: passed.
+- `gofmt -l internal/runtime/engine.go internal/runtime/planmode.go internal/runtime/planmode_test.go internal/tools/registry.go`: no output.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-523
 

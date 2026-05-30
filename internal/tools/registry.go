@@ -2374,7 +2374,21 @@ func defRequestUserInput() Definition {
 						},
 					}, nil
 				}
-				return errorResult("request_user_input", err), nil
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return session.ToolResult{}, err
+				}
+				return session.ToolResult{
+					Name:          "request_user_input",
+					LLMOutput:     "Error: " + err.Error(),
+					DisplayOutput: "Error: " + err.Error(),
+					IsError:       true,
+					Metadata: map[string]any{
+						"planmode":           true,
+						"plan_input_pending": true,
+						"request_id":         request.RequestID,
+						"plan_mode_id":       planMode.PlanModeID,
+					},
+				}, nil
 			}
 			previousPlanMode, err := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
 			if err != nil {

@@ -619,6 +619,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						},
 					}, toolArgs)
 					e.control.clearCancel(cancel)
+					if isPendingPlanModeInputResult(toolResult) {
+						return e.awaitingPlanInput(ctx, meta, state, hookManager)
+					}
 					annotateExactArtifactTemplateResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateExactArtifactLiteralResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
 					annotateTargetConsistencyResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)
@@ -920,6 +923,28 @@ func (e *Engine) awaitingPlanApproval(ctx context.Context, meta session.SessionM
 		return RunResult{}, fmt.Errorf("record session.awaiting_input event for plan_approval: %w", err)
 	}
 	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode is awaiting approval."}
+	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
+		return result, err
+	}
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
+	return result, nil
+}
+
+func (e *Engine) awaitingPlanInput(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
+	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	state.Status = session.StatusAwaitingInput
+	state.Phase = "plan_input"
+	state.LastAssistantExcerpt = "Plan Mode is awaiting user input."
+	if err := e.store.SaveState(meta.ID, state); err != nil {
+		return RunResult{}, err
+	}
+	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "plan_input"}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.awaiting_input event for plan_input: %w", err)
+	}
+	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: "Plan Mode is awaiting user input."}
 	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
 		return result, err
 	}
