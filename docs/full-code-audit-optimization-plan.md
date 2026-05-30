@@ -9252,7 +9252,54 @@ Evidence gates:
 - Confirmed this is distinct from the recovered cancellation slice. The recovered `Continue(CancelPlan)` replay result now carries `cancelled=true`, but the live `request_user_input` cancellation result emitted by the tool path still only carried `planmode_terminal=plan_cancelled`, `request_id`, and `plan_mode_id`.
 - Confirmed the minimal fix belongs in `internal/tools/registry.go` `request_user_input`: add `cancelled=true` to the live cancellation result metadata, preserving existing terminal Plan Mode handling, synthetic later tool result behavior, state transitions, events, and recovery paths.
 
+### Review 518
+
+- Confirmed FCA-20260530-523 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/11-spec-audit-and-traceability.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: live and recovered Plan Mode input answer tool results should identify the same Plan Mode fact source.
+- Confirmed this is distinct from the cancellation metadata slices. Recovered `/planmode/input` replay results already carried `plan_mode_id` and `recovered=true`, while the live `request_user_input` answer result emitted by the active tool path only carried `planmode=true` and `request_id`.
+- Confirmed the minimal fix belongs in `internal/tools/registry.go` `request_user_input`: add `plan_mode_id` to successful live answer result metadata, preserving responder delivery, pending-request persistence, answered history/event rollback behavior, and recovered replay semantics.
+
 ## Update Log
+
+### FCA-20260530-523
+
+Slice: `fix(tools): identify live plan input answers`
+
+Finding:
+
+- The live `request_user_input` answer path in `internal/tools/registry.go` returned a successful Plan Mode tool result with `planmode=true` and `request_id`, but omitted `plan_mode_id`.
+- The recovered Plan Mode input answer path in `internal/runtime/runner.go` `appendPlanInputToolResult(...)` already appends the replay result with `plan_mode_id` and `recovered=true`.
+- A focused failing tool test proved the live answer result lacked the Plan Mode identity even though the same answered input history and event facts were tied to a specific Plan Mode.
+
+Impact:
+
+- Durable session inspection, Web timeline details, and audit tooling could tie recovered input answers back to `planmode.json` more precisely than live input answers.
+- This weakened Plan Mode trace consistency for the common active-runner path and made live answer tool results less self-describing than recovered replay results for the same operator action.
+
+Changes:
+
+- Added a focused regression asserting successful live `request_user_input` answers carry `plan_mode_id` together with `planmode=true` and `request_id`.
+- Added `plan_mode_id` to the successful live answer metadata emitted by the `request_user_input` tool.
+- Preserved existing Plan Mode pending-request persistence, responder delivery, answered history/event rollback, state transitions, recovered replay metadata, and cancellation handling.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputLiveAnswerIncludesPlanModeID -count=1`: failed before the fix because the live answer result metadata lacked `plan_mode_id`.
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputLiveAnswerIncludesPlanModeID -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput|TestSubmitPlan' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputAnswerRollsBackWhenToolResultAppendFails|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|EnginePlanInputCancelStopsTurnAndCompletesLaterToolResults)' -count=1`: passed.
+- `gofmt -l internal/tools/registry.go internal/tools/registry_test.go`: no output.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-522
 

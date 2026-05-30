@@ -2407,8 +2407,9 @@ func defRequestUserInput() Definition {
 				LLMOutput:     string(data),
 				DisplayOutput: string(data),
 				Metadata: map[string]any{
-					"planmode":   true,
-					"request_id": answered.RequestID,
+					"planmode":     true,
+					"request_id":   answered.RequestID,
+					"plan_mode_id": planMode.PlanModeID,
 				},
 			}, nil
 		},

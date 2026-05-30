@@ -394,6 +394,74 @@ func TestRequestUserInputResponderErrorKeepsRecoverablePendingRequest(t *testing
 	}
 }
 
+func TestRequestUserInputLiveAnswerIncludesPlanModeID(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	created, err := store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Resolve one planning decision"})
+	if err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	responder := &recordingPlanInputResponder{}
+	result, err := registry.Execute(context.Background(), "request_user_input", ExecContext{
+		SessionID:          meta.ID,
+		ToolCallID:         "call_plan_input",
+		Workdir:            meta.Workdir,
+		Store:              store,
+		Config:             cfg,
+		PlanInputResponder: responder,
+	}, json.RawMessage(`{
+		"questions":[{
+			"id":"scope_choice",
+			"header":"Scope",
+			"question":"Which scope should the plan use?",
+			"options":[
+				{"label":"Narrow (Recommended)","description":"Keep the implementation focused."},
+				{"label":"Broad","description":"Include adjacent cleanup."}
+			]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("request_user_input execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected successful live answer result, got %#v", result)
+	}
+	if result.Metadata["planmode"] != true {
+		t.Fatalf("expected planmode metadata, got %#v", result.Metadata)
+	}
+	if strings.TrimSpace(fmt.Sprint(result.Metadata["request_id"])) == "" {
+		t.Fatalf("expected request_id metadata, got %#v", result.Metadata)
+	}
+	if result.Metadata["plan_mode_id"] != created.PlanModeID {
+		t.Fatalf("expected live answer result to carry plan_mode_id %q, got %#v", created.PlanModeID, result.Metadata)
+	}
+	if responder.calls != 1 {
+		t.Fatalf("expected one responder call, got %d", responder.calls)
+	}
+}
+
 func TestRequestUserInputReportsStateLoadErrorBeforeResponder(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
