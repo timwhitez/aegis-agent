@@ -9264,7 +9264,56 @@ Evidence gates:
 - Confirmed this is distinct from answered/cancelled replay metadata consistency. Answered and cancelled inputs have final operator decisions and must append matching tool results; a generic responder error after `pending_request.tool_call_id` is persisted has no answer or cancellation yet, so appending an error tool result consumes the same tool call that Web/CLI recovery still needs to answer later.
 - Confirmed the minimal fix spans `internal/tools/registry.go` and `internal/runtime/engine.go`: mark this recoverable pending-input condition in the tool result metadata and have the engine stop at `awaiting_input` / `plan_input` before `tool.after`, tool-result append, or another provider turn, preserving cancellation, explicit context interruption, recovered answer/cancel, and provider adapter boundaries.
 
+### Review 520
+
+- Confirmed FCA-20260530-525 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/04-tools-and-skills.md`, `spec/11-spec-audit-and-traceability.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Plan Mode input durability failures that leave `pending_request.tool_call_id` recoverable must not append a provider replay tool result.
+- Confirmed this is a separate follow-on from FCA-20260530-524. A lost active Web/CLI responder is non-fatal and should stop cleanly at `plan_input`; failed required Plan Mode input events are durability errors and should surface as errors, but they still must not consume the pending `request_user_input` tool call before an answer or cancellation is durably replayable.
+- Confirmed the minimal fix belongs at the same internal marker boundary: the `request_user_input` tool marks pending-input durability failures with `plan_input_pending` plus error metadata, and the engine intercepts that marker before `tool.after`, message append, or another provider turn.
+
 ## Update Log
+
+### FCA-20260530-525
+
+Slice: `fix(runtime): preserve pending input event failures`
+
+Finding:
+
+- The live `request_user_input` tool first persisted `planmode.json.pending_request`, appended Plan Mode input-request history, and saved `state.status=awaiting_input` / `phase=plan_input`.
+- If a required Plan Mode input event then failed, such as `planmode.input_requested`, `planmode.input_answered`, or `planmode.input_cancelled`, the tool returned a normal error result even when the pending request remained recoverable or was restored to pending.
+- The engine treated that normal error result as a provider replay result, proceeded into `tool.after`, and could append the result for the original `tool_call_id`. A focused failing test showed the surfaced error became `tool.after` instead of the original `planmode.input_requested` event failure.
+
+Impact:
+
+- Web/CLI recovery could later answer or cancel the same `pending_request.tool_call_id`, producing two tool results for one provider tool call: an earlier durability error and the recovered operator decision.
+- The original required-event failure context could be masked by a later `tool.after` event error, weakening diagnosis of the actual durable fact that failed.
+- This violated the provider replay boundary in the Plan Mode spec: an unanswered or restored pending input is not a final tool result until the operator answer/cancellation has a durable replay fact.
+
+Changes:
+
+- Added engine regressions for `planmode.input_requested`, `planmode.input_answered`, and `planmode.input_cancelled` event failures proving the pending input remains recoverable and no `request_user_input` replay result is appended.
+- Added `plan_input_pending_error` metadata for `request_user_input` durability failures that leave the pending input boundary active or restored.
+- Updated the engine's pending Plan Mode input marker handling to return the original durability error before `tool.after`, tool-result append, or another provider turn.
+- Preserved the existing non-fatal lost-responder behavior from FCA-20260530-524, explicit context cancellation/interruption behavior, successful live answer/cancel replay results, and recovered answer/cancel paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEnginePlanInputRequestedEventFailureDoesNotAppendReplayResult -count=1`: failed before the fix because the run surfaced `record tool.after event for request_user_input: ... events.jsonl: is a directory` instead of the original `planmode.input_requested` failure.
+- `go test -timeout 120s ./internal/runtime -run 'TestEnginePlanInput(RequestedEventFailureDoesNotAppendReplayResult|AnsweredEventFailureDoesNotAppendReplayResult|CancelledEventFailureDoesNotAppendReplayResult|ResponderErrorStopsWithoutReplayResult|CancelStopsTurnAndCompletesLaterToolResults)' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(EnginePlanInputRequestedEventFailureDoesNotAppendReplayResult|EnginePlanInputAnsweredEventFailureDoesNotAppendReplayResult|EnginePlanInputCancelledEventFailureDoesNotAppendReplayResult|EnginePlanInputResponderErrorStopsWithoutReplayResult|EnginePlanInputCancelStopsTurnAndCompletesLaterToolResults|PlanInputAnswerRetryAfterEventFailureRestoresEvent|PlanInputAnswerRollsBackWhenToolResultAppendFails|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|CancelPlanModeRecordsAwaitingInputLifecycleEvent|CancelPlanModeRetryAfterCancelledEventFailureDoesNotDuplicateHistory|PlanInputCancelRetryAfterHistoryFailureRestoresFacts)' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput|TestSubmitPlan' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-524
 

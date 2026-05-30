@@ -382,6 +382,23 @@ func (r unavailablePlanInputRunner) RequestPlanInput(context.Context, string, se
 	return nil, r.err
 }
 
+type recordingRuntimePlanInputRunner struct {
+	calls atomic.Int32
+}
+
+func (r *recordingRuntimePlanInputRunner) AutoContinue(context.Context, string) (RunResult, error) {
+	return RunResult{}, errors.New("unexpected AutoContinue")
+}
+
+func (r *recordingRuntimePlanInputRunner) RequestPlanInput(context.Context, string, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
+	r.calls.Add(1)
+	return []session.PlanModeInputAnswer{{
+		QuestionID: "scope_choice",
+		Label:      "Narrow (Recommended)",
+		Value:      "Narrow (Recommended)",
+	}}, nil
+}
+
 func TestEnginePlanInputResponderErrorStopsWithoutReplayResult(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	engine.SetRunner(unavailablePlanInputRunner{err: errors.New("web input handle lost")})
@@ -449,6 +466,219 @@ func TestEnginePlanInputResponderErrorStopsWithoutReplayResult(t *testing.T) {
 	}
 	if count := countRuntimeToolResults(messages, "call_plan_input_unavailable", "request_user_input"); count != 0 {
 		t.Fatalf("unanswered Plan Mode input must not append a replay tool result, got %d messages=%#v", count, messages)
+	}
+}
+
+func TestEnginePlanInputRequestedEventFailureDoesNotAppendReplayResult(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	runner := &recordingRuntimePlanInputRunner{}
+	engine.SetRunner(runner)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Ask before planning.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if _, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Ask before planning"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "planmode.input_requested" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if !hasProviderTool(req.Tools, "request_user_input") {
+			t.Fatalf("request_user_input missing from planning tools: %#v", req.Tools)
+		}
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{{
+				ID:   "call_plan_input_event_failed",
+				Name: "request_user_input",
+				Arguments: json.RawMessage(`{
+					"questions":[{
+						"id":"scope_choice",
+						"header":"Scope",
+						"question":"Which scope should the plan use?",
+						"options":[
+							{"label":"Narrow (Recommended)","description":"Keep the plan focused."},
+							{"label":"Broad","description":"Include adjacent cleanup."}
+						]
+					}]
+				}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected input_requested event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "planmode.input_requested") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected planmode.input_requested events error with path context, got %v", err)
+	}
+	if runner.calls.Load() != 0 {
+		t.Fatalf("responder must not be called after input_requested event failure, got %d calls", runner.calls.Load())
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.Status != session.StatusAwaitingInput || loadedState.Phase != "plan_input" {
+		t.Fatalf("expected plan_input awaiting state, got %#v", loadedState)
+	}
+	planMode, err := engine.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil {
+		t.Fatalf("expected pending Plan Mode input to remain recoverable, got %#v", planMode)
+	}
+	if planMode.PendingRequest.ToolCallID != "call_plan_input_event_failed" {
+		t.Fatalf("expected stored tool call id for recovery, got %#v", planMode.PendingRequest)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, "call_plan_input_event_failed", "request_user_input"); count != 0 {
+		t.Fatalf("unanswered Plan Mode input must not append a replay tool result after event failure, got %d messages=%#v", count, messages)
+	}
+}
+
+func TestEnginePlanInputAnsweredEventFailureDoesNotAppendReplayResult(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	runner := &recordingRuntimePlanInputRunner{}
+	engine.SetRunner(runner)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Ask before planning.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if _, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Ask before planning"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "planmode.input_answered" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if !hasProviderTool(req.Tools, "request_user_input") {
+			t.Fatalf("request_user_input missing from planning tools: %#v", req.Tools)
+		}
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{{
+				ID:   "call_plan_input_answer_event_failed",
+				Name: "request_user_input",
+				Arguments: json.RawMessage(`{
+					"questions":[{
+						"id":"scope_choice",
+						"header":"Scope",
+						"question":"Which scope should the plan use?",
+						"options":[
+							{"label":"Narrow (Recommended)","description":"Keep the plan focused."},
+							{"label":"Broad","description":"Include adjacent cleanup."}
+						]
+					}]
+				}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected input_answered event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "planmode.input_answered") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected planmode.input_answered events error with path context, got %v", err)
+	}
+	if runner.calls.Load() != 1 {
+		t.Fatalf("responder should be called once before input_answered event failure, got %d calls", runner.calls.Load())
+	}
+	planMode, err := engine.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil {
+		t.Fatalf("expected pending Plan Mode input restored after answered event failure, got %#v", planMode)
+	}
+	if planMode.PendingRequest.ToolCallID != "call_plan_input_answer_event_failed" {
+		t.Fatalf("expected stored tool call id for recovery, got %#v", planMode.PendingRequest)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, "call_plan_input_answer_event_failed", "request_user_input"); count != 0 {
+		t.Fatalf("restored pending Plan Mode input must not append a replay tool result after answered event failure, got %d messages=%#v", count, messages)
+	}
+}
+
+func TestEnginePlanInputCancelledEventFailureDoesNotAppendReplayResult(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.SetRunner(cancellingPlanInputRunner{})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Ask before planning.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if _, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Ask before planning"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "planmode.input_cancelled" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if !hasProviderTool(req.Tools, "request_user_input") {
+			t.Fatalf("request_user_input missing from planning tools: %#v", req.Tools)
+		}
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{{
+				ID:   "call_plan_input_cancel_event_failed",
+				Name: "request_user_input",
+				Arguments: json.RawMessage(`{
+					"questions":[{
+						"id":"scope_choice",
+						"header":"Scope",
+						"question":"Which scope should the plan use?",
+						"options":[
+							{"label":"Narrow (Recommended)","description":"Keep the plan focused."},
+							{"label":"Broad","description":"Include adjacent cleanup."}
+						]
+					}]
+				}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err == nil {
+		t.Fatalf("expected input_cancelled event append error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "planmode.input_cancelled") || !strings.Contains(err.Error(), "events.jsonl") {
+		t.Fatalf("expected planmode.input_cancelled events error with path context, got %v", err)
+	}
+	planMode, err := engine.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil {
+		t.Fatalf("expected pending Plan Mode input restored after cancelled event failure, got %#v", planMode)
+	}
+	if planMode.PendingRequest.ToolCallID != "call_plan_input_cancel_event_failed" {
+		t.Fatalf("expected stored tool call id for recovery, got %#v", planMode.PendingRequest)
+	}
+	if planMode.PendingRequest.Status != "pending" || planMode.PendingRequest.CancelledAt != "" {
+		t.Fatalf("expected pending request to remain uncancelled after event failure, got %#v", planMode.PendingRequest)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if count := countRuntimeToolResults(messages, "call_plan_input_cancel_event_failed", "request_user_input"); count != 0 {
+		t.Fatalf("restored pending Plan Mode input must not append a replay tool result after cancelled event failure, got %d messages=%#v", count, messages)
 	}
 }
 

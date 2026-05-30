@@ -620,6 +620,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}, toolArgs)
 					e.control.clearCancel(cancel)
 					if isPendingPlanModeInputResult(toolResult) {
+						if errText := pendingPlanModeInputError(toolResult); errText != "" {
+							_ = writeSessionSummary(e.store, meta.ID)
+							_ = writeLongRunCheckpoint(e.store, meta.ID)
+							return RunResult{}, errors.New(errText)
+						}
 						return e.awaitingPlanInput(ctx, meta, state, hookManager)
 					}
 					annotateExactArtifactTemplateResult(meta.Workdir, currentMessages, call.Name, toolArgs, &toolResult)

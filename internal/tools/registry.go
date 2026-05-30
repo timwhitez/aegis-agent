@@ -2319,22 +2319,22 @@ func defRequestUserInput() Definition {
 				"request_id":   request.RequestID,
 				"questions":    len(request.Questions),
 			}); err != nil {
-				return errorResult("request_user_input", fmt.Errorf("record planmode.input_requested event: %w", err)), nil
+				return pendingPlanInputErrorResult(fmt.Errorf("record planmode.input_requested event: %w", err), request, planMode), nil
 			}
 			answers, err := execCtx.PlanInputResponder.RequestPlanInput(ctx, execCtx.SessionID, request)
 			if err != nil {
 				if errors.Is(err, ErrPlanInputCancelled) {
 					previousPlanMode, snapshotErr := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
 					if snapshotErr != nil {
-						return errorResult("request_user_input", snapshotErr), nil
+						return pendingPlanInputErrorResult(snapshotErr, request, planMode), nil
 					}
 					previousHistory, historyErr := execCtx.Store.LoadPlanModeHistory(execCtx.SessionID)
 					if historyErr != nil {
-						return errorResult("request_user_input", historyErr), nil
+						return pendingPlanInputErrorResult(historyErr, request, planMode), nil
 					}
 					planMode, cancelErr := execCtx.Store.CancelPlanMode(execCtx.SessionID, session.PlanModeSourceTool)
 					if cancelErr != nil {
-						return errorResult("request_user_input", cancelErr), nil
+						return pendingPlanInputErrorResult(cancelErr, request, planMode), nil
 					}
 					if eventErr := emitToolEvents(execCtx, []ToolEvent{
 						{
@@ -2353,12 +2353,12 @@ func defRequestUserInput() Definition {
 						},
 					}); eventErr != nil {
 						if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPlanMode); rollbackErr != nil {
-							return errorResult("request_user_input", fmt.Errorf("restore plan mode after planmode cancellation event failure %v: %w", eventErr, rollbackErr)), nil
+							return pendingPlanInputErrorResult(fmt.Errorf("restore plan mode after planmode cancellation event failure %v: %w", eventErr, rollbackErr), request, planMode), nil
 						}
 						if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
-							return errorResult("request_user_input", fmt.Errorf("restore plan mode history after planmode cancellation event failure %v: %w", eventErr, rollbackErr)), nil
+							return pendingPlanInputErrorResult(fmt.Errorf("restore plan mode history after planmode cancellation event failure %v: %w", eventErr, rollbackErr), request, planMode), nil
 						}
-						return errorResult("request_user_input", fmt.Errorf("record planmode.input_cancelled and planmode.cancelled events: %w", eventErr)), nil
+						return pendingPlanInputErrorResult(fmt.Errorf("record planmode.input_cancelled and planmode.cancelled events: %w", eventErr), request, planMode), nil
 					}
 					return session.ToolResult{
 						Name:          "request_user_input",
@@ -2392,15 +2392,15 @@ func defRequestUserInput() Definition {
 			}
 			previousPlanMode, err := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
 			if err != nil {
-				return errorResult("request_user_input", err), nil
+				return pendingPlanInputErrorResult(err, request, planMode), nil
 			}
 			previousHistory, err := execCtx.Store.LoadPlanModeHistory(execCtx.SessionID)
 			if err != nil {
-				return errorResult("request_user_input", err), nil
+				return pendingPlanInputErrorResult(err, request, planMode), nil
 			}
 			planMode, answered, err := execCtx.Store.AnswerPlanModeInput(execCtx.SessionID, request.RequestID, session.PlanModeSourceTool, answers)
 			if err != nil {
-				return errorResult("request_user_input", err), nil
+				return pendingPlanInputErrorResult(err, request, planMode), nil
 			}
 			if err := emitToolEvent(execCtx, "planmode.input_answered", map[string]any{
 				"plan_mode_id": planMode.PlanModeID,
@@ -2408,12 +2408,12 @@ func defRequestUserInput() Definition {
 				"answers":      answers,
 			}); err != nil {
 				if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPlanMode); rollbackErr != nil {
-					return errorResult("request_user_input", fmt.Errorf("restore plan mode after planmode.input_answered event failure %v: %w", err, rollbackErr)), nil
+					return pendingPlanInputErrorResult(fmt.Errorf("restore plan mode after planmode.input_answered event failure %v: %w", err, rollbackErr), request, planMode), nil
 				}
 				if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousHistory); rollbackErr != nil {
-					return errorResult("request_user_input", fmt.Errorf("restore plan mode history after planmode.input_answered event failure %v: %w", err, rollbackErr)), nil
+					return pendingPlanInputErrorResult(fmt.Errorf("restore plan mode history after planmode.input_answered event failure %v: %w", err, rollbackErr), request, planMode), nil
 				}
-				return errorResult("request_user_input", fmt.Errorf("record planmode.input_answered event: %w", err)), nil
+				return pendingPlanInputErrorResult(fmt.Errorf("record planmode.input_answered event: %w", err), request, planMode), nil
 			}
 			data, _ := json.Marshal(map[string]any{"answers": answers})
 			return session.ToolResult{
@@ -3509,6 +3509,23 @@ func errorResult(tool string, err error) session.ToolResult {
 		LLMOutput:     "Error: " + err.Error(),
 		DisplayOutput: "Error: " + err.Error(),
 		IsError:       true,
+	}
+}
+
+func pendingPlanInputErrorResult(err error, request session.PlanModeInputRequest, planMode session.PlanModeState) session.ToolResult {
+	message := err.Error()
+	return session.ToolResult{
+		Name:          "request_user_input",
+		LLMOutput:     "Error: " + message,
+		DisplayOutput: "Error: " + message,
+		IsError:       true,
+		Metadata: map[string]any{
+			"planmode":                 true,
+			"plan_input_pending":       true,
+			"plan_input_pending_error": message,
+			"request_id":               request.RequestID,
+			"plan_mode_id":             planMode.PlanModeID,
+		},
 	}
 }
 
