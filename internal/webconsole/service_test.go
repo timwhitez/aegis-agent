@@ -9187,6 +9187,12 @@ func TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets(t *testing.T) 
 	if err := os.Symlink(filepath.Join("..", "secrets", "key-real"), filepath.Join(workspaceRoot, "configs", "deploy.pem")); err != nil {
 		t.Fatalf("symlink nested deploy.pem: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "secrets", "env-real"), []byte("TOKEN=secret\n"), 0o600); err != nil {
+		t.Fatalf("write env target: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "secrets", "env-real"), filepath.Join(workspaceRoot, "configs", ".env")); err != nil {
+		t.Fatalf("symlink nested .env: %v", err)
+	}
 
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -9220,9 +9226,12 @@ func TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets(t *testing.T) 
 		if item["name"] == "key-real" {
 			t.Fatalf("workspace listing leaked nested private key symlink target: %#v", secretsTree)
 		}
+		if item["name"] == "env-real" {
+			t.Fatalf("workspace listing leaked nested env symlink target: %#v", secretsTree)
+		}
 	}
 
-	for _, denied := range []string{"maven-real/settings.xml", "npm-real", "secrets/key-real"} {
+	for _, denied := range []string{"maven-real/settings.xml", "npm-real", "secrets/key-real", "secrets/env-real"} {
 		resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(denied))
 		if err != nil {
 			t.Fatalf("workspace credential symlink target read request %s: %v", denied, err)

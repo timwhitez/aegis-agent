@@ -9294,7 +9294,53 @@ Evidence gates:
 - Confirmed this is distinct from the filename enumeration slices. Existing direct path checks already denied `configs/deploy.pem` lexically, and existing alias checks denied root-level `deploy.pem -> secrets/key-real`; the remaining bypass was writing or reading the ordinary target path `secrets/key-real` while a nested sensitive alias such as `configs/deploy.pem -> ../secrets/key-real` existed.
 - Confirmed the minimal fix belongs in the shared workspace write policy, not in Web-only filtering or a runtime workflow guard: recursively inspect existing workspace entries whose names match the credential/private-key pattern and compare their resolved targets with the requested write/read target.
 
+### Review 525
+
+- Confirmed FCA-20260530-530 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: the nested symlink alias protection must cover fixed sensitive names such as `.env`, `.npmrc`, `.netrc`, and `credentials`, not only wildcard credential/private-key patterns.
+- Confirmed this is distinct from FCA-20260530-529. That slice made the alias scan recursive, but it still called `deniedWorkspaceWriteFilePattern`, which intentionally excludes fixed names handled by `deniedWorkspaceWriteFiles`. A nested alias such as `configs/.env -> ../secrets/env-real` therefore still let `secrets/env-real` pass resolved-target checks.
+- Confirmed the minimal fix is to reuse the existing complete path-component predicate in the recursive alias scan, preserving all prior direct-path and root-alias denial messages while extending nested target checks to the same fixed-name policy.
+
 ## Update Log
+
+### FCA-20260530-530
+
+Slice: `fix(workspace): deny nested fixed credential aliases`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` now states that workspace write policy must reject credential / private-key / secret config paths, including sensitive symlink aliases anywhere in the workspace.
+- The previous recursive alias scan only used `deniedWorkspaceWriteFilePattern`, so it covered names such as `deploy.pem`, `client_secret.json`, and `service_account.json`, but not fixed sensitive names handled by `deniedWorkspaceWriteFiles`, including `.env`, `.envrc`, `.npmrc`, `.netrc`, `_netrc`, `.pypirc`, and `credentials`.
+- A focused failing test showed `configs/.env -> ../secrets/env-real` still allowed writes to the ordinary target `secrets/env-real`.
+
+Impact:
+
+- A model-facing `write_file` or `edit_file` call could indirectly overwrite dotenv or package credential material through a nested fixed-name symlink alias while satisfying the existing resolved workspace path checks.
+- The Web read-only Workspace browser reused the same workspace write policy for target denial, so it could list or read the ordinary target behind a nested `.env` alias even though it hid the alias path itself.
+
+Changes:
+
+- Changed the recursive resolved-alias scan to call `deniedWorkspaceWritePathComponentPattern` instead of the wildcard-only filename helper.
+- This reuses the existing unified fixed-name plus wildcard predicate and keeps allowed env templates, direct input checks, fixed root aliases, and wildcard alias behavior aligned.
+- Added a tool-policy regression for `configs/.env -> ../secrets/env-real` denying writes to `secrets/env-real`.
+- Extended the Web Workspace symlink-target regression to ensure a nested `.env` alias hides `secrets/env-real` from listing and rejects direct reads.
+
+Validation:
+
+- `go test ./internal/tools -run TestWriteDeniedNestedCredentialNameSymlinkFileTarget -count=1`: failed before the fix because `CheckWorkspaceWriteAllowed(root, "secrets/env-real")` returned `<nil>` while `configs/.env` pointed at that target; passed after the fix.
+- `go test ./internal/tools -run 'TestWriteDeniedNestedCredentialNameSymlinkFileTarget|TestWriteDeniedNestedPrivateKeyPatternSymlinkFileTarget|TestWriteDeniedSensitiveSymlinkFileTarget|TestWriteDeniedBrokenSensitiveSymlinkTarget' -count=1`: passed.
+- `go test ./internal/webconsole -run TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-529
 

@@ -279,6 +279,30 @@ func TestWriteDeniedNestedPrivateKeyPatternSymlinkFileTarget(t *testing.T) {
 	}
 }
 
+func TestWriteDeniedNestedCredentialNameSymlinkFileTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o700); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+	target := filepath.Join(root, "secrets", "env-real")
+	if err := os.WriteFile(target, []byte("TOKEN=old\n"), 0o600); err != nil {
+		t.Fatalf("write sensitive target: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "secrets", "env-real"), filepath.Join(root, "configs", ".env")); err != nil {
+		t.Fatalf("symlink nested .env: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "secrets/env-real")
+	if err != nil {
+		t.Fatalf("resolve sensitive target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.env'") {
+		t.Fatalf("expected nested resolved .env target to be denied, got %v", err)
+	}
+}
+
 func TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets(t *testing.T) {
 	tests := []struct {
 		name    string

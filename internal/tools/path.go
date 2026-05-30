@@ -242,7 +242,7 @@ func checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath s
 		if entry == nil || sameCleanPath(path, base) {
 			return nil
 		}
-		pattern := deniedWorkspaceWriteFilePattern(entry.Name())
+		pattern := deniedWorkspaceWritePathComponentPattern(entry.Name())
 		if pattern == "" {
 			return nil
 		}
