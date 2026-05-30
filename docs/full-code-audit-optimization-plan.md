@@ -9558,7 +9558,46 @@ Evidence gates:
 - Confirmed this is a provider-adapter sibling of FCA-20260531-572, not the same bug shape. OpenAI reasoning blocks are standalone opaque replay items that can be stripped wholesale; Anthropic and Google embed opaque continuation facts next to replay anchors, so the safe behavior is to strip only unscoped thinking/signature facts while keeping normal text/tool-call anchors.
 - Confirmed the minimal fix belongs inside the Anthropic and Google adapters: stamp newly returned provider blocks with request scope, strip unscoped opaque thinking/signature replay when the current request scope is known, and avoid moving provider-specific replay decisions into runtime, Web, CLI, or tools.
 
+### Review 569
+
+- Confirmed FCA-20260531-574 against `spec/17-web-console.md`: frontend-loaded message history must survive polling refreshes, and a detected middle gap must stay loadable until the operator fills it with the message paging endpoint.
+- Confirmed this is distinct from FCA-20260525-023 and FCA-20260530-481. Those slices added gap tracking and invalidated stale reset windows; this residual race occurs when a non-gap older-page request is already in flight, then polling creates a new gap before that request resolves.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` `loadEarlierMessages`: after merging the older page, preserve a different currently active `messageGapAnchorId` instead of clearing it based on the older request's captured non-gap context.
+
 ## Update Log
+
+### FCA-20260531-574
+
+Slice: `fix(webconsole): preserve concurrent paging gaps`
+
+Finding:
+
+- `spec/17-web-console.md` requires the Session workspace to preserve frontend-loaded history during polling and keep message stream / timeline paging consistent by message id.
+- `loadEarlierMessages()` captured whether the request was filling a gap before it issued `GET /api/sessions/{id}/messages?before_id=...&limit=40`.
+- If the request started as a normal oldest-history load, then a polling refresh advanced the server tail far enough to create a new `messageGapAnchorId`, the in-flight older-page response still ran the non-gap completion branch.
+- That branch cleared `messageGapAnchorId`, set `loadedAllEarlierMessages=true` when the older page had no more history before it, and hid the load-earlier control even though the merged message stream still had a middle gap created by the polling refresh.
+
+Impact:
+
+- A long-running session could permanently hide a missing middle message window after a realistic race between user paging and polling.
+- The WebConsole would still show durable messages it had loaded, but the browser-local paging projection could incorrectly claim that all earlier messages were loaded while a later tail gap remained.
+
+Changes:
+
+- After merging an older-page response, `loadEarlierMessages()` now checks the current active gap anchor.
+- If polling created a different `messageGapAnchorId` while the request was in flight, the older-page response preserves that active gap, keeps load-earlier available, and does not mark the window fully loaded.
+- Added a frontend regression that starts a normal older-page request, simulates polling creating a gap, resolves the older page, and verifies the gap anchor and load-earlier state remain intact.
+
+Validation:
+
+- `node --test --test-name-pattern "loadEarlierMessages preserves a polling-created gap" validation/scripts/webconsole_utils_test.mjs`: passed.
+- `node --check internal/webconsole/assets/app.js && node --check internal/webconsole/assets/session-view.js && node --check internal/webconsole/assets/workspace-view.js && node --check internal/webconsole/assets/events.js && node --check internal/webconsole/assets/settings-view.js && node --check internal/webconsole/assets/utils.js && node --check internal/webconsole/assets/api.js && node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed with 116 subtests.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `git diff --check`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-573
 

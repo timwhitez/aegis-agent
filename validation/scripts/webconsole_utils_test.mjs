@@ -2783,6 +2783,63 @@ test('loadEarlierMessages ignores stale page responses after same-session window
   });
 });
 
+test('loadEarlierMessages preserves a polling-created gap while an older page is in flight', async () => {
+  const appContext = createAppHarnessContext();
+  const pageLoad = vm.runInContext(`
+    state.sessionId = 'session_gap_race';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_gap_race' },
+      messages: [
+        { id: 'm41', role: 'assistant', text: 'old tail 41' },
+        { id: 'm42', role: 'assistant', text: 'old tail 42' }
+      ],
+      timeline: []
+    };
+    setHasMoreMessagesToLoad(true);
+    setOldestLoadedMessageId('m41');
+    setLoadedAllEarlierMessages(false);
+    setMessageGapAnchorId('');
+    loadEarlierMessages();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /before_id=m41/);
+
+  vm.runInContext(`
+    state.sessionDetail.messages = [
+      { id: 'm41', role: 'assistant', text: 'old tail 41' },
+      { id: 'm42', role: 'assistant', text: 'old tail 42' },
+      { id: 'm50', role: 'assistant', text: 'new tail 50' },
+      { id: 'm51', role: 'assistant', text: 'new tail 51' }
+    ];
+    setMessageGapAnchorId('m50');
+    setHasMoreMessagesToLoad(true);
+    setLoadedAllEarlierMessages(false);
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({
+    messages: [
+      { id: 'm39', role: 'assistant', text: 'older 39' },
+      { id: 'm40', role: 'assistant', text: 'older 40' }
+    ],
+    has_more: false
+  });
+  await pageLoad;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    messageIDs: maybeArray(state.sessionDetail?.messages).map((message) => message.id),
+    hasMore: hasMoreMessagesToLoad(),
+    loadedAll: loadedAllEarlierMessages(),
+    gapAnchor: messageGapAnchorId()
+  })`, appContext)), {
+    messageIDs: ['m39', 'm40', 'm41', 'm42', 'm50', 'm51'],
+    hasMore: true,
+    loadedAll: false,
+    gapAnchor: 'm50'
+  });
+});
+
 test('message paging in-flight view state is isolated from durable app state', async () => {
   const appContext = createAppHarnessContext();
   const pageLoad = vm.runInContext(`

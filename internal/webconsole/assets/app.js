@@ -2890,7 +2890,11 @@ async function loadEarlierMessages() {
       state.sessionDetail.messages = mergeMessagesBeforeAnchor(currentMessages, olderMessages, beforeID);
       const mergedMessages = maybeArray(state.sessionDetail?.messages);
       setOldestLoadedMessageId(mergedMessages.length > 0 ? mergedMessages[0].id : '');
-      if (fillingGap && resp?.has_more === true) {
+      const activeGapAnchor = messageGapAnchorId();
+      if (activeGapAnchor && activeGapAnchor !== beforeID) {
+        setHasMoreMessagesToLoad(true);
+        setLoadedAllEarlierMessages(false);
+      } else if (fillingGap && resp?.has_more === true) {
         setMessageGapAnchorId(olderMessages[0]?.id || beforeID);
         setHasMoreMessagesToLoad(true);
         setLoadedAllEarlierMessages(false);
