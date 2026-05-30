@@ -140,6 +140,10 @@ var reservedNames = map[string]struct{}{
 	"get_plan_mode": {}, "submit_plan": {}, "request_user_input": {},
 }
 
+const providerToolNamePatternText = `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`
+
+var providerToolNamePattern = regexp.MustCompile(providerToolNamePatternText)
+
 func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane, trustedCommandWorkdir ...string) (*Registry, error) {
 	if cfg == nil {
 		cfg = config.Default()
@@ -160,6 +164,9 @@ func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Sto
 			}
 			if toolName != tool.Name {
 				return nil, fmt.Errorf("skill tool name must not contain surrounding whitespace: %q", tool.Name)
+			}
+			if !providerToolNamePattern.MatchString(toolName) {
+				return nil, fmt.Errorf("skill tool name must match provider-compatible pattern %s: %q", providerToolNamePatternText, toolName)
 			}
 			if _, ok := reservedNames[toolName]; ok {
 				return nil, fmt.Errorf("skill tool name is reserved: %s", toolName)

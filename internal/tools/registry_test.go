@@ -4112,6 +4112,11 @@ func TestSkillCommandToolRejectsInvalidToolNames(t *testing.T) {
 	}{
 		{name: "blank", toolName: "", want: "skill tool name must not be empty"},
 		{name: "surrounding whitespace", toolName: " shared_echo ", want: "skill tool name must not contain surrounding whitespace"},
+		{name: "space", toolName: "shared echo", want: "skill tool name must match provider-compatible pattern"},
+		{name: "dot", toolName: "shared.echo", want: "skill tool name must match provider-compatible pattern"},
+		{name: "unicode", toolName: "工具", want: "skill tool name must match provider-compatible pattern"},
+		{name: "starts with digit", toolName: "1shared_echo", want: "skill tool name must match provider-compatible pattern"},
+		{name: "too long", toolName: strings.Repeat("a", 65), want: "skill tool name must match provider-compatible pattern"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

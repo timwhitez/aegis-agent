@@ -9378,7 +9378,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-542. That slice stabilized the command cwd and sandbox bind source; this residual slice covers the execution configuration applied after the command definition has been registered.
 - Confirmed the minimal fix belongs across `internal/skills/catalog.go` and `internal/tools/registry.go`: the catalog should preserve an omitted `timeout_sec` as omitted, and the executor should compute timeout, sandbox, exec policy, environment filtering, and result metadata from the effective execution config.
 
+### Review 539
+
+- Confirmed FCA-20260530-544 against `AGENTS.md`, `spec/03-provider-contracts.md`, `spec/04-tools-and-skills.md`, and the provider schema conversion path: direct-call skill command names are user-provided registry names and are passed unchanged into OpenAI, Anthropic, and Google tool/function declarations.
+- Confirmed this is distinct from FCA-20260530-541. That slice rejected duplicate names; this residual slice covers syntactically invalid names such as spaces, dots, Unicode, digit-prefixed names, and overlong names that would make provider tool schemas fail after registry construction.
+- Confirmed the minimal fix belongs in `NewRegistry` before `commandToolDefinition` registration. Provider adapters should keep their thin name pass-through, while the local registry rejects incompatible trusted skill command names before exposing them to the model.
+
 ## Update Log
+
+### FCA-20260530-544
+
+Slice: `fix(tools): reject provider-incompatible skill tool names`
+
+Finding:
+
+- `spec/03-provider-contracts.md` defines internal tool schemas as `{ name, description, input_schema }` and each provider adapter converts that name directly into its native tool/function declaration.
+- `internal/provider/openai.go`, `internal/provider/anthropic.go`, and `internal/provider/google.go` all pass `tool.Name` through unchanged when building provider request schemas.
+- `internal/tools/registry.go` only rejected blank, whitespace-padded, reserved, and duplicate trusted skill command names. Names containing spaces, dots, Unicode, a leading digit, or more than 64 characters could still register successfully and only fail later when a provider rejected the tool schema.
+
+Impact:
+
+- A trusted direct-call skill could make registry construction succeed while causing the next OpenAI / Anthropic / Google request to fail during provider schema validation.
+- This moved a local tool contract error across the provider boundary, weakening fail-fast diagnostics and making the same skill catalog behave differently depending on the selected provider.
+- The failure would occur after the tool list had already been exposed to the session rather than at skill command registration time.
+
+Changes:
+
+- Added a provider-compatible skill command name pattern: `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`.
+- Rejected incompatible trusted skill command names in `NewRegistry` before reserved-name and duplicate-name checks create a command definition.
+- Extended `TestSkillCommandToolRejectsInvalidToolNames` to cover spaces, dots, Unicode, digit-prefixed names, and overlong names.
+- Updated `spec/04-tools-and-skills.md` so the direct-call skill command contract documents the fail-fast provider-compatible `name` requirement.
+
+Validation:
+
+- `go test ./internal/tools -run TestSkillCommandToolRejectsInvalidToolNames -count=1`: failed before the fix because invalid names registered successfully.
+- `go test ./internal/tools -run TestSkillCommandToolRejectsInvalidToolNames -count=1`: passed.
+- `go test ./internal/tools -run 'TestSkillCommandTool(RejectsInvalidToolNames|RejectsDuplicateToolNames|RejectsReservedToolNames|UsesRuntimeDefaultTimeoutWhenUnset)' -count=1`: passed.
+- `go test ./internal/tools -run TestSkillCommandTool -count=1`: passed.
+- `go test ./internal/skills -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools ./internal/skills -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-543
 
