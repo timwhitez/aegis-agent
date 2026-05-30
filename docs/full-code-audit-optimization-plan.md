@@ -9492,7 +9492,40 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-553, FCA-20260530-559, FCA-20260530-560, and FCA-20260530-561. Those slices covered rollback after later persistence failures, invalid guardrails values, empty Settings writes, and config-test DTO narrowing; the residual gap was `handleUpdateConfig` still mapping API-key/env target preflight failures to HTTP 500 and checking audit-log writability before rejecting malformed API-key writes.
 - Confirmed the minimal fix belongs in the Web Settings preflight boundary: classify deterministic env-key/env-value/config-env-audit alias errors as bad requests, keep real filesystem/audit/environment failures as server errors, and run API-key preflight validation before opening the audit log.
 
+### Review 558
+
+- Confirmed FCA-20260530-563 against `spec/03-provider-contracts.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md`: provider generation/reasoning options are effective session facts, and `continue` must not let current config drift change an existing session's durable provider defaults.
+- Confirmed this is distinct from the existing provider-option backfill and durable retry-policy slices. Those paths correctly backfill missing legacy metadata and restore explicit retry/timeout policy; the residual gap was the durable session merge treating zero-valued scalar options such as `max_output_tokens=0` and `thinking_budget=0` as absent, so a later non-zero config changed the provider request during continue.
+- Confirmed the minimal fix belongs in the runtime metadata merge boundary: keep full backfill for sessions with no provider options, but for sessions that already have provider options preserve durable generation/reasoning default values while continuing to backfill adapter/store/transport facts needed for old partial metadata.
+
 ## Update Log
+
+### FCA-20260530-563
+
+Slice: `fix(runtime): preserve provider option defaults`
+
+Finding:
+
+- `spec/03-provider-contracts.md` requires generation and reasoning options to travel through config, runtime, session metadata, and provider adapters.
+- `spec/18-durable-contract-and-completion.md` says provider attempt and provider-option facts are durable recovery evidence rather than current-process state.
+- `internal/runtime/runner.go` `Continue` called `mergedSessionProviderOptions`, which used the same partial-override merge as request-time provider overrides.
+- That merge treated integer zero values as "not provided"; an existing session whose metadata recorded provider defaults with `max_output_tokens=0` or `thinking_budget=0` could be continued after config changed to non-zero values, and the runtime rewrote the session metadata plus provider request to the new config values.
+
+Impact:
+
+- Existing sessions were not fully insulated from provider Settings/config drift during `continue`.
+- A provider request could unexpectedly gain a max-output cap or thinking budget that was not part of the original session facts, weakening replay/recovery traceability.
+
+Changes:
+
+- Added a runtime regression that starts from an existing session with durable zero-valued provider defaults, drifts current config to non-zero `max_output_tokens` and `thinking_budget`, and proves `continue` must preserve the old metadata and omit `max_output_tokens` from the OpenAI request.
+- Updated the session provider-option merge to preserve durable generation/reasoning defaults for sessions that already have provider options, while preserving the existing full backfill for legacy sessions with no provider options.
+- Kept existing partial-metadata backfill for adapter/store facts and existing durable retry-policy reconstruction behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerContinuePreservesZeroProviderOptionDefaults -count=1`: failed before the fix because `ProviderOptions.MaxOutputTokens` drifted to `2048` and `ThinkingBudget` drifted to `4096`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerContinuePreservesZeroProviderOptionDefaults|TestRunnerContinueBackfillsMissingProviderOptions|TestRunnerContinueBackfillsPartialProviderOptions|TestRunnerContinueUsesDurableRetryPolicyFromSessionMetadata' -count=1`: passed after the fix.
 
 ### FCA-20260530-562
 

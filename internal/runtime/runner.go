@@ -2248,7 +2248,14 @@ func (r *Runner) mergedSessionProviderOptions(providerName string, current sessi
 	if err != nil {
 		return session.ProviderOptions{}, WrapConfigError(err)
 	}
-	return resolvedProviderOptions(providerName, providerCfg, current)
+	merged, err := resolvedProviderOptions(providerName, providerCfg, current)
+	if err != nil {
+		return session.ProviderOptions{}, err
+	}
+	if current == (session.ProviderOptions{}) {
+		return merged, nil
+	}
+	return preserveDurableProviderOptionDefaults(merged, current), nil
 }
 
 func (r *Runner) providerConfig(name, baseURL, apiKeyEnv, apiProvider, wireAPI, model string) (config.Provider, error) {
@@ -2512,6 +2519,30 @@ func mergeProviderOptions(defaults, override session.ProviderOptions) session.Pr
 		out.TimeoutPolicy = override.TimeoutPolicy
 	}
 	return out
+}
+
+func preserveDurableProviderOptionDefaults(merged, current session.ProviderOptions) session.ProviderOptions {
+	if current.Temperature == nil {
+		merged.Temperature = nil
+	}
+	if current.TopP == nil {
+		merged.TopP = nil
+	}
+	merged.MaxOutputTokens = current.MaxOutputTokens
+	merged.ReasoningEffort = strings.TrimSpace(current.ReasoningEffort)
+	merged.ReasoningSummary = strings.TrimSpace(current.ReasoningSummary)
+	merged.TextVerbosity = strings.TrimSpace(current.TextVerbosity)
+	merged.ThinkingBudget = current.ThinkingBudget
+	if current.IncludeThoughts == nil {
+		merged.IncludeThoughts = nil
+	}
+	if current.SendMetadata == nil {
+		merged.SendMetadata = nil
+	}
+	if current.RawSidecar == nil {
+		merged.RawSidecar = nil
+	}
+	return merged
 }
 
 func defaultStoreForAPIProvider(apiProvider string, configured *bool) *bool {

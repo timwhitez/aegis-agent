@@ -1577,6 +1577,86 @@ func TestRunnerContinueBackfillsPartialProviderOptions(t *testing.T) {
 	}
 }
 
+func TestRunnerContinuePreservesZeroProviderOptionDefaults(t *testing.T) {
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(data, &seenBody); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_zero_defaults",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"continued\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	oldProvider := config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+	}
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		MaxOutputTokens:   2048,
+		ThinkingBudget:    4096,
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", oldProvider),
+	}
+	state := session.State{Status: session.StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Message: "continue with original provider defaults"})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	loadedMeta, err := runner.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if loadedMeta.ProviderOptions.MaxOutputTokens != 0 || loadedMeta.ProviderOptions.ThinkingBudget != 0 {
+		t.Fatalf("continue should preserve durable zero-valued provider defaults, got %#v", loadedMeta.ProviderOptions)
+	}
+	if _, ok := seenBody["max_output_tokens"]; ok {
+		t.Fatalf("continue should not drift max_output_tokens into the provider request, got %#v", seenBody)
+	}
+}
+
 func TestRunnerContinueClaimsSessionBeforeUserMessageHook(t *testing.T) {
 	root := t.TempDir()
 	hookStarted := filepath.Join(root, "hook-started")
