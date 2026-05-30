@@ -9162,7 +9162,42 @@ Evidence gates:
 - Confirmed this is distinct from the symlink and non-regular ZIP entry hardening slices. Those checks rejected symlink-mode and non-regular file entries, but a directory entry named `demo-skill/SKILL.md/` still matched the manifest discovery rule because `path.Base(cleaned) == "SKILL.md"`; the upload transaction then installed a skill directory with no regular manifest and still reported success.
 - Confirmed the minimal fix belongs at manifest discovery time in `processSkillZipReader(...)`: when a cleaned entry name has base `SKILL.md`, reject directory entries before adding the root to `skillRoots`, so malformed packages fail before staging or target replacement.
 
+### Review 503
+
+- Confirmed FCA-20260530-508 against `AGENTS.md` and `spec/17-web-console.md`: the WebConsole workspace read-only browser must hide and reject credential-like paths, including common rc/auth files that carry package, Git, Docker, Python, or netrc credentials.
+- Confirmed this is distinct from FCA-20260526-042 and the existing workspace browser coverage. The earlier deny rules covered `.env`, private-key names, cloud credential directories, `.config/gcloud`, and generic `credentials` filenames; the residual gap was root-visible credential rc files such as `.npmrc`, `.netrc`, `_netrc`, `.pypirc`, `.git-credentials`, and `.dockercfg`.
+- Confirmed the minimal fix belongs in `webFileBrowserNameDenied(...)`, because both `handleListFiles(...)` and `handleReadFile(...)` route through `webFileBrowserPathDenied(...)` and the directory listing also filters entry names through the same deny predicate.
+
 ## Update Log
+
+### FCA-20260530-508
+
+Slice: `fix(webconsole): hide credential rc workspace files`
+
+Finding:
+
+- `webFileBrowserNameDenied(...)` did not deny common credential rc/auth files such as `.npmrc`, `.netrc`, `_netrc`, `.pypirc`, `.git-credentials`, and `.dockercfg`.
+- A focused failing test showed that `/api/files` listed these files at the workspace root before the fix, and direct `/api/file/read?path=...` requests were not covered by a filename-specific deny rule.
+
+Impact:
+
+- The local WebConsole workspace browser could expose package registry tokens, netrc machine credentials, Python package upload credentials, Git credential helper material, or legacy Docker registry auth through the read-only file browser.
+- This violated the `spec/17-web-console.md` requirement that the workspace browser hide and reject credential-like paths and Docker/cloud credential material.
+
+Changes:
+
+- Added these credential rc/auth filenames to `webFileBrowserNameDenied(...)`.
+- Added `TestServiceWorkspaceRoutesRejectsCredentialRCFiles` to prove the files are hidden from `/api/files` and direct reads return `403`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesRejectsCredentialRCFiles -count=1`: failed before the fix by listing `.dockercfg`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, and `_netrc`; passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspace(RoutesListReadAndRejectEscape|RoutesRejectsCredentialRCFiles|RootIncludesParentNavigationWhenEmpty)|TestServiceMetaReportsDefaultWorkspaceSubdirOnly|TestServiceMetaReportsWorkspaceRootError' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Workspace|Test.*File|Test.*Meta' -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-507
 

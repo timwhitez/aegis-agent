@@ -8938,6 +8938,62 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	}
 }
 
+func TestServiceWorkspaceRoutesRejectsCredentialRCFiles(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	for _, name := range []string{".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
+		if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+			t.Fatalf("mkdir workspace: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(workspaceRoot, name), []byte(name+"=secret\n"), 0o600); err != nil {
+			t.Fatalf("write credential rc file %s: %v", name, err)
+		}
+	}
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var tree []map[string]any
+	postGetJSON(t, ts.URL+"/api/files", &tree)
+	for _, item := range tree {
+		name, _ := item["name"].(string)
+		for _, denied := range []string{".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
+			if name == denied {
+				t.Fatalf("workspace listing leaked credential rc file %s: %#v", denied, tree)
+			}
+		}
+	}
+	for _, denied := range []string{".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
+		resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(denied))
+		if err != nil {
+			t.Fatalf("workspace credential rc read request %s: %v", denied, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected forbidden for workspace credential rc read %s, got %d body=%s", denied, resp.StatusCode, string(body))
+		}
+	}
+}
+
 func TestServiceWorkspaceRootIncludesParentNavigationWhenEmpty(t *testing.T) {
 	root := t.TempDir()
 	previousWD, err := os.Getwd()
