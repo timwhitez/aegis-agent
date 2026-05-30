@@ -1665,6 +1665,9 @@ func (r *Runner) Steer(_ context.Context, req SteerRequest) (SteerResult, error)
 		return SteerResult{}, err
 	}
 	if _, err := r.store.RefreshPendingSteerCount(req.SessionID); err != nil {
+		if rejectErr := r.rejectQueuedSteerRequest(req.SessionID, request.ID); rejectErr != nil {
+			return SteerResult{}, fmt.Errorf("refresh pending steer count after rejecting queued steer failed with %v: %w", rejectErr, err)
+		}
 		return SteerResult{}, err
 	}
 	if err := r.appendEvent(req.SessionID, "session.steer.requested", "control", map[string]any{

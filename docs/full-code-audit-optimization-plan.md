@@ -9204,7 +9204,45 @@ Evidence gates:
 - Confirmed this is distinct from the existing resolved-alias protections. The guard already rejected writes to existing real targets such as `.env -> secrets/env-real` after `secrets/env-real` existed, but a broken sensitive symlink was ignored by `filepath.EvalSymlinks`, so the first write to the intended target could materialize the credential file through a benign-looking path.
 - Confirmed the minimal fix belongs in the workspace write-policy resolver only. The runtime loop, provider adapters, Web UI, session store, and workflow/Plan/Goal behavior do not need to change.
 
+### Review 510
+
+- Confirmed FCA-20260530-515 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, and `spec/18-durable-contract-and-completion.md`: a failed `steer` submission must not leave a durable pending steer request without the required queued/requested event facts.
+- Confirmed this is distinct from the existing queued-event rollback coverage. That path rejected a steer request when event append failed after the pending count had been refreshed; the residual issue was an earlier failure while refreshing `state.pending_steer_count` after `control/steer.jsonl` was already appended.
+- Confirmed the minimal fix belongs in `Runner.Steer(...)`: reuse the existing queued-request rejection path immediately after a pending-count refresh error, preserving the normal queue-first steer behavior and avoiding any Web, CLI, provider, Plan Mode, or queue workflow changes.
+
 ## Update Log
+
+### FCA-20260530-515
+
+Slice: `fix(runtime): reject steer when count refresh fails`
+
+Finding:
+
+- `internal/runtime/runner.go` appended a new steer request to `control/steer.jsonl`, then refreshed `state.pending_steer_count`, then appended `session.steer.requested` and `session.steer.queued` events.
+- A focused failing test proved that when the state refresh failed after the append, `Runner.Steer(...)` returned an error while the newly created steer request stayed `pending` in `steer.jsonl`.
+- Because the failure happened before the requested/queued events, the session could later accept a pending steer request that the submitting client had been told failed and that had no required queued timeline evidence.
+
+Impact:
+
+- Live input recovery facts could diverge: `control/steer.jsonl` contained an actionable pending request, while `events.jsonl` had no matching `session.steer.requested` or `session.steer.queued` events and `state.json` was not refreshed.
+- This weakened the queue-first live steering contract and operator diagnostics for both CLI and Web callers. It did not change provider adapters, tool execution, Plan Mode, queue/delegation, or workspace path safety.
+
+Changes:
+
+- Updated `Runner.Steer(...)` to reject the just-appended steer request if refreshing the pending steer count fails.
+- Reused the existing `rejectQueuedSteerRequest(...)` path so the durable request status is changed to `rejected` and best-effort count refresh remains centralized.
+- Added a regression that blocks `state.lock`, triggers the post-append refresh failure, and verifies the durable steer request is rejected with no misleading queued events.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestRunnerSteerRejectsQueuedRequestWhenPendingCountRefreshFails -count=1`: failed before the fix because the request remained `pending`.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerSteer(RejectsQueuedRequestWhenPendingCountRefreshFails|ReportsQueuedEventAppendError|ReturnsQueuedBehaviorForRunningSession|ReportsCorruptMetadataBeforeQueueing)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-514
 

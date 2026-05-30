@@ -2579,6 +2579,60 @@ func TestRunnerSteerReportsQueuedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestRunnerSteerRejectsQueuedRequestWhenPendingCountRefreshFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	lockPath := filepath.Join(runner.store.SessionDir(meta.ID), "state.lock")
+	if err := os.Symlink("state-target.lock", lockPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	result, err := runner.Steer(context.Background(), SteerRequest{
+		SessionID: meta.ID,
+		Message:   "focus on tests",
+		Interrupt: true,
+	})
+	if err == nil {
+		t.Fatalf("expected pending steer count refresh error, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "state.lock") {
+		t.Fatalf("expected state.lock error context, got %v", err)
+	}
+	requests, err := runner.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusRejected {
+		t.Fatalf("pending count refresh failure should reject durable steer request, got %#v", requests)
+	}
+	events, err := runner.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("failed steer request should not emit queued events, got %#v", events)
+	}
+}
+
 func TestRunnerWatchSteerHandlesMultipleInterruptRequests(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()
