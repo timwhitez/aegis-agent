@@ -9210,7 +9210,49 @@ Evidence gates:
 - Confirmed this is distinct from the existing queued-event rollback coverage. That path rejected a steer request when event append failed after the pending count had been refreshed; the residual issue was an earlier failure while refreshing `state.pending_steer_count` after `control/steer.jsonl` was already appended.
 - Confirmed the minimal fix belongs in `Runner.Steer(...)`: reuse the existing queued-request rejection path immediately after a pending-count refresh error, preserving the normal queue-first steer behavior and avoiding any Web, CLI, provider, Plan Mode, or queue workflow changes.
 
+### Review 511
+
+- Confirmed FCA-20260530-516 against `AGENTS.md` and `spec/03-provider-contracts.md`: provider adapter normalization must produce runtime-safe tool call facts, including stable unique internal tool call IDs when an upstream protocol omits optional IDs.
+- Confirmed this is specific to the Google adapter fallback path. OpenAI Responses uses `call_id`, Anthropic `tool_use.id` is required for replay, and Google `functionCall.id` can be absent; the residual issue was two same-name Google `functionCall` parts without `id` both becoming `call_<name>`.
+- Confirmed the minimal fix belongs in `internal/provider/google.go`: keep provider-specific parsing in the adapter, preserve the raw provider call id when present, and generate unique internal fallback IDs before the runtime translates tool calls into durable assistant messages.
+
 ## Update Log
+
+### FCA-20260530-516
+
+Slice: `fix(provider): uniquify google fallback tool call ids`
+
+Finding:
+
+- `internal/provider/google.go` mapped a Google `functionCall` without `id` to `call_` plus the function name.
+- A focused failing test proved that two same-name Google function calls without provider ids produced duplicate internal ids such as `call_shell`.
+- `internal/session/store.go` rejects duplicate `tool_call.id` values in a single assistant message, so the runtime could turn a valid provider tool-use response shape into a session persistence failure before tool execution.
+
+Impact:
+
+- Gemini responses containing multiple same-name function calls without ids could fail at the provider/runtime boundary even though each call had valid JSON object arguments.
+- This weakened provider contract normalization and durable replay consistency for Google sessions. It did not change Web routing, CLI behavior, tool execution policy, Plan Mode, Goal completion, queue/delegation, or OpenAI/Anthropic adapters.
+
+Changes:
+
+- Added per-response Google tool call id tracking in the adapter.
+- Preserved the original provider `functionCall.id` as `ProviderCallID` when present.
+- Generated a unique internal fallback id for missing or colliding Google call ids, and used the same internal id in the corresponding provider content block.
+- Added a regression with two same-name Google `functionCall` parts without ids.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run TestGoogleAdapterGeneratesUniqueFallbackToolCallIDs -count=1`: failed before the fix because both calls had `ID:"call_shell"`.
+- `go test -timeout 120s ./internal/provider -run TestGoogleAdapterGeneratesUniqueFallbackToolCallIDs -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/provider -run 'TestGoogleAdapter(SerializesAndParses|GeneratesUniqueFallbackToolCallIDs|MapsPromptSafetyBlockWithoutCandidates|MapsUnknownFinishReasonToErrorStop)' -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `git diff --check`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-515
 

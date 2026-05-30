@@ -666,6 +666,48 @@ func TestGoogleAdapterSerializesAndParses(t *testing.T) {
 	}
 }
 
+func TestGoogleAdapterGeneratesUniqueFallbackToolCallIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_no_call_ids",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[
+					{"functionCall":{"name":"shell","args":{"command":"pwd"}}},
+					{"functionCall":{"name":"shell","args":{"command":"ls"}}}
+				]},
+				"finishReason":"STOP"
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "tool_use" || len(result.ToolCalls) != 2 {
+		t.Fatalf("expected two google tool calls, got %#v", result)
+	}
+	if result.ToolCalls[0].ID == "" || result.ToolCalls[1].ID == "" || result.ToolCalls[0].ID == result.ToolCalls[1].ID {
+		t.Fatalf("expected unique fallback tool call ids, got %#v", result.ToolCalls)
+	}
+	if result.ProviderContentBlocks[0].ID != result.ToolCalls[0].ID || result.ProviderContentBlocks[1].ID != result.ToolCalls[1].ID {
+		t.Fatalf("expected provider block ids to match fallback tool call ids, got blocks=%#v calls=%#v", result.ProviderContentBlocks, result.ToolCalls)
+	}
+}
+
 func TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()

@@ -105,6 +105,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	var calls []ToolCall
 	thoughtPartCount := 0
 	thoughtSignatureCount := 0
+	seenCallIDs := map[string]struct{}{}
 	for _, part := range candidate.Content.Parts {
 		if part.Thought {
 			thoughtPartCount++
@@ -146,10 +147,12 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			if part.ThoughtSig != "" {
 				thoughtSignatureCount++
 			}
-			callID := part.FunctionCall.ID
+			providerCallID := strings.TrimSpace(part.FunctionCall.ID)
+			callID := providerCallID
 			if callID == "" {
 				callID = "call_" + part.FunctionCall.Name
 			}
+			callID = uniqueGoogleToolCallID(callID, seenCallIDs)
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider:         "google",
 				Type:             "function_call",
@@ -163,7 +166,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				ID:             callID,
 				Name:           part.FunctionCall.Name,
 				Arguments:      args,
-				ProviderCallID: part.FunctionCall.ID,
+				ProviderCallID: providerCallID,
 			})
 		}
 	}
@@ -204,6 +207,21 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			"thinking_strategy":         thinkingStrategy,
 		}),
 	}, nil
+}
+
+func uniqueGoogleToolCallID(base string, seen map[string]struct{}) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "call_google"
+	}
+	candidate := base
+	for suffix := 2; ; suffix++ {
+		if _, exists := seen[candidate]; !exists {
+			seen[candidate] = struct{}{}
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s_%d", base, suffix)
+	}
 }
 
 func googleGenerationConfig(req TurnRequest) map[string]any {
