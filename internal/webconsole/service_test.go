@@ -9193,6 +9193,15 @@ func TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets(t *testing.T) 
 	if err := os.Symlink(filepath.Join("..", "secrets", "env-real"), filepath.Join(workspaceRoot, "configs", ".env")); err != nil {
 		t.Fatalf("symlink nested .env: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "secrets", "ssh-real"), 0o755); err != nil {
+		t.Fatalf("mkdir ssh target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "secrets", "ssh-real", "config"), []byte("Host secret\n"), 0o600); err != nil {
+		t.Fatalf("write ssh config target: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "secrets", "ssh-real"), filepath.Join(workspaceRoot, "configs", ".ssh")); err != nil {
+		t.Fatalf("symlink nested .ssh: %v", err)
+	}
 
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -9231,7 +9240,17 @@ func TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets(t *testing.T) 
 		}
 	}
 
-	for _, denied := range []string{"maven-real/settings.xml", "npm-real", "secrets/key-real", "secrets/env-real"} {
+	sshListResp, err := http.Get(ts.URL + "/api/files?path=" + url.QueryEscape("secrets/ssh-real"))
+	if err != nil {
+		t.Fatalf("workspace nested ssh target list request: %v", err)
+	}
+	sshListBody, _ := io.ReadAll(sshListResp.Body)
+	sshListResp.Body.Close()
+	if sshListResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected forbidden for workspace nested ssh target listing, got %d body=%s", sshListResp.StatusCode, string(sshListBody))
+	}
+
+	for _, denied := range []string{"maven-real/settings.xml", "npm-real", "secrets/key-real", "secrets/env-real", "secrets/ssh-real/config"} {
 		resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(denied))
 		if err != nil {
 			t.Fatalf("workspace credential symlink target read request %s: %v", denied, err)

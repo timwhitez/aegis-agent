@@ -303,6 +303,51 @@ func TestWriteDeniedNestedCredentialNameSymlinkFileTarget(t *testing.T) {
 	}
 }
 
+func TestWriteDeniedNestedSecretDirectorySymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o700); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	targetDir := filepath.Join(root, "secrets", "ssh-real")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatalf("mkdir ssh target: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "secrets", "ssh-real"), filepath.Join(root, "configs", ".ssh")); err != nil {
+		t.Fatalf("symlink nested .ssh: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "secrets/ssh-real/config")
+	if err != nil {
+		t.Fatalf("resolve sensitive target child: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.ssh/'") {
+		t.Fatalf("expected nested resolved .ssh target child to be denied, got %v", err)
+	}
+}
+
+func TestWriteDeniedNestedPackageCredentialPathSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs", ".m2"), 0o700); err != nil {
+		t.Fatalf("mkdir nested maven config: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+	target := filepath.Join(root, "secrets", "settings-real.xml")
+	if err := os.WriteFile(target, []byte("<settings><password>old</password></settings>\n"), 0o600); err != nil {
+		t.Fatalf("write sensitive target: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", "secrets", "settings-real.xml"), filepath.Join(root, "configs", ".m2", "settings.xml")); err != nil {
+		t.Fatalf("symlink nested maven settings: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "secrets/settings-real.xml")
+	if err != nil {
+		t.Fatalf("resolve sensitive target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.m2/settings.xml'") {
+		t.Fatalf("expected nested resolved .m2/settings.xml target to be denied, got %v", err)
+	}
+}
+
 func TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets(t *testing.T) {
 	tests := []struct {
 		name    string

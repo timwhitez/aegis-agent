@@ -9300,7 +9300,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-529. That slice made the alias scan recursive, but it still called `deniedWorkspaceWriteFilePattern`, which intentionally excludes fixed names handled by `deniedWorkspaceWriteFiles`. A nested alias such as `configs/.env -> ../secrets/env-real` therefore still let `secrets/env-real` pass resolved-target checks.
 - Confirmed the minimal fix is to reuse the existing complete path-component predicate in the recursive alias scan, preserving all prior direct-path and root-alias denial messages while extending nested target checks to the same fixed-name policy.
 
+### Review 526
+
+- Confirmed FCA-20260530-531 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: recursive resolved-alias checks must mirror the full lexical write policy, including sensitive directories like `.ssh/` and nested package credential paths like `.m2/settings.xml`.
+- Confirmed this is distinct from FCA-20260530-530. That slice extended recursive aliases from wildcard-only names to fixed sensitive file names, but directory aliases still bypassed because `.ssh`, `.aws`, `.kube`, `.docker`, and `.config/gcloud` live in the directory/path deny lists rather than the file-name predicate.
+- Confirmed the minimal fix is to factor the recursive alias pattern selection through the same ordered policy groups used for lexical input paths: denied directories, denied directory paths, denied file paths, then denied file-name components.
+
 ## Update Log
+
+### FCA-20260530-531
+
+Slice: `fix(workspace): deny nested secret dir aliases`
+
+Finding:
+
+- Workspace write policy denied direct paths containing sensitive directories such as `.ssh/`, and root-level resolved aliases such as `.ssh -> secrets/ssh-real`.
+- The recursive resolved-alias scan added in prior slices still only evaluated file-name component patterns, so a nested directory alias such as `configs/.ssh -> ../secrets/ssh-real` did not protect the ordinary target `secrets/ssh-real/config`.
+- Focused failing evidence showed `CheckWorkspaceWriteAllowed(root, "secrets/ssh-real/config")` returned `<nil>` when `configs/.ssh` pointed at `secrets/ssh-real`.
+
+Impact:
+
+- A model-facing `write_file` or `edit_file` call could indirectly modify SSH, cloud, kube, docker, or package-manager credential material through a nested sensitive directory/path symlink alias while passing workspace containment and direct sensitive path checks.
+- The Web read-only Workspace browser reused the same target denial helper, so it could expose or enter real target directories behind nested sensitive directory aliases unless the recursive alias scan matched those directories.
+
+Changes:
+
+- Added `deniedWorkspaceWriteRecursiveAliasPattern`, which evaluates recursive alias candidates in the same order as `checkWorkspaceWriteDisplayPath`: denied directory names, denied directory paths, denied file paths, then denied file-name components.
+- Updated the recursive alias scan to pass the workspace-relative path plus entry name into that helper before resolving and comparing target paths.
+- Added tool-policy regressions for nested `.ssh` directory aliases and nested `.m2/settings.xml` package-credential path aliases.
+- Extended the Web Workspace symlink-target regression so a nested `.ssh` alias refuses listing of the real target directory and rejects direct reads of the target child file.
+- Updated the tools spec to explicitly include sensitive directory and package-credential path symlink aliases in the write policy.
+
+Validation:
+
+- `go test ./internal/tools -run TestWriteDeniedNestedSecretDirectorySymlinkTarget -count=1`: failed before the fix because the nested `.ssh` target child write was allowed; passed after the fix.
+- `go test ./internal/tools -run 'TestWriteDeniedNestedSecretDirectorySymlinkTarget|TestWriteDeniedNestedPackageCredentialPathSymlinkTarget|TestWriteDeniedNestedCredentialNameSymlinkFileTarget|TestWriteDeniedNestedPrivateKeyPatternSymlinkFileTarget' -count=1`: passed.
+- `go test ./internal/webconsole -run TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-530
 

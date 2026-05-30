@@ -242,13 +242,13 @@ func checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath s
 		if entry == nil || sameCleanPath(path, base) {
 			return nil
 		}
-		pattern := deniedWorkspaceWritePathComponentPattern(entry.Name())
-		if pattern == "" {
-			return nil
-		}
 		rel, err := filepath.Rel(base, path)
 		if err != nil {
 			return err
+		}
+		pattern := deniedWorkspaceWriteRecursiveAliasPattern(filepath.ToSlash(rel), entry.Name())
+		if pattern == "" {
+			return nil
 		}
 		deniedPath, ok, err := resolveWorkspacePolicyPathWithExistingParent(base, rel)
 		if err != nil {
@@ -259,6 +259,26 @@ func checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath s
 		}
 		return nil
 	})
+}
+
+func deniedWorkspaceWriteRecursiveAliasPattern(displayPath, name string) string {
+	parts := strings.Split(filepath.ToSlash(displayPath), "/")
+	for _, part := range parts {
+		for _, denied := range deniedWorkspaceWriteDirs {
+			if strings.EqualFold(part, denied) {
+				return denied + "/"
+			}
+		}
+	}
+	for _, denied := range deniedWorkspaceWriteDirPaths {
+		if displayPathContainsDirPath(parts, denied) {
+			return denied + "/"
+		}
+	}
+	if pattern := deniedWorkspaceWriteFilePathPattern(parts); pattern != "" {
+		return pattern
+	}
+	return deniedWorkspaceWritePathComponentPattern(name)
 }
 
 func deniedWorkspaceWriteFilePattern(name string) string {
