@@ -9324,7 +9324,47 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-533. That slice added a runtime backstop for empty tool-use stops; this slice prevents an adapter from exposing non-empty tool calls from a failed OpenAI response in the first place.
 - Confirmed the minimal fix belongs in the OpenAI adapter stop mapping, not runtime or Web. Runtime should still receive a normal provider failure stop with raw status telemetry, while valid `status=completed` function calls remain unchanged.
 
+### Review 530
+
+- Confirmed FCA-20260530-535 against `AGENTS.md`, `spec/01-runtime-architecture.md`, and `spec/03-provider-contracts.md`: Google `functionCall` parts are executable only when the candidate finish boundary is compatible with tool execution.
+- Confirmed this is the Google counterpart to FCA-20260530-534, but it is a separate adapter-specific response-shape bug because Google uses `finishReason` and provider content blocks rather than OpenAI `status` and Responses output items.
+- Confirmed the minimal fix belongs in the Google adapter stop mapping: non-`STOP` finish reasons must suppress executable tool calls and their function-call replay blocks while preserving raw finish telemetry.
+
 ## Update Log
+
+### FCA-20260530-535
+
+Slice: `fix(provider): suppress google calls on safety finish`
+
+Finding:
+
+- `internal/provider/google.go` parsed `functionCall` parts and mapped `len(calls) > 0` to `StopReason:"tool_use"` before checking `candidate.FinishReason`.
+- If Gemini returned `finishReason:"SAFETY"` with a syntactically valid `functionCall`, the adapter returned an executable internal tool call and a Google function-call provider block instead of treating the candidate as blocked.
+- Focused failing evidence showed `TestGoogleAdapterDoesNotExecuteFunctionCallsFromSafetyFinish` returned `StopReason:"tool_use"` and one `shell` call before the fix.
+
+Impact:
+
+- A safety-blocked or otherwise non-`STOP` Google candidate could trigger local tool execution, undermining the provider boundary and making safety/incomplete telemetry look like a normal tool turn.
+- The stale function-call provider content block could also leave durable replay facts that contradict the blocked stop reason.
+- This does not affect ordinary Gemini tool execution because `finishReason:"STOP"` candidates with `functionCall` parts still map to `tool_use`.
+
+Changes:
+
+- Changed Google stop mapping so `STOP` is required for executable tool calls.
+- Suppressed parsed tool calls and Google function-call provider blocks for `MAX_TOKENS`, `SAFETY`, and unknown non-empty finish reasons.
+- Added a regression test for a `SAFETY` candidate that contains a valid `functionCall`.
+- Updated the provider contract to state that Google function calls are executable only from `finishReason=STOP` candidates.
+
+Validation:
+
+- `go test ./internal/provider -run TestGoogleAdapterDoesNotExecuteFunctionCallsFromSafetyFinish -count=1`: failed before the fix because the adapter returned `tool_use`; passed after the fix.
+- `go test ./internal/provider -run 'TestGoogleAdapterSerializesAndParses|TestGoogleAdapterGeneratesUniqueFallbackToolCallIDs|TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates|TestGoogleAdapterDoesNotExecuteFunctionCallsFromSafetyFinish|TestGoogleAdapterMapsUnknownFinishReasonToErrorStop|TestGoogleAdapterRejectsNonObjectFunctionCallArgs' -count=1`: passed.
+- `go test ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-534
 

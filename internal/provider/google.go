@@ -175,17 +175,29 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		emit("assistant.delta", map[string]any{"text": text})
 	}
 	stopReason := "done_candidate"
+	suppressFunctionCalls := false
 	switch {
-	case len(calls) > 0:
-		stopReason = "tool_use"
 	case candidate.FinishReason == "STOP":
+		if len(calls) > 0 {
+			stopReason = "tool_use"
+			break
+		}
 		stopReason = "done_candidate"
 	case candidate.FinishReason == "MAX_TOKENS":
 		stopReason = "max_tokens"
+		suppressFunctionCalls = true
 	case candidate.FinishReason == "SAFETY":
 		stopReason = "blocked"
+		suppressFunctionCalls = true
 	case strings.TrimSpace(candidate.FinishReason) != "":
 		stopReason = "error"
+		suppressFunctionCalls = true
+	case len(calls) > 0:
+		stopReason = "tool_use"
+	}
+	if suppressFunctionCalls {
+		calls = nil
+		providerBlocks = dropGoogleFunctionCallBlocks(providerBlocks)
 	}
 	return TurnResult{
 		Text:                  text,
@@ -222,6 +234,20 @@ func uniqueGoogleToolCallID(base string, seen map[string]struct{}) string {
 		}
 		candidate = fmt.Sprintf("%s_%d", base, suffix)
 	}
+}
+
+func dropGoogleFunctionCallBlocks(blocks []session.ProviderContentBlock) []session.ProviderContentBlock {
+	if len(blocks) == 0 {
+		return blocks
+	}
+	filtered := blocks[:0]
+	for _, block := range blocks {
+		if block.Provider == "google" && block.Type == "function_call" {
+			continue
+		}
+		filtered = append(filtered, block)
+	}
+	return filtered
 }
 
 func googleGenerationConfig(req TurnRequest) map[string]any {

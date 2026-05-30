@@ -322,10 +322,11 @@ adapter 负责转换为：
 
 ### 8.5 stop_reason 映射
 
-- 有 `functionCall` -> `tool_use`
+- `finishReason=STOP` 且有 `functionCall` -> `tool_use`
 - `finishReason=STOP` -> `done_candidate`
 - `finishReason=MAX_TOKENS` -> `max_tokens`
 - 安全拦截 -> `blocked`
+- 非 `STOP` finishReason 必须先按 provider boundary / safety / incomplete 语义处理，并且不得把同一 candidate 里的 `functionCall` 暴露为可执行 tool call
 - cancel -> `cancelled`
 - 其他错误 -> `error`
 
