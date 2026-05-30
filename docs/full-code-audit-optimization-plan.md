@@ -9276,7 +9276,52 @@ Evidence gates:
 - Confirmed this is distinct from prior `.env` / `.env.*`, credential RC, package credential, and symlink-alias slices. Those covered dotenv variants and common package-manager auth files, but `.envrc` is a separate direnv RC file and was not matched by `.env.*` because it has no dot after `.env`.
 - Confirmed the minimal fix belongs in the existing deny-name / deny-path helpers, not in a new workflow guard: add `.envrc` to Web workspace sensitive names and shared workspace write policy so listing, read, write, shell redirect, and common write-command classification stay aligned.
 
+### Review 522
+
+- Confirmed FCA-20260530-527 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: OAuth-style `client_secret` / `client-secret` files are credential-like workspace paths and should be hidden from Web browsing and denied by model-facing write/exec policy.
+- Confirmed this is distinct from the Cargo/package credential probe. Cargo credential filenames were already covered by the generic `credentials` / `credentials.*` rules; `client_secret.json` and `client-secret.json` were not covered by the existing `credentials.*`, `*_credentials.json`, private-key, or dotenv patterns.
+- Confirmed the minimal fix belongs in the shared credential-name predicates so Web listing/read filtering, `write_file` / `edit_file` path policy, shell redirect/tee classification, and common write-command classification stay consistent without adding a task-specific runtime workflow guard.
+
 ## Update Log
+
+### FCA-20260530-527
+
+Slice: `fix(workspace): deny client secret files`
+
+Finding:
+
+- `spec/17-web-console.md` requires the Workspace browser to hide and refuse credential-like paths, and `spec/04-tools-and-skills.md` keeps secret path writes inside the tool safety boundary.
+- Existing filters denied `credentials.json`, `service-account_credentials.json`, private key names, dotenv variants, credential RC files, and package credential paths, but not OAuth-style `client_secret.json` or `client-secret.json`.
+- Focused failing tests showed `/api/files` listed `client_secret.json`, direct write policy allowed `client_secret.json` / `client-secret.json`, and shell write detection returned no `secret_path_write` violation for `printf token > client_secret.json`, `printf token > client-secret.json`, or `cp token.txt client_secret.json`.
+
+Impact:
+
+- The Web read-only Workspace browser could expose local OAuth client secret material while hiding adjacent `credentials.*` and private-key files.
+- A model-facing file write or shell command could create or overwrite client-secret files without triggering the existing secret path write boundary, leaving credential-like handling inconsistent across Web, tools, and shell policy.
+
+Changes:
+
+- Added `client_secret` and `client-secret` filename matching to the shared workspace write credential pattern helper.
+- Added the same matching to the Web Workspace browser credential-name deny predicate.
+- Updated the Web Console spec to explicitly include `client_secret` in credential-like workspace browser paths.
+- Added focused WebConsole, workspace path, and exec-policy regressions for client-secret filenames.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: failed before the fix because `/api/files` listed `client_secret.json`; passed after the fix.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedPrivateKeyAndCredentialFiles|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyDetectsSecretPathWriteCommands' -count=1`: failed before the fix because client-secret writes and shell commands were allowed/unclassified; passed after the fix.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-526
 

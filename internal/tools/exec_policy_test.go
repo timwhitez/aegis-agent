@@ -67,6 +67,8 @@ func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 		"printf key > id_ecdsa",
 		"printf key > deploy.pem",
 		"printf key > service_private_key.json",
+		"printf token > client_secret.json",
+		"printf token > client-secret.json",
 		"printf token > credentials.json",
 		"printf token > service-account_credentials.json",
 		"printf token > .azure/accessTokens.json",
@@ -94,6 +96,7 @@ func TestExecPolicyDetectsSecretPathWriteCommands(t *testing.T) {
 	for _, command := range []string{
 		"cp token.txt .env.local",
 		"cp token.txt .envrc",
+		"cp token.txt client_secret.json",
 		"mv token.txt .ssh/id_rsa",
 		"touch .aws/credentials",
 		"mkdir -p .kube",

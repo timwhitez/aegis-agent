@@ -272,6 +272,10 @@ func deniedWorkspaceWriteFilePattern(name string) string {
 		return "*private_key*"
 	case strings.Contains(name, "private-key"):
 		return "*private-key*"
+	case strings.Contains(name, "client_secret"):
+		return "*client_secret*"
+	case strings.Contains(name, "client-secret"):
+		return "*client-secret*"
 	case strings.HasSuffix(name, ".pem"):
 		return "*.pem"
 	case strings.HasSuffix(name, ".key"):

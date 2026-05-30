@@ -90,6 +90,8 @@ func TestWriteDeniedPrivateKeyAndCredentialFiles(t *testing.T) {
 		{path: "deploy.pem", pattern: "*.pem"},
 		{path: "private-key.txt", pattern: "*private-key*"},
 		{path: "service_private_key.json", pattern: "*private_key*"},
+		{path: "client_secret.json", pattern: "*client_secret*"},
+		{path: "client-secret.json", pattern: "*client-secret*"},
 		{path: "credentials.json", pattern: "credentials.*"},
 		{path: "service-account_credentials.json", pattern: "*_credentials.json"},
 		{path: "prod.credentials", pattern: "*.credentials"},
