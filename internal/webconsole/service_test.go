@@ -9109,6 +9109,75 @@ func TestServiceWorkspaceRoutesRejectsPackageCredentialFiles(t *testing.T) {
 	}
 }
 
+func TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "maven-real"), 0o755); err != nil {
+		t.Fatalf("mkdir maven target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "maven-real", "settings.xml"), []byte("<settings><password>maven-secret</password></settings>\n"), 0o600); err != nil {
+		t.Fatalf("write maven target: %v", err)
+	}
+	if err := os.Symlink("maven-real", filepath.Join(workspaceRoot, ".m2")); err != nil {
+		t.Fatalf("symlink .m2: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "npm-real"), []byte("//registry.npmjs.org/:_authToken=npm-secret\n"), 0o600); err != nil {
+		t.Fatalf("write npm target: %v", err)
+	}
+	if err := os.Symlink("npm-real", filepath.Join(workspaceRoot, ".npmrc")); err != nil {
+		t.Fatalf("symlink .npmrc: %v", err)
+	}
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var mavenTree []map[string]any
+	postGetJSON(t, ts.URL+"/api/files?path="+url.QueryEscape("maven-real"), &mavenTree)
+	for _, item := range mavenTree {
+		if item["name"] == "settings.xml" {
+			t.Fatalf("workspace listing leaked package credential symlink target: %#v", mavenTree)
+		}
+	}
+
+	var rootTree []map[string]any
+	postGetJSON(t, ts.URL+"/api/files", &rootTree)
+	for _, item := range rootTree {
+		if item["name"] == "npm-real" {
+			t.Fatalf("workspace listing leaked credential rc symlink target: %#v", rootTree)
+		}
+	}
+
+	for _, denied := range []string{"maven-real/settings.xml", "npm-real"} {
+		resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(denied))
+		if err != nil {
+			t.Fatalf("workspace credential symlink target read request %s: %v", denied, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected forbidden for workspace credential symlink target read %s, got %d body=%s", denied, resp.StatusCode, string(body))
+		}
+	}
+}
+
 func TestServiceWorkspaceRootIncludesParentNavigationWhenEmpty(t *testing.T) {
 	root := t.TempDir()
 	previousWD, err := os.Getwd()

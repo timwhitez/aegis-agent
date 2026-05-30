@@ -9186,7 +9186,45 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-508 and FCA-20260530-509. Those slices hardened the Web read-only browser for credential rc files and package-manager credential configs; the residual issue was the tool side still allowed `write_file` / `edit_file` and shell writes to the same rc/package credential paths.
 - Confirmed the minimal fix belongs in `internal/tools/path.go` and `internal/tools/exec_policy.go`: extend the existing secret write deny/classification helpers, including symlink-alias resolution for directory-scoped package credential paths, without changing workspace reads, Web rendering, provider replay, session/report content, or runtime workflow decisions.
 
+### Review 507
+
+- Confirmed FCA-20260530-512 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: the WebConsole workspace read-only browser must reject credential real targets that are reachable through sensitive symlink aliases, not only the sensitive alias names themselves.
+- Confirmed this is distinct from FCA-20260530-508 and FCA-20260530-509. Those slices denied direct credential rc/package paths such as `.npmrc` and `.m2/settings.xml`; the residual issue was browsing the same underlying file through a benign-looking real target such as `npm-real` or `maven-real/settings.xml` after `.npmrc -> npm-real` or `.m2 -> maven-real`.
+- Confirmed the minimal fix belongs in the WebConsole workspace browser path guard: keep lexical deny checks for requested names, but also check the resolved target against both the service browse root and the workspace root so symlink-alias real targets are hidden from listings and denied by direct reads.
+
 ## Update Log
+
+### FCA-20260530-512
+
+Slice: `fix(webconsole): reject credential alias real targets`
+
+Finding:
+
+- `internal/webconsole/service.go` denied sensitive workspace browser names and package credential paths lexically, but did not deny the resolved real target when a sensitive path was a symlink alias.
+- A focused failing test proved that a workspace containing `.m2 -> maven-real` listed `maven-real/settings.xml` through `/api/files?path=maven-real` before the fix. The same test also covers direct reads of `maven-real/settings.xml` and a root credential rc alias target reached through `.npmrc -> npm-real`.
+
+Impact:
+
+- The local read-only Workspace browser could expose package-manager or rc/auth credentials by listing or reading the non-sensitive-looking real file or directory behind an existing sensitive symlink alias.
+- This weakened the Web credential boundary established by FCA-20260530-508 and FCA-20260530-509. The issue is limited to Web workspace browsing; it does not alter provider replay, CLI behavior, model-facing write policy, or runtime workflow decisions.
+
+Changes:
+
+- Added a Web workspace target-deny helper that checks both the server browse root and, when applicable, the workspace root.
+- Reused the resolved workspace sensitive-path policy so existing symlink aliases such as `.npmrc -> npm-real` and `.m2 -> maven-real` also deny the underlying real targets.
+- Applied the combined target check to `/api/files`, `/api/file/read`, and directory listing filtering.
+- Added focused WebConsole coverage for package credential and credential rc symlink real targets.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets' -count=1`: failed before the fix because `/api/files?path=maven-real` listed `settings.xml`; passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspaceRoutes(ListReadAndRejectEscape|RejectsCredentialRCFiles|RejectsPackageCredentialFiles|RejectCredentialSymlinkRealTargets)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-511
 

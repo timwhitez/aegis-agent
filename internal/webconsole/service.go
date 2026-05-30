@@ -3078,7 +3078,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if webFileBrowserPathDenied(browseRoot, target) {
+	if webFileBrowserTargetDenied(root, browseRoot, target) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
@@ -3125,7 +3125,7 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
-	if webFileBrowserPathDenied(browseRoot, fullPath) {
+	if webFileBrowserTargetDenied(root, browseRoot, fullPath) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
@@ -5082,7 +5082,7 @@ func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error)
 		if err != nil {
 			continue
 		}
-		if webFileBrowserPathDenied(browseRoot, resolvedPath) {
+		if webFileBrowserTargetDenied(root, browseRoot, resolvedPath) {
 			continue
 		}
 		relPath, _ := filepath.Rel(root, fullPath)
@@ -5122,6 +5122,19 @@ func webFileBrowserPathDenied(root, target string) bool {
 		return true
 	}
 	if webFileBrowserPackageCredentialPathDenied(parts) {
+		return true
+	}
+	if err := tools.CheckWorkspaceWriteAllowed(root, target); err != nil {
+		return true
+	}
+	return false
+}
+
+func webFileBrowserTargetDenied(workspaceRoot, browseRoot, target string) bool {
+	if webFileBrowserPathDenied(browseRoot, target) {
+		return true
+	}
+	if pathWithinRoot(workspaceRoot, target) && webFileBrowserPathDenied(workspaceRoot, target) {
 		return true
 	}
 	return false
