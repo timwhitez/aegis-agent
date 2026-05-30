@@ -303,6 +303,38 @@ func TestOpenAIAdapterDoesNotExecuteFunctionCallsFromFailedStatus(t *testing.T) 
 	}
 }
 
+func TestOpenAIAdapterDoesNotExecuteFunctionCallsWithoutCompletedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_missing_status_with_call",
+			"output":[
+				{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"command\":\"pwd\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected missing status to block function calls, got %#v", result)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("expected missing status to suppress tool calls, got %#v", result.ToolCalls)
+	}
+}
+
 func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
 	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
@@ -894,6 +926,44 @@ func TestGoogleAdapterDoesNotExecuteFunctionCallsFromSafetyFinish(t *testing.T) 
 	}
 	if result.RawProvider["provider_stop_reason"] != "SAFETY" || result.RawProvider["finish_reason"] != "SAFETY" {
 		t.Fatalf("expected raw safety finish reason to be preserved, got %#v", result.RawProvider)
+	}
+}
+
+func TestGoogleAdapterDoesNotExecuteFunctionCallsWithoutStopFinish(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_missing_finish_with_call",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[{"functionCall":{"name":"shell","id":"call_1","args":{"command":"pwd"}}}]}
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":1}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected missing finish reason to block function calls, got %#v", result)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("expected missing finish reason to suppress tool calls, got %#v", result.ToolCalls)
+	}
+	for _, block := range result.ProviderContentBlocks {
+		if block.Provider == "google" && block.Type == "function_call" {
+			t.Fatalf("expected missing finish reason to suppress function-call provider blocks, got %#v", result.ProviderContentBlocks)
+		}
 	}
 }
 

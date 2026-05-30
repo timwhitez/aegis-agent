@@ -193,6 +193,7 @@ adapter 负责转换为：
 - `status=completed` 且无工具调用 -> `done_candidate`
 - `incomplete_details.reason=max_output_tokens` -> `max_tokens`
 - 非 `completed` 状态必须先按 provider failure / incomplete boundary 处理，并且不得把同一响应里的 `function_call` 暴露为可执行 tool call
+- 缺失 `status` 时若响应包含 `function_call`，adapter 必须按 provider boundary failure 处理，不能把缺失成功边界的调用暴露给 runtime
 - cancel -> `cancelled`
 - HTTP / parse error -> `error`
 
@@ -327,6 +328,7 @@ adapter 负责转换为：
 - `finishReason=MAX_TOKENS` -> `max_tokens`
 - 安全拦截 -> `blocked`
 - 非 `STOP` finishReason 必须先按 provider boundary / safety / incomplete 语义处理，并且不得把同一 candidate 里的 `functionCall` 暴露为可执行 tool call
+- 缺失 `finishReason` 时若 candidate 包含 `functionCall`，adapter 必须按 provider boundary failure 处理，不能把缺失成功边界的调用暴露给 runtime
 - cancel -> `cancelled`
 - 其他错误 -> `error`
 

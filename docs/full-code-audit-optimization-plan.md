@@ -9330,7 +9330,48 @@ Evidence gates:
 - Confirmed this is the Google counterpart to FCA-20260530-534, but it is a separate adapter-specific response-shape bug because Google uses `finishReason` and provider content blocks rather than OpenAI `status` and Responses output items.
 - Confirmed the minimal fix belongs in the Google adapter stop mapping: non-`STOP` finish reasons must suppress executable tool calls and their function-call replay blocks while preserving raw finish telemetry.
 
+### Review 531
+
+- Confirmed FCA-20260530-536 against `AGENTS.md`, `spec/01-runtime-architecture.md`, and `spec/03-provider-contracts.md`: a parsed provider tool call is executable only when the adapter also observed the provider's explicit successful stop boundary.
+- Confirmed this is distinct from FCA-20260530-534 and FCA-20260530-535. Those handled explicit failed OpenAI status and explicit Google safety finish; this residual slice covers missing OpenAI `status` and missing Google `finishReason`, which previously still fell through to `tool_use`.
+- Confirmed the minimal fix is adapter-owned stop mapping only. Runtime keeps its generic malformed `tool_use` backstop, while OpenAI/Google adapters stop emitting executable calls when the provider did not prove a successful tool-call boundary.
+
 ## Update Log
+
+### FCA-20260530-536
+
+Slice: `fix(provider): require success stop for parsed tool calls`
+
+Finding:
+
+- OpenAI and Google adapters parsed tool-call payloads before stop mapping, but still allowed parsed calls to win when the provider success boundary was missing.
+- OpenAI Responses with a valid `function_call` and no `status` returned `StopReason:"tool_use"` before the fix.
+- Google candidates with a valid `functionCall` and no `finishReason` returned `StopReason:"tool_use"` and kept the function-call provider replay block before the fix.
+
+Impact:
+
+- A malformed or partially compatible provider response could trigger local tool execution without durable proof that the provider completed a tool-call turn.
+- This weakened the provider/runtime boundary and could leave replay facts that looked like a normal tool turn even though the provider omitted the success stop metadata that the adapter contract requires.
+- This does not affect normal OpenAI or Google tool execution because calls with `status:"completed"` / `finishReason:"STOP"` still map to `tool_use`.
+
+Changes:
+
+- Tightened OpenAI stop mapping so only `status:"completed"` can expose parsed `function_call` items as executable tool calls.
+- Tightened Google stop mapping so only `finishReason:"STOP"` can expose parsed `functionCall` parts as executable tool calls.
+- Suppressed Google function-call provider replay blocks when the finish reason is missing or otherwise not executable.
+- Added focused regression tests for missing OpenAI `status` and missing Google `finishReason` with valid tool calls.
+- Updated the provider contract to document missing-success-boundary behavior for both adapters.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestOpenAIAdapterDoesNotExecuteFunctionCallsWithoutCompletedStatus|TestGoogleAdapterDoesNotExecuteFunctionCallsWithoutStopFinish' -count=1`: failed before the fix because both adapters returned `tool_use`; passed after the fix.
+- `go test ./internal/provider -run 'TestOpenAIAdapterSerializesAndParses|TestOpenAIAdapterMapsNonCompletedStatusToErrorStop|TestOpenAIAdapterDoesNotExecuteFunctionCallsFromFailedStatus|TestOpenAIAdapterDoesNotExecuteFunctionCallsWithoutCompletedStatus|TestGoogleAdapterSerializesAndParses|TestGoogleAdapterDoesNotExecuteFunctionCallsFromSafetyFinish|TestGoogleAdapterDoesNotExecuteFunctionCallsWithoutStopFinish|TestGoogleAdapterMapsUnknownFinishReasonToErrorStop' -count=1`: passed.
+- `go test ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-535
 

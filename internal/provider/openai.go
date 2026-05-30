@@ -167,17 +167,21 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		emit("assistant.delta", map[string]any{"text": text})
 	}
 	stopReason := "done_candidate"
+	status := strings.TrimSpace(resp.Status)
 	switch {
 	case resp.IncompleteDetails.Reason == "max_output_tokens":
 		stopReason = "max_tokens"
 		calls = nil
-	case strings.TrimSpace(resp.Status) != "" && resp.Status != "completed":
+	case status == "completed" && len(calls) > 0:
+		stopReason = "tool_use"
+	case status == "completed":
+		stopReason = "done_candidate"
+	case status != "":
 		stopReason = "error"
 		calls = nil
 	case len(calls) > 0:
-		stopReason = "tool_use"
-	case resp.Status == "completed":
-		stopReason = "done_candidate"
+		stopReason = "error"
+		calls = nil
 	}
 	return TurnResult{
 		Text:                  text,
