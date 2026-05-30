@@ -9480,7 +9480,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-558 and FCA-20260530-559. Those slices covered top-level JSON shape and invalid guardrails values; the residual gap was an object-shaped request with no semantic Settings fields at all.
 - Confirmed the minimal fix belongs in `handleUpdateConfig`: reject empty Settings update requests before locking, cloning config, resolving cwd, writing config, appending audit events, or refreshing worker config, while preserving normal full-form Settings saves and explicit field-clearing requests.
 
+### Review 556
+
+- Confirmed FCA-20260530-561 against `spec/17-web-console.md`: `POST /api/config/test` is a non-persisting provider probe over the current Settings provider form subset, not a shadow save endpoint for guardrails, hard-turn-limit, or role-provider settings.
+- Confirmed this is distinct from FCA-20260530-559 and FCA-20260530-560. Those slices hardened `/api/config` save semantics; the residual gap was `/api/config/test` reusing the save DTO and silently accepting save-only fields before running a provider probe.
+- Confirmed the minimal fix belongs in the Web service DTO boundary: give config-test a narrow request struct so existing strict JSON decoding rejects save-only fields before provider probes, while preserving valid provider/profile/base URL/model/API-key/reasoning probe behavior and keeping provider adapters unchanged.
+
 ## Update Log
+
+### FCA-20260530-561
+
+Slice: `fix(webconsole): narrow config test payload`
+
+Finding:
+
+- `spec/17-web-console.md` defines `POST /api/config/test` as using the current Settings form values to execute a thinking-observation provider probe and accepting the provider form subset: provider, model, base URL, API key, API Provider, and reasoning / thinking options.
+- The frontend `testConfig()` already sends only that provider subset, but `internal/webconsole/service.go` `handleTestConfig` decoded into `UpdateConfigRequest`, the broader save DTO.
+- A focused regression posted `guardrails_mode:"standrad"` to `/api/config/test` alongside a valid provider/base URL. Before the fix, the route ignored the save-only field, called the provider, and returned HTTP 200 probe success.
+
+Impact:
+
+- Direct API clients could get a successful Settings test response for a payload containing fields the test endpoint does not test and the save endpoint may reject.
+- The test route could make malformed guardrails or other save-only Settings payloads look healthy, weakening the local WebConsole Settings contract and recovery-script diagnostics.
+
+Changes:
+
+- Added a narrow `TestConfigRequest` DTO containing only the provider probe subset.
+- Changed `handleTestConfig` to decode into that narrow DTO, reusing the existing strict unknown-field decoder to reject save-only fields before provider probes.
+- Kept valid provider/model/base URL/API Provider/reasoning/API-key probe behavior unchanged and left persistent Settings save validation separate.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe -count=1`: failed before the fix because `/api/config/test` returned HTTP 200 and ran the provider probe.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe|TestServiceConfigTestRejectsInvalidAPIKeyBeforeProbe|TestServiceConfigTestRejectsUnsupportedAPIProvider|TestServiceConfigTestAppliesReasoningModeWithoutPersisting' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe|TestServiceConfigTestRejectsInvalidAPIKeyBeforeProbe|TestServiceConfigTestRejectsUnsupportedAPIProvider|TestServiceConfigTestAppliesReasoningModeWithoutPersisting|TestServiceConfigTestUsesAnthropicPromptCacheDefault|TestServiceConfigTestClearsStaleReasoningFieldsWhenSwitchingAdapterFamily' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-560
 

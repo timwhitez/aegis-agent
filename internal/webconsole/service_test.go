@@ -9322,6 +9322,45 @@ func TestServiceConfigTestRejectsInvalidAPIKeyBeforeProbe(t *testing.T) {
 	}
 }
 
+func TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe(t *testing.T) {
+	var probeCalled bool
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probeCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe_1",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"provider probe ok\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+		"provider":        "openai",
+		"base_url":        providerServer.URL,
+		"guardrails_mode": "standrad",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unknown field") || !strings.Contains(errResp.Error, "guardrails_mode") {
+		t.Fatalf("expected config-test to reject save-only field, got %#v", errResp)
+	}
+	if probeCalled {
+		t.Fatalf("provider probe should not run with save-only config-test fields")
+	}
+}
+
 func TestServiceConfigRejectsUnsupportedRoleAPIProviderOverride(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

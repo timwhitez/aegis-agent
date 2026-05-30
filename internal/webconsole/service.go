@@ -3868,7 +3868,7 @@ func isConfigurableMissionRole(role string) bool {
 }
 
 func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
-	var req UpdateConfigRequest
+	var req TestConfigRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

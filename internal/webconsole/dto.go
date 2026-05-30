@@ -121,6 +121,16 @@ type UpdateConfigRequest struct {
 	RoleProviders        map[string]RoleProviderOverrideRequest `json:"role_providers"`
 }
 
+type TestConfigRequest struct {
+	Provider         string  `json:"provider"`
+	APIProvider      *string `json:"api_provider"`
+	BaseURL          *string `json:"base_url"`
+	Model            *string `json:"model"`
+	APIKey           *string `json:"api_key"`
+	ReasoningMode    *string `json:"reasoning_mode"`
+	ReasoningSummary *string `json:"reasoning_summary"`
+}
+
 type RoleProviderOverrideRequest struct {
 	Provider    string `json:"provider"`
 	APIProvider string `json:"api_provider"`
