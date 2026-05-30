@@ -9360,7 +9360,49 @@ Evidence gates:
 - Confirmed this is a contract drift rather than a storage-layer task graph issue. `BuildTaskBoard` already exposes ready / blocked / completed / cancelled / done derived views, and task create/update state transitions remain correct; the missing behavior was confined to the `task_list` adapter schema and response projection.
 - Confirmed the minimal fix should preserve the default full-graph recovery behavior, then apply optional filters only to the returned task view. Explicit `status` filters should override `include_completed=false` so callers can still request `completed`, `cancelled`, or combined `done` tasks intentionally.
 
+### Review 536
+
+- Confirmed FCA-20260530-541 against `AGENTS.md` and `spec/04-tools-and-skills.md`: same-name skill command tools must be rejected instead of silently overriding a previously registered direct-call tool.
+- Confirmed this is distinct from command argument validation, workspace-skill trust gating, and shell sandbox fail-closed behavior. Those paths already had focused coverage; the residual gap was registry-level name collision handling after trusted command tools were enumerated.
+- Confirmed the minimal fix belongs in `NewRegistry` before `commandToolDefinition` registration, preserving existing skill catalog scanning and command execution while rejecting blank, whitespace-padded, reserved, or duplicate skill command names before provider schema exposure.
+
 ## Update Log
+
+### FCA-20260530-541
+
+Slice: `fix(tools): reject duplicate skill command names`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` states that built-in tool names are reserved and same-name skill tools are rejected by default because v1 has no override mechanism.
+- `internal/tools/registry.go` only checked direct-call skill command names against the built-in reserved-name table. If two trusted skills declared the same command tool name, the second definition overwrote the first in `registry.defs` while `registry.order` kept only the original order entry.
+- Provider tool schema exposure and runtime dispatch could therefore refer to a silently replaced command implementation, making the active tool surface depend on catalog ordering instead of an explicit conflict error.
+
+Impact:
+
+- A local skill bundle could unintentionally or deliberately shadow another trusted skill command with the same model-facing name.
+- Because the registry did not fail during setup, the operator and model saw one direct-call tool name without a durable diagnostic explaining that another skill had been discarded.
+- This weakened the tool registry contract and traceability for skill command execution; the issue was not in the command argument decoder, sandbox wrapper, or workspace skill trust filter.
+
+Changes:
+
+- Added registry-time validation for trusted skill command tool names before registration.
+- Rejected blank names and names with surrounding whitespace so invalid names are not exposed as provider tools.
+- Preserved the existing built-in reserved-name rejection and added duplicate detection against already registered definitions, covering same-name skill tools without introducing an override path.
+- Added a focused regression with two trusted skills declaring the same `shared_echo` command tool name.
+
+Validation:
+
+- `go test ./internal/tools -run TestSkillCommandToolRejectsDuplicateToolNames -count=1`: failed before the fix because duplicate skill tool names were accepted; passed after the fix.
+- `go test ./internal/tools -run 'TestSkillCommandTool(RejectsDuplicateToolNames|RejectsInvalidToolNames)' -count=1`: passed.
+- `go test ./internal/tools -run 'TestSkillCommandTool(RejectsDuplicateToolNames|RejectsInvalidToolNames|DescriptionAddsDirectCallGuidance|RejectsMissingRequiredField|ClosesSchemaByDefault|RejectsTrailingJSONValue|PreservesExplicitAdditionalPropertiesTrue|ExecutesWithValidRequiredPayload|ExecutesFromSkillDirectory|UsesRegistryConfigWhenExecContextConfigMissing|TimeoutIncludesStructuredMetadata)' -count=1`: passed.
+- `go test ./internal/skills -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools ./internal/skills -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
 
 ### FCA-20260530-540
 

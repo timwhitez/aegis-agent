@@ -154,8 +154,18 @@ func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Sto
 			workdir = trustedCommandWorkdir[0]
 		}
 		for _, tool := range catalog.TrustedCommandTools(workdir) {
-			if _, ok := reservedNames[tool.Name]; ok {
-				return nil, fmt.Errorf("skill tool name is reserved: %s", tool.Name)
+			toolName := strings.TrimSpace(tool.Name)
+			if toolName == "" {
+				return nil, fmt.Errorf("skill tool name must not be empty: %s", tool.SkillPath)
+			}
+			if toolName != tool.Name {
+				return nil, fmt.Errorf("skill tool name must not contain surrounding whitespace: %q", tool.Name)
+			}
+			if _, ok := reservedNames[toolName]; ok {
+				return nil, fmt.Errorf("skill tool name is reserved: %s", toolName)
+			}
+			if _, exists := registry.defs[toolName]; exists {
+				return nil, fmt.Errorf("duplicate skill tool name: %s", toolName)
 			}
 			def := commandToolDefinition(cfg, tool)
 			registry.Register(def)

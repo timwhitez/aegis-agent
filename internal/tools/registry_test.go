@@ -4079,6 +4079,66 @@ func TestWorkspaceSkillCommandToolsAreNotAutoRegistered(t *testing.T) {
 	}
 }
 
+func TestSkillCommandToolRejectsDuplicateToolNames(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	for _, skillName := range []string{"alpha", "beta"} {
+		skillDir := filepath.Join(root, "skills", skillName)
+		if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", skillName, err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: "+skillName+"\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+			t.Fatalf("write skill %s: %v", skillName, err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: shared_echo\ncommand: [\"echo\", \""+skillName+"\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+			t.Fatalf("write tool %s: %v", skillName, err)
+		}
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	_, err = NewRegistry(cfg, catalog, nil, nil, filepath.Join(root, "workspace"))
+	if err == nil || !strings.Contains(err.Error(), "duplicate skill tool name: shared_echo") {
+		t.Fatalf("expected duplicate skill tool name rejection, got %v", err)
+	}
+}
+
+func TestSkillCommandToolRejectsInvalidToolNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		want     string
+	}{
+		{name: "blank", toolName: "", want: "skill tool name must not be empty"},
+		{name: "surrounding whitespace", toolName: " shared_echo ", want: "skill tool name must not contain surrounding whitespace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			root := t.TempDir()
+			skillDir := filepath.Join(root, "skills", "helpers")
+			if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+				t.Fatalf("write skill: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: \""+tt.toolName+"\"\ncommand: [\"echo\", \"ok\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+				t.Fatalf("write tool: %v", err)
+			}
+			catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+			if err != nil {
+				t.Fatalf("scan skills: %v", err)
+			}
+			_, err = NewRegistry(cfg, catalog, nil, nil, filepath.Join(root, "workspace"))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func TestSkillCommandToolRejectsMissingRequiredField(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()
