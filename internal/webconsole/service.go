@@ -1494,6 +1494,10 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if !goalPatchRequestHasFields(req) {
+		writeError(w, http.StatusBadRequest, errors.New("goal patch requires at least one field"))
+		return
+	}
 	current, err := s.store.LoadGoal(sessionID)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
@@ -1759,6 +1763,10 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	var req MissionPlanPatchRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !missionPlanPatchRequestHasFields(req) {
+		writeError(w, http.StatusBadRequest, errors.New("mission plan patch requires at least one field"))
 		return
 	}
 	current, err := s.store.LoadGoal(sessionID)
@@ -2062,6 +2070,10 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.ValidationPlan == nil && req.ValidationContract == nil {
+		writeError(w, http.StatusBadRequest, errors.New("mission validation patch requires at least one field"))
 		return
 	}
 	goal, err := s.store.LoadGoal(sessionID)
@@ -5687,6 +5699,25 @@ func goalStoreStatus(err error) int {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
+}
+
+func goalPatchRequestHasFields(req GoalPatchRequest) bool {
+	return req.SuccessCriteria != nil ||
+		req.ValidationPlan != nil ||
+		req.Control != nil ||
+		req.Mission != nil
+}
+
+func missionPlanPatchRequestHasFields(req MissionPlanPatchRequest) bool {
+	return req.Requirements != nil ||
+		req.Features != nil ||
+		req.Milestones != nil ||
+		req.ValidationContract != nil ||
+		req.RolePlan != nil ||
+		req.SharedArtifacts != nil ||
+		req.KnowledgeArtifacts != nil ||
+		strings.TrimSpace(req.PlanStatus) != "" ||
+		req.CreateTasksFromPlan != nil
 }
 
 func ensureMissionPlan(plan *session.MissionPlan) *session.MissionPlan {

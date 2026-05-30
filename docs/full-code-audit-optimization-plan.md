@@ -9444,7 +9444,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-394. That slice validated CLI `--workers` startup bounds before service creation, while the residual Web API gap accepted a syntactically valid JSON object that omitted `desired_count` and silently interpreted it as `0`.
 - Confirmed the minimal fix belongs in `handleScaleWorkers`: make `desired_count` explicit/required at the route boundary while preserving `0` as a valid requested scale, preserving the existing max-worker rejection, and leaving `workerPool.Scale` clamping as an internal safety net.
 
+### Review 550
+
+- Confirmed FCA-20260530-555 against `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md`: Goal, mission-plan, and mission-validation PATCH routes are local WebConsole mutation boundaries over durable `goal.json`, Goal history, linked Plan Mode gates, task sync, and events, so a syntactically valid empty object must not produce a no-op-looking durable mutation.
+- Confirmed this is distinct from FCA-20260530-554 and the earlier goal rollback slices. The worker slice covered a required scalar field on `POST /api/workers`; the rollback slices covered failed persistence after meaningful patches. The residual gap was that `{}` reached PATCH handlers, advanced `updated_at`, appended history/events, or created an empty mission plan before any semantic field was supplied.
+- Confirmed the minimal fix belongs in the Web handler boundary: reject empty `PATCH /goal`, `PATCH /mission/plan`, and `PATCH /mission/validation` requests before loading or writing durable goal facts, while preserving explicit empty arrays as valid field-clearing requests and preserving explicit non-approval-scoped no-op fields such as `create_tasks_from_plan:false`.
+
 ## Update Log
+
+### FCA-20260530-555
+
+Slice: `fix(webconsole): reject empty goal patches`
+
+Finding:
+
+- `spec/17-web-console.md` defines `PATCH /api/sessions/{id}/goal`, `PATCH /api/sessions/{id}/mission/plan`, and `PATCH /api/sessions/{id}/mission/validation` as mutation endpoints for specific Goal, mission-plan, or validation fields.
+- `internal/webconsole/service.go` decoded those routes into structs but did not require any semantic field to be present.
+- Focused regressions posted `{}` to all three routes. Before the fix, `/goal` returned HTTP 200 and advanced `goal.json.updated_at`, `/mission/plan` returned HTTP 200 and converted a plain goal into a mission with an empty draft plan, and `/mission/validation` returned HTTP 200 and advanced `goal.json.updated_at`.
+
+Impact:
+
+- Empty local-console PATCH requests could leave durable Goal facts, history, and events changed even though the caller supplied no field to update.
+- The mission-plan variant was worse than a timestamp-only no-op: it could turn a simple Goal snapshot into a Mission snapshot with an empty draft plan, weakening the Web-first boundary that default Goal state and advanced mission planning are explicit.
+
+Changes:
+
+- Added route-boundary semantic-field checks for `GoalPatchRequest` and `MissionPlanPatchRequest`, and an inline check for mission validation patch fields.
+- Rejected truly empty / null-only patch bodies with HTTP 400 before loading, saving, syncing tasks, creating linked Plan Mode gates, or appending history/events.
+- Preserved explicit empty arrays as valid clearing operations and adjusted the approved-plan no-op regression to submit `create_tasks_from_plan:false` explicitly.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch|MissionValidationPatch)RejectsEmptyRequest' -count=1`: failed before the fix because all three routes returned HTTP 200 for `{}` and advanced durable goal facts.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch|MissionValidationPatch)RejectsEmptyRequest' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(GoalPatch|MissionPlanPatch|MissionValidationPatch)(RejectsEmptyRequest|RejectsMalformedStructuredItems|ReportsHistoryAppendError|ReportsGoalWriteFailureAsServerError|PreservesRuntimeProgressFacts|TaskSyncPreservesRuntimeProgressFacts|ResetsApprovedPlanToPendingGate|NoopKeepsApprovedPlan|RollsBackWhenTaskSyncFails|PlanModeReportsHistoryAppendError|MissionPlanModeReportsHistoryAppendError|RollsBackLinkedPlanModeWhenEventAppendFails|RollsBackWhenLinkedPlanModeCreationFails)' -count=1`: passed.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-554
 

@@ -917,6 +917,67 @@ func TestServiceGoalPatchRejectsMalformedStructuredItems(t *testing.T) {
 	}
 }
 
+func TestServiceGoalPatchRejectsEmptyRequest(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_goal_patch_empty_request")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Reject empty goal patch",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	before, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal baseline: %v", err)
+	}
+	beforeHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	beforeEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/goal", map[string]any{}, http.StatusBadRequest, &apiErr)
+	if !strings.Contains(apiErr.Error, "at least one field") {
+		t.Fatalf("expected empty goal patch error, got %#v", apiErr)
+	}
+	after, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if after.UpdatedAt != before.UpdatedAt || len(after.SuccessCriteria) != len(before.SuccessCriteria) || len(after.ValidationPlan) != len(before.ValidationPlan) || after.Mission != nil {
+		t.Fatalf("empty goal patch should not advance goal snapshot, before=%#v after=%#v", before, after)
+	}
+	afterHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history after empty patch: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || goalHistoryContainsType(afterHistory, "goal.updated") {
+		t.Fatalf("empty goal patch should not append history, before=%#v after=%#v", beforeHistory, afterHistory)
+	}
+	afterEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events after empty patch: %v", err)
+	}
+	if len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("empty goal patch should not append events, before=%#v after=%#v", beforeEvents, afterEvents)
+	}
+}
+
 func TestServiceGoalPatchReportsHistoryAppendError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -1220,6 +1281,67 @@ func TestServiceMissionPlanPatchRejectsMalformedStructuredItems(t *testing.T) {
 	}
 	if loaded.Mission != nil && len(loaded.Mission.Features) != 0 {
 		t.Fatalf("failed malformed mission patch should not advance snapshot, got %#v", loaded.Mission.Features)
+	}
+}
+
+func TestServiceMissionPlanPatchRejectsEmptyRequest(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_plan_patch_empty_request")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Reject empty mission plan patch",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	before, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal baseline: %v", err)
+	}
+	beforeHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	beforeEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{}, http.StatusBadRequest, &apiErr)
+	if !strings.Contains(apiErr.Error, "at least one field") {
+		t.Fatalf("expected empty mission plan patch error, got %#v", apiErr)
+	}
+	after, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if after.Mode != before.Mode || after.UpdatedAt != before.UpdatedAt || after.Mission != nil {
+		t.Fatalf("empty mission plan patch should not advance goal snapshot, before=%#v after=%#v", before, after)
+	}
+	afterHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history after empty patch: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || goalHistoryContainsType(afterHistory, "mission.plan.updated") {
+		t.Fatalf("empty mission plan patch should not append history, before=%#v after=%#v", beforeHistory, afterHistory)
+	}
+	afterEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events after empty patch: %v", err)
+	}
+	if len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("empty mission plan patch should not append events, before=%#v after=%#v", beforeEvents, afterEvents)
 	}
 }
 
@@ -1675,7 +1797,9 @@ func TestServiceMissionPlanPatchNoopKeepsApprovedPlan(t *testing.T) {
 	defer ts.Close()
 
 	var patched session.SessionGoal
-	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{}, http.StatusOK, &patched)
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan", map[string]any{
+		"create_tasks_from_plan": false,
+	}, http.StatusOK, &patched)
 	if patched.Mission == nil || patched.Mission.PlanStatus != session.MissionPlanStatusApproved || patched.Mission.ApprovedAt != approvedAt {
 		t.Fatalf("no-op patch should preserve approved mission, got %#v", patched.Mission)
 	}
@@ -1917,6 +2041,67 @@ func TestServiceMissionValidationPatchResetsApprovedPlanToPendingGate(t *testing
 	}
 	if planMode.LinkedGoalID != goal.GoalID || planMode.Status != session.PlanModeStatusPlanning {
 		t.Fatalf("unexpected reset plan mode: %#v", planMode)
+	}
+}
+
+func TestServiceMissionValidationPatchRejectsEmptyRequest(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_mission_validation_patch_empty_request")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Reject empty validation patch",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	before, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal baseline: %v", err)
+	}
+	beforeHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history: %v", err)
+	}
+	beforeEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var apiErr ErrorResponse
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/sessions/"+meta.ID+"/mission/validation", map[string]any{}, http.StatusBadRequest, &apiErr)
+	if !strings.Contains(apiErr.Error, "at least one field") {
+		t.Fatalf("expected empty validation patch error, got %#v", apiErr)
+	}
+	after, err := svc.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if after.UpdatedAt != before.UpdatedAt || len(after.ValidationPlan) != len(before.ValidationPlan) || after.Mission != nil {
+		t.Fatalf("empty validation patch should not advance goal snapshot, before=%#v after=%#v", before, after)
+	}
+	afterHistory, err := svc.store.LoadGoalHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal history after empty patch: %v", err)
+	}
+	if len(afterHistory) != len(beforeHistory) || goalHistoryContainsType(afterHistory, "mission.validation.updated") {
+		t.Fatalf("empty validation patch should not append history, before=%#v after=%#v", beforeHistory, afterHistory)
+	}
+	afterEvents, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events after empty patch: %v", err)
+	}
+	if len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("empty validation patch should not append events, before=%#v after=%#v", beforeEvents, afterEvents)
 	}
 }
 
