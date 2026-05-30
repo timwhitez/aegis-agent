@@ -9144,7 +9144,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-107. That earlier slice replaced native `window.confirm` for risk and destructive actions; this residual issue was `handlePlanInputAction(...)` still calling `window.prompt(...)` for custom Plan Mode answers.
 - Confirmed the minimal fix belongs in the frontend utility layer and Plan Mode input handler: add a reusable local prompt dialog, use it for `Other` answers, keep request-scoped selection state unchanged, and add Node harness coverage proving the native prompt path is not used.
 
+### Review 500
+
+- Confirmed FCA-20260530-505 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, and the WebConsole skill list / upload / uninstall paths: the first configured skill directory is the managed root and all WebConsole skill surfaces must resolve it consistently.
+- Confirmed this is distinct from the earlier symlink-root and symlink-manifest hardening slices. `handleUploadSkill(...)` and `handleUninstallSkill(...)` already used `resolveManagedSkillDir(...)`, but `handleListSkills(...)` used the raw `resolveSkillDir(...)` path; when the configured managed path had a symlink ancestor, mutation operated on the canonical real directory while listing tried to read manifests through the symlinked ancestor and failed.
+- Confirmed the minimal fix belongs in `handleListSkills(...)`: resolve the first non-blank configured skill directory through `resolveManagedSkillDir(...)` once, reuse that canonical path for the managed list pass, and leave later configured skill directories as read-only discovery roots.
+
 ## Update Log
+
+### FCA-20260530-505
+
+Slice: `fix(webconsole): canonicalize managed skill listing`
+
+Finding:
+
+- `handleListSkills(...)` resolved the first configured skill directory with `resolveSkillDir(...)`, while upload and uninstall resolved the same managed root with `resolveManagedSkillDir(...)`.
+- A focused failing test configured the managed skill directory below a symlinked ancestor. Before the fix, `/api/skills` returned `500` while reading `SKILL.md` through the symlinked ancestor, even though upload/uninstall would canonicalize the same managed root to the real directory.
+
+Impact:
+
+- The WebConsole could make its skills page unusable for a managed skill root that the mutation paths otherwise treated as valid after canonicalization.
+- This split the local Web-first control surface from the managed skill root used by install/uninstall, making operator observability disagree with the actual mutation target.
+
+Changes:
+
+- Changed `handleListSkills(...)` to resolve the first non-blank configured skill directory through `resolveManagedSkillDir(...)`, matching upload and uninstall.
+- Reused the canonical managed path when listing that first configured root so manifest reads, `discovery_path`, and mutable/read-only state all describe the same managed directory.
+- Kept later configured skill directories on `resolveSkillDir(...)` so they remain read-only discovery roots rather than additional managed mutation targets.
+- Added `TestServiceSkillListUsesCanonicalManagedSkillDir` to cover the symlink-ancestor configuration and prove listed managed skills remain mutable with the canonical discovery path.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillListUsesCanonicalManagedSkillDir -count=1`: failed before the fix with `/api/skills` returning `500` while reading through the symlinked ancestor; passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkill(ListUsesCanonicalManagedSkillDir|RoutesUploadListUninstallAndInstallUnsupported|ListMarksNonManagedSkillDirsReadOnly|ListMarksUnmanageableManagedSkillIDsReadOnly|RoutesUseFirstNonBlankManagedSkillDir|ListRequiresReadableSkillManifest|UninstallRejectsSymlinkedSkillDir|UninstallRejectsSymlinkedSkillManifest)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Skill|TestProcessSkillZip|TestReserveSkillBackupPath' -count=1`: passed.
+- `go test -timeout 120s ./internal/skills -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test.*Skill|Test.*Catalog|Test.*Command' -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-504
 

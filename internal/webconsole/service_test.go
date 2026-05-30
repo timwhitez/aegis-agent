@@ -9532,6 +9532,48 @@ func TestServiceSkillRoutesUseFirstNonBlankManagedSkillDir(t *testing.T) {
 	}
 }
 
+func TestServiceSkillListUsesCanonicalManagedSkillDir(t *testing.T) {
+	cfg := testConfig(t, "")
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real-root")
+	linkRoot := filepath.Join(base, "link-root")
+	skillsDir := filepath.Join(realRoot, "skills")
+	skillDir := filepath.Join(skillsDir, "demo-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: demo-skill\ndescription: canonical managed skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill manifest: %v", err)
+	}
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	cfg.Skills.Dirs = []string{filepath.Join(linkRoot, "skills")}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 1 {
+		t.Fatalf("expected one managed skill, got %#v", listed)
+	}
+	if listed[0]["id"] != "demo-skill" {
+		t.Fatalf("unexpected listed skill: %#v", listed[0])
+	}
+	if listed[0]["read_only"] == true || listed[0]["disabled_reason"] != nil {
+		t.Fatalf("canonical managed skill should remain mutable, got %#v", listed[0])
+	}
+	if listed[0]["discovery_path"] != filepath.Clean(skillsDir) {
+		t.Fatalf("expected canonical discovery path %s, got %#v", filepath.Clean(skillsDir), listed[0])
+	}
+}
+
 func TestServiceSkillListRequiresReadableSkillManifest(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")

@@ -4106,7 +4106,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	managedSkillIndex := -1
 	if index, rawManagedDir, ok := firstConfiguredSkillDir(cfg.Skills.Dirs); ok {
 		managedSkillIndex = index
-		managedSkillDir, err = resolveSkillDir(rawManagedDir)
+		managedSkillDir, err = resolveManagedSkillDir(rawManagedDir)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -4116,10 +4116,13 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(rawDir) == "" {
 			continue
 		}
-		dir, err := resolveSkillDir(rawDir)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
+		dir := managedSkillDir
+		if index != managedSkillIndex {
+			dir, err = resolveSkillDir(rawDir)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 		managed := index == managedSkillIndex && filepath.Clean(dir) == filepath.Clean(managedSkillDir)
 		entries, err := os.ReadDir(dir)
