@@ -9516,7 +9516,43 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-565. That slice handled contradictory parsed tool calls; this residual slice covers a no-tool provider failure whose stop handling was skipped because `budgetStopRequested` ran first.
 - Confirmed the minimal fix belongs in the engine's post-provider decision ordering: preserve the existing partial assistant persistence behavior, but evaluate provider stop failures before appending a budget wrap-up reminder or entering the wrap-up turn.
 
+### Review 562
+
+- Confirmed FCA-20260530-567 against `spec/03-provider-contracts.md`: `cancelled` is a first-class provider stop reason, and the provider-specific mapping sections define provider cancellation as `cancel -> cancelled`.
+- Confirmed the runtime already handled local context cancellation errors from pause and steer interrupt, but a normalized provider result with `StopReason:"cancelled"` and no tool calls bypassed `providerStopFailure`.
+- Confirmed the minimal fix is to classify the normalized `cancelled` stop reason alongside other provider boundary failures, preserving the existing context-cancel pause/interrupt paths that are driven by returned errors rather than successful `TurnResult` values.
+
 ## Update Log
+
+### FCA-20260530-567
+
+Slice: `fix(runtime): fail provider cancelled stops`
+
+Finding:
+
+- `spec/03-provider-contracts.md` lists `cancelled` as an internal provider stop reason and maps provider cancellation to `cancelled` for the supported provider families.
+- `internal/runtime/engine.go` handled `context.Canceled` errors from local pause and steer interrupt before provider stop-reason handling.
+- The no-tool `providerStopFailure` classifier omitted normalized `StopReason:"cancelled"`.
+- A focused regression showed that a provider result with `StopReason:"cancelled"` and no tool calls returned `Status:"awaiting_input"` with `FinalText:"partial"` instead of failing the session with a provider-boundary incomplete reason.
+
+Impact:
+
+- A provider-side cancellation encoded as a successful `TurnResult` could be misclassified as a normal assistant pause.
+- Recovery diagnostics would lose the provider cancellation boundary and could invite an ordinary continue rather than surfacing a failed provider turn.
+
+Changes:
+
+- Extended the existing provider stop-reason failure table to classify `cancelled` as `provider_cancelled`.
+- Added `cancelled` to the runtime regression that proves provider stop failures become durable failed sessions and remain resumable.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable/cancelled -count=1`: failed before the fix because the engine returned `Status:"awaiting_input"` with `FinalText:"partial"`.
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable/cancelled -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderStopReasonFailuresAreResumable|TestEngineRejectsToolCallsWithoutToolUseStopReason|TestEngineProviderStopFailureWinsOverBudgetStop' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/provider -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-566
 
