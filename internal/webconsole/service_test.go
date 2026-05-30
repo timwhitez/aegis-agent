@@ -9924,6 +9924,23 @@ func TestProcessSkillZipRejectsNonRegularEntriesBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestProcessSkillZipRejectsDirectoryManifestEntriesBeforeMutation(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	zipPath := filepath.Join(base, "skill-directory-manifest.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "demo-skill/SKILL.md/", mode: os.ModeDir | 0o755},
+		{name: "demo-skill/references/a.md", content: "reference\n"},
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("expected directory manifest entry to be rejected, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "demo-skill")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("directory manifest upload should not install a skill, got %v", err)
+	}
+}
+
 func TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")

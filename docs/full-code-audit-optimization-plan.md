@@ -9156,7 +9156,44 @@ Evidence gates:
 - Confirmed this is the read-only counterpart to FCA-20260530-505. The managed root now reused `resolveManagedSkillDir(...)`, but later configured skill directories still used the raw `resolveSkillDir(...)` path; when a read-only configured root had a symlink ancestor, the runtime catalog could discover the canonical real skill root while Web `/api/skills` failed before returning read-only skill metadata.
 - Confirmed the minimal fix should not make later directories mutable. It belongs in a separate read-only resolver that canonicalizes the configured root for safe listing while preserving `read_only=true` and the existing disabled reason for all non-managed skill directories.
 
+### Review 502
+
+- Confirmed FCA-20260530-507 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: WebConsole skill upload must only accept packages with a regular `SKILL.md` manifest file.
+- Confirmed this is distinct from the symlink and non-regular ZIP entry hardening slices. Those checks rejected symlink-mode and non-regular file entries, but a directory entry named `demo-skill/SKILL.md/` still matched the manifest discovery rule because `path.Base(cleaned) == "SKILL.md"`; the upload transaction then installed a skill directory with no regular manifest and still reported success.
+- Confirmed the minimal fix belongs at manifest discovery time in `processSkillZipReader(...)`: when a cleaned entry name has base `SKILL.md`, reject directory entries before adding the root to `skillRoots`, so malformed packages fail before staging or target replacement.
+
 ## Update Log
+
+### FCA-20260530-507
+
+Slice: `fix(webconsole): reject directory skill manifests`
+
+Finding:
+
+- `processSkillZipReader(...)` treated any cleaned ZIP entry whose basename was `SKILL.md` as a skill root marker.
+- A focused failing test showed that a directory entry `demo-skill/SKILL.md/` was accepted as a manifest marker, causing the upload transaction to report success and install `demo-skill/` without a regular `SKILL.md` file.
+
+Impact:
+
+- WebConsole upload could report a successful skill install for a malformed package that the runtime skill catalog could not load as a valid local skill.
+- This left the managed skill directory with an invalid bundle after a nominally successful install, breaking the Web-first skill management surface's install/list consistency.
+
+Changes:
+
+- Added a manifest discovery guard in `processSkillZipReader(...)` that rejects directory entries named `SKILL.md`.
+- Added `TestProcessSkillZipRejectsDirectoryManifestEntriesBeforeMutation` to prove such packages are rejected before any skill directory is installed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsDirectoryManifestEntriesBeforeMutation -count=1`: failed before the fix with `processSkillZip(...)` returning success; passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZip(RejectsDirectoryManifestEntriesBeforeMutation|RejectsNonRegularEntriesBeforeMutation|RejectsSymlinkEntriesBeforeMutation|RejectsTraversalEntries|RejectsOversizedEntry|RejectsDuplicateTargetNamesBeforeMutation|RejectsFileDirectoryConflictBeforeMutation|RejectsDuplicateNormalizedEntryPathsBeforeMutation|RejectsNestedSkillRootsBeforeMutation|AllowsSiblingSkillRoots|SanitizesUploadedFileModes|PreservesExistingSkillOnLateExtractionError|AllowsNestedSkillFiles)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Skill|TestProcessSkillZip|TestReserveSkillBackupPath' -count=1`: passed.
+- `go test -timeout 120s ./internal/skills -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test.*Skill|Test.*Catalog|Test.*Command' -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-506
 

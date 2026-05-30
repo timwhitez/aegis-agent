@@ -4337,6 +4337,9 @@ func processSkillZipReader(r *zip.Reader, globalDest string) (*skillZipInstallTr
 		}
 		cleanNames[f] = cleaned
 		if path.Base(cleaned) == "SKILL.md" {
+			if f.FileInfo().IsDir() {
+				return nil, skillZipPackageErrorf("skill zip manifest must be a regular file: %s", cleaned)
+			}
 			dir := path.Dir(cleaned)
 			skillRoots = append(skillRoots, dir)
 		}
