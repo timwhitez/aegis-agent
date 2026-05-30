@@ -3031,6 +3031,111 @@ test('Plan input answer does not refresh a newly selected session after stale co
   ]);
 });
 
+test('Plan input answer ignores stale completion after same-session request refresh', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  const toasts = [];
+  appContext.planInputSubmitButton = fakeActionButton({
+    'data-plan-input-action': 'submit',
+    'data-request-id': 'request_old'
+  });
+  appContext.window.setTimeout = function(callback) {
+    callback();
+    return 0;
+  };
+
+  const action = vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_input_same_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_input_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_input_gate',
+        status: 'awaiting_user_input',
+        objective: 'old input',
+        updated_at: '2026-05-30T03:00:00Z',
+        pending_request: {
+          request_id: 'request_old',
+          questions: [
+            { id: 'scope', options: [{ label: 'Small' }] }
+          ]
+        }
+      }
+    };
+    planInputViewState.selections = {
+      request_old: {
+        scope: { label: 'Small', value: 'Small' }
+      }
+    };
+    handlePlanInputAction(planInputSubmitButton);
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_input_same_a\/planmode\/input/);
+
+  vm.runInContext(`
+    state.sessionDetail = {
+      metadata: { id: 'session_input_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_input_gate',
+        status: 'awaiting_user_input',
+        objective: 'new input',
+        updated_at: '2026-05-30T03:01:00Z',
+        pending_request: {
+          request_id: 'request_new',
+          questions: [
+            { id: 'scope', options: [{ label: 'Large' }] }
+          ]
+        }
+      }
+    };
+    planInputViewState.selections = {
+      request_old: {
+        scope: { label: 'Small', value: 'Small' }
+      },
+      request_new: {
+        scope: { label: 'Large', value: 'Large' }
+      }
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'accepted' });
+  await new Promise((resolve) => setImmediate(resolve));
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({
+      metadata: { id: 'session_input_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_input_gate',
+        status: 'awaiting_user_input',
+        objective: 'new input',
+        updated_at: '2026-05-30T03:01:00Z',
+        pending_request: {
+          request_id: 'request_new',
+          questions: [
+            { id: 'scope', options: [{ label: 'Large' }] }
+          ]
+        }
+      },
+      messages: [],
+      timeline: []
+    });
+  }
+  await action;
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(sameRealm(toasts), []);
+  assert.deepEqual(sameRealm(vm.runInContext(`Object.keys(planInputViewState.selections).sort()`, appContext)), [
+    'request_new',
+    'request_old'
+  ]);
+});
+
 test('Goal actions do not refresh a newly selected session after stale completion', async () => {
   const appContext = createAppHarnessContext();
   installGoalAPITestWrappers(appContext);

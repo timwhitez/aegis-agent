@@ -2027,6 +2027,23 @@ function isCurrentPlanModeActionIdentity(identity) {
   return currentPlanModeActionIdentity() === identity;
 }
 
+function currentPlanInputActionIdentity(requestID) {
+  const planMode = currentPlanMode();
+  const request = planMode?.pending_request;
+  const currentRequestID = String(request?.request_id || '').trim();
+  if (!request || !currentRequestID || currentRequestID !== String(requestID || '').trim()) {
+    return '';
+  }
+  return [
+    currentPlanModeActionIdentity(),
+    currentRequestID
+  ].join('\n');
+}
+
+function isCurrentPlanInputActionIdentity(identity, requestID) {
+  return currentPlanInputActionIdentity(requestID) === identity;
+}
+
 async function handlePlanModeAction(button) {
   if (!hasDurableSession()) {
     showToast('No durable session is loaded.', 'info');
@@ -2113,6 +2130,7 @@ async function handlePlanInputAction(button) {
     showToast('Plan input request is no longer pending.', 'error');
     return;
   }
+  const actionPlanInputIdentity = currentPlanInputActionIdentity(requestID);
 
   if (action === 'select') {
     const questionID = button.getAttribute('data-question-id') || '';
@@ -2148,7 +2166,7 @@ async function handlePlanInputAction(button) {
   button.disabled = true;
   try {
     await answerPlanModeInput(sessionID, { requestID, answers });
-    if (state.sessionId !== sessionID) {
+    if (state.sessionId !== sessionID || !isCurrentPlanInputActionIdentity(actionPlanInputIdentity, requestID)) {
       return;
     }
     delete planInputViewState.selections[requestID];
@@ -2156,14 +2174,14 @@ async function handlePlanInputAction(button) {
     queueSessionRefresh(80);
     queueOverviewRefresh(180);
   } catch (err) {
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentPlanInputActionIdentity(actionPlanInputIdentity, requestID)) {
       showToast(err.message || 'Failed to answer Plan Mode input.', 'error');
     }
   } finally {
     if (document.body.contains(button)) {
       button.disabled = false;
     }
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentPlanInputActionIdentity(actionPlanInputIdentity, requestID)) {
       renderCurrentSession();
     }
   }
