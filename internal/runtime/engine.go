@@ -1410,6 +1410,14 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 			}
 			return accepted, fmt.Errorf("refresh pending steer count: %w", err)
 		}
+		eventsRollback, err := e.store.LoadEvents(sessionID)
+		if err != nil {
+			requests[i] = rollbackRequest
+			if rollbackErr := e.rollbackAcceptedSteer(sessionID, msg.ID, rollbackRequest, goalHistoryAppended, goalHistoryRollback); rollbackErr != nil {
+				return accepted, fmt.Errorf("snapshot events before accepted steer after rollback failed with %v: %w", rollbackErr, err)
+			}
+			return accepted, fmt.Errorf("snapshot events before accepted steer: %w", err)
+		}
 		if err := e.appendEvents(sessionID, acceptanceEvents); err != nil {
 			requests[i] = rollbackRequest
 			if rollbackErr := e.rollbackAcceptedSteer(sessionID, msg.ID, rollbackRequest, goalHistoryAppended, goalHistoryRollback); rollbackErr != nil {
@@ -1420,11 +1428,26 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 		if err := refreshContractForSession(e.store, func(eventType string, data map[string]any) error {
 			return e.appendEvent(sessionID, eventType, "control_drain", data)
 		}, meta); err != nil {
-			return accepted, err
+			requests[i] = rollbackRequest
+			if rollbackErr := e.rollbackAcceptedSteerAndEvents(sessionID, msg.ID, rollbackRequest, goalHistoryAppended, goalHistoryRollback, eventsRollback); rollbackErr != nil {
+				return accepted, fmt.Errorf("refresh contract for accepted steer after rollback failed with %v: %w", rollbackErr, err)
+			}
+			return accepted, fmt.Errorf("refresh contract for accepted steer: %w", err)
 		}
 		accepted++
 	}
 	return accepted, nil
+}
+
+func (e *Engine) rollbackAcceptedSteerAndEvents(sessionID, messageID string, request session.SteerRequest, goalHistoryAppended bool, goalHistoryRollback []session.GoalHistoryEntry, eventsRollback []events.Event) error {
+	var rollbackErrs []error
+	if err := e.rollbackAcceptedSteer(sessionID, messageID, request, goalHistoryAppended, goalHistoryRollback); err != nil {
+		rollbackErrs = append(rollbackErrs, err)
+	}
+	if err := e.store.RestoreEvents(sessionID, eventsRollback); err != nil {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("restore events: %w", err))
+	}
+	return errors.Join(rollbackErrs...)
 }
 
 func (e *Engine) rollbackAcceptedSteer(sessionID, messageID string, request session.SteerRequest, goalHistoryAppended bool, goalHistoryRollback []session.GoalHistoryEntry) error {

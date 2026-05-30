@@ -9606,7 +9606,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-577, FCA-20260531-579, and FCA-20260531-580. Those slices rejected multiple Plan Mode controls, cancellation mixed with execution inputs, and approval mixed with ordinary text; this residual gap allowed a single input-answer control to carry ordinary text that would be appended as an extra user message after the recovered tool result.
 - Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject `PlanInputAnswers` plus ordinary message before provider metadata can be saved, the session can be claimed, the pending request can be cleared, or replay/user messages can be appended, while preserving valid answer-only recovery.
 
+### Review 577
+
+- Confirmed FCA-20260531-582 against `spec/13-live-input-and-steering.md` and `spec/18-durable-contract-and-completion.md`: an accepted steer must enter `messages.jsonl` as a real user message, and when that steer changes external artifact or completion constraints, `contract.json`, `artifact-tracker.json`, and contract history must refresh as matching durable facts.
+- Confirmed this is distinct from FCA-20260531-576 and the Plan Mode conflict slices FCA-20260531-577 through FCA-20260531-581. Those slices hardened pre-run and Plan Mode control boundaries; this residual gap was a post-acceptance steer boundary where contract refresh could fail after the steer was already provider-visible and marked accepted.
+- Confirmed the minimal fix belongs in `Engine.drainSteer`: snapshot events before acceptance events, and if the post-acceptance contract refresh fails, restore the open steer request, pending count, provider-visible steer message, goal history, and events so the steer remains retryable instead of half-accepted.
+
 ## Update Log
+
+### FCA-20260531-582
+
+Slice: `fix(runtime): roll back steer contract failures`
+
+Finding:
+
+- `spec/13-live-input-and-steering.md` requires an accepted steer to append a real user message and refresh `contract.json` / `artifact-tracker.json` when explicit artifact, template, literal, or target constraints change.
+- `spec/18-durable-contract-and-completion.md` makes those contract and artifact files durable completion facts, not optional UI hints.
+- `Engine.drainSteer` marked a steer accepted and appended durable `user.message` / `session.steer.accepted` events before running `refreshContractForSession`; if that refresh failed, the function returned an error while leaving the steer provider-visible, status `accepted`, and no longer pending for retry.
+
+Impact:
+
+- A steer such as "write the final report to reports/final.md" could be visible to the provider and unavailable for retry while `contract.json`, `contract-history.jsonl`, or `artifact-tracker.json` did not reflect the new required artifact.
+- Later completion gates and recovery views could evaluate the session against stale or missing completion facts, weakening the explicit artifact contract.
+
+Changes:
+
+- Snapshot `events.jsonl` before appending steer acceptance events.
+- On contract refresh failure after steer acceptance, restore the open steer request, pending steer count, provider-visible steer message, goal history, and events.
+- Added `rollbackAcceptedSteerAndEvents` so the contract-refresh failure path removes both acceptance events and any partial contract-refresh events.
+- Added `TestEngineSteerAcceptanceRollsBackWhenContractRefreshFails` to prove the steer remains pending, no provider-visible steer user message remains, pending count is restored, missing contract state is restored, and steer acceptance events are removed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineSteerAcceptanceRollsBackWhenContractRefreshFails -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineSteerAcceptance(RollsBackWhenContractRefreshFails|ReportsAcceptedEventAppendError|RollsBackMessageWhenStatusUpdateFails|RollsBackMessageWhenPendingCountRefreshFails|PersistsEarlierAcceptedStatusWhenLaterAcceptFails)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-581
 

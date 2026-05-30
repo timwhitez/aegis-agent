@@ -3087,6 +3087,61 @@ func TestEngineSteerAcceptanceReportsAcceptedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineSteerAcceptanceRollsBackWhenContractRefreshFails(t *testing.T) {
+	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	request := session.NewSteerRequest("write the final report to reports/final.md", false)
+	if err := engine.store.AppendSteerRequest(meta.ID, request); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	blockRuntimeContractHistoryPath(t, engine.store, meta.ID)
+
+	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	if err == nil || !strings.Contains(err.Error(), "refresh contract for accepted steer") || !strings.Contains(err.Error(), "contract-history.jsonl") {
+		t.Fatalf("expected contract refresh error, accepted=%d err=%v", accepted, err)
+	}
+	if accepted != 0 {
+		t.Fatalf("contract refresh failure should not count accepted steer requests, got %d", accepted)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load messages: %v", loadErr)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "steer" {
+			t.Fatalf("contract refresh failure should roll back provider-visible steer message, got %#v", messages)
+		}
+	}
+	requests, loadErr := engine.store.LoadSteerRequests(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load steer requests: %v", loadErr)
+	}
+	if len(requests) != 1 || requests[0].ID != request.ID || requests[0].Status != session.SteerStatusPending {
+		t.Fatalf("contract refresh failure should keep steer pending for retry, got %#v", requests)
+	}
+	loadedState, loadErr := engine.store.LoadState(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if loadedState.PendingSteerCount != 1 {
+		t.Fatalf("contract refresh failure should restore pending steer count, got %#v", loadedState)
+	}
+	if _, loadErr := engine.store.LoadContract(meta.ID); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Fatalf("contract refresh failure should restore missing contract, got %v", loadErr)
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	for _, event := range eventsList {
+		if event.Type == "user.message" && event.Data["source"] == "steer" {
+			t.Fatalf("contract refresh failure should roll back steer user.message event, got %#v", eventsList)
+		}
+		if event.Type == "session.steer.accepted" {
+			t.Fatalf("contract refresh failure should roll back accepted steer event, got %#v", eventsList)
+		}
+	}
+}
+
 func TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails(t *testing.T) {
 	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
