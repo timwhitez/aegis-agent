@@ -9402,7 +9402,41 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-546. That slice routed Plan Mode input/cancel active-runner decisions through stale-handle pruning; this residual gap covered the separate `/interrupt` and `/stop` handlers, which still read `s.handles` directly and could call a settled runner for a durable `failed` or `completed` session.
 - Confirmed the minimal fix is to reuse `handleForSession` for stop/interrupt ownership checks. That keeps the existing terminal-only pruning policy, preserves real live stop/interrupt behavior, and returns the structured `ACTIVE_HANDLE_NOT_OWNED` recovery guidance when durable facts prove the handle is stale.
 
+### Review 543
+
+- Confirmed FCA-20260530-548 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Web stop fallback from `ACTIVE_HANDLE_NOT_OWNED` is still a control action and must remain tied to the selected session or parent/child projection the operator acted on.
+- Confirmed this is distinct from FCA-20260530-547. That slice corrected backend stale-handle ownership; this residual gap was frontend-only, where the WebConsole still converted any not-owned stop response into an interrupt steer before checking whether the same session had refreshed terminal or whether the selected parent still referenced the child.
+- Confirmed the minimal fix belongs in `requestStopSession` / `requestStopViaBestAvailablePath`: reuse the existing same-session and referenced-child identity checks before issuing fallback steer, while preserving fallback steer for still-current not-owned running sessions.
+
 ## Update Log
+
+### FCA-20260530-548
+
+Slice: `fix(webconsole): guard stale stop fallback steer`
+
+Finding:
+
+- `spec/13-live-input-and-steering.md` makes interrupt steer a real durable control input, not a UI-only hint.
+- `spec/17-web-console.md` treats stop buttons as controls over the current selected session or the child/session facts visible in the current session projection.
+- After FCA-20260530-547, `/stop` can return `ACTIVE_HANDLE_NOT_OWNED` when a current-process handle is not available or has been pruned as stale.
+- `internal/webconsole/assets/app.js` `requestStopViaBestAvailablePath` caught every `ACTIVE_HANDLE_NOT_OWNED` response and immediately sent fallback `steer(..., interrupt=true)` before `requestStopSession` checked whether the selected session, same-session state identity, or parent-child reference was still current.
+- Focused frontend regressions reproduced the stale side effect: a same-session stop whose detail refreshed from `running` to `completed`, and a child stop whose selected parent refreshed without that child reference, both still opened a second `/steer` request after the stale `/stop` response.
+
+Impact:
+
+- A stale Web stop response could create a new durable interrupt-steer request for a session the current UI projection no longer showed as the operator's target.
+- For a durably terminal session, the fallback steer was also misleading: the session was no longer running, so the stale fallback could surface an avoidable error rather than quietly preserving the refreshed terminal view.
+
+Changes:
+
+- Added a `shouldFallback` guard to `requestStopViaBestAvailablePath`.
+- Passed a stop-specific guard from `requestStopSession` that permits fallback only when the stopped session is still the selected session with the same action identity, the selected parent still references the child/session with the same reference identity, or the stop action has no selected-session context.
+- Added frontend regressions proving stale same-session terminal refreshes and stale parent-without-child refreshes do not send fallback interrupt steer, do not toast, and clear pending stop UI state.
+- Updated `docs/webconsole-frontend-optimization-plan.md` with current asset line counts and the completed stop-fallback stale-response guard.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the stale `/stop` rejection opened a pending fallback `/steer` request, then passed after the fix with 114/114 tests.
 
 ### FCA-20260530-547
 

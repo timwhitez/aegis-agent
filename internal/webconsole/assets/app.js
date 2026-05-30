@@ -1553,13 +1553,20 @@ async function requestStopSession(sessionID, options = {}) {
     hasDurableSession() &&
     (!refreshSelectedSession || isCurrentReferencedSessionActionIdentity(selectedReferenceIdentity, sessionID))
   );
+  const stopFallbackStillCurrent = () => (
+    selectedStoppedSessionStillCurrent() ||
+    (refreshSelectedSession && selectedContextStillCurrent()) ||
+    (!stoppingSelectedSession && !refreshSelectedSession)
+  );
   stopActionViewState.sessionIds.add(sessionID);
   const button = options.button || null;
   if (button) {
     button.disabled = true;
   }
   try {
-    const result = await requestStopViaBestAvailablePath(sessionID);
+    const result = await requestStopViaBestAvailablePath(sessionID, {
+      shouldFallback: stopFallbackStillCurrent
+    });
     if (selectedStoppedSessionStillCurrent()) {
       setLiveActivity({
         title: 'Stopping run',
@@ -1599,12 +1606,15 @@ async function requestStopSession(sessionID, options = {}) {
   }
 }
 
-async function requestStopViaBestAvailablePath(sessionID) {
+async function requestStopViaBestAvailablePath(sessionID, options = {}) {
   try {
     await stopSession(sessionID);
     return { via: 'handle' };
   } catch (err) {
     if (err?.code !== 'ACTIVE_HANDLE_NOT_OWNED') {
+      throw err;
+    }
+    if (typeof options.shouldFallback === 'function' && !options.shouldFallback()) {
       throw err;
     }
     await steerSession(sessionID, {

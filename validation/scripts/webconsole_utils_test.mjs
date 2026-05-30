@@ -4848,6 +4848,134 @@ test('child stop completion ignores refreshed parent without child reference', a
   });
 });
 
+test('stop not-owned fallback does not steer after same-session terminal refresh', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+  vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  const stop = vm.runInContext(`
+    state.sessionId = 'session_stop_not_owned_terminal';
+    state.sessionBacked = true;
+    setGeneratingViewState(true);
+    setLiveActivity({ title: 'Running old state', copy: '', tone: 'live' });
+    state.sessionDetail = {
+      metadata: { id: 'session_stop_not_owned_terminal', updated_at: '2026-05-30T10:00:00Z' },
+      state: { status: 'running', updated_at: '2026-05-30T10:00:00Z' },
+      messages: []
+    };
+    requestStop();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_stop_not_owned_terminal\/stop/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded completed session', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_stop_not_owned_terminal', updated_at: '2026-05-30T10:01:00Z' },
+      state: { status: 'completed', updated_at: '2026-05-30T10:01:00Z' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].reject({
+    code: 'ACTIVE_HANDLE_NOT_OWNED',
+    message: 'session is not actively owned by this web console; it may already be settled'
+  });
+  await stop;
+
+  assert.deepEqual(sameRealm(appContext.pendingRequests.map((request) => request.url)), [
+    '/api/sessions/session_stop_not_owned_terminal/stop'
+  ]);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: isGenerating(),
+    activityTitle: currentLiveActivity().title,
+    stopping: isStoppingSession('session_stop_not_owned_terminal')
+  })`, appContext)), {
+    selected: 'session_stop_not_owned_terminal',
+    generating: false,
+    activityTitle: 'Loaded completed session',
+    stopping: false
+  });
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
+test('child stop not-owned fallback does not steer after parent loses child reference', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  vm.runInContext(`
+    refreshCalls = [];
+    toastCalls = [];
+    queueSessionRefresh = function(delay) {
+      refreshCalls.push({ kind: 'session', delay, selected: state.sessionId });
+    };
+    queueOverviewRefresh = function(delay) {
+      refreshCalls.push({ kind: 'overview', delay, selected: state.sessionId });
+    };
+    showToast = function(message, tone) {
+      toastCalls.push({ message, tone });
+    };
+  `, appContext);
+
+  const stop = vm.runInContext(`
+    setCurrentViewName('chat');
+    state.sessionId = 'parent_session_stop_not_owned';
+    state.sessionBacked = true;
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Parent with child', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'parent_session_stop_not_owned', updated_at: '2026-05-30T10:10:00Z' },
+      state: { status: 'awaiting_input', updated_at: '2026-05-30T10:10:00Z' },
+      children: { sessions: [{ id: 'child_session_stop_not_owned', status: 'running' }] },
+      messages: []
+    };
+    requestStopSession('child_session_stop_not_owned');
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /child_session_stop_not_owned\/stop/);
+
+  vm.runInContext(`
+    setLiveActivity({ title: 'Parent refreshed without child', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'parent_session_stop_not_owned', updated_at: '2026-05-30T10:11:00Z' },
+      state: { status: 'awaiting_input', updated_at: '2026-05-30T10:11:00Z' },
+      children: { sessions: [] },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].reject({
+    code: 'ACTIVE_HANDLE_NOT_OWNED',
+    message: 'session is not actively owned by this web console; it may already be settled'
+  });
+  await stop;
+
+  assert.deepEqual(sameRealm(appContext.pendingRequests.map((request) => request.url)), [
+    '/api/sessions/child_session_stop_not_owned/stop'
+  ]);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    activityTitle: currentLiveActivity().title,
+    stoppingChild: isStoppingSession('child_session_stop_not_owned'),
+    refreshCalls,
+    toastCalls
+  })`, appContext)), {
+    selected: 'parent_session_stop_not_owned',
+    activityTitle: 'Parent refreshed without child',
+    stoppingChild: false,
+    refreshCalls: [],
+    toastCalls: []
+  });
+});
+
 test('loadWorkspaceDirectory ignores stale directory responses after navigation changes', async () => {
   const workspaceContext = createWorkspaceHarnessContext();
   const slowLoad = vm.runInContext(`loadWorkspaceDirectory('slow')`, workspaceContext);
