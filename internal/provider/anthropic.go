@@ -81,6 +81,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	if err != nil {
 		return TurnResult{}, err
 	}
+	stopReasonRaw := strings.TrimSpace(resp.StopReason)
 	var textParts []string
 	var thinkingParts []string
 	var providerBlocks []session.ProviderContentBlock
@@ -131,6 +132,9 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				Model:           req.Model,
 			})
 		case "tool_use":
+			if stopReasonRaw == "" {
+				continue
+			}
 			if err := validateToolCallEnvelope("anthropic", item.Name, item.ID); err != nil {
 				return TurnResult{}, err
 			}
@@ -160,14 +164,14 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	if text != "" {
 		emit("assistant.delta", map[string]any{"text": text})
 	}
-	if resp.StopReason == "tool_use" && len(calls) == 0 {
+	if stopReasonRaw == "tool_use" && len(calls) == 0 {
 		return TurnResult{}, &HTTPError{
 			Provider: "anthropic",
 			Class:    "response_parse_error",
 			Message:  "anthropic tool_use stop reason did not include a tool_use content block",
 		}
 	}
-	if resp.StopReason != "tool_use" && len(calls) > 0 {
+	if stopReasonRaw != "tool_use" && len(calls) > 0 {
 		return TurnResult{}, &HTTPError{
 			Provider: "anthropic",
 			Class:    "response_parse_error",
@@ -175,7 +179,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		}
 	}
 	stopReason := "done_candidate"
-	switch resp.StopReason {
+	switch stopReasonRaw {
 	case "tool_use":
 		stopReason = "tool_use"
 	case "end_turn":

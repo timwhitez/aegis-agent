@@ -9582,7 +9582,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260529-408 and FCA-20260530-570. Those slices moved invalid Plan Mode controls before claim and allowed idempotent executing approvals; this residual gap was accepting multiple valid-looking controls in one request and letting the later `Continue` branch order decide the outcome.
 - Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject conflicting Plan Mode controls before `ClaimSessionRun`, `SaveMetadata`, replay message append, Plan Mode mutation, or provider execution, while preserving each standalone control's existing preflight and recovery behavior.
 
+### Review 573
+
+- Confirmed FCA-20260531-578 against `spec/03-provider-contracts.md`: a final Anthropic-compatible response that omits `stop_reason` is a provider boundary failure and must not expose same-response `tool_use` content as executable local tool calls.
+- Confirmed this is a residual sibling of FCA-20260531-575 and FCA-20260530-538. Those slices handled OpenAI/Google non-success call parsing and Anthropic `end_turn`/`tool_use` contradictions; this narrower gap was that Anthropic missing-`stop_reason` responses still parsed malformed `tool_use.input` before honoring the missing boundary.
+- Confirmed the minimal fix belongs inside `internal/provider/anthropic.go`: when `stop_reason` is missing, suppress `tool_use` parsing and provider replay blocks before stop mapping, while keeping valid `stop_reason=tool_use` malformed-call validation and `end_turn` plus executable `tool_use` contradiction checks unchanged.
+
 ## Update Log
+
+### FCA-20260531-578
+
+Slice: `fix(provider): suppress anthropic calls without stop`
+
+Finding:
+
+- `spec/03-provider-contracts.md` says Anthropic-compatible `stop_reason` is the provider boundary for tool execution, and a final response that omits `stop_reason` must be treated as provider boundary failure rather than ordinary completion.
+- `internal/provider/anthropic.go` already mapped text-only missing `stop_reason` responses to internal `StopReason:"error"`, but the adapter still parsed `tool_use` content blocks before that stop mapping.
+- A missing-`stop_reason` response with malformed `tool_use.input` could therefore fail as a tool-argument parse error before the adapter classified the missing provider boundary and suppressed same-response tool execution facts.
+
+Impact:
+
+- Provider diagnostics became inconsistent across adapters: OpenAI and Google already gate function-call parsing on a successful provider boundary, while Anthropic missing-`stop_reason` responses could be reported as malformed tool arguments instead of missing boundary failures.
+- A recovered or compatible-gateway response with no Anthropic stop boundary could still create local `tool_use` provider-content blocks before being rejected, weakening the "provider boundary first, executable calls second" invariant.
+
+Changes:
+
+- Normalized the Anthropic raw stop reason before content-block parsing.
+- Skipped `tool_use` parsing and provider-content-block creation when `stop_reason` is missing.
+- Kept existing Anthropic response-shape validation for `stop_reason=tool_use` with no parsed tool calls, and for non-tool stop reasons such as `end_turn` that include executable `tool_use` blocks.
+- Added `TestAnthropicAdapterSuppressesMalformedToolUseWhenStopReasonMissing` to prove malformed tool-use input no longer masks the missing stop boundary and no internal tool calls or Anthropic `tool_use` replay blocks are exposed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run 'TestAnthropicAdapter(SuppressesMalformedToolUseWhenStopReasonMissing|MapsMissingStopReasonToErrorStop|RejectsToolUseBlockWithoutToolUseStop|RejectsNonObjectToolUseInput|SerializesAndParses)' -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-577
 

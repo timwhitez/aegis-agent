@@ -732,6 +732,44 @@ func TestAnthropicAdapterMapsMissingStopReasonToErrorStop(t *testing.T) {
 	}
 }
 
+func TestAnthropicAdapterSuppressesMalformedToolUseWhenStopReasonMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_missing_stop_with_bad_tool",
+			"content":[
+				{"type":"text","text":"partial"},
+				{"type":"tool_use","id":"toolu_1","name":"shell","input":[]}
+			],
+			"usage":{"input_tokens":8,"output_tokens":4}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("missing stop reason should suppress malformed tool_use parsing before boundary handling: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected missing stop reason to stay a provider error stop, got %#v", result)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("expected missing stop reason to suppress tool calls, got %#v", result.ToolCalls)
+	}
+	for _, block := range result.ProviderContentBlocks {
+		if block.Provider == "anthropic" && block.Type == "tool_use" {
+			t.Fatalf("expected missing stop reason to suppress tool_use provider blocks, got %#v", result.ProviderContentBlocks)
+		}
+	}
+}
+
 func TestAnthropicAdapterRejectsNonObjectToolUseInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
