@@ -9438,7 +9438,47 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-118, FCA-20260526-119, FCA-20260526-122, FCA-20260526-124, and FCA-20260527-223. Those slices covered env-file write failure, invalid env key/value preflight, blank API keys, and audit append rollback; the residual gap was the later process environment update failing after both `config.yaml` and `.env` had already been written.
 - Confirmed the minimal fix belongs in `handleUpdateConfig`: reuse the existing config/env/process-env snapshot rollback on process API-key env failure before returning the error, while preserving successful API-key writes, audit events, in-memory config updates, and existing audit-failure rollback behavior.
 
+### Review 549
+
+- Confirmed FCA-20260530-554 against `spec/17-web-console.md`: `POST /api/workers` is an advanced local WebConsole mutation whose input contract is `desired_count`, and missing that semantic field must not perform a worker-pool scaling side effect.
+- Confirmed this is distinct from FCA-20260529-394. That slice validated CLI `--workers` startup bounds before service creation, while the residual Web API gap accepted a syntactically valid JSON object that omitted `desired_count` and silently interpreted it as `0`.
+- Confirmed the minimal fix belongs in `handleScaleWorkers`: make `desired_count` explicit/required at the route boundary while preserving `0` as a valid requested scale, preserving the existing max-worker rejection, and leaving `workerPool.Scale` clamping as an internal safety net.
+
 ## Update Log
+
+### FCA-20260530-554
+
+Slice: `fix(webconsole): require worker scale count`
+
+Finding:
+
+- `spec/17-web-console.md` defines `POST /api/workers` with input `desired_count`; it is an advanced/test API for dynamic worker-pool concurrency, not a default visible frontend control.
+- `internal/webconsole/service.go` decoded the route body into an `int` field. When callers posted `{}` or `{"desired_count":null}`, Go left the field at zero.
+- A focused regression started a service with one worker and posted `{}` to `/api/workers`. Before the fix, the route returned HTTP 202 and scaled the pool to zero workers.
+
+Impact:
+
+- A malformed advanced local-console request could stop all WebConsole queue workers without explicitly requesting `desired_count:0`.
+- This weakened the Web mutation contract around a real runtime side effect, even though same-origin/local mutation guard, JSON body requirement, negative-count rejection, and excessive-count rejection were already present.
+
+Changes:
+
+- Changed `handleScaleWorkers` to decode `desired_count` as a pointer and reject missing/null values with HTTP 400 before calling `workerPool.Scale`.
+- Preserved `desired_count:0` as the explicit request to stop workers.
+- Preserved the existing lower-bound and max-worker validation and the worker pool's internal clamping safety net.
+- Added a focused regression proving missing `desired_count` leaves the existing worker pool unchanged.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkerScalingRejectsMissingDesiredCount -count=1`: failed before the fix with HTTP 202 and `{"desired_count":0,"active_count":0,...}`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkerScaling(RejectsMissingDesiredCount|RejectsExcessiveCount)?$' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkerScaling|TestServiceRejectsForeignOriginMutation|TestServiceRejectsMissingMutationGuard|TestServiceRejectsNonJSONMutationContentType|TestServiceAllowsSameOriginMutation' -count=1`: passed.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-553
 

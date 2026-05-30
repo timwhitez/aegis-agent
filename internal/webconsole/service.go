@@ -2883,21 +2883,26 @@ func queueJobActionStatus(err error) int {
 
 func (s *Service) handleScaleWorkers(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DesiredCount int `json:"desired_count"`
+		DesiredCount *int `json:"desired_count"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if req.DesiredCount < 0 {
+	if req.DesiredCount == nil {
+		writeError(w, http.StatusBadRequest, errors.New("desired_count is required"))
+		return
+	}
+	desiredCount := *req.DesiredCount
+	if desiredCount < 0 {
 		writeError(w, http.StatusBadRequest, errors.New("desired_count must be >= 0"))
 		return
 	}
-	if req.DesiredCount > maxWorkerCount {
+	if desiredCount > maxWorkerCount {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("desired_count must be <= %d", maxWorkerCount))
 		return
 	}
-	s.workers.Scale(req.DesiredCount)
+	s.workers.Scale(desiredCount)
 	writeJSON(w, http.StatusAccepted, s.workers.Snapshot())
 }
 

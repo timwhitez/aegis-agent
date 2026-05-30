@@ -6722,6 +6722,27 @@ func TestServiceWorkerScalingRejectsExcessiveCount(t *testing.T) {
 	}
 }
 
+func TestServiceWorkerScalingRejectsMissingDesiredCount(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 1})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for missing desired_count, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if snapshot := svc.workers.Snapshot(); snapshot.DesiredCount != 1 || snapshot.ActiveCount != 1 {
+		t.Fatalf("missing desired_count should not scale workers, got %#v", snapshot)
+	}
+}
+
 func TestServiceRejectsForeignOriginMutation(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
