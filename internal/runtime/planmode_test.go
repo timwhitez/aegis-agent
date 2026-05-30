@@ -221,6 +221,85 @@ func TestContinuePlanModeRejectsCancelWithExecutionInputsBeforeClaim(t *testing.
 	}
 }
 
+func TestContinuePlanModeRejectsInputAnswerWithMessageBeforeClaim(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		ProviderOptions:  providerOptionsFromConfig("openai", cfg.Providers["openai"]),
+	}
+	initialState := session.State{Status: session.StatusAwaitingInput, Phase: "plan_input", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, initialState); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Answer only", Source: session.PlanModeSourceCLI}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	request := session.PlanModeInputRequest{
+		RequestID:  "pmq_answer_only",
+		ToolCallID: "call_answer_only",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow (Recommended)", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := runner.store.SetPlanModePendingRequest(sessionID, request, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID:          sessionID,
+		Message:            "also revise the plan",
+		PlanInputRequestID: request.RequestID,
+		PlanInputAnswers: []session.PlanModeInputAnswer{{
+			QuestionID: "scope_choice",
+			Label:      "Narrow (Recommended)",
+			Value:      "Narrow (Recommended)",
+		}},
+		Source: session.PlanModeSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "plan mode input answer cannot include ordinary message") {
+		t.Fatalf("expected input answer/message conflict, got result=%#v err=%v", result, err)
+	}
+	state, err := runner.store.LoadState(sessionID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != initialState.Status || state.Phase != initialState.Phase {
+		t.Fatalf("input answer/message conflict should not claim the session, got %#v", state)
+	}
+	planMode, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingUserInput || planMode.PendingRequest == nil || planMode.PendingRequest.RequestID != request.RequestID {
+		t.Fatalf("input answer/message conflict should keep pending request, got %#v", planMode)
+	}
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("input answer/message conflict should not append replay messages, got %#v", messages)
+	}
+}
+
 func TestContinuePlanModeRejectsApprovalWithMessageBeforeClaim(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

@@ -972,6 +972,9 @@ func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest)
 	if req.ApprovePlan && stringsTrim(req.Message) != "" {
 		return errors.New("plan mode approval cannot include ordinary message")
 	}
+	if len(req.PlanInputAnswers) > 0 && stringsTrim(req.Message) != "" {
+		return errors.New("plan mode input answer cannot include ordinary message")
+	}
 	if req.CancelPlan {
 		var executionInputs []string
 		if stringsTrim(req.Message) != "" {

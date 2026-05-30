@@ -9600,7 +9600,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-577 and FCA-20260531-579. Those slices rejected multiple Plan Mode controls and cancellation mixed with execution inputs; this residual gap allowed approval plus an ordinary message, and `Runner.Continue` silently replaced that message with the synthetic approval text.
 - Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject `ApprovePlan` plus ordinary message before provider metadata can be saved, the session can be claimed, Plan Mode can enter executing, or replay messages can be appended, while preserving provider/model execution overrides for approval.
 
+### Review 576
+
+- Confirmed FCA-20260531-581 against `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md`: Plan Mode input answering is a narrow control that supplies `{request_id, answers}` and must append the matching `request_user_input` tool result; an ordinary continuation message is a separate user instruction/revision fact.
+- Confirmed this is distinct from FCA-20260531-577, FCA-20260531-579, and FCA-20260531-580. Those slices rejected multiple Plan Mode controls, cancellation mixed with execution inputs, and approval mixed with ordinary text; this residual gap allowed a single input-answer control to carry ordinary text that would be appended as an extra user message after the recovered tool result.
+- Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject `PlanInputAnswers` plus ordinary message before provider metadata can be saved, the session can be claimed, the pending request can be cleared, or replay/user messages can be appended, while preserving valid answer-only recovery.
+
 ## Update Log
+
+### FCA-20260531-581
+
+Slice: `fix(runtime): reject plan input message conflicts`
+
+Finding:
+
+- `spec/17-web-console.md` defines the Web Plan Mode input API as `{ "request_id": "...", "answers": [...] }`; it does not mix recovered input answers with ordinary continuation text.
+- `spec/18-durable-contract-and-completion.md` requires recovered Plan Mode input answers to append the matching `request_user_input` tool result using the stored `tool_call_id`.
+- `Runner.Continue` accepted `PlanInputAnswers` with a non-empty ordinary `Message`, appended the recovered tool result, then appended the ordinary message before running the provider turn.
+
+Impact:
+
+- A malformed SDK/API caller could answer a pending Plan Mode input and simultaneously inject an unscoped user message into `messages.jsonl`.
+- That extra message was not tied to the `request_user_input` prompt and could refresh contract facts or steer the next planning turn differently from the explicit answer payload.
+- The recovered path no longer matched the live Web input path, where `AnswerActivePlanInput` can only deliver answers to the blocked runner.
+
+Changes:
+
+- Extended `Runner.preflightPlanModeControl` to reject `PlanInputAnswers` when combined with an ordinary continuation message.
+- Preserved valid answer-only recovery and the existing request-id / answer validation behavior.
+- Added `TestContinuePlanModeRejectsInputAnswerWithMessageBeforeClaim` to prove the conflict fails before claim, leaves the pending request intact, and appends no replay or user messages.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestContinuePlanModeRejectsInputAnswerWithMessageBeforeClaim -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestContinuePlanModeRejects(InputAnswerWithMessage|ApprovalWithMessage|CancelWithExecutionInputs|ConflictingControls|InvalidDraft)BeforeClaim|TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-580
 
