@@ -8681,6 +8681,9 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "client_secret.json"), []byte(`{"client_secret":"workspace"}`), 0o600); err != nil {
 		t.Fatalf("write workspace client secret file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "service_account.json"), []byte(`{"private_key":"workspace"}`), 0o600); err != nil {
+		t.Fatalf("write workspace service account file: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "env-real"), []byte("WORKSPACE_SECRET_ALIAS=1"), 0o600); err != nil {
 		t.Fatalf("write workspace env alias target: %v", err)
 	}
@@ -8756,7 +8759,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		if item["name"] == ".env" {
 			t.Fatalf("workspace listing leaked env file: %#v", tree)
 		}
-		if item["name"] == "id_ecdsa" || item["name"] == "credentials.json" || item["name"] == "client_secret.json" {
+		if item["name"] == "id_ecdsa" || item["name"] == "credentials.json" || item["name"] == "client_secret.json" || item["name"] == "service_account.json" {
 			t.Fatalf("workspace listing leaked credential-like file: %#v", tree)
 		}
 		if item["name"] == ".azure" {
@@ -8913,7 +8916,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		t.Fatalf("expected forbidden for workspace env read, got %d body=%s", resp.StatusCode, string(body))
 	}
 
-	for _, deniedPath := range []string{"id_ecdsa", "credentials.json", "client_secret.json"} {
+	for _, deniedPath := range []string{"id_ecdsa", "credentials.json", "client_secret.json", "service_account.json"} {
 		resp, err = http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(deniedPath))
 		if err != nil {
 			t.Fatalf("workspace credential read request %s: %v", deniedPath, err)

@@ -5235,6 +5235,8 @@ func webFileBrowserPrivateKeyNameDenied(name string) bool {
 func webFileBrowserCredentialNameDenied(name string) bool {
 	return strings.Contains(name, "client_secret") ||
 		strings.Contains(name, "client-secret") ||
+		strings.Contains(name, "service_account") ||
+		strings.Contains(name, "service-account") ||
 		strings.HasPrefix(name, "credentials.") ||
 		strings.HasSuffix(name, "_credentials.json") ||
 		strings.HasSuffix(name, "-credentials.json") ||

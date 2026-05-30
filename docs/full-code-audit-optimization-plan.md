@@ -9282,7 +9282,53 @@ Evidence gates:
 - Confirmed this is distinct from the Cargo/package credential probe. Cargo credential filenames were already covered by the generic `credentials` / `credentials.*` rules; `client_secret.json` and `client-secret.json` were not covered by the existing `credentials.*`, `*_credentials.json`, private-key, or dotenv patterns.
 - Confirmed the minimal fix belongs in the shared credential-name predicates so Web listing/read filtering, `write_file` / `edit_file` path policy, shell redirect/tee classification, and common write-command classification stay consistent without adding a task-specific runtime workflow guard.
 
+### Review 523
+
+- Confirmed FCA-20260530-528 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: service account JSON files are credential-like workspace paths and should be hidden from Web browsing and denied by model-facing write/exec policy.
+- Confirmed this is distinct from FCA-20260530-527. That slice covered OAuth client secret filenames; this residual gap covers common cloud service-account filenames such as `service_account.json` and `service-account.json`, which did not contain `credentials`, `client_secret`, `private_key`, or a private-key file extension in the filename.
+- Confirmed the minimal fix should reuse the existing credential-name predicate and preserve prior `*_credentials.json` matching order, so existing diagnostics and symlink-alias behavior remain stable while adding service-account coverage.
+
 ## Update Log
+
+### FCA-20260530-528
+
+Slice: `fix(workspace): deny service account files`
+
+Finding:
+
+- `spec/17-web-console.md` requires the read-only Workspace browser to hide and refuse credential-like paths, and the tool safety boundary must reject writes to secret/credential paths.
+- Existing rules denied dotenv variants, private-key names, `credentials.*`, `*_credentials.json`, `client_secret`, credential RC files, and package credential paths, but did not deny service-account filenames such as `service_account.json` or `service-account.json`.
+- Focused failing tests showed `/api/files` listed `service_account.json`, direct workspace write policy allowed `service_account.json` / `service-account.json`, and shell write detection returned no `secret_path_write` violation for `printf token > service_account.json`, `printf token > service-account.json`, or `cp token.txt service_account.json`.
+
+Impact:
+
+- The Web read-only Workspace browser could expose cloud service account material while hiding adjacent `credentials.*`, client-secret, and private-key files.
+- A model-facing file write or shell command could create or overwrite service-account credential files without triggering the existing secret-path write boundary, leaving credential-like handling inconsistent across Web, tools, and shell policy.
+
+Changes:
+
+- Added `service_account` and `service-account` filename matching to the shared workspace credential pattern helper.
+- Added the same matching to the Web Workspace browser credential-name deny predicate.
+- Preserved the existing `*_credentials.json` / `*-credentials.json` matching order so names such as `service-account_credentials.json` still report the more specific existing credential pattern.
+- Updated the Web Console spec to explicitly include `service_account` in credential-like workspace browser paths.
+- Added focused WebConsole, workspace path, and exec-policy regressions for service-account filenames.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesListReadAndRejectEscape -count=1`: failed before the fix because `/api/files` listed `service_account.json`; passed after the fix.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedPrivateKeyAndCredentialFiles|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyDetectsSecretPathWriteCommands' -count=1`: failed before the fix because service-account writes and shell commands were allowed/unclassified; passed after the fix.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-527
 

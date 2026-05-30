@@ -292,6 +292,10 @@ func deniedWorkspaceWriteFilePattern(name string) string {
 		return "*-credentials.json"
 	case strings.HasSuffix(name, ".credentials"):
 		return "*.credentials"
+	case strings.Contains(name, "service_account"):
+		return "*service_account*"
+	case strings.Contains(name, "service-account"):
+		return "*service-account*"
 	default:
 		return ""
 	}
