@@ -350,7 +350,7 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 - timeline/event descriptor、event refresh filter 和 live-activity event promotion helper 集中在 `events.js`；`app.js` 只调用这些 helper，不重复维护事件文案映射。
 - Settings view 的 render 与 save handler 集中在 `settings-view.js`；`app.js` 只负责视图切换时调用 `renderSettings()`。
 - Workspace read-only browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
-- Workspace read-only browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取 `.env`、`.env.*`（示例/模板除外）、SSH / cloud / kube / docker 凭据目录、private-key 文件名和 `credentials` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
+- Workspace read-only browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取 `.env`、`.env.*`（示例/模板除外）、`.envrc`、SSH / cloud / kube / docker 凭据目录、private-key 文件名和 `credentials` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
 - 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取 workspace 文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
 - 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。skill upload 必须有请求体、zip entry 数量、单 entry 解压大小和总解压大小上限，避免本地控制台被 zip bomb 或超大 multipart 请求拖垮。

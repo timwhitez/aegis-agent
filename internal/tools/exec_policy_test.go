@@ -61,6 +61,7 @@ func TestExecPolicyDetectsWrappedPolicyCommands(t *testing.T) {
 func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 	for _, command := range []string{
 		"echo token > .env",
+		"echo token > .envrc",
 		"echo token > .env.local",
 		"echo token > .env/token",
 		"printf key > id_ecdsa",
@@ -92,6 +93,7 @@ func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 func TestExecPolicyDetectsSecretPathWriteCommands(t *testing.T) {
 	for _, command := range []string{
 		"cp token.txt .env.local",
+		"cp token.txt .envrc",
 		"mv token.txt .ssh/id_rsa",
 		"touch .aws/credentials",
 		"mkdir -p .kube",

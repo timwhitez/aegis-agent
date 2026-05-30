@@ -94,6 +94,7 @@ var deniedWorkspaceWriteFilePaths = []string{
 
 var deniedWorkspaceWriteFiles = []string{
 	".env",
+	".envrc",
 	".npmrc",
 	".netrc",
 	"_netrc",

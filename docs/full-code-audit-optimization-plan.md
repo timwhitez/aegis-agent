@@ -9270,7 +9270,52 @@ Evidence gates:
 - Confirmed this is a separate follow-on from FCA-20260530-524. A lost active Web/CLI responder is non-fatal and should stop cleanly at `plan_input`; failed required Plan Mode input events are durability errors and should surface as errors, but they still must not consume the pending `request_user_input` tool call before an answer or cancellation is durably replayable.
 - Confirmed the minimal fix belongs at the same internal marker boundary: the `request_user_input` tool marks pending-input durability failures with `plan_input_pending` plus error metadata, and the engine intercepts that marker before `tool.after`, message append, or another provider turn.
 
+### Review 521
+
+- Confirmed FCA-20260530-526 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: the Web Workspace browser and model-facing write/exec policy should treat direnv `.envrc` files as local env credential material, not as ordinary workspace text.
+- Confirmed this is distinct from prior `.env` / `.env.*`, credential RC, package credential, and symlink-alias slices. Those covered dotenv variants and common package-manager auth files, but `.envrc` is a separate direnv RC file and was not matched by `.env.*` because it has no dot after `.env`.
+- Confirmed the minimal fix belongs in the existing deny-name / deny-path helpers, not in a new workflow guard: add `.envrc` to Web workspace sensitive names and shared workspace write policy so listing, read, write, shell redirect, and common write-command classification stay aligned.
+
 ## Update Log
+
+### FCA-20260530-526
+
+Slice: `fix(workspace): deny envrc credential files`
+
+Finding:
+
+- `spec/17-web-console.md` requires the read-only Workspace browser to hide and refuse local env/credential paths, and the tools spec keeps secret-path writes inside the tool safety boundary.
+- The existing rules denied `.env`, `.env.*` with template exceptions, credential RC files such as `.npmrc`, and package credential configs, but did not deny `.envrc`.
+- Focused failing tests showed `/api/files` listed `.envrc`, `CheckWorkspaceWriteAllowed(..., ".envrc")` allowed writes, and `DetectExecPolicyViolations("echo token > .envrc")` / `DetectExecPolicyViolations("cp token.txt .envrc")` returned no `secret_path_write` violation.
+
+Impact:
+
+- A local WebConsole operator could read direnv configuration containing exported tokens or shell commands through the Workspace browser, even though adjacent dotenv files were hidden.
+- A model-facing `write_file` / `edit_file` path or shell command could create or overwrite `.envrc`, weakening the existing secret-path write boundary and making env credential mutation inconsistent across Web, write tools, and shell policy.
+
+Changes:
+
+- Added `.envrc` to the Web Workspace browser sensitive-name deny list.
+- Added `.envrc` to the shared workspace write deny list so `write_file`, `edit_file`, shell redirect/tee target extraction, and common write-command detection classify it as a secret path.
+- Updated the Web Console spec to state that `.envrc` must be hidden and rejected alongside `.env` and `.env.*`.
+- Extended focused WebConsole, workspace path, and exec-policy regressions for `.envrc`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesRejectsCredentialRCFiles -count=1`: failed before the fix because `/api/files` listed `.envrc`; passed after the fix.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedCredentialRCAndPackageCredentialFiles|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyDetectsSecretPathWriteCommands' -count=1`: failed before the fix because `.envrc` writes and shell commands were allowed/unclassified; passed after the fix.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-525
 

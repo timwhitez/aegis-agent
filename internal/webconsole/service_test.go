@@ -9019,7 +9019,7 @@ func TestServiceWorkspaceRoutesRejectsCredentialRCFiles(t *testing.T) {
 		_ = os.Chdir(previousWD)
 	})
 
-	for _, name := range []string{".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
+	for _, name := range []string{".envrc", ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
 		if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
 			t.Fatalf("mkdir workspace: %v", err)
 		}
@@ -9042,13 +9042,13 @@ func TestServiceWorkspaceRoutesRejectsCredentialRCFiles(t *testing.T) {
 	postGetJSON(t, ts.URL+"/api/files", &tree)
 	for _, item := range tree {
 		name, _ := item["name"].(string)
-		for _, denied := range []string{".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
+		for _, denied := range []string{".envrc", ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
 			if name == denied {
 				t.Fatalf("workspace listing leaked credential rc file %s: %#v", denied, tree)
 			}
 		}
 	}
-	for _, denied := range []string{".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
+	for _, denied := range []string{".envrc", ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg"} {
 		resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(denied))
 		if err != nil {
 			t.Fatalf("workspace credential rc read request %s: %v", denied, err)

@@ -5156,7 +5156,7 @@ func webFileBrowserNameDenied(name string) bool {
 	case ".git", ".go-cli-agent", ".ssh", ".aws", ".azure", ".oci", ".gnupg", ".kube", ".docker",
 		"credentials":
 		return true
-	case ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg":
+	case ".envrc", ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg":
 		return true
 	case ".yarnrc", ".yarnrc.yml", ".pnpmrc":
 		return true

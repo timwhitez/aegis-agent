@@ -128,6 +128,7 @@ func TestWriteDeniedCredentialRCAndPackageCredentialFiles(t *testing.T) {
 		pattern string
 	}{
 		{path: ".npmrc", pattern: ".npmrc"},
+		{path: ".envrc", pattern: ".envrc"},
 		{path: ".netrc", pattern: ".netrc"},
 		{path: "_netrc", pattern: "_netrc"},
 		{path: ".pypirc", pattern: ".pypirc"},
