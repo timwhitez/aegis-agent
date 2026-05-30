@@ -9462,7 +9462,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-556. That slice covered `continue` of an existing resumable session; the residual gap was the `start` path, where runtime created a new session and then failed it during Goal/Plan Mode initialization, and Web start could return HTTP 202 for an invalid Goal draft.
 - Confirmed the minimal fix belongs in runtime `Start` and the Web Goal draft adapter: normalize and validate start Goal/Plan Mode drafts before `store.Create`, and validate Web Goal drafts at the handler boundary while preserving valid Goal start, Plan Mode start, linked Plan Mode creation for goal approval, and existing rollback tests for event append failures.
 
+### Review 553
+
+- Confirmed FCA-20260530-558 against `spec/17-web-console.md`: WebConsole mutation requests are local control/API boundaries, and non-empty JSON request bodies must represent the documented object payload rather than a top-level `null` that is silently decoded into a zero-value request.
+- Confirmed this is distinct from FCA-20260530-551 and FCA-20260530-555. Those slices rejected non-JSON bodies on no-input routes and empty semantic PATCH objects; the residual gap was valid JSON `null`, which still reached required and optional JSON decoders as a zero-value struct.
+- Confirmed the minimal fix belongs in the shared Web JSON decoder: preserve empty-body compatibility for optional controls and preserve `{}` where routes intentionally allow it, but reject non-empty top-level non-object JSON before settings writes, goal/plan controls, session launch/continue, queue submit, and other mutation handlers.
+
 ## Update Log
+
+### FCA-20260530-558
+
+Slice: `fix(webconsole): reject null json mutations`
+
+Finding:
+
+- `spec/17-web-console.md` defines the WebConsole as a local control surface over real session, queue, Goal, Plan Mode, Settings, and workspace facts, with unsafe mutations guarded by explicit local-console JSON request handling.
+- `internal/webconsole/service.go` `decodeJSON` decoded directly into request structs. In Go's JSON decoder, top-level `null` unmarshals into a non-pointer struct without error and leaves every field at its zero value.
+- The optional JSON decoder used by no-input and approval routes had the same shape: a non-empty body containing `null` decoded successfully into an empty request.
+- Focused regressions showed `POST /api/config` with body `null` returned HTTP 200, wrote `config.yaml`, and appended `web.config.write`; `DELETE /api/sessions/{id}/goal` with body `null` returned HTTP 200 and cleared the durable Goal.
+
+Impact:
+
+- A malformed client request could execute durable WebConsole side effects while hiding the serialization bug as a no-op-looking JSON body.
+- Risk-sensitive Settings writes and Goal/Plan/session control mutations became less strict than their documented object payloads, weakening the Web-first local API boundary and audit trail.
+
+Changes:
+
+- Added a shared top-level JSON object check for required and optional Web JSON decoders.
+- Preserved truly empty optional bodies and explicit `{}` payloads for existing no-input controls and approval routes.
+- Rejected top-level `null`, arrays, strings, numbers, and booleans before handler logic or durable mutation.
+- Added focused WebConsole regressions for null Settings writes and null optional-empty Goal clear requests.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'Test(UpdateConfigRejectsNullBodyBeforeConfigWrite|ServiceOptionalEmptyJSONRoutesRejectNullBodies)' -count=1`: failed before the fix because null bodies wrote config/audit facts and cleared a Goal.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(UpdateConfigRejectsNullBodyBeforeConfigWrite|ServiceOptionalEmptyJSONRoutesRejectNullBodies|ServiceNoInputMutationRoutesRejectNonJSONBodies|StartSessionRejectsTrailingJSON|OptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentType|BodylessMutationsDoNotRequireJSONContentType|SkillActionRoutesRejectNonJSONBodies|StartSessionRejectsUnsupportedModeAsBadRequest|ContinuePlanModeRejectsInvalidDraftBeforeClaim)' -count=1`: passed after the fix.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-557
 

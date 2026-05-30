@@ -4949,6 +4949,34 @@ func TestUpdateConfigRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRejectsNullBodyBeforeConfigWrite(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(cwd, "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postRawJSONError(t, ts.URL+"/api/config", `null`, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "JSON object") {
+		t.Fatalf("expected JSON object error, got %#v", errResp)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("null config body should not persist config; stat err=%v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.config.write") {
+		t.Fatalf("null config body should not append config audit event, got %s", string(data))
+	}
+}
+
 func TestUpdateConfigReportsMissingCurrentDirectoryBeforeDefaultPathPersistence(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
@@ -7468,6 +7496,39 @@ func TestServiceNoInputMutationRoutesRejectNonJSONBodies(t *testing.T) {
 				route.verify(t, svc)
 			}
 		})
+	}
+}
+
+func TestServiceOptionalEmptyJSONRoutesRejectNullBodies(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_noinput_null_goal")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Keep this goal",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+
+	var apiErr ErrorResponse
+	requestJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/sessions/"+meta.ID+"/goal", nil, http.StatusBadRequest, &apiErr)
+	if !strings.Contains(apiErr.Error, "JSON object") {
+		t.Fatalf("expected JSON object error, got %#v", apiErr)
+	}
+	if _, err := svc.store.LoadGoal(meta.ID); err != nil {
+		t.Fatalf("null clear-goal body should leave goal intact: %v", err)
 	}
 }
 

@@ -6747,7 +6747,14 @@ func etagMatches(headerValue, etag string) bool {
 
 func decodeJSON(r *http.Request, target any) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if !jsonBodyIsObject(data) {
+		return errors.New("request body must contain a JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -6778,6 +6785,9 @@ func decodeOptionalJSON(r *http.Request, target any) (bool, error) {
 	if err != nil || !strings.EqualFold(mediaType, "application/json") {
 		return false, errJSONMutationContentType
 	}
+	if !jsonBodyIsObject(data) {
+		return false, errors.New("request body must contain a JSON object")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -6791,6 +6801,11 @@ func decodeOptionalJSON(r *http.Request, target any) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func jsonBodyIsObject(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	return len(trimmed) > 0 && trimmed[0] == '{'
 }
 
 func guardUnsafeAPIRequest(r *http.Request) error {
