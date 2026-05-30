@@ -289,6 +289,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		return RunResult{}, err
 	}
 	sessionID := session.NewSessionID()
+	req, err = prepareStartGoalAndPlanModeDrafts(sessionID, req)
+	if err != nil {
+		return RunResult{}, err
+	}
 	releaseRunSlot, err := r.acquireRunSlot(sessionID)
 	if err != nil {
 		return RunResult{}, err
@@ -409,6 +413,44 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		}
 	}
 	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+}
+
+func prepareStartGoalAndPlanModeDrafts(sessionID string, req StartRequest) (StartRequest, error) {
+	if req.Goal != nil && req.Goal.Enabled {
+		draft := *req.Goal
+		if strings.TrimSpace(draft.Source) == "" {
+			draft.Source = session.GoalSourceCLI
+		}
+		goal, err := session.NewSessionGoalFromDraft(sessionID, draft)
+		if err != nil {
+			return req, err
+		}
+		req.Goal = &draft
+		if (req.PlanMode == nil || !req.PlanMode.Enabled) && session.GoalRequiresPlanApproval(goal) {
+			linkedDraft := session.PlanModeDraft{
+				Enabled:   true,
+				Objective: goal.Objective,
+				Source:    goal.Source,
+			}
+			if _, err := session.NewPlanModeFromDraft(sessionID, linkedDraft, goal.GoalID); err != nil {
+				return req, err
+			}
+		}
+	}
+	if req.PlanMode != nil && req.PlanMode.Enabled {
+		draft := *req.PlanMode
+		if strings.TrimSpace(draft.Source) == "" {
+			draft.Source = session.PlanModeSourceCLI
+		}
+		if strings.TrimSpace(draft.Objective) == "" {
+			draft.Objective = req.Prompt
+		}
+		if _, err := session.NewPlanModeFromDraft(sessionID, draft, ""); err != nil {
+			return req, err
+		}
+		req.PlanMode = &draft
+	}
+	return req, nil
 }
 
 type startGoalPlanRollback struct {

@@ -9456,7 +9456,62 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-555 and FCA-20260530-550. Those slices covered missing semantic fields and optional no-input bodies at Web route boundaries; the residual gap was a present but invalid `plan_mode` draft whose objective exceeded the Plan Mode contract and was only rejected after `ClaimSessionRun`.
 - Confirmed the minimal fix belongs in both the Web adapter and runtime continue boundary: validate Web Plan Mode drafts before adding a Web handle or launching `runner.Continue`, and prepare/validate runtime continue Plan Mode drafts before `ClaimSessionRun`, while preserving valid start/continue Plan Mode creation and the existing retry path for already-created Plan Mode facts.
 
+### Review 552
+
+- Confirmed FCA-20260530-557 against `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md`: start-time Goal and Plan Mode drafts are explicit session creation inputs, but their durable snapshots still have strict validation contracts. Invalid start drafts must be rejected before creating a session directory or returning an accepted Web launch.
+- Confirmed this is distinct from FCA-20260530-556. That slice covered `continue` of an existing resumable session; the residual gap was the `start` path, where runtime created a new session and then failed it during Goal/Plan Mode initialization, and Web start could return HTTP 202 for an invalid Goal draft.
+- Confirmed the minimal fix belongs in runtime `Start` and the Web Goal draft adapter: normalize and validate start Goal/Plan Mode drafts before `store.Create`, and validate Web Goal drafts at the handler boundary while preserving valid Goal start, Plan Mode start, linked Plan Mode creation for goal approval, and existing rollback tests for event append failures.
+
 ## Update Log
+
+### FCA-20260530-557
+
+Slice: `fix(runtime): preflight start goal drafts`
+
+Finding:
+
+- `spec/17-web-console.md` defines session start as the default Web-first creation path, with optional Goal and Plan Mode toggles.
+- `spec/18-durable-contract-and-completion.md` defines `goal.json` and `planmode.json` as durable snapshots with validated objectives and bounded fields.
+- `internal/runtime/runner.go` created `session.json` / `state.json` before validating start-time Goal or Plan Mode drafts in `initializeStartGoalAndPlanMode`.
+- `internal/webconsole/service.go` validated Web Plan Mode drafts before launch after FCA-20260530-556, but Web Goal drafts still reached runtime without using the session Goal constructor validation.
+- Focused regressions used overlong Goal and Plan Mode objectives. Before the fix, runtime start created `failed` sessions with `LastError:"goal objective exceeds 4000 characters"` or `LastError:"plan mode objective exceeds 4000 characters"`, and Web start with an invalid Goal draft returned HTTP 202 instead of HTTP 400.
+
+Impact:
+
+- A malformed start request could leave durable failed session directories even though the request was rejectable before any session existed.
+- The Web start response could mislead the browser/operator by reporting an accepted launch for an invalid Goal draft, making a client input error look like an asynchronous runtime failure.
+
+Changes:
+
+- Added runtime start draft preparation that normalizes Goal / Plan Mode sources and Plan Mode objective fallback, then validates them before acquiring the run slot or writing session facts.
+- Preflighted the linked Plan Mode draft implied by Goal/Mission plan approval requirements before start-time persistence.
+- Reused the normalized drafts for the existing start initialization path so preflight and mutation use the same source/objective semantics.
+- Added Web Goal draft validation through `session.NewSessionGoalFromDraft` before start or goal-create handlers reach durable mutation paths.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerStartRejectsInvalid(Goal|PlanMode)DraftBeforeCreate' -count=1`: failed before the fix because runtime created failed sessions for invalid start drafts.
+- `go test -timeout 120s ./internal/webconsole -run 'TestStartSessionRejectsInvalid(Goal|PlanMode)DraftAsBadRequest' -count=1`: failed before the fix because invalid Web Goal start returned HTTP 202.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerStartRejectsInvalid(Goal|PlanMode)DraftBeforeCreate' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestStartSessionRejectsInvalid(Goal|PlanMode)DraftAsBadRequest' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerStart(RejectsInvalid(Goal|PlanMode)DraftBeforeCreate|GoalCreatedEventAppendErrorRestoresGoal|LinkedPlanModeCreatedEventAppendErrorRestoresGoalAndPlanMode|ExplicitPlanModeCreatedEventAppendErrorRestoresPlanMode|GoalPlanApprovalCreatesLinkedPlanModeGate)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(StartSessionRejectsInvalid(Goal|PlanMode)DraftAsBadRequest|StartSessionRejectsUnsupportedModeAsBadRequest|StartSessionRejectsUnknownField)|TestServiceStartSessionWithPlanModePersistsPlanAndDetail' -count=1`: passed.
+- `gofmt -w internal/runtime/runner.go internal/runtime/runner_test.go internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-556
 

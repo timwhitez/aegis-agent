@@ -5621,7 +5621,7 @@ func goalDraftFromWebRequest(req *GoalDraftRequest, source string) (*session.Goa
 		value := *req.TimeBudgetMinutes * 60
 		timeBudgetSeconds = &value
 	}
-	return &session.GoalDraft{
+	draft := &session.GoalDraft{
 		Enabled:                   true,
 		Mode:                      req.Mode,
 		Objective:                 objective,
@@ -5638,7 +5638,11 @@ func goalDraftFromWebRequest(req *GoalDraftRequest, source string) (*session.Goa
 		Source:                    source,
 		AskBeforeLargeChanges:     req.AskBeforeLargeChanges,
 		AskBeforeDependencyChange: req.AskBeforeDependencyChange,
-	}, nil
+	}
+	if _, err := session.NewSessionGoalFromDraft("session_web_goal_draft", *draft); err != nil {
+		return nil, err
+	}
+	return draft, nil
 }
 
 func isGoalClientError(err error) bool {

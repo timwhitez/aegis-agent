@@ -4557,6 +4557,66 @@ func TestStartSessionRejectsUnsupportedModeAsBadRequest(t *testing.T) {
 	}
 }
 
+func TestStartSessionRejectsInvalidGoalDraftAsBadRequest(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt": "start with invalid goal",
+		"goal": map[string]any{
+			"enabled":   true,
+			"objective": strings.Repeat("x", session.MaxGoalObjectiveChars+1),
+		},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "goal objective exceeds") {
+		t.Fatalf("expected goal objective validation error, got %#v", errResp)
+	}
+	sessions, listErr := svc.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("invalid goal draft should not create a session, got %#v", sessions)
+	}
+}
+
+func TestStartSessionRejectsInvalidPlanModeDraftAsBadRequest(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt": "start with invalid Plan Mode",
+		"plan_mode": map[string]any{
+			"enabled":   true,
+			"objective": strings.Repeat("x", session.MaxPlanModeObjectiveChars+1),
+		},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "plan mode objective exceeds") {
+		t.Fatalf("expected Plan Mode objective validation error, got %#v", errResp)
+	}
+	sessions, listErr := svc.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("invalid Plan Mode draft should not create a session, got %#v", sessions)
+	}
+}
+
 func TestStartSessionRejectsGitIsolationOutsideRepoAsBadRequest(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

@@ -1081,6 +1081,54 @@ func TestRunnerStartExplicitPlanModeCreatedEventAppendErrorRestoresPlanMode(t *t
 	}
 }
 
+func TestRunnerStartRejectsInvalidGoalDraftBeforeCreate(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	result, err := runner.Start(context.Background(), StartRequest{
+		Prompt: "start with an invalid goal draft",
+		Goal: &session.GoalDraft{
+			Enabled:   true,
+			Objective: strings.Repeat("x", session.MaxGoalObjectiveChars+1),
+			Source:    session.GoalSourceCLI,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal objective exceeds") {
+		t.Fatalf("expected invalid goal objective error, got result=%#v err=%v", result, err)
+	}
+	sessions, listErr := runner.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("invalid start goal should not create a session, got %#v", sessions)
+	}
+}
+
+func TestRunnerStartRejectsInvalidPlanModeDraftBeforeCreate(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	result, err := runner.Start(context.Background(), StartRequest{
+		Prompt: "start with an invalid Plan Mode draft",
+		PlanMode: &session.PlanModeDraft{
+			Enabled:   true,
+			Objective: strings.Repeat("x", session.MaxPlanModeObjectiveChars+1),
+			Source:    session.PlanModeSourceCLI,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "plan mode objective exceeds") {
+		t.Fatalf("expected invalid Plan Mode objective error, got result=%#v err=%v", result, err)
+	}
+	sessions, listErr := runner.store.List(10)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("invalid start Plan Mode should not create a session, got %#v", sessions)
+	}
+}
+
 func TestRunnerStartGoalPlanApprovalCreatesLinkedPlanModeGate(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
