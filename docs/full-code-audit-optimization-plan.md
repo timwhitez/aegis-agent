@@ -9408,7 +9408,42 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-547. That slice corrected backend stale-handle ownership; this residual gap was frontend-only, where the WebConsole still converted any not-owned stop response into an interrupt steer before checking whether the same session had refreshed terminal or whether the selected parent still referenced the child.
 - Confirmed the minimal fix belongs in `requestStopSession` / `requestStopViaBestAvailablePath`: reuse the existing same-session and referenced-child identity checks before issuing fallback steer, while preserving fallback steer for still-current not-owned running sessions.
 
+### Review 544
+
+- Confirmed FCA-20260530-549 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: History-row stop buttons are also durable control actions, so their `ACTIVE_HANDLE_NOT_OWNED` fallback steer must stay tied to the History render the operator acted on.
+- Confirmed this is distinct from FCA-20260530-548. That slice guarded selected-session and selected parent/child projections, but a History list row can be clicked without either context; after the History list re-rendered, the stale row's rejected `/stop` could still fall through the no-selected-session fallback branch.
+- Confirmed the minimal fix belongs in the existing frontend stop path: capture `currentHistoryRenderSeq()` at click time, require that sequence to remain current before fallback steer or History cleanup refresh, and keep non-History stop behavior unchanged.
+
 ## Update Log
+
+### FCA-20260530-549
+
+Slice: `fix(webconsole): guard stale history stop fallback`
+
+Finding:
+
+- `spec/13-live-input-and-steering.md` makes interrupt steer a durable runtime control input.
+- `spec/17-web-console.md` keeps History as a read-only session-list projection; a row button must not outlive the History render that produced it.
+- After FCA-20260530-548, selected-session and selected parent/child stale stop fallbacks were guarded, but History rows still used the generic no-selected-session stop path.
+- `internal/webconsole/assets/app.js` could therefore receive `ACTIVE_HANDLE_NOT_OWNED` for a stop request started from an old History render and then create a fallback `/steer` request after a newer History render had replaced that row.
+- A focused frontend regression reproduced the side effect by starting a History-row stop, invalidating the History render sequence, and rejecting `/stop` with `ACTIVE_HANDLE_NOT_OWNED`; before the fix, the stale response opened a fallback `/steer` request.
+
+Impact:
+
+- A stale History row could create a new durable interrupt-steer request for a session that was no longer represented by the current History view.
+- The stale response could also trigger unnecessary History refresh/render cleanup for a row the operator was no longer acting on.
+
+Changes:
+
+- Captured the current History render sequence when a `[data-stop-session-id]` click originates from the History view.
+- Added a `historyContextStillCurrent` guard in `requestStopSession`.
+- Required the guard before `ACTIVE_HANDLE_NOT_OWNED` fallback steer and before History refresh/render cleanup.
+- Added a frontend regression proving stale History-row stop fallback does not steer, does not refresh History, does not toast, and clears pending stop state.
+- Updated `docs/webconsole-frontend-optimization-plan.md` with current asset line counts and the completed History stop fallback render-sequence guard.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs`: failed before the fix because the stale History `/stop` rejection opened a pending fallback `/steer` request, then passed after the fix with 115/115 tests.
 
 ### FCA-20260530-548
 

@@ -1002,7 +1002,10 @@ function setupEventListeners() {
       event.stopPropagation();
       const sessionID = stopInlineSessionButton.getAttribute('data-stop-session-id');
       if (sessionID) {
-        await requestStopSession(sessionID, { button: stopInlineSessionButton });
+        await requestStopSession(sessionID, {
+          button: stopInlineSessionButton,
+          historyRenderSeq: currentViewName() === 'history' ? currentHistoryRenderSeq() : 0
+        });
       }
       return;
     }
@@ -1553,10 +1556,18 @@ async function requestStopSession(sessionID, options = {}) {
     hasDurableSession() &&
     (!refreshSelectedSession || isCurrentReferencedSessionActionIdentity(selectedReferenceIdentity, sessionID))
   );
+  const historyRenderSeq = Number(options.historyRenderSeq || 0);
+  const historyContextStillCurrent = () => (
+    !historyRenderSeq ||
+    (currentViewName() === 'history' && isCurrentHistoryRenderSeq(historyRenderSeq))
+  );
   const stopFallbackStillCurrent = () => (
-    selectedStoppedSessionStillCurrent() ||
-    (refreshSelectedSession && selectedContextStillCurrent()) ||
-    (!stoppingSelectedSession && !refreshSelectedSession)
+    historyContextStillCurrent() &&
+    (
+      selectedStoppedSessionStillCurrent() ||
+      (refreshSelectedSession && selectedContextStillCurrent()) ||
+      (!stoppingSelectedSession && !refreshSelectedSession)
+    )
   );
   stopActionViewState.sessionIds.add(sessionID);
   const button = options.button || null;
@@ -1583,7 +1594,7 @@ async function requestStopSession(sessionID, options = {}) {
       queueSessionRefresh(120);
       queueOverviewRefresh(180);
     }
-    if (currentViewName() === 'history') {
+    if (currentViewName() === 'history' && historyContextStillCurrent()) {
       await fetchHistory(currentHistoryPage(), { showLoading: false, silentError: true });
     }
   } catch (err) {
@@ -1597,7 +1608,7 @@ async function requestStopSession(sessionID, options = {}) {
     if (button && document.body.contains(button)) {
       button.disabled = false;
     }
-    if (currentViewName() === 'history') {
+    if (currentViewName() === 'history' && historyContextStillCurrent()) {
       renderHistory();
     }
     if (selectedStoppedSessionStillCurrent() || (refreshSelectedSession && selectedContextStillCurrent())) {

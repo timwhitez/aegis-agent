@@ -4976,6 +4976,53 @@ test('child stop not-owned fallback does not steer after parent loses child refe
   });
 });
 
+test('history stop not-owned fallback does not steer after history refresh', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  vm.runInContext(`
+    refreshCalls = [];
+    toastCalls = [];
+    fetchHistory = async function(page = currentHistoryPage(), options = {}) {
+      refreshCalls.push({ kind: 'history', page, silent: Boolean(options.silentError) });
+    };
+    showToast = function(message, tone) {
+      toastCalls.push({ message, tone });
+    };
+  `, appContext);
+
+  const stop = vm.runInContext(`
+    setCurrentViewName('history');
+    invalidateHistoryRenderSeq();
+    requestStopSession('history_session_stop_stale', {
+      historyRenderSeq: currentHistoryRenderSeq()
+    });
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /history_session_stop_stale\/stop/);
+
+  vm.runInContext(`invalidateHistoryRenderSeq();`, appContext);
+
+  appContext.pendingRequests[0].reject({
+    code: 'ACTIVE_HANDLE_NOT_OWNED',
+    message: 'session is not actively owned by this web console; it may already be settled'
+  });
+  await stop;
+
+  assert.deepEqual(sameRealm(appContext.pendingRequests.map((request) => request.url)), [
+    '/api/sessions/history_session_stop_stale/stop'
+  ]);
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    stopping: isStoppingSession('history_session_stop_stale'),
+    refreshCalls,
+    toastCalls
+  })`, appContext)), {
+    stopping: false,
+    refreshCalls: [],
+    toastCalls: []
+  });
+});
+
 test('loadWorkspaceDirectory ignores stale directory responses after navigation changes', async () => {
   const workspaceContext = createWorkspaceHarnessContext();
   const slowLoad = vm.runInContext(`loadWorkspaceDirectory('slow')`, workspaceContext);

@@ -19,7 +19,7 @@ Current resource size:
 | --- | ---: |
 | `internal/webconsole/assets/index.html` | 180 |
 | `internal/webconsole/assets/styles.css` | 4,384 |
-| `internal/webconsole/assets/app.js` | 3,643 |
+| `internal/webconsole/assets/app.js` | 3,654 |
 | `internal/webconsole/assets/session-view.js` | 2,447 |
 | `internal/webconsole/assets/utils.js` | 780 |
 | `internal/webconsole/assets/events.js` | 454 |
@@ -27,7 +27,7 @@ Current resource size:
 | `internal/webconsole/assets/api.js` | 193 |
 | `internal/webconsole/assets/workspace-view.js` | 449 |
 | `internal/webconsole/assets/icons.js` | 56 |
-| Total | 13,035 |
+| Total | 13,046 |
 
 Current implemented facts:
 
@@ -90,6 +90,7 @@ The earlier frontend plan contained stale findings. These items are now implemen
 - New-session launch pending state no longer lives on the main global `state`; it is isolated in `launchViewState` while preserving duplicate-start suppression, pending button/input styling, durable-session adoption cleanup, and stale launch completion protections.
 - Current selected-session generating/pending-run affordance state no longer lives on the main global `state`; it is isolated in `runViewState` while preserving steer-vs-start routing, interrupt and stop control visibility, pending-stage rendering, activity copy, composer labels, and active polling.
 - Stop-button fallback from a not-owned `/stop` response now rechecks the current selected session or parent/child reference projection before sending an interrupt steer, so a stale terminal refresh or refreshed parent without that child cannot create a new control side effect.
+- History row stop-button fallback from a not-owned `/stop` response now rechecks the History render sequence before sending an interrupt steer or refreshing History, so a stale row from a previous render cannot create a new control side effect.
 
 ## Remaining Optimization Backlog
 
