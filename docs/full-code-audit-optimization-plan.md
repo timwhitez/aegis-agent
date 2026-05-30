@@ -9546,7 +9546,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-570. That slice fixed the direct Web Plan Mode approve endpoint; this residual gap was the CLI mission approval path falling through on linked `executing` Plan Mode and calling `EnsurePlanModeForGoal`, which created a fresh pending Plan Mode instead of preserving the already-approved execution fact.
 - Confirmed the minimal fix belongs in the CLI app adapter, not the session store: the store already represents linked executing Plan Mode and Web already has an executing branch; the CLI adapter needed to handle that state before the generic "ensure pending gate" fallback.
 
+### Review 567
+
+- Confirmed FCA-20260531-572 against `spec/03-provider-contracts.md`: OpenAI encrypted reasoning replay is an adapter-owned opaque continuation fact, and when the current provider profile, effective API provider, or model is known, replay must require the stored block to prove the same scope.
+- Confirmed this is distinct from FCA-20260526-056 and FCA-20260528-347. Those slices covered malformed persisted tool arguments and provider-content owner validation; this residual gap was the OpenAI reasoning replay filter accepting legacy unscoped model/profile/API fields because mismatch checks only ran when both sides were non-empty.
+- Confirmed the minimal fix belongs inside the OpenAI provider adapter replay boundary: stamp new OpenAI reasoning blocks with request scope and strip old unscoped opaque reasoning blocks when the current request scope is known, without moving provider-specific replay logic into Web, CLI, runtime, or tools.
+
 ## Update Log
+
+### FCA-20260531-572
+
+Slice: `fix(provider): scope OpenAI reasoning replay`
+
+Finding:
+
+- `spec/03-provider-contracts.md` requires OpenAI encrypted reasoning replay to stay provider-adapter-owned and says old opaque reasoning continuation facts must be stripped when provider profile, effective API provider, or model changes.
+- `internal/runtime/engine.go` passes the current `ProviderProfile` / `APIProvider` into the adapter and stamps persisted provider blocks with those facts, but `internal/provider/openai.go` returned adapter-created reasoning blocks without those scope fields.
+- `openAIReasoningReplayItems` only rejected stored model/profile/API mismatches when both the stored value and current value were non-empty.
+- That meant a legacy or direct-adapter OpenAI reasoning block with missing model, provider profile, or API provider could still be replayed into a request whose current scope was known.
+
+Impact:
+
+- A recovered or manually constructed session could carry an old encrypted OpenAI reasoning continuation fact into a different model/profile/API request instead of falling back to ordinary message/tool-call replay.
+- The bug stayed inside the provider adapter boundary, but it weakened the durable replay contract because missing scope was treated as compatible rather than unproven.
+
+Changes:
+
+- Added request `ProviderProfile` and `APIProvider` to OpenAI reasoning `ProviderContentBlock` values emitted by `RunTurn`.
+- Tightened OpenAI reasoning replay filtering so a non-empty current model/profile/API requires the stored block to carry the same trimmed value.
+- Preserved existing helper behavior for direct tests or callers that do not provide a current scope.
+- Added `TestOpenAIInputDropsReasoningBlocksWithoutCurrentReplayScope`.
+- Extended the existing OpenAI reasoning adapter test to assert returned provider blocks include the request replay scope.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run 'TestOpenAI(AdapterSerializesReasoning|InputReplaysEncryptedReasoningBlockSafely|InputDropsReasoningBlocksWithoutCurrentReplayScope|InputReplaysEmptyReasoningSummaryArray)' -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `gofmt -l internal/provider/openai.go internal/provider/provider_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/provider ./internal/runtime ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed with 115 subtests.
 
 ### FCA-20260530-571
 

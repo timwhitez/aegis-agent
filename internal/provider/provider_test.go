@@ -115,6 +115,8 @@ func TestOpenAIResponsesReasoningSummaryEncryptedAndReplay(t *testing.T) {
 		Model:            "gpt-5.4",
 		SystemPrompt:     "system",
 		Messages:         []session.Message{session.NewMessage("user", "hello")},
+		ProviderProfile:  "openai",
+		APIProvider:      "openai-compatible",
 		ReasoningEffort:  "xhigh",
 		ReasoningSummary: "auto",
 	}, func(string, map[string]any) {})
@@ -139,7 +141,7 @@ func TestOpenAIResponsesReasoningSummaryEncryptedAndReplay(t *testing.T) {
 		t.Fatalf("expected one reasoning provider block, got %#v", result.ProviderContentBlocks)
 	}
 	block := result.ProviderContentBlocks[0]
-	if block.Provider != "openai" || block.Type != "reasoning" || block.ID != "rs_1" || block.Data != "enc_opaque" || block.Model != "gpt-5.4" {
+	if block.Provider != "openai" || block.ProviderProfile != "openai" || block.APIProvider != "openai-compatible" || block.Type != "reasoning" || block.ID != "rs_1" || block.Data != "enc_opaque" || block.Model != "gpt-5.4" {
 		t.Fatalf("unexpected reasoning provider block: %#v", block)
 	}
 	if len(block.Summary) != 1 || block.Summary[0] != "checked constraints" || block.Sequence != 1 {
@@ -470,6 +472,33 @@ func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
 		if obj, ok := item.(map[string]any); ok && obj["type"] == "reasoning" {
 			t.Fatalf("mixed text+reasoning+tool_call replay should be disabled until order is verified: %#v", input)
 		}
+	}
+}
+
+func TestOpenAIInputDropsReasoningBlocksWithoutCurrentReplayScope(t *testing.T) {
+	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "openai", Type: "reasoning", ID: "rs_no_model", Data: "legacy-model", Sequence: 1, ProviderProfile: "openai", APIProvider: "openai-compatible"},
+		{Provider: "openai", Type: "reasoning", ID: "rs_no_profile", Data: "legacy-profile", Sequence: 2, Model: "gpt-5.4", APIProvider: "openai-compatible"},
+		{Provider: "openai", Type: "reasoning", ID: "rs_no_api", Data: "legacy-api", Sequence: 3, Model: "gpt-5.4", ProviderProfile: "openai"},
+		{Provider: "openai", Type: "reasoning", ID: "rs_valid", Data: "enc_valid", Summary: []string{"kept"}, Sequence: 4, Model: "gpt-5.4", ProviderProfile: "openai", APIProvider: "openai-compatible"},
+	}
+	input, err := openAIInput([]session.Message{assistant}, "gpt-5.4", "openai", "openai-compatible")
+	if err != nil {
+		t.Fatalf("input: %v", err)
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	body := string(raw)
+	for _, dropped := range []string{"rs_no_model", "rs_no_profile", "rs_no_api"} {
+		if strings.Contains(body, dropped) {
+			t.Fatalf("expected unscoped reasoning block %s to be stripped, got %s", dropped, body)
+		}
+	}
+	if !strings.Contains(body, `"id":"rs_valid"`) || !strings.Contains(body, `"type":"function_call"`) {
+		t.Fatalf("expected scoped reasoning plus function call replay, got %s", body)
 	}
 }
 

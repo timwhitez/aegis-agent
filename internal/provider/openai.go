@@ -150,13 +150,15 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			if strings.TrimSpace(item.EncryptedContent) != "" {
 				reasoningEncryptedCount++
 				providerBlocks = append(providerBlocks, session.ProviderContentBlock{
-					Provider: "openai",
-					Type:     "reasoning",
-					ID:       item.ID,
-					Data:     item.EncryptedContent,
-					Summary:  summaryParts,
-					Sequence: index + 1,
-					Model:    req.Model,
+					Provider:        "openai",
+					ProviderProfile: req.ProviderProfile,
+					APIProvider:     req.APIProvider,
+					Type:            "reasoning",
+					ID:              item.ID,
+					Data:            item.EncryptedContent,
+					Summary:         summaryParts,
+					Sequence:        index + 1,
+					Model:           req.Model,
 				})
 			}
 		}
@@ -378,13 +380,13 @@ func openAIReasoningReplayItems(msg session.Message, model, providerProfile, api
 		if strings.TrimSpace(block.ID) == "" || strings.TrimSpace(block.Data) == "" {
 			continue
 		}
-		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
+		if !openAIReplayScopeMatches(block.Model, model) {
 			continue
 		}
-		if strings.TrimSpace(block.ProviderProfile) != "" && strings.TrimSpace(providerProfile) != "" && block.ProviderProfile != providerProfile {
+		if !openAIReplayScopeMatches(block.ProviderProfile, providerProfile) {
 			continue
 		}
-		if strings.TrimSpace(block.APIProvider) != "" && strings.TrimSpace(apiProvider) != "" && block.APIProvider != apiProvider {
+		if !openAIReplayScopeMatches(block.APIProvider, apiProvider) {
 			continue
 		}
 		item := map[string]any{
@@ -415,4 +417,12 @@ func openAIReasoningReplayItems(msg session.Message, model, providerProfile, api
 		out = append(out, block.item)
 	}
 	return out
+}
+
+func openAIReplayScopeMatches(stored, current string) bool {
+	current = strings.TrimSpace(current)
+	if current == "" {
+		return true
+	}
+	return strings.TrimSpace(stored) == current
 }
