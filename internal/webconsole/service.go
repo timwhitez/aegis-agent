@@ -6113,17 +6113,15 @@ func (s *Service) goalFacts(sessionID string, goal session.SessionGoal, children
 	childIDs, queueIDs, evaluatorCount, latestBlocker := linkedGoalFacts(goal)
 	unresolvedChildren := unresolvedLinkedChildren(childIDs, children.Sessions)
 	unresolvedJobs := unresolvedLinkedJobs(queueIDs, children.Jobs)
-	if len(unresolvedChildren) == 0 || len(unresolvedJobs) == 0 {
-		for _, notification := range background {
-			if notification.DeliveryStatus != session.BackgroundNotificationPending {
-				continue
-			}
-			if notification.SessionID != "" {
-				unresolvedChildren = appendUniqueString(unresolvedChildren, notification.SessionID)
-			}
-			if notification.QueueJobID != "" {
-				unresolvedJobs = appendUniqueString(unresolvedJobs, notification.QueueJobID)
-			}
+	for _, notification := range background {
+		if notification.DeliveryStatus != session.BackgroundNotificationPending {
+			continue
+		}
+		if notification.SessionID != "" {
+			unresolvedChildren = appendUniqueString(unresolvedChildren, notification.SessionID)
+		}
+		if notification.QueueJobID != "" {
+			unresolvedJobs = appendUniqueString(unresolvedJobs, notification.QueueJobID)
 		}
 	}
 	return &GoalFactsResponse{

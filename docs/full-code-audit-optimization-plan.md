@@ -9624,7 +9624,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-583 and earlier queue lifecycle rollback fixes. Those slices handled failed parent coordination writes and event/notification rollback after a chosen queue status; this residual gap let `LoadJob` / engine reconciliation promote a freshly leased running job to terminal parent facts before visible output sync could succeed or fail.
 - Confirmed the minimal fix belongs in `Store.reconcileQueueJobSession` and `Runner.ProcessNextJob`: suppress terminal queue repair while a running job has a recent lease, then let the worker settle queue status and write parent queue events idempotently after handoff.
 
+### Review 580
+
+- Confirmed FCA-20260531-585 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md`: WebConsole Goal inspector is a local view over durable session / queue / background facts and must surface pending background results even when other child and queue links are already unresolved.
+- Confirmed this is distinct from FCA-20260531-584. That slice fixed premature parent queue completion facts; this residual WebConsole gap only affected `goal_facts` aggregation, where pending background notifications were skipped whenever both unresolved child and unresolved queue lists were already non-empty.
+- Confirmed the minimal fix belongs in `Service.goalFacts`: always merge pending background notification session/job IDs into the unresolved facts with de-duplication, instead of treating them as a fallback only for empty unresolved dimensions.
+
 ## Update Log
+
+### FCA-20260531-585
+
+Slice: `fix(webconsole): include pending background goal facts`
+
+Finding:
+
+- `spec/00-product.md` and `spec/01-runtime-architecture.md` make WebConsole the default local operator surface, but it must remain a view over session, queue, children, and background file facts rather than a second status source.
+- `Service.goalFacts` derived unresolved child and queue IDs from goal-linked records, then only merged pending background notifications when either unresolved list was empty.
+- If a goal already had at least one unresolved child and at least one unresolved queue job, a newly completed or failed background notification waiting for transcript acceptance was omitted from `goal_facts.unresolved_*` even though the same pending notification remained visible elsewhere and still blocked finish through the parent-background gate.
+
+Impact:
+
+- The Goal inspector's mission facts could under-report pending background results exactly when a larger delegated goal already had multiple unresolved links.
+- Operators could see the background notification list or completion gate warning, but the Goal facts summary would not count the pending child / queue result as unresolved, weakening Web-first traceability during long delegated work.
+
+Changes:
+
+- `Service.goalFacts` now always merges pending background notification session IDs and queue job IDs into the unresolved Goal facts.
+- Existing de-duplication via `appendUniqueString` preserves linked unresolved IDs and prevents duplicate counts when a pending notification references an already-linked child or queue job.
+- Added `TestServiceGoalFactsIncludesPendingBackgroundWithExistingUnresolvedLinks` to cover a goal with existing unresolved child and queue links plus a separate pending completed background notification.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalFactsIncludesPendingBackgroundWithExistingUnresolvedLinks|TestServiceGoalFactsAndMissionCoverageApproval' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-584
 

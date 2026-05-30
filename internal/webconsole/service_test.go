@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2586,6 +2587,64 @@ func TestServiceGoalFactsAndMissionCoverageApproval(t *testing.T) {
 	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusOK, &approved)
 	if approved.GoalID != goal.GoalID || approved.Mission.PlanStatus != "approved" {
 		t.Fatalf("expected mission approved after coverage, got %#v", approved.Mission)
+	}
+}
+
+func TestServiceGoalFactsIncludesPendingBackgroundWithExistingUnresolvedLinks(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_goal_pending_background")
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Show pending background facts",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if _, _, err := svc.store.RecordGoalProgress(meta.ID, session.GoalProgressInput{
+		Source:          session.GoalSourceTool,
+		Kind:            "handoff",
+		Summary:         "Linked unresolved child and queue work.",
+		ChildSessionIDs: []string{"child_unresolved_goal_fact"},
+		QueueJobIDs:     []string{"job_unresolved_goal_fact"},
+	}); err != nil {
+		t.Fatalf("record progress: %v", err)
+	}
+	notification := session.NewBackgroundNotification(session.QueueJob{
+		ID:            "job_pending_goal_fact",
+		Status:        session.QueueStatusCompleted,
+		SessionID:     "child_pending_goal_fact",
+		SessionStatus: session.StatusCompleted,
+		FinalText:     "pending result",
+	})
+	if err := svc.store.EnsureBackgroundNotification(meta.ID, notification); err != nil {
+		t.Fatalf("ensure background notification: %v", err)
+	}
+
+	detail, err := svc.sessionDetail(meta.ID, 40)
+	if err != nil {
+		t.Fatalf("session detail: %v", err)
+	}
+	if detail.GoalFacts == nil {
+		t.Fatalf("expected goal facts in detail: %#v", detail)
+	}
+	if !slices.Contains(detail.GoalFacts.UnresolvedChildSessionIDs, "child_unresolved_goal_fact") ||
+		!slices.Contains(detail.GoalFacts.UnresolvedChildSessionIDs, "child_pending_goal_fact") {
+		t.Fatalf("expected unresolved and pending child facts, got %#v", detail.GoalFacts.UnresolvedChildSessionIDs)
+	}
+	if !slices.Contains(detail.GoalFacts.UnresolvedQueueJobIDs, "job_unresolved_goal_fact") ||
+		!slices.Contains(detail.GoalFacts.UnresolvedQueueJobIDs, "job_pending_goal_fact") {
+		t.Fatalf("expected unresolved and pending queue facts, got %#v", detail.GoalFacts.UnresolvedQueueJobIDs)
 	}
 }
 
