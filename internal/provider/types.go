@@ -91,6 +91,11 @@ func rawProviderEnvelope(sourceKey, stopReason string, extras map[string]any) ma
 	return out
 }
 
+func providerStopReasonIsCancelled(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.EqualFold(value, "cancel") || strings.EqualFold(value, "cancelled")
+}
+
 type EmitFunc func(eventType string, data map[string]any)
 
 type Adapter interface {

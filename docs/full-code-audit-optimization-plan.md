@@ -9522,7 +9522,49 @@ Evidence gates:
 - Confirmed the runtime already handled local context cancellation errors from pause and steer interrupt, but a normalized provider result with `StopReason:"cancelled"` and no tool calls bypassed `providerStopFailure`.
 - Confirmed the minimal fix is to classify the normalized `cancelled` stop reason alongside other provider boundary failures, preserving the existing context-cancel pause/interrupt paths that are driven by returned errors rather than successful `TurnResult` values.
 
+### Review 563
+
+- Confirmed FCA-20260530-568 against `spec/03-provider-contracts.md`: provider adapter stop-reason mapping must normalize provider cancellation to the internal `cancelled` stop reason for OpenAI Responses, Anthropic-compatible Messages, and Google Gemini.
+- Confirmed this is distinct from FCA-20260530-567. That slice made the runtime fail normalized `StopReason:"cancelled"` correctly; this residual adapter slice covers upstream cancellation fields still being normalized as generic `error` before runtime can see the provider-cancellation boundary.
+- Confirmed the minimal fix belongs in each adapter's stop mapping: map cancellation responses to `cancelled` while still suppressing any unsafe tool/function calls that arrive under non-success cancellation boundaries, and preserve raw provider stop metadata for diagnostics.
+
 ## Update Log
+
+### FCA-20260530-568
+
+Slice: `fix(provider): map cancelled stops`
+
+Finding:
+
+- `spec/03-provider-contracts.md` lists `cancelled` as an internal stop reason and says provider cancellation maps to `cancelled` for OpenAI Responses, Anthropic-compatible Messages, and Google Gemini.
+- `internal/provider/openai.go` treated OpenAI `status:"cancelled"` as generic `error`.
+- `internal/provider/anthropic.go` treated Anthropic-compatible `stop_reason:"cancelled"` as generic `error`.
+- `internal/provider/google.go` treated Gemini `finishReason:"CANCELLED"` as generic `error`.
+- Focused regressions showed all three adapters returned `StopReason:"error"` for cancellation-shaped provider responses. OpenAI and Google correctly suppressed tool/function calls under the non-success boundary, but they lost the cancellation classification before the runtime provider-cancel failure gate could record `provider_cancelled`.
+
+Impact:
+
+- Provider-side cancellation facts were indistinguishable from generic provider errors in session state, provider attempts, Web diagnostics, and recovery prompts.
+- Runtime cancellation handling added in FCA-20260530-567 could not activate for real adapter-normalized provider responses from the supported provider families.
+
+Changes:
+
+- Added a shared cancellation stop-reason helper for provider adapters.
+- Mapped OpenAI `status:"cancelled"` / `status:"cancel"` to internal `cancelled` and suppressed function calls.
+- Mapped Anthropic-compatible `stop_reason:"cancelled"` / `stop_reason:"cancel"` to internal `cancelled`.
+- Mapped Google `finishReason:"CANCELLED"` / `finishReason:"CANCEL"` to internal `cancelled` and suppressed function-call blocks.
+- Added focused adapter regressions for OpenAI, Anthropic-compatible, and Google cancellation responses.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run 'Test(OpenAIAdapterMapsCancelledStatusToCancelledStop|AnthropicAdapterMapsCancelledStopReasonToCancelledStop|GoogleAdapterMapsCancelledFinishReasonToCancelledStop)' -count=1`: failed before the fix because all three adapters returned `StopReason:"error"`.
+- `go test -timeout 120s ./internal/provider -run 'Test(OpenAIAdapterMapsCancelledStatusToCancelledStop|AnthropicAdapterMapsCancelledStopReasonToCancelledStop|GoogleAdapterMapsCancelledFinishReasonToCancelledStop)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderStopReasonFailuresAreResumable|TestEngineRejectsToolCallsWithoutToolUseStopReason|TestEngineProviderStopFailureWinsOverBudgetStop' -count=1`: passed.
+- `gofmt -l internal/provider/openai.go internal/provider/anthropic.go internal/provider/google.go internal/provider/types.go internal/provider/provider_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-567
 

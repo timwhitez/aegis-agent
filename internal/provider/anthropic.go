@@ -174,6 +174,8 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		stopReason = "done_candidate"
 	case "max_tokens":
 		stopReason = "max_tokens"
+	case "cancel", "cancelled":
+		stopReason = "cancelled"
 	case "pause_turn":
 		stopReason = "error"
 	default:

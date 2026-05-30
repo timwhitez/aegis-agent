@@ -197,6 +197,9 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case finishReason == "SAFETY":
 		stopReason = "blocked"
 		suppressFunctionCalls = true
+	case providerStopReasonIsCancelled(finishReason):
+		stopReason = "cancelled"
+		suppressFunctionCalls = true
 	case finishReason != "":
 		stopReason = "error"
 		suppressFunctionCalls = true

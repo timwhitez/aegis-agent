@@ -172,6 +172,9 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case resp.IncompleteDetails.Reason == "max_output_tokens":
 		stopReason = "max_tokens"
 		calls = nil
+	case providerStopReasonIsCancelled(status):
+		stopReason = "cancelled"
+		calls = nil
 	case status == "completed" && len(calls) > 0:
 		stopReason = "tool_use"
 	case status == "completed":

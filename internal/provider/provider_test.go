@@ -303,6 +303,43 @@ func TestOpenAIAdapterDoesNotExecuteFunctionCallsFromFailedStatus(t *testing.T) 
 	}
 }
 
+func TestOpenAIAdapterMapsCancelledStatusToCancelledStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_cancelled_with_call",
+			"status":"cancelled",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]},
+				{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"command\":\"pwd\"}"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "cancelled" {
+		t.Fatalf("expected cancelled status to map to cancelled stop, got %#v", result)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("expected cancelled status to suppress function calls, got %#v", result.ToolCalls)
+	}
+	if result.RawProvider["provider_stop_reason"] != "cancelled" || result.RawProvider["status"] != "cancelled" {
+		t.Fatalf("expected raw cancelled status to be preserved, got %#v", result.RawProvider)
+	}
+}
+
 func TestOpenAIAdapterDoesNotExecuteFunctionCallsWithoutCompletedStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -527,6 +564,36 @@ func TestAnthropicAdapterMapsUnknownStopReasonToErrorStop(t *testing.T) {
 	}
 	if result.RawProvider["provider_stop_reason"] != "refusal" || result.RawProvider["stop_reason"] != "refusal" {
 		t.Fatalf("expected raw stop reason to be preserved, got %#v", result.RawProvider)
+	}
+}
+
+func TestAnthropicAdapterMapsCancelledStopReasonToCancelledStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_cancelled",
+			"stop_reason":"cancelled",
+			"content":[{"type":"text","text":"partial"}],
+			"usage":{"input_tokens":8,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "cancelled" {
+		t.Fatalf("expected cancelled stop reason, got %#v", result)
+	}
+	if result.RawProvider["provider_stop_reason"] != "cancelled" || result.RawProvider["stop_reason"] != "cancelled" {
+		t.Fatalf("expected raw cancelled stop reason to be preserved, got %#v", result.RawProvider)
 	}
 }
 
@@ -1072,6 +1139,51 @@ func TestGoogleAdapterMapsMissingFinishReasonToErrorStop(t *testing.T) {
 	}
 	if result.StopReason != "error" {
 		t.Fatalf("expected missing finish reason to be a provider error stop, got %#v", result)
+	}
+}
+
+func TestGoogleAdapterMapsCancelledFinishReasonToCancelledStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_cancelled_with_call",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[
+					{"text":"partial"},
+					{"functionCall":{"name":"shell","id":"call_1","args":{"command":"pwd"}}}
+				]},
+				"finishReason":"CANCELLED"
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "cancelled" {
+		t.Fatalf("expected cancelled finish to win over function calls, got %#v", result)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("expected cancelled finish to suppress function calls, got %#v", result.ToolCalls)
+	}
+	for _, block := range result.ProviderContentBlocks {
+		if block.Provider == "google" && block.Type == "function_call" {
+			t.Fatalf("expected cancelled finish to suppress function-call provider blocks, got %#v", result.ProviderContentBlocks)
+		}
+	}
+	if result.RawProvider["provider_stop_reason"] != "CANCELLED" || result.RawProvider["finish_reason"] != "CANCELLED" {
+		t.Fatalf("expected raw cancelled finish reason to be preserved, got %#v", result.RawProvider)
 	}
 }
 
