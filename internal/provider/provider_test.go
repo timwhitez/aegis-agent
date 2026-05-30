@@ -564,9 +564,11 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 
 	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
 	result, err := adapter.RunTurn(context.Background(), TurnRequest{
-		SessionID:    "s1",
-		Model:        "claude-sonnet-4-6",
-		SystemPrompt: "system",
+		SessionID:       "s1",
+		Model:           "claude-sonnet-4-6",
+		SystemPrompt:    "system",
+		ProviderProfile: "anthropic",
+		APIProvider:     "anthropic-compatible",
 		Messages: []session.Message{
 			session.NewAssistantMessage("", "", []session.ToolCall{{ID: "toolu_0", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}}),
 			session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_0", Name: "shell", LLMOutput: "ok"}}),
@@ -593,6 +595,11 @@ func TestAnthropicAdapterSerializesAndParses(t *testing.T) {
 	}
 	if len(result.ProviderContentBlocks) != 3 || result.ProviderContentBlocks[0].Signature != "sig_thinking_1" {
 		t.Fatalf("expected anthropic provider content blocks, got %#v", result.ProviderContentBlocks)
+	}
+	for _, block := range result.ProviderContentBlocks {
+		if block.ProviderProfile != "anthropic" || block.APIProvider != "anthropic-compatible" || block.Model != "claude-sonnet-4-6" {
+			t.Fatalf("expected scoped anthropic provider block, got %#v", block)
+		}
 	}
 	if result.RawProvider["stop_reason"] != "tool_use" {
 		t.Fatalf("expected anthropic raw provider stop_reason, got %#v", result.RawProvider)
@@ -932,18 +939,20 @@ func TestAnthropicAdapterReplaysThinkingBlocks(t *testing.T) {
 
 	assistant := session.NewAssistantMessage("visible", "reasoning", []session.ToolCall{{ID: "toolu_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
-		{Provider: "anthropic", Type: "thinking", Thinking: "reasoning", Signature: "sig_thinking_1"},
-		{Provider: "anthropic", Type: "redacted_thinking", Data: "opaque_redacted_data"},
-		{Provider: "anthropic", Type: "text", Text: "visible"},
-		{Provider: "anthropic", Type: "tool_use", ID: "toolu_1", Name: "shell", Input: json.RawMessage(`{"command":"pwd"}`)},
+		{Provider: "anthropic", ProviderProfile: "anthropic", APIProvider: "anthropic-compatible", Type: "thinking", Thinking: "reasoning", Signature: "sig_thinking_1", Model: "claude-sonnet-4-6"},
+		{Provider: "anthropic", ProviderProfile: "anthropic", APIProvider: "anthropic-compatible", Type: "redacted_thinking", Data: "opaque_redacted_data", Model: "claude-sonnet-4-6"},
+		{Provider: "anthropic", ProviderProfile: "anthropic", APIProvider: "anthropic-compatible", Type: "text", Text: "visible", Model: "claude-sonnet-4-6"},
+		{Provider: "anthropic", ProviderProfile: "anthropic", APIProvider: "anthropic-compatible", Type: "tool_use", ID: "toolu_1", Name: "shell", Input: json.RawMessage(`{"command":"pwd"}`), Model: "claude-sonnet-4-6"},
 	}
 
 	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
 	if _, err := adapter.RunTurn(context.Background(), TurnRequest{
-		SessionID:    "s1",
-		Model:        "claude-sonnet-4-6",
-		SystemPrompt: "system",
-		Messages:     []session.Message{assistant, session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_1", Name: "shell", LLMOutput: "ok"}})},
+		SessionID:       "s1",
+		Model:           "claude-sonnet-4-6",
+		SystemPrompt:    "system",
+		ProviderProfile: "anthropic",
+		APIProvider:     "anthropic-compatible",
+		Messages:        []session.Message{assistant, session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_1", Name: "shell", LLMOutput: "ok"}})},
 	}, func(string, map[string]any) {}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -957,6 +966,40 @@ func TestAnthropicAdapterReplaysThinkingBlocks(t *testing.T) {
 	} {
 		if !strings.Contains(rawBody, want) {
 			t.Fatalf("expected %s in anthropic replay body: %s", want, rawBody)
+		}
+	}
+}
+
+func TestAnthropicReplayStripsUnscopedOpaqueThinking(t *testing.T) {
+	assistant := session.NewAssistantMessage("", "", nil)
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "anthropic", Type: "thinking", Thinking: "legacy reasoning", Signature: "sig_legacy"},
+		{Provider: "anthropic", Type: "redacted_thinking", Data: "legacy_redacted"},
+		{Provider: "anthropic", ProviderProfile: "anthropic", APIProvider: "anthropic-compatible", Type: "thinking", Thinking: "kept reasoning", Signature: "sig_keep", Model: "claude-sonnet-4-6"},
+		{Provider: "anthropic", ProviderProfile: "anthropic", APIProvider: "anthropic-compatible", Type: "redacted_thinking", Data: "kept_redacted", Model: "claude-sonnet-4-6"},
+		{Provider: "anthropic", Type: "text", Text: "visible anchor"},
+		{Provider: "anthropic", Type: "tool_use", ID: "toolu_1", Name: "shell", Input: json.RawMessage(`{"command":"pwd"}`)},
+	}
+	replay, err := anthropicMessages([]session.Message{
+		assistant,
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "toolu_1", Name: "shell", LLMOutput: "ok"}}),
+	}, "claude-sonnet-4-6", "anthropic", "anthropic-compatible", false)
+	if err != nil {
+		t.Fatalf("anthropic replay: %v", err)
+	}
+	raw, err := json.Marshal(replay)
+	if err != nil {
+		t.Fatalf("marshal replay: %v", err)
+	}
+	body := string(raw)
+	for _, dropped := range []string{"sig_legacy", "legacy_redacted"} {
+		if strings.Contains(body, dropped) {
+			t.Fatalf("expected unscoped opaque thinking %s to be stripped, got %s", dropped, body)
+		}
+	}
+	for _, kept := range []string{"sig_keep", "kept_redacted", `"type":"tool_use"`, `"tool_use_id":"toolu_1"`} {
+		if !strings.Contains(body, kept) {
+			t.Fatalf("expected %s in scoped anthropic replay body: %s", kept, body)
 		}
 	}
 }
@@ -986,11 +1029,13 @@ func TestGoogleAdapterSerializesAndParses(t *testing.T) {
 
 	adapter := NewGoogle(server.URL, "key", server.Client())
 	result, err := adapter.RunTurn(context.Background(), TurnRequest{
-		SessionID:    "s1",
-		Model:        "gemini-2.5-flash",
-		SystemPrompt: "system",
-		Messages:     []session.Message{session.NewToolMessage([]session.ToolResult{{ToolCallID: "call_0", Name: "shell", LLMOutput: `{"output":"ok"}`}})},
-		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+		SessionID:       "s1",
+		Model:           "gemini-2.5-flash",
+		SystemPrompt:    "system",
+		ProviderProfile: "google",
+		APIProvider:     "google",
+		Messages:        []session.Message{session.NewToolMessage([]session.ToolResult{{ToolCallID: "call_0", Name: "shell", LLMOutput: `{"output":"ok"}`}})},
+		Tools:           []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
 	}, func(string, map[string]any) {})
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -1006,6 +1051,11 @@ func TestGoogleAdapterSerializesAndParses(t *testing.T) {
 	}
 	if len(result.ProviderContentBlocks) != 3 || result.ProviderContentBlocks[0].Thought == nil || !*result.ProviderContentBlocks[0].Thought || result.ProviderContentBlocks[0].ThoughtSignature != "sig_thought_1" || result.ProviderContentBlocks[2].ThoughtSignature != "sig_call_1" {
 		t.Fatalf("expected google provider content blocks with thought signatures, got %#v", result.ProviderContentBlocks)
+	}
+	for _, block := range result.ProviderContentBlocks {
+		if block.ProviderProfile != "google" || block.APIProvider != "google" || block.Model != "gemini-2.5-flash" {
+			t.Fatalf("expected scoped google provider block, got %#v", block)
+		}
 	}
 	if result.ProviderResponseID != "resp_google_1" {
 		t.Fatalf("expected google provider response id, got %#v", result.ProviderResponseID)
@@ -1355,17 +1405,19 @@ func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
 	thought := true
 	assistant := session.NewAssistantMessage("visible", "reasoning", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
-		{Provider: "google", Type: "part", Text: "reasoning", Thought: &thought, ThoughtSignature: "sig_thought_1"},
-		{Provider: "google", Type: "part", Text: "visible"},
-		{Provider: "google", Type: "function_call", ID: "call_1", Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`), ThoughtSignature: "sig_call_1"},
+		{Provider: "google", ProviderProfile: "google", APIProvider: "google", Type: "part", Text: "reasoning", Thought: &thought, ThoughtSignature: "sig_thought_1", Model: "gemini-2.5-flash"},
+		{Provider: "google", ProviderProfile: "google", APIProvider: "google", Type: "part", Text: "visible", Model: "gemini-2.5-flash"},
+		{Provider: "google", ProviderProfile: "google", APIProvider: "google", Type: "function_call", ID: "call_1", Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`), ThoughtSignature: "sig_call_1", Model: "gemini-2.5-flash"},
 	}
 
 	adapter := NewGoogle(server.URL, "key", server.Client())
 	if _, err := adapter.RunTurn(context.Background(), TurnRequest{
-		SessionID:    "s1",
-		Model:        "gemini-2.5-flash",
-		SystemPrompt: "system",
-		Messages:     []session.Message{assistant},
+		SessionID:       "s1",
+		Model:           "gemini-2.5-flash",
+		SystemPrompt:    "system",
+		ProviderProfile: "google",
+		APIProvider:     "google",
+		Messages:        []session.Message{assistant},
 	}, func(string, map[string]any) {}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -1378,6 +1430,43 @@ func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
 	} {
 		if !strings.Contains(rawBody, want) {
 			t.Fatalf("expected %s in google replay body: %s", want, rawBody)
+		}
+	}
+}
+
+func TestGoogleReplayStripsUnscopedThoughtSignatures(t *testing.T) {
+	thought := true
+	assistant := session.NewAssistantMessage("", "", nil)
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "google", Type: "part", Text: "legacy thought", Thought: &thought, ThoughtSignature: "sig_legacy_thought"},
+		{Provider: "google", ProviderProfile: "google", APIProvider: "google", Type: "part", Text: "kept thought", Thought: &thought, ThoughtSignature: "sig_keep_thought", Model: "gemini-2.5-flash"},
+		{Provider: "google", Type: "part", Text: "visible legacy text", ThoughtSignature: "sig_legacy_text"},
+		{Provider: "google", Type: "function_call", ID: "call_legacy", Name: "shell", Args: json.RawMessage(`{"command":"pwd"}`), ThoughtSignature: "sig_legacy_call"},
+		{Provider: "google", ProviderProfile: "google", APIProvider: "google", Type: "function_call", ID: "call_keep", Name: "shell", Args: json.RawMessage(`{"command":"ls"}`), ThoughtSignature: "sig_keep_call", Model: "gemini-2.5-flash"},
+	}
+	replay, err := googleContents([]session.Message{
+		assistant,
+		session.NewToolMessage([]session.ToolResult{
+			{ToolCallID: "call_legacy", Name: "shell", LLMOutput: `{"output":"ok"}`},
+			{ToolCallID: "call_keep", Name: "shell", LLMOutput: `{"output":"ok"}`},
+		}),
+	}, "gemini-2.5-flash", "google", "google")
+	if err != nil {
+		t.Fatalf("google replay: %v", err)
+	}
+	raw, err := json.Marshal(replay)
+	if err != nil {
+		t.Fatalf("marshal replay: %v", err)
+	}
+	body := string(raw)
+	for _, dropped := range []string{"sig_legacy_thought", "sig_legacy_text", "sig_legacy_call"} {
+		if strings.Contains(body, dropped) {
+			t.Fatalf("expected unscoped thought signature %s to be stripped, got %s", dropped, body)
+		}
+	}
+	for _, kept := range []string{"sig_keep_thought", "sig_keep_call", `"id":"call_legacy"`, `"id":"call_keep"`, "visible legacy text"} {
+		if !strings.Contains(body, kept) {
+			t.Fatalf("expected %s in google replay body: %s", kept, body)
 		}
 	}
 }

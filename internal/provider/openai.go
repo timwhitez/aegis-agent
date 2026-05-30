@@ -380,13 +380,13 @@ func openAIReasoningReplayItems(msg session.Message, model, providerProfile, api
 		if strings.TrimSpace(block.ID) == "" || strings.TrimSpace(block.Data) == "" {
 			continue
 		}
-		if !openAIReplayScopeMatches(block.Model, model) {
+		if !providerReplayScopeMatches(block.Model, model) {
 			continue
 		}
-		if !openAIReplayScopeMatches(block.ProviderProfile, providerProfile) {
+		if !providerReplayScopeMatches(block.ProviderProfile, providerProfile) {
 			continue
 		}
-		if !openAIReplayScopeMatches(block.APIProvider, apiProvider) {
+		if !providerReplayScopeMatches(block.APIProvider, apiProvider) {
 			continue
 		}
 		item := map[string]any{
@@ -417,12 +417,4 @@ func openAIReasoningReplayItems(msg session.Message, model, providerProfile, api
 		out = append(out, block.item)
 	}
 	return out
-}
-
-func openAIReplayScopeMatches(stored, current string) bool {
-	current = strings.TrimSpace(current)
-	if current == "" {
-		return true
-	}
-	return strings.TrimSpace(stored) == current
 }

@@ -9552,7 +9552,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-056 and FCA-20260528-347. Those slices covered malformed persisted tool arguments and provider-content owner validation; this residual gap was the OpenAI reasoning replay filter accepting legacy unscoped model/profile/API fields because mismatch checks only ran when both sides were non-empty.
 - Confirmed the minimal fix belongs inside the OpenAI provider adapter replay boundary: stamp new OpenAI reasoning blocks with request scope and strip old unscoped opaque reasoning blocks when the current request scope is known, without moving provider-specific replay logic into Web, CLI, runtime, or tools.
 
+### Review 568
+
+- Confirmed FCA-20260531-573 against `spec/03-provider-contracts.md`: Anthropic thinking / redacted thinking and Google thought signatures are provider-native replay facts, while ordinary text and tool-call anchors must remain available so provider replay does not lose tool-result pairing.
+- Confirmed this is a provider-adapter sibling of FCA-20260531-572, not the same bug shape. OpenAI reasoning blocks are standalone opaque replay items that can be stripped wholesale; Anthropic and Google embed opaque continuation facts next to replay anchors, so the safe behavior is to strip only unscoped thinking/signature facts while keeping normal text/tool-call anchors.
+- Confirmed the minimal fix belongs inside the Anthropic and Google adapters: stamp newly returned provider blocks with request scope, strip unscoped opaque thinking/signature replay when the current request scope is known, and avoid moving provider-specific replay decisions into runtime, Web, CLI, or tools.
+
 ## Update Log
+
+### FCA-20260531-573
+
+Slice: `fix(provider): scope native thinking replay`
+
+Finding:
+
+- `spec/03-provider-contracts.md` makes provider-native reasoning/thinking replay an adapter-owned concern: Anthropic thinking signatures / redacted thinking and Gemini thought signatures are replay facts, while `Message.thinking` is only a readable UI/session summary.
+- `internal/runtime/engine.go` passes current provider profile and effective API provider into provider adapters and stamps persisted provider blocks, but `internal/provider/anthropic.go` and `internal/provider/google.go` returned new provider blocks without those scope fields.
+- `anthropicProviderContent` and `googleProviderParts` used the same permissive non-empty mismatch checks that had already been fixed for OpenAI reasoning replay.
+- For Anthropic/Google the safe granularity is narrower than OpenAI: text, `tool_use`, and `functionCall` are replay anchors, but `thinking`, `redacted_thinking`, `thought=true` parts, and `thoughtSignature` values are opaque continuation facts that should be stripped when stored scope cannot prove the current model/profile/API.
+
+Impact:
+
+- A recovered or manually constructed session could replay stale Anthropic thinking signatures, redacted thinking blocks, or Gemini thought signatures into a current request whose model/profile/API scope was known but not proven by the stored block.
+- Stripping whole provider-content messages would risk breaking tool-result pairing, so the bug required adapter-level selective filtering rather than a coarse runtime/session-store policy.
+
+Changes:
+
+- Added request `ProviderProfile` and `APIProvider` to Anthropic and Google provider blocks emitted by `RunTurn`.
+- Added a shared provider replay scope helper and reused it from OpenAI, Anthropic, and Google replay paths.
+- Changed Anthropic replay to drop unscoped `thinking` / `redacted_thinking` blocks when current scope is known, while preserving ordinary `text` and `tool_use` anchors.
+- Changed Google replay to drop unscoped `thought=true` parts and omit unscoped `thoughtSignature` values from text/function-call parts while preserving normal text/function-call anchors.
+- Added `TestAnthropicReplayStripsUnscopedOpaqueThinking` and `TestGoogleReplayStripsUnscopedThoughtSignatures`.
+- Extended Anthropic and Google adapter serialization tests to assert returned provider blocks include request replay scope.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run 'Test(AnthropicAdapterSerializesAndParses|AnthropicAdapterReplaysThinkingBlocks|AnthropicReplayStripsUnscopedOpaqueThinking|GoogleAdapterSerializesAndParses|GoogleAdapterReplaysThoughtSignatures|GoogleReplayStripsUnscopedThoughtSignatures|ProviderReplaySerializesCompactedProviderBlockToolCalls|OpenAIInputDropsReasoningBlocksWithoutCurrentReplayScope)' -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `gofmt -l internal/provider/anthropic.go internal/provider/google.go internal/provider/openai.go internal/provider/provider_test.go internal/provider/replay.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/provider ./internal/runtime ./internal/session -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed with 115 subtests.
 
 ### FCA-20260531-572
 

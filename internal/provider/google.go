@@ -118,6 +118,8 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			thought := true
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider:         "google",
+				ProviderProfile:  req.ProviderProfile,
+				APIProvider:      req.APIProvider,
 				Type:             "part",
 				Text:             part.Text,
 				Thought:          &thought,
@@ -133,6 +135,8 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			textParts = append(textParts, part.Text)
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider:         "google",
+				ProviderProfile:  req.ProviderProfile,
+				APIProvider:      req.APIProvider,
 				Type:             "part",
 				Text:             part.Text,
 				ThoughtSignature: part.ThoughtSig,
@@ -162,6 +166,8 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			callID = uniqueGoogleToolCallID(callID, seenCallIDs)
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
 				Provider:         "google",
+				ProviderProfile:  req.ProviderProfile,
+				APIProvider:      req.APIProvider,
 				Type:             "function_call",
 				Name:             part.FunctionCall.Name,
 				ID:               callID,
@@ -412,13 +418,10 @@ func googleProviderParts(blocks []session.ProviderContentBlock, model, providerP
 		if block.Provider != "google" {
 			continue
 		}
-		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
-			continue
-		}
-		if strings.TrimSpace(block.ProviderProfile) != "" && strings.TrimSpace(providerProfile) != "" && block.ProviderProfile != providerProfile {
-			continue
-		}
-		if strings.TrimSpace(block.APIProvider) != "" && strings.TrimSpace(apiProvider) != "" && block.APIProvider != apiProvider {
+		scopeOK := providerReplayScopeMatches(block.Model, model) &&
+			providerReplayScopeMatches(block.ProviderProfile, providerProfile) &&
+			providerReplayScopeMatches(block.APIProvider, apiProvider)
+		if block.Thought != nil && *block.Thought && !scopeOK {
 			continue
 		}
 		part := map[string]any{}
@@ -431,7 +434,7 @@ func googleProviderParts(blocks []session.ProviderContentBlock, model, providerP
 		if block.Thought != nil {
 			part["thought"] = *block.Thought
 		}
-		if block.ThoughtSignature != "" {
+		if block.ThoughtSignature != "" && scopeOK {
 			part["thoughtSignature"] = block.ThoughtSignature
 		}
 		if block.Type == "function_call" && block.Name != "" {

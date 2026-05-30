@@ -93,10 +93,12 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		case "text":
 			textParts = append(textParts, item.Text)
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
-				Provider: "anthropic",
-				Type:     "text",
-				Text:     item.Text,
-				Model:    req.Model,
+				Provider:        "anthropic",
+				ProviderProfile: req.ProviderProfile,
+				APIProvider:     req.APIProvider,
+				Type:            "text",
+				Text:            item.Text,
+				Model:           req.Model,
 			})
 		case "thinking":
 			thinkingBlockCount++
@@ -107,11 +109,13 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				thinkingReplayObserved = true
 			}
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
-				Provider:  "anthropic",
-				Type:      "thinking",
-				Thinking:  item.Thinking,
-				Signature: item.Signature,
-				Model:     req.Model,
+				Provider:        "anthropic",
+				ProviderProfile: req.ProviderProfile,
+				APIProvider:     req.APIProvider,
+				Type:            "thinking",
+				Thinking:        item.Thinking,
+				Signature:       item.Signature,
+				Model:           req.Model,
 			})
 		case "redacted_thinking":
 			redactedThinkingCount++
@@ -119,10 +123,12 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				thinkingReplayObserved = true
 			}
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
-				Provider: "anthropic",
-				Type:     "redacted_thinking",
-				Data:     item.Data,
-				Model:    req.Model,
+				Provider:        "anthropic",
+				ProviderProfile: req.ProviderProfile,
+				APIProvider:     req.APIProvider,
+				Type:            "redacted_thinking",
+				Data:            item.Data,
+				Model:           req.Model,
 			})
 		case "tool_use":
 			if err := validateToolCallEnvelope("anthropic", item.Name, item.ID); err != nil {
@@ -133,12 +139,14 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				return TurnResult{}, err
 			}
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
-				Provider: "anthropic",
-				Type:     "tool_use",
-				ID:       item.ID,
-				Name:     item.Name,
-				Input:    input,
-				Model:    req.Model,
+				Provider:        "anthropic",
+				ProviderProfile: req.ProviderProfile,
+				APIProvider:     req.APIProvider,
+				Type:            "tool_use",
+				ID:              item.ID,
+				Name:            item.Name,
+				Input:           input,
+				Model:           req.Model,
 			})
 			calls = append(calls, ToolCall{
 				ID:             item.ID,
@@ -378,17 +386,14 @@ func anthropicProviderContent(blocks []session.ProviderContentBlock, model, prov
 		if block.Provider != "anthropic" {
 			continue
 		}
-		if strings.TrimSpace(block.Model) != "" && strings.TrimSpace(model) != "" && block.Model != model {
-			continue
-		}
-		if strings.TrimSpace(block.ProviderProfile) != "" && strings.TrimSpace(providerProfile) != "" && block.ProviderProfile != providerProfile {
-			continue
-		}
-		if strings.TrimSpace(block.APIProvider) != "" && strings.TrimSpace(apiProvider) != "" && block.APIProvider != apiProvider {
-			continue
-		}
+		scopeOK := providerReplayScopeMatches(block.Model, model) &&
+			providerReplayScopeMatches(block.ProviderProfile, providerProfile) &&
+			providerReplayScopeMatches(block.APIProvider, apiProvider)
 		switch block.Type {
 		case "thinking":
+			if !scopeOK {
+				continue
+			}
 			item := map[string]any{
 				"type":     "thinking",
 				"thinking": block.Thinking,
@@ -398,6 +403,9 @@ func anthropicProviderContent(blocks []session.ProviderContentBlock, model, prov
 			}
 			content = append(content, item)
 		case "redacted_thinking":
+			if !scopeOK {
+				continue
+			}
 			item := map[string]any{"type": "redacted_thinking"}
 			if block.Data != "" {
 				item["data"] = block.Data
