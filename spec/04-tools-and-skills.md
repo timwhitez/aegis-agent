@@ -315,6 +315,7 @@ description: Example skill for local tasks
 
 - `command` 必须是字符串数组，而不是 shell 字符串
 - built-in 工具名保留，不可覆盖
+- direct-call skill command tool 必须从已解析的 skill 根目录执行，并把 cwd / sandbox bind source 绑定到 no-symlink 打开的目录；若 skill 目录在注册后、进程启动前被替换为 symlink，不得跟随新路径执行
 
 ## 7. Skill 加载策略
 

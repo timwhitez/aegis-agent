@@ -9366,7 +9366,51 @@ Evidence gates:
 - Confirmed this is distinct from command argument validation, workspace-skill trust gating, and shell sandbox fail-closed behavior. Those paths already had focused coverage; the residual gap was registry-level name collision handling after trusted command tools were enumerated.
 - Confirmed the minimal fix belongs in `NewRegistry` before `commandToolDefinition` registration, preserving existing skill catalog scanning and command execution while rejecting blank, whitespace-padded, reserved, or duplicate skill command names before provider schema exposure.
 
+### Review 537
+
+- Confirmed FCA-20260530-542 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/18-durable-contract-and-completion.md`: direct-call skill command tools execute local commands from a registered skill directory, so their cwd and optional bwrap bind source must not be a replaceable path string at process start.
+- Confirmed this is distinct from FCA-20260530-476, which fixed the built-in `shell` workdir override path. The residual gap was the separate skill command executor still using `cmd.Dir = skillDir` and `sandboxCommand(..., skillDir, skillDir, ...)`.
+- Confirmed the minimal fix belongs in the skill command execution path: reuse the same stable no-symlink command workdir helper as `shell`, keep the model-facing skill metadata path unchanged, and avoid changing command rendering, argument validation, timeout, exec-policy, or provider replay behavior.
+
 ## Update Log
+
+### FCA-20260530-542
+
+Slice: `fix(tools): stabilize skill command workdirs`
+
+Finding:
+
+- The built-in `shell` tool already opened the resolved command directory as a no-symlink descriptor and used a descriptor-backed cwd / bwrap bind source before starting the process.
+- Direct-call skill command tools still used the scanned `skillDir` path string directly in `sandboxCommand(shellSandbox, skillDir, skillDir, argv)` and `cmd.Dir = skillDir`.
+- If the skill directory path was replaced after the command tool was registered but before process start, a non-sandboxed direct-call skill command could run in the replacement symlink target instead of the originally resolved skill directory.
+
+Impact:
+
+- A registered skill command's execution cwd could be redirected outside the skill root by a local filesystem replacement race.
+- This weakened the same local tool execution boundary already hardened for `shell`: skill command metadata still said the command ran from the registered skill directory, while the actual process cwd could be the replacement target.
+- With explicit `runtime.shell.sandbox=bwrap`, the bind source also came from the replaceable path string rather than the already opened skill directory descriptor.
+
+Changes:
+
+- Reused `openStableCommandWorkdir` for direct-call skill command tools.
+- Passed the descriptor-backed bind source into `sandboxCommand` so bwrap binds the opened skill directory instead of reopening `skillDir` by path.
+- Set `cmd.Dir` to the stable descriptor-backed command directory and pass the descriptor through `ExtraFiles` for bwrap, matching the built-in `shell` command launch boundary.
+- Kept `GO_CLI_AGENT_SKILL_DIR`, result metadata, command rendering, input validation, timeout behavior, exec-policy handling, and output truncation unchanged.
+- Updated `spec/04-tools-and-skills.md` to document the no-symlink cwd / sandbox bind-source requirement for direct-call skill command tools.
+- Added regressions that replace the skill directory with a symlink before the stable open and immediately before process start, proving the command either fails closed or writes to the originally opened directory rather than the replacement target.
+
+Validation:
+
+- `go test ./internal/tools -run TestSkillCommandToolKeepsResolvedWorkdirWhenPathReplacedBeforeStart -count=1`: failed before the fix because the command-start replacement hook was never reached and the direct-call skill command path had no stable cwd boundary; passed after the fix.
+- `go test ./internal/tools -run 'TestSkillCommandTool(KeepsResolvedWorkdirWhenPathReplacedBeforeStart|RejectsReplacedSymlinkWorkdirBeforeOpen)' -count=1`: passed.
+- `go test ./internal/tools -run 'Test(SkillCommandTool|ShellToolKeepsResolvedWorkdirWhenPathReplacedBeforeStart|ShellToolRejectsUnsupportedSandboxConfig)' -count=1`: passed.
+- `go test ./internal/skills -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools ./internal/skills -count=1`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-541
 

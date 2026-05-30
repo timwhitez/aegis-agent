@@ -3226,7 +3226,15 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			if execCtx.Config != nil {
 				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
 			}
-			commandPath, commandArgs, sandboxStatus, sandboxErr := sandboxCommand(shellSandbox, skillDir, skillDir, argv)
+			stableDir, commandDir, err := openStableCommandWorkdir(skillDir)
+			if err != nil {
+				return errorResult(tool.Name, err), nil
+			}
+			defer func() {
+				_ = stableDir.Close()
+			}()
+			sandboxSource, sandboxExtraFiles := commandWorkdirSandboxSource(stableDir, skillDir)
+			commandPath, commandArgs, sandboxStatus, sandboxErr := sandboxCommand(shellSandbox, skillDir, sandboxSource, argv)
 			if policyMode == "deny" && len(policyViolations) > 0 {
 				text := "Error: skill command denied by exec policy"
 				return session.ToolResult{
@@ -3251,7 +3259,10 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			}
 			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
 			procutil.PrepareCommandCancellation(cmd)
-			cmd.Dir = skillDir
+			cmd.Dir = commandDir
+			if sandboxStatus == "bwrap" {
+				cmd.ExtraFiles = append(cmd.ExtraFiles, sandboxExtraFiles...)
+			}
 			cmd.Env = append(
 				filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist),
 				"GO_CLI_AGENT_ARGS_JSON="+string(raw),
@@ -3259,6 +3270,11 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				"GO_CLI_AGENT_SKILL_NAME="+tool.SkillName,
 			)
 			cmd.Stdin = bytes.NewReader(raw)
+			if beforeShellCommandStart != nil {
+				if err := beforeShellCommandStart(skillDir); err != nil {
+					return errorResult(tool.Name, err), nil
+				}
+			}
 			output, err := cmd.CombinedOutput()
 			exitCode := 0
 			if cmd.ProcessState != nil {

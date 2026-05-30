@@ -4346,6 +4346,125 @@ func TestSkillCommandToolExecutesFromSkillDirectory(t *testing.T) {
 	}
 }
 
+func TestSkillCommandToolKeepsResolvedWorkdirWhenPathReplacedBeforeStart(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("stable command workdir uses /proc/self/fd on linux")
+	}
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	renamedSkillDir := filepath.Join(root, "skills", "helpers-renamed")
+	outsideDir := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "marker.yaml"), []byte("name: skill_marker\ndescription: Write marker\ncommand: [\"bash\", \"-lc\", \"printf stable > marker.txt\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	hookCalled := false
+	restoreHook := beforeShellCommandStart
+	beforeShellCommandStart = func(commandWorkdir string) error {
+		if commandWorkdir != skillDir {
+			return nil
+		}
+		hookCalled = true
+		if err := os.Rename(skillDir, renamedSkillDir); err != nil {
+			return err
+		}
+		return os.Symlink(outsideDir, skillDir)
+	}
+	defer func() {
+		beforeShellCommandStart = restoreHook
+	}()
+
+	result, err := registry.Execute(context.Background(), "skill_marker", ExecContext{
+		Workdir: root,
+		Config:  cfg,
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !hookCalled {
+		t.Fatal("expected command-start hook to replace the skill directory")
+	}
+	if result.IsError {
+		t.Fatalf("expected skill command to run in originally resolved workdir, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "marker.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("skill command followed replaced workdir symlink outside skill root, stat err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(renamedSkillDir, "marker.txt"))
+	if err != nil {
+		t.Fatalf("expected marker in originally resolved skill dir: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "stable" {
+		t.Fatalf("unexpected marker content: %q", data)
+	}
+}
+
+func TestSkillCommandToolRejectsReplacedSymlinkWorkdirBeforeOpen(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	renamedSkillDir := filepath.Join(root, "skills", "helpers-renamed")
+	outsideDir := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "marker.yaml"), []byte("name: skill_marker\ndescription: Write marker\ncommand: [\"bash\", \"-lc\", \"printf escaped > marker.txt\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	if err := os.Rename(skillDir, renamedSkillDir); err != nil {
+		t.Fatalf("rename skill dir: %v", err)
+	}
+	if err := os.Symlink(outsideDir, skillDir); err != nil {
+		t.Fatalf("symlink replaced skill dir: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "skill_marker", ExecContext{
+		Workdir: root,
+		Config:  cfg,
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected replaced symlink skill dir to fail closed, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "marker.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("skill command ran through replaced symlink workdir, stat err=%v", err)
+	}
+}
+
 func TestSkillCommandToolUsesRegistryConfigWhenExecContextConfigMissing(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()
