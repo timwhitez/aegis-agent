@@ -2590,6 +2590,7 @@ func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
 
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	originalStatus := job.Status
+	now := time.Now().UTC()
 	meta, state, messages, ok, err := s.findSessionForQueueJob(job)
 	if err != nil {
 		return job, false, err
@@ -2603,7 +2604,7 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			}
 			return job, false, nil
 		}
-		if !queueJobIsStale(job, time.Now().UTC()) {
+		if !queueJobIsStale(job, now) {
 			return job, false, nil
 		}
 		job.Status = QueueStatusFailed
@@ -2623,7 +2624,11 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		}
 		return job, true, nil
 	}
-	if job.Status == QueueStatusRunning && state.Status == StatusRunning && queueJobIsStale(job, time.Now().UTC()) {
+	if job.Status == QueueStatusRunning && queueJobHasRecentLease(job, now) {
+		syncLeasedQueueJobSession(&job, meta, state)
+		return job, false, nil
+	}
+	if job.Status == QueueStatusRunning && state.Status == StatusRunning && queueJobIsStale(job, now) {
 		job.Status = QueueStatusFailed
 		if strings.TrimSpace(job.LastError) == "" {
 			job.LastError = "queue job stale: linked running session heartbeat is stale"
@@ -2889,6 +2894,24 @@ func syncRunningQueueJobSession(job *QueueJob, meta SessionMetadata, state State
 	return changed
 }
 
+func syncLeasedQueueJobSession(job *QueueJob, meta SessionMetadata, state State) {
+	if job.SessionID != meta.ID {
+		job.SessionID = meta.ID
+	}
+	if job.SessionStatus != state.Status {
+		job.SessionStatus = state.Status
+	}
+	if job.FinalText != state.LastAssistantExcerpt {
+		job.FinalText = state.LastAssistantExcerpt
+	}
+	if job.LastError != state.LastError {
+		job.LastError = state.LastError
+	}
+	if job.EffectiveWorkdir != meta.Workdir {
+		job.EffectiveWorkdir = meta.Workdir
+	}
+}
+
 func queueJobIsStale(job QueueJob, now time.Time) bool {
 	reference := firstNonEmpty(job.HeartbeatAt, job.ClaimedAt, job.UpdatedAt)
 	if reference == "" {
@@ -2899,6 +2922,18 @@ func queueJobIsStale(job QueueJob, now time.Time) bool {
 		return false
 	}
 	return now.Sub(parsed) > queueRunningStaleAfter
+}
+
+func queueJobHasRecentLease(job QueueJob, now time.Time) bool {
+	reference := firstNonEmpty(job.HeartbeatAt, job.ClaimedAt)
+	if reference == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, reference)
+	if err != nil {
+		return false
+	}
+	return now.Sub(parsed) <= queueRunningStaleAfter
 }
 
 func firstNonEmpty(values ...string) string {

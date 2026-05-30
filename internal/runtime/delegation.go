@@ -534,20 +534,10 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			job.LastError = "child session is resumable: " + result.Status
 		}
 	}
-	terminalParentFactsAlreadyReconciled := job.ParentSessionID != "" &&
-		result.SessionID != "" &&
-		handoffErr == nil &&
-		isTerminalQueueStatus(job.Status) &&
-		!queueReconcileErr
 	if err := retryQueuePersistence("persist queue job "+job.ID, func() error {
 		return r.store.SaveJob(job)
 	}); err != nil {
 		return job, true, err
-	}
-	if terminalParentFactsAlreadyReconciled {
-		_ = writeSessionSummary(r.store, job.ParentSessionID)
-		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
-		return job, true, nil
 	}
 	if job.ParentSessionID != "" {
 		var terminalCoordinationSnapshot session.ParentCoordinationSnapshot
@@ -584,12 +574,8 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			return job, true, err
 		}
 		if err := retryQueuePersistence("append queue notified event for job "+job.ID, func() error {
-			return r.appendEvent(job.ParentSessionID, "queue.job.notified", "queue", map[string]any{
-				"job_id":     job.ID,
-				"session_id": job.SessionID,
-				"status":     job.Status,
-				"agent_role": job.AgentRole,
-			})
+			_, err := r.appendQueueJobEventOnce(job.ParentSessionID, "queue.job.notified", job)
+			return err
 		}); err != nil {
 			if restoreTerminalCoordination {
 				if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, terminalCoordinationSnapshot); restoreErr != nil {
@@ -608,16 +594,18 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		if job.Status == session.QueueStatusFailed {
 			eventType = "queue.job.failed"
 		}
-		if r.beforeQueueLifecycleEvent != nil {
-			r.beforeQueueLifecycleEvent(job, eventType)
-		}
 		if err := retryQueuePersistence("append queue lifecycle event "+eventType+" for job "+job.ID, func() error {
-			return r.appendEvent(job.ParentSessionID, eventType, "queue", map[string]any{
-				"job_id":     job.ID,
-				"session_id": job.SessionID,
-				"status":     job.Status,
-				"agent_role": job.AgentRole,
-			})
+			exists, err := r.queueJobEventExists(job.ParentSessionID, eventType, job.ID)
+			if err != nil {
+				return err
+			}
+			if exists {
+				return nil
+			}
+			if r.beforeQueueLifecycleEvent != nil {
+				r.beforeQueueLifecycleEvent(job, eventType)
+			}
+			return r.appendQueueJobEvent(job.ParentSessionID, eventType, job)
 		}); err != nil {
 			if restoreTerminalCoordination {
 				if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, terminalCoordinationSnapshot); restoreErr != nil {
@@ -667,6 +655,43 @@ func (r *Runner) startQueueJobHeartbeat(ctx context.Context, jobID string) func(
 
 func isTerminalQueueStatus(status string) bool {
 	return status == session.QueueStatusCompleted || status == session.QueueStatusFailed
+}
+
+func (r *Runner) appendQueueJobEventOnce(parentSessionID, eventType string, job session.QueueJob) (bool, error) {
+	exists, err := r.queueJobEventExists(parentSessionID, eventType, job.ID)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+	return true, r.appendQueueJobEvent(parentSessionID, eventType, job)
+}
+
+func (r *Runner) queueJobEventExists(parentSessionID, eventType, jobID string) (bool, error) {
+	eventsList, err := r.store.LoadEvents(parentSessionID)
+	if err != nil {
+		return false, err
+	}
+	for _, evt := range eventsList {
+		if evt.Type != eventType {
+			continue
+		}
+		eventJobID, _ := evt.Data["job_id"].(string)
+		if eventJobID == jobID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *Runner) appendQueueJobEvent(parentSessionID, eventType string, job session.QueueJob) error {
+	return r.appendEvent(parentSessionID, eventType, "queue", map[string]any{
+		"job_id":     job.ID,
+		"session_id": job.SessionID,
+		"status":     job.Status,
+		"agent_role": job.AgentRole,
+	})
 }
 
 func (r *Runner) queueJobHeartbeatInterval() time.Duration {

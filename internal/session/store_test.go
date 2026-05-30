@@ -6432,6 +6432,132 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
+func TestLoadJobDoesNotTerminalRepairFreshRunningLease(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_fresh_lease",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_fresh_lease",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_fresh_lease",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusRunning,
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		AgentName:       "child-two",
+		AgentRole:       "evaluator",
+		Prompt:          "Finish child two.",
+		Mode:            ModeExec,
+		Background:      true,
+		IsolationMode:   "auto",
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+	if err := store.SaveParentCoordination(parentMeta.ID, ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentMeta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{job.ID},
+		Parked:              true,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_fresh_lease",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		AgentName:        "child-two",
+		AgentRole:        "evaluator",
+		QueueJobID:       job.ID,
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{
+		Status:               StatusCompleted,
+		Phase:                "turn_decide",
+		UpdatedAt:            now,
+		LastAssistantExcerpt: "Done.",
+	}); err != nil {
+		t.Fatalf("create completed child: %v", err)
+	}
+	job.SessionID = childMeta.ID
+	job.SessionStatus = StatusRunning
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save linked running job: %v", err)
+	}
+
+	observed, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load fresh running job: %v", err)
+	}
+	if observed.Status != QueueStatusRunning {
+		t.Fatalf("fresh lease should remain owned by worker, got %#v", observed)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusCompleted, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh lease should not persist completed queue copy, stat err=%v", err)
+	}
+	var persisted QueueJob
+	if err := readJSONFile(store.queueJobPath(QueueStatusRunning, job.ID), &persisted); err != nil {
+		t.Fatalf("read persisted running job: %v", err)
+	}
+	if persisted.Status != QueueStatusRunning || persisted.SessionID != childMeta.ID || persisted.SessionStatus != StatusRunning {
+		t.Fatalf("fresh lease load should not rewrite durable running job before worker handoff, got %#v", persisted)
+	}
+	notifications, err := store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("fresh lease should not notify parent before worker handoff, got %#v", notifications)
+	}
+	coordination, err := store.LoadParentCoordination(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if !slices.Equal(coordination.UnresolvedQueueJobs, []string{job.ID}) ||
+		len(coordination.CompletedQueueJobs) != 0 ||
+		len(coordination.FailedQueueJobs) != 0 ||
+		!coordination.Parked {
+		t.Fatalf("fresh lease should keep parent coordination unresolved, got %#v", coordination)
+	}
+	eventsList, err := store.LoadEvents(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load parent events: %v", err)
+	}
+	for _, evt := range eventsList {
+		if evt.Type == "queue.job.completed" || evt.Type == "queue.job.failed" || evt.Type == "queue.job.notified" {
+			t.Fatalf("fresh lease should not emit parent queue event before worker handoff, got %#v", evt)
+		}
+	}
+}
+
 func TestSyncQueueVisiblePathsRejectsDestinationSymlinkAlias(t *testing.T) {
 	requestedWorkdir := t.TempDir()
 	effectiveWorkdir := t.TempDir()
@@ -6970,6 +7096,7 @@ func TestLoadJobRollsBackParentCoordinationWhenNotificationWriteFails(t *testing
 func TestLoadJobRollsBackBlockedParentStateWhenLifecycleEventFails(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	staleLease := time.Now().UTC().Add(-QueueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
 	parentMeta := SessionMetadata{
 		SchemaVersion:    1,
 		ID:               "parent_blocked_lifecycle_error",
@@ -6987,11 +7114,11 @@ func TestLoadJobRollsBackBlockedParentStateWhenLifecycleEventFails(t *testing.T)
 	job := QueueJob{
 		SchemaVersion:   1,
 		ID:              "job_blocked_lifecycle_error",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		CreatedAt:       staleLease,
+		UpdatedAt:       staleLease,
 		Status:          QueueStatusRunning,
-		ClaimedAt:       now,
-		HeartbeatAt:     now,
+		ClaimedAt:       staleLease,
+		HeartbeatAt:     staleLease,
 		ParentSessionID: parentMeta.ID,
 		RootSessionID:   parentMeta.ID,
 		SessionID:       "child_blocked_lifecycle_error",
@@ -7072,6 +7199,7 @@ func TestLoadJobRollsBackBlockedParentStateWhenLifecycleEventFails(t *testing.T)
 func TestLoadJobRepairsBlockedParentNotificationAndEvent(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	staleLease := time.Now().UTC().Add(-QueueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
 	parentMeta := SessionMetadata{
 		SchemaVersion:    1,
 		ID:               "parent_blocked_repair",
@@ -7089,11 +7217,11 @@ func TestLoadJobRepairsBlockedParentNotificationAndEvent(t *testing.T) {
 	job := QueueJob{
 		SchemaVersion:   1,
 		ID:              "job_blocked_repair",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		CreatedAt:       staleLease,
+		UpdatedAt:       staleLease,
 		Status:          QueueStatusRunning,
-		ClaimedAt:       now,
-		HeartbeatAt:     now,
+		ClaimedAt:       staleLease,
+		HeartbeatAt:     staleLease,
 		ParentSessionID: parentMeta.ID,
 		RootSessionID:   parentMeta.ID,
 		SessionID:       "child_blocked_repair",

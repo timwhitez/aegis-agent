@@ -9618,7 +9618,57 @@ Evidence gates:
 - Confirmed this is distinct from queued child submission rollback and queue lifecycle notification fixes. Queue submission already snapshots and restores parent coordination when `session.child.queued` fails; this residual direct-delegate path wrote `session.child.spawned` before the parent coordination mutation.
 - Confirmed the minimal fix belongs in `Runner.SpawnAgent` for foreground delegation: snapshot parent events and coordination before emitting the child-spawned event, and restore both if add/resolve parent coordination fails after the event is durable.
 
+### Review 579
+
+- Confirmed FCA-20260531-584 against `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`: a running queue job's fresh worker lease is the durable owner signal for handoff, and parent completion facts must not be settled from a linked child session before the worker finishes result handoff.
+- Confirmed this is distinct from FCA-20260531-583 and earlier queue lifecycle rollback fixes. Those slices handled failed parent coordination writes and event/notification rollback after a chosen queue status; this residual gap let `LoadJob` / engine reconciliation promote a freshly leased running job to terminal parent facts before visible output sync could succeed or fail.
+- Confirmed the minimal fix belongs in `Store.reconcileQueueJobSession` and `Runner.ProcessNextJob`: suppress terminal queue repair while a running job has a recent lease, then let the worker settle queue status and write parent queue events idempotently after handoff.
+
 ## Update Log
+
+### FCA-20260531-584
+
+Slice: `fix(runtime): settle queue jobs after handoff`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` describes queue workers as the owner of durable queue job claim, heartbeat, child session result write-back, and parent background notification delivery.
+- `spec/18-durable-contract-and-completion.md` treats `parent-coordination.json`, background notifications, and queue lifecycle events as completion facts for explicit queue work.
+- `Store.LoadJob` / `ReconcileSessionQueueJob` could promote a freshly leased `running` job to `completed` or `failed` as soon as the linked child session reached a terminal state.
+- In the active worker path, that happened before `Runner.ProcessNextJob` loaded child handoff metadata, copied visible outputs back to the requested workspace, and decided whether handoff itself succeeded.
+
+Impact:
+
+- A parent session could receive a pending completed background notification and `queue.job.completed` event while the worker still had to copy visible outputs or validate child handoff files.
+- If that handoff later failed, the queue job and `parent-coordination.json` moved to failed, but the parent timeline had already recorded a completed queue lifecycle fact.
+- A concurrently running parent could accept the premature background result before the worker produced the final handoff status.
+
+Changes:
+
+- `Store.reconcileQueueJobSession` now detects a recent running-job lease from `heartbeat_at` / `claimed_at` and avoids terminal repair while the worker still owns the handoff.
+- The fresh-lease branch returns the observed queue job without moving it to completed/failed, without syncing visible outputs, and without writing parent notifications or coordination changes.
+- `Runner.ProcessNextJob` no longer assumes terminal parent facts were already reconciled by the child engine. After handoff, it persists the final queue job status and settles parent coordination, background notification, and lifecycle events itself.
+- Parent queue events emitted by the worker are now idempotent by `(event_type, job_id)`, so pre-existing repaired facts do not produce duplicate `queue.job.notified` / terminal lifecycle events.
+- Added focused regressions for fresh-lease repair suppression and visible-output sync failure producing only the failed queue lifecycle event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session ./internal/runtime -run 'TestLoadJobDoesNotTerminalRepairFreshRunningLease|TestReconcileCompletedSessionCompletesJob|TestRunnerQueueSubmitAndWorkerCompletesJob|TestRunnerProcessNextJobWritesTerminalLifecycleAfterWorkerHandoff|TestRunnerProcessNextJobFailsWhenVisibleOutputCannotSync|TestEngineCompletingQueuedChildReconcilesParentQueueFacts|TestRunnerProcessNextJobReportsQueueLifecycleEventAppendError|TestRunnerProcessNextJobRollsBackNotificationWhenLifecycleEventFails' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-583
 

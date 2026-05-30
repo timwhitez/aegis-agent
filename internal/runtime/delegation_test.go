@@ -826,7 +826,7 @@ func TestRunnerProcessNextJobRollsBackNotificationWhenLifecycleEventFails(t *tes
 	}
 }
 
-func TestRunnerProcessNextJobSkipsDuplicateTerminalLifecycleEvents(t *testing.T) {
+func TestRunnerProcessNextJobWritesTerminalLifecycleAfterWorkerHandoff(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
 	parentWorkdir := t.TempDir()
@@ -840,11 +840,10 @@ func TestRunnerProcessNextJobSkipsDuplicateTerminalLifecycleEvents(t *testing.T)
 	if err != nil {
 		t.Fatalf("queue submit: %v", err)
 	}
-	var duplicateAttempted bool
+	var lifecycleAttempted bool
 	runner.beforeQueueLifecycleEvent = func(job session.QueueJob, eventType string) {
 		if eventType == "queue.job.completed" {
-			duplicateAttempted = true
-			blockRuntimeEventsPath(t, runner.store, parentID)
+			lifecycleAttempted = true
 		}
 	}
 
@@ -855,8 +854,8 @@ func TestRunnerProcessNextJobSkipsDuplicateTerminalLifecycleEvents(t *testing.T)
 	if !ok || processed.ID != job.ID || processed.Status != session.QueueStatusCompleted {
 		t.Fatalf("expected completed claimed job to be returned, got job=%#v ok=%v", processed, ok)
 	}
-	if duplicateAttempted {
-		t.Fatalf("worker should not append duplicate terminal lifecycle events after child transition reconciliation")
+	if !lifecycleAttempted {
+		t.Fatalf("worker should append terminal lifecycle after completing child handoff")
 	}
 	coordination, loadErr := runner.store.LoadParentCoordination(parentID)
 	if loadErr != nil {
@@ -1953,6 +1952,20 @@ func TestRunnerProcessNextJobFailsWhenVisibleOutputCannotSync(t *testing.T) {
 		slices.Contains(coordination.CompletedQueueJobs, job.ID) ||
 		!slices.Contains(coordination.FailedQueueJobs, job.ID) {
 		t.Fatalf("expected failed-only parent coordination after sync failure, got %#v", coordination)
+	}
+	eventsList, err := runner.store.LoadEvents(parentID)
+	if err != nil {
+		t.Fatalf("load parent events: %v", err)
+	}
+	counts := map[string]int{}
+	for _, evt := range eventsList {
+		eventJobID, _ := evt.Data["job_id"].(string)
+		if eventJobID == job.ID {
+			counts[evt.Type]++
+		}
+	}
+	if counts["queue.job.completed"] != 0 || counts["queue.job.failed"] != 1 || counts["queue.job.notified"] != 1 {
+		t.Fatalf("expected only failed queue lifecycle after sync failure, got %#v", counts)
 	}
 }
 
