@@ -9510,7 +9510,44 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-533. That earlier slice covered `StopReason:"tool_use"` with no parsed calls; the residual inverse mismatch was a result with parsed calls but a non-`tool_use` stop reason such as `max_tokens`, which runtime still dispatched.
 - Confirmed the minimal fix belongs in the core engine after provider result recording but before assistant/tool persistence: fail the session with a durable provider-boundary reason before creating dangling assistant tool-call replay facts or executing any tool.
 
+### Review 561
+
+- Confirmed FCA-20260530-566 against `spec/03-provider-contracts.md` and `spec/18-durable-contract-and-completion.md`: local budget wrap-up is a goal-accounting control, not a provider-failure override; provider `max_tokens`, `blocked`, or `error` stop reasons must remain terminal failure facts even when the same turn also crosses a stop-on-budget threshold.
+- Confirmed this is distinct from FCA-20260530-565. That slice handled contradictory parsed tool calls; this residual slice covers a no-tool provider failure whose stop handling was skipped because `budgetStopRequested` ran first.
+- Confirmed the minimal fix belongs in the engine's post-provider decision ordering: preserve the existing partial assistant persistence behavior, but evaluate provider stop failures before appending a budget wrap-up reminder or entering the wrap-up turn.
+
 ## Update Log
+
+### FCA-20260530-566
+
+Slice: `fix(runtime): keep provider stop before budget`
+
+Finding:
+
+- `spec/03-provider-contracts.md` defines `max_tokens`, `blocked`, and `error` as provider stop failures.
+- `spec/18-durable-contract-and-completion.md` treats budget-limited goals as requiring wrap-up, but explicitly says budget limited is not completion and does not override completion audit.
+- `internal/runtime/engine.go` updated goal accounting immediately after provider success, then computed `budgetStopRequested`.
+- The engine persisted the assistant message and handled `budgetStopRequested` before checking `providerStopFailure(result.StopReason)` for no-tool responses.
+- A focused regression showed that a provider result with `StopReason:"max_tokens"` and usage that crossed a stop-on-budget token limit entered the budget wrap-up path and returned `awaiting_input` instead of failing with `provider_max_tokens`.
+
+Impact:
+
+- A provider boundary failure could be reclassified as a local goal budget pause when both occurred in the same turn.
+- The next provider turn could be used for budget wrap-up even though the previous provider turn ended due to `max_tokens`, weakening provider recovery diagnostics.
+
+Changes:
+
+- Added a runtime regression proving provider `max_tokens` must win over budget-stop handling.
+- Reordered the engine's post-provider no-tool decision path so provider stop failures are evaluated before budget wrap-up handling.
+- Kept existing partial assistant-message persistence for provider stop failures, limiting the behavioral change to the provider-failure vs budget-control priority.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineProviderStopFailureWinsOverBudgetStop -count=1`: failed before the fix because the engine returned `Status:"awaiting_input"` with the budget wrap-up message.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineProviderStopFailureWinsOverBudgetStop|TestEngineBudgetWrapUpThenFinishAwaitsInput|TestEngineProviderStopReasonFailuresAreResumable' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime ./internal/provider -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-565
 

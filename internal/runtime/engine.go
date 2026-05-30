@@ -448,19 +448,6 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			result.Text = assistantText
 		}
 
-		if budgetStopRequested {
-			if len(result.ToolCalls) > 0 {
-				toolResults := syntheticToolResults(result.ToolCalls, "Error: goal budget limit reached and stop_on_budget is true; this tool call was not executed. Wrap up with record_goal_progress kind=\"budget_wrapup\" on the next turn.")
-				if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
-					return RunResult{}, err
-				}
-			}
-			if _, err := e.appendHarnessReminder(meta, "turn_decide", goalBudgetWrapUpPrompt(), "goal_budget_wrapup_required"); err != nil {
-				return RunResult{}, err
-			}
-			continue
-		}
-
 		if len(result.ToolCalls) == 0 {
 			if failureReason, failureText := providerStopFailure(result.StopReason); failureReason != "" {
 				state.Status = session.StatusFailed
@@ -477,6 +464,22 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				_ = writeLongRunCheckpoint(e.store, meta.ID)
 				return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
 			}
+		}
+
+		if budgetStopRequested {
+			if len(result.ToolCalls) > 0 {
+				toolResults := syntheticToolResults(result.ToolCalls, "Error: goal budget limit reached and stop_on_budget is true; this tool call was not executed. Wrap up with record_goal_progress kind=\"budget_wrapup\" on the next turn.")
+				if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
+					return RunResult{}, err
+				}
+			}
+			if _, err := e.appendHarnessReminder(meta, "turn_decide", goalBudgetWrapUpPrompt(), "goal_budget_wrapup_required"); err != nil {
+				return RunResult{}, err
+			}
+			continue
+		}
+
+		if len(result.ToolCalls) == 0 {
 			acceptedBackgroundAfterProvider, err := e.drainBackground(ctx, meta, hookManager)
 			if err != nil {
 				return RunResult{}, err

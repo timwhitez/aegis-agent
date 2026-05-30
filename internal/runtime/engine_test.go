@@ -1038,6 +1038,53 @@ func TestEngineRejectsToolCallsWithoutToolUseStopReason(t *testing.T) {
 	}
 }
 
+func TestEngineProviderStopFailureWinsOverBudgetStop(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	tokenBudget := int64(1)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:      true,
+		Mode:         session.GoalModeGoal,
+		Objective:    "Stop when budget is exhausted.",
+		TokenBudget:  &tokenBudget,
+		StopOnBudget: true,
+		Source:       session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "trigger max tokens")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	calls := 0
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		calls++
+		if calls == 1 {
+			return provider.TurnResult{
+				Text:       "partial",
+				StopReason: "max_tokens",
+				Usage:      provider.Usage{InputTokens: 1, OutputTokens: 1},
+			}, nil
+		}
+		return provider.TurnResult{Text: "budget path should not run", StopReason: "done_candidate"}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider max_tokens failure should not enter budget wrap-up turn, calls=%d", calls)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed status, got %#v", result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.IncompleteReason != "provider_max_tokens" {
+		t.Fatalf("expected provider_max_tokens to win over budget stop, got %#v", loaded)
+	}
+}
+
 func TestEngineProviderStopReasonReportsFailedEventAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
