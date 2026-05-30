@@ -2266,8 +2266,15 @@ func isClientStartError(err error) bool {
 	return strings.Contains(message, "unsupported agent role") ||
 		strings.Contains(message, "unsupported run mode") ||
 		strings.Contains(message, "unsupported isolation mode") ||
-		strings.Contains(message, "isolation target must not be inside source workdir") ||
+		isClientIsolationError(message) ||
 		strings.Contains(message, "unknown provider")
+}
+
+func isClientIsolationError(message string) bool {
+	return strings.Contains(message, "isolation target must not be inside source workdir") ||
+		strings.Contains(message, "isolation target escapes root") ||
+		strings.Contains(message, "isolation root must not be inside source workdir") ||
+		strings.Contains(message, "git isolation requested")
 }
 
 func (s *Service) validateProviderOverride(providerName string) error {
@@ -2840,7 +2847,7 @@ func queueJobActionStatus(err error) int {
 		strings.Contains(message, "unsupported wait mode") ||
 		strings.Contains(message, "unsupported isolation mode") ||
 		strings.Contains(message, "unknown provider") ||
-		strings.Contains(message, "isolation target must not be inside source workdir") {
+		isClientIsolationError(message) {
 		return http.StatusBadRequest
 	}
 	if strings.Contains(message, "plan mode is pending") ||

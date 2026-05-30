@@ -9192,7 +9192,37 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-508 and FCA-20260530-509. Those slices denied direct credential rc/package paths such as `.npmrc` and `.m2/settings.xml`; the residual issue was browsing the same underlying file through a benign-looking real target such as `npm-real` or `maven-real/settings.xml` after `.npmrc -> npm-real` or `.m2 -> maven-real`.
 - Confirmed the minimal fix belongs in the WebConsole workspace browser path guard: keep lexical deny checks for requested names, but also check the resolved target against both the service browse root and the workspace root so symlink-alias real targets are hidden from listings and denied by direct reads.
 
+### Review 508
+
+- Confirmed FCA-20260530-513 against `AGENTS.md`, `spec/09-phase-plan.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Web start validation errors caused by explicit isolation controls should be reported as client input failures, not as local service failures.
+- Confirmed this is distinct from the existing unsupported-mode and target-inside-source mappings. Those paths already returned `400 Bad Request`; the residual issue was `isolation_mode=git` in a non-Git workdir, where `isolation.Prepare` returns a deterministic user-actionable error before creating any session but Web start still surfaced it as `500 Internal Server Error`.
+- Confirmed the minimal fix belongs in WebConsole error classification only. Runtime isolation preparation still rejects the request, and no provider, session, queue, workflow, or isolation-copy behavior changes are required.
+
 ## Update Log
+
+### FCA-20260530-513
+
+Slice: `fix(webconsole): classify git isolation start errors`
+
+Finding:
+
+- `internal/webconsole/service.go` classified unsupported isolation modes and source-workdir target errors as client-side `400 Bad Request`, but omitted other deterministic `isolation.Prepare` validation errors.
+- A focused failing WebConsole test proved that `/api/sessions/start` with `isolation_mode=git` in a non-Git workdir returned `500 Internal Server Error` even though the request was rejected before session creation and the error text was user-actionable.
+
+Impact:
+
+- The local Web Console could present an operator-supplied isolation setting error as a service failure, weakening diagnostics for the Web-first start path.
+- This did not create a session, execute provider calls, change queue behavior, or weaken the isolation guard itself; the defect was the HTTP status classification and resulting operator signal.
+
+Changes:
+
+- Added a shared WebConsole isolation client-error classifier for deterministic isolation validation messages.
+- Reused that classifier in Web start and queue action status mapping so future isolation validation errors stay consistently user-facing.
+- Added focused WebConsole coverage proving non-Git `git` isolation requests return `400 Bad Request` and do not create a session.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestStartSessionRejectsGitIsolationOutsideRepoAsBadRequest -count=1`: failed before the fix with `unexpected status 500 want 400`; passed after the fix.
 
 ### FCA-20260530-512
 
