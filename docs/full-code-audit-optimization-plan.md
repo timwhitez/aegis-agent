@@ -9126,7 +9126,44 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-500 and the earlier WebConsole skill upload/list/uninstall hardening. Those slices aligned Web mutation/listing behavior; this residual issue was in the runtime `Scan(...)` path, where `readCatalogFile(...)` resolved `SKILL.md` or `tools/*.yaml` before calling `fileutil.ReadRegularFileNoSymlink(...)`, so same-root symlinked catalog files were accepted.
 - Confirmed the minimal fix belongs in `readCatalogFile(...)`: keep the existing real-path root and allowed-directory escape check, then reject a catalog file whose original `Lstat` mode is symlink before reading the resolved regular file.
 
+### Review 497
+
+- Confirmed FCA-20260530-502 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, and the WebConsole skill zip extraction path: uploaded skill packages should not accept ZIP entries whose source metadata marks them as symlinks.
+- Confirmed this is distinct from FCA-20260530-501. That runtime fix rejects symlinked catalog files after installation or local discovery; this residual WebConsole upload issue accepted a symlink-mode `SKILL.md` entry and wrote the link target text as a regular managed manifest before the runtime catalog ever saw it.
+- Confirmed the minimal fix belongs in `processSkillZipReader(...)` while normalizing entry names and before staging or target replacement: reject `os.ModeSymlink` zip entries as malformed skill packages, preserving ordinary regular files, sibling skill roots, mode sanitization, duplicate/path-conflict checks, rollback behavior, and audit gating.
+
 ## Update Log
+
+### FCA-20260530-502
+
+Slice: `fix(webconsole): reject symlink skill zip entries`
+
+Finding:
+
+- `processSkillZipReader(...)` cleaned zip entry names and later wrote every non-directory entry as a regular file through `fileutil.AtomicWriteFileNoSymlink(...)`.
+- It did not inspect `zip.File.Mode()` for `os.ModeSymlink`.
+- A focused regression proved that a package with `demo-skill/SKILL.md` marked as a symlink entry was accepted before the fix; the symlink target text was installed as a regular `SKILL.md` file under the managed skill directory.
+
+Impact:
+
+- The WebConsole upload path could install malformed skill packages whose source bundle relied on symlink entries, even though the rest of the local skill boundary now rejects symlinked manifests, symlinked managed roots, symlinked uninstall targets, and symlinked runtime catalog files.
+- This kept Web upload semantics out of sync with the no-symlink skill bundle boundary required for local skill resources.
+
+Changes:
+
+- Added an `os.ModeSymlink` check during zip entry normalization in `processSkillZipReader(...)`.
+- Return a `skillZipPackageError` so symlink entries are reported as HTTP 400 malformed packages through `/api/skills/upload`.
+- Added a focused upload regression proving symlink-mode entries are rejected before managed-skill mutation and are not written as regular files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsSymlinkEntriesBeforeMutation -count=1`: failed before the fix because the symlink entry was accepted and installed.
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsSymlinkEntriesBeforeMutation -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZip(RejectsSymlinkEntriesBeforeMutation|RejectsTraversalEntries|RejectsSymlinkDestination|RejectsSymlinkedManagedRootBeforeCommit|RejectsSymlinkedManagedRootBeforeStaging|RejectsOversizedEntry|RejectsDuplicateTargetNamesBeforeMutation|RejectsFileDirectoryConflictBeforeMutation|RejectsDuplicateNormalizedEntryPathsBeforeMutation|RejectsNestedSkillRootsBeforeMutation|AllowsSiblingSkillRoots|SanitizesUploadedFileModes|PreservesExistingSkillOnLateExtractionError|AllowsNestedSkillFiles)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-501
 

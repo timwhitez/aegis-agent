@@ -9805,6 +9805,23 @@ func TestProcessSkillZipRejectsSymlinkDestination(t *testing.T) {
 	}
 }
 
+func TestProcessSkillZipRejectsSymlinkEntriesBeforeMutation(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	zipPath := filepath.Join(base, "skill-symlink-entry.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "demo-skill/SKILL.md", content: "real-manifest.md", mode: os.ModeSymlink | 0o777},
+		{name: "demo-skill/real-manifest.md", content: "---\nname: demo-skill\n---\nbody\n"},
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink zip entry to be rejected, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "demo-skill", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlink entry should not be installed as a regular file, got %v", err)
+	}
+}
+
 func TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")

@@ -4326,6 +4326,9 @@ func processSkillZipReader(r *zip.Reader, globalDest string) (*skillZipInstallTr
 		if err != nil {
 			return nil, wrapSkillZipPackageError(err)
 		}
+		if f.Mode()&os.ModeSymlink != 0 {
+			return nil, skillZipPackageErrorf("skill zip symlink entry is not allowed: %s", cleaned)
+		}
 		cleanNames[f] = cleaned
 		if path.Base(cleaned) == "SKILL.md" {
 			dir := path.Dir(cleaned)
