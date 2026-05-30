@@ -51,6 +51,48 @@ func TestCatalogRejectsSymlinkedToolYAMLEscape(t *testing.T) {
 	}
 }
 
+func TestCatalogRejectsSymlinkedSkillMDInsideRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	skillDir := filepath.Join(root, "linked")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "manifest.md"), []byte("---\nname: linked\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write manifest target: %v", err)
+	}
+	if err := os.Symlink("manifest.md", filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("symlink skill manifest: %v", err)
+	}
+
+	_, err := Scan([]string{root})
+	if err == nil || !strings.Contains(err.Error(), "symlinked skill catalog file") {
+		t.Fatalf("expected symlinked manifest to be rejected, got %v", err)
+	}
+}
+
+func TestCatalogRejectsSymlinkedToolYAMLInsideRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	skillDir := filepath.Join(root, "linked")
+	toolsDir := filepath.Join(skillDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0o700); err != nil {
+		t.Fatalf("mkdir skill tools: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: linked\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(toolsDir, "real.yaml"), []byte("name: linked_tool\ncommand: [\"echo\", \"x\"]\ninput_schema:\n  type: object\n"), 0o600); err != nil {
+		t.Fatalf("write tool target: %v", err)
+	}
+	if err := os.Symlink("real.yaml", filepath.Join(toolsDir, "tool.yaml")); err != nil {
+		t.Fatalf("symlink tool yaml: %v", err)
+	}
+
+	_, err := Scan([]string{root})
+	if err == nil || !strings.Contains(err.Error(), "symlinked skill catalog file") {
+		t.Fatalf("expected symlinked tool yaml to be rejected, got %v", err)
+	}
+}
+
 func TestCatalogAllowsRegularNestedSkillAndTools(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	skillDir := filepath.Join(root, "demo")

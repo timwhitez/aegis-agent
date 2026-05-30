@@ -289,7 +289,8 @@ func loadTools(rootReal, skillDirReal, dir, skillName, skillPath string) ([]Comm
 }
 
 func readCatalogFile(rootReal, allowedDirReal, path string) ([]byte, string, error) {
-	if _, err := os.Lstat(path); err != nil {
+	info, err := os.Lstat(path)
+	if err != nil {
 		return nil, "", err
 	}
 	realPath, err := filepath.EvalSymlinks(path)
@@ -299,6 +300,9 @@ func readCatalogFile(rootReal, allowedDirReal, path string) ([]byte, string, err
 	realPath = filepath.Clean(realPath)
 	if !pathWithin(rootReal, realPath) || !pathWithin(allowedDirReal, realPath) {
 		return nil, "", fmt.Errorf("skill catalog file escapes skill root: %s", path)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, "", fmt.Errorf("symlinked skill catalog file is not allowed: %s", path)
 	}
 	data, _, err := fileutil.ReadRegularFileNoSymlink(realPath)
 	if err != nil {

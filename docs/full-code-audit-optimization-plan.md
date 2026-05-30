@@ -9120,7 +9120,46 @@ Evidence gates:
 - Confirmed this is distinct from the symlinked skill-directory guard and earlier upload symlink/root hardening. Those slices rejected a managed skill path or upload root that was itself a symlink; this residual issue was a real managed skill directory whose `SKILL.md` was a symlink to another path. `os.Stat(...)` followed that manifest symlink and let uninstall remove a directory that Web listing/runtime catalog would reject.
 - Confirmed the minimal fix belongs in `handleUninstallSkill(...)`: replace the manifest existence preflight with `fileutil.ReadRegularFileNoSymlink(...)`, preserving the existing direct-child, managed-root, audit, backup, rollback, and successful uninstall behavior.
 
+### Review 496
+
+- Confirmed FCA-20260530-501 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, and `internal/skills`: runtime skill catalog loading must reject symlinked catalog files even when the symlink target stays inside the same skill root.
+- Confirmed this is distinct from FCA-20260530-500 and the earlier WebConsole skill upload/list/uninstall hardening. Those slices aligned Web mutation/listing behavior; this residual issue was in the runtime `Scan(...)` path, where `readCatalogFile(...)` resolved `SKILL.md` or `tools/*.yaml` before calling `fileutil.ReadRegularFileNoSymlink(...)`, so same-root symlinked catalog files were accepted.
+- Confirmed the minimal fix belongs in `readCatalogFile(...)`: keep the existing real-path root and allowed-directory escape check, then reject a catalog file whose original `Lstat` mode is symlink before reading the resolved regular file.
+
 ## Update Log
+
+### FCA-20260530-501
+
+Slice: `fix(skills): reject symlinked catalog files`
+
+Finding:
+
+- `readCatalogFile(...)` called `filepath.EvalSymlinks(path)` before calling `fileutil.ReadRegularFileNoSymlink(...)`.
+- That preserved escape detection for symlinks pointing outside the skill root, but it also erased the final-path symlink fact before the no-symlink reader saw the path.
+- Focused regressions proved that a skill with `SKILL.md -> manifest.md` inside the same skill directory, or a tool definition with `tools/tool.yaml -> real.yaml` inside the same tools directory, was accepted by `skills.Scan(...)` before the fix.
+
+Impact:
+
+- Runtime skill discovery could load symlinked skill manifests or command-tool YAML files that WebConsole list/uninstall paths now reject.
+- That weakened the local skill bundle boundary in `spec/04-tools-and-skills.md`: registered skill bundle files are read-only resources, and catalog loading should validate symlink behavior instead of accepting alias files as normal catalog facts.
+
+Changes:
+
+- Preserved the original `os.Lstat(path)` result in `readCatalogFile(...)`.
+- Kept the existing `EvalSymlinks(...)` root and allowed-directory escape checks so symlink escapes still report the existing escape error.
+- Rejected catalog files whose original path is a symlink after confirming the resolved target stays inside the allowed root.
+- Added focused runtime catalog regressions for same-root symlinked `SKILL.md` and same-root symlinked `tools/*.yaml`.
+
+Validation:
+
+- `go test -timeout 120s ./internal/skills -run 'TestCatalogRejectsSymlinkedSkillMDInsideRoot|TestCatalogRejectsSymlinkedToolYAMLInsideRoot' -count=1`: failed before the fix because both symlinked catalog files were accepted.
+- `go test -timeout 120s ./internal/skills -run 'TestCatalogRejectsSymlinkedSkillMDInsideRoot|TestCatalogRejectsSymlinkedToolYAMLInsideRoot|TestCatalogRejectsSymlinkedSkillMDEscape|TestCatalogRejectsSymlinkedToolYAMLEscape|TestCatalogAllowsRegularNestedSkillAndTools' -count=1`: passed.
+- `go test -timeout 120s ./internal/skills -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test.*Skill|Test.*Catalog|Test.*Command' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-500
 
