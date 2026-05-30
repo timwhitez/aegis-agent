@@ -2006,12 +2006,34 @@ function isCurrentGoalActionIdentity(identity) {
   return currentGoalActionIdentity() === identity;
 }
 
+function currentPlanModeActionIdentity() {
+  const planMode = currentPlanMode();
+  if (!planMode || typeof planMode !== 'object') {
+    return '';
+  }
+  return [
+    planMode.plan_mode_id || planMode.id || '',
+    planMode.updated_at || '',
+    planMode.status || '',
+    planMode.objective || '',
+    planMode.plan_id || '',
+    planMode.plan_version || '',
+    planMode.approved_version || '',
+    planMode.linked_goal_id || ''
+  ].map((part) => String(part || '')).join('\n');
+}
+
+function isCurrentPlanModeActionIdentity(identity) {
+  return currentPlanModeActionIdentity() === identity;
+}
+
 async function handlePlanModeAction(button) {
   if (!hasDurableSession()) {
     showToast('No durable session is loaded.', 'info');
     return;
   }
   const sessionID = state.sessionId;
+  const actionPlanModeIdentity = currentPlanModeActionIdentity();
   const action = button.getAttribute('data-plan-action');
   button.disabled = true;
   try {
@@ -2025,18 +2047,21 @@ async function handlePlanModeAction(button) {
         if (!isCoverageApprovalBlock(err)) {
           throw err;
         }
+        if (!isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
+          return;
+        }
         if (!await confirmCoverageOverride()) {
-          if (state.sessionId === sessionID) {
+          if (state.sessionId === sessionID && isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
             showToast('Plan approval was not overridden.', 'info');
           }
           return;
         }
-        if (state.sessionId !== sessionID) {
+        if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
           return;
         }
         await approvePlanMode(sessionID, { override_coverage: true });
       }
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
         return;
       }
       setGenerating(true, {
@@ -2047,7 +2072,7 @@ async function handlePlanModeAction(button) {
       showToast('Plan approved and execution started.', 'success');
     } else if (action === 'cancel') {
       await cancelPlanMode(sessionID);
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
         return;
       }
       showToast('Plan Mode cancelled.', 'success');
@@ -2060,7 +2085,7 @@ async function handlePlanModeAction(button) {
       queueOverviewRefresh(180);
     }
   } catch (err) {
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
       showToast(err.message || 'Plan Mode action failed.', 'error');
     }
   } finally {

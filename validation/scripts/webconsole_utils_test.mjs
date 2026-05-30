@@ -2881,6 +2881,88 @@ test('Plan Mode approval override ignores stale confirmation after session chang
   assert.deepEqual(sameRealm(toasts), []);
 });
 
+test('Plan Mode approval override ignores stale confirmation after same-session refresh', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  const confirmResolvers = [];
+  const toasts = [];
+  appContext.planApproveButton = fakeActionButton({ 'data-plan-action': 'approve' });
+
+  const approval = vm.runInContext(`
+    confirmCoverageOverride = function() {
+      return new Promise((resolve) => {
+        confirmResolversRef.push(resolve);
+      });
+    };
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_plan_override_same_a';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_override_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_old',
+        status: 'awaiting_approval',
+        objective: 'old plan',
+        plan_version: 1,
+        updated_at: '2026-05-30T01:00:00Z'
+      }
+    };
+    handlePlanModeAction(planApproveButton);
+  `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_plan_override_same_a\/planmode\/approve$/);
+  appContext.pendingRequests[0].reject({
+    status: 409,
+    message: 'validation coverage blocks approval'
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(confirmResolvers.length, 1);
+
+  vm.runInContext(`
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_override_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_new',
+        status: 'awaiting_approval',
+        objective: 'new plan',
+        plan_version: 2,
+        updated_at: '2026-05-30T01:01:00Z'
+      }
+    };
+  `, appContext);
+
+  confirmResolvers[0](true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (appContext.pendingRequests[1]) {
+    appContext.pendingRequests[1].resolve({ session_id: 'session_plan_override_same_a', status: 'accepted' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (appContext.pendingRequests[2]) {
+    appContext.pendingRequests[2].resolve({
+      metadata: { id: 'session_plan_override_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_new',
+        status: 'awaiting_approval',
+        objective: 'new plan',
+        plan_version: 2,
+        updated_at: '2026-05-30T01:01:00Z'
+      },
+      messages: [],
+      timeline: []
+    });
+  }
+  await approval;
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('Plan input answer does not refresh a newly selected session after stale completion', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);
