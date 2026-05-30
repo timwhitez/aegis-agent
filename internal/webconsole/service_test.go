@@ -9822,6 +9822,23 @@ func TestProcessSkillZipRejectsSymlinkEntriesBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestProcessSkillZipRejectsNonRegularEntriesBeforeMutation(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	zipPath := filepath.Join(base, "skill-nonregular-entry.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "demo-skill/SKILL.md", content: "---\nname: demo-skill\n---\nbody\n"},
+		{name: "demo-skill/tools/fifo", content: "payload\n", mode: os.ModeNamedPipe | 0o644},
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("expected non-regular zip entry to be rejected, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "demo-skill", "tools", "fifo")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("non-regular entry should not be installed as a regular file, got %v", err)
+	}
+}
+
 func TestProcessSkillZipRejectsSymlinkedManagedRootBeforeCommit(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")

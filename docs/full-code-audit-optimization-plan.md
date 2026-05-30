@@ -9132,7 +9132,43 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-501. That runtime fix rejects symlinked catalog files after installation or local discovery; this residual WebConsole upload issue accepted a symlink-mode `SKILL.md` entry and wrote the link target text as a regular managed manifest before the runtime catalog ever saw it.
 - Confirmed the minimal fix belongs in `processSkillZipReader(...)` while normalizing entry names and before staging or target replacement: reject `os.ModeSymlink` zip entries as malformed skill packages, preserving ordinary regular files, sibling skill roots, mode sanitization, duplicate/path-conflict checks, rollback behavior, and audit gating.
 
+### Review 498
+
+- Confirmed FCA-20260530-503 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, and the WebConsole skill zip extraction path: uploaded skill packages should only contain directories and regular files.
+- Confirmed this is a residual issue after FCA-20260530-502. That slice rejected symlink entries specifically; named pipe, device, socket, and other non-regular entry types still reached extraction and were written as regular managed files through `AtomicWriteFileNoSymlink(...)`.
+- Confirmed the minimal fix belongs next to the symlink-entry check in `processSkillZipReader(...)`: reject non-directory entries whose ZIP mode has any non-regular type bits, while preserving ordinary ZIP entries that do not carry POSIX mode metadata and preserving valid directory entries.
+
 ## Update Log
+
+### FCA-20260530-503
+
+Slice: `fix(webconsole): reject non-regular skill zip entries`
+
+Finding:
+
+- `processSkillZipReader(...)` rejected symlink-mode ZIP entries but still accepted other non-regular mode types.
+- A focused regression proved that `demo-skill/tools/fifo` marked as `os.ModeNamedPipe` was accepted before the fix and installed as a regular managed file.
+
+Impact:
+
+- The WebConsole upload path could normalize special-file entries into regular files inside managed skill bundles.
+- That kept upload validation looser than the local skill bundle model, where registered skill resources should be ordinary read-only bundle files and directories rather than ambiguous special-file entries.
+
+Changes:
+
+- Added a non-regular ZIP entry guard during entry normalization in `processSkillZipReader(...)`.
+- The guard allows directories and regular files, keeps the earlier explicit symlink error, and rejects other type bits as malformed packages before staging or target replacement.
+- Added a focused regression proving non-regular entries are rejected before managed-skill mutation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestProcessSkillZipRejectsNonRegularEntriesBeforeMutation -count=1`: failed before the fix because the named-pipe entry was accepted and installed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZipRejectsNonRegularEntriesBeforeMutation|TestProcessSkillZipRejectsSymlinkEntriesBeforeMutation' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZip(RejectsNonRegularEntriesBeforeMutation|RejectsSymlinkEntriesBeforeMutation|RejectsTraversalEntries|RejectsSymlinkDestination|RejectsSymlinkedManagedRootBeforeCommit|RejectsSymlinkedManagedRootBeforeStaging|RejectsOversizedEntry|RejectsDuplicateTargetNamesBeforeMutation|RejectsFileDirectoryConflictBeforeMutation|RejectsDuplicateNormalizedEntryPathsBeforeMutation|RejectsNestedSkillRootsBeforeMutation|AllowsSiblingSkillRoots|SanitizesUploadedFileModes|PreservesExistingSkillOnLateExtractionError|AllowsNestedSkillFiles)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-502
 
