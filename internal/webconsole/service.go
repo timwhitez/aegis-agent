@@ -2259,7 +2259,11 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	planModeDraft := planModeDraftFromWebRequest(req.PlanMode, req.Prompt)
+	planModeDraft, err := planModeDraftFromWebRequest(req.PlanMode, req.Prompt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	resp, err := s.startSession(runtime.StartRequest{
 		Prompt:         req.Prompt,
 		AgentName:      req.AgentName,
@@ -2413,6 +2417,11 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	planModeDraft, err := planModeDraftFromWebRequest(req.PlanMode, req.Message)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
@@ -2432,7 +2441,7 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 			Provider:       req.Provider,
 			Model:          req.Model,
 			SystemOverride: req.SystemOverride,
-			PlanMode:       planModeDraftFromWebRequest(req.PlanMode, req.Message),
+			PlanMode:       planModeDraft,
 			Source:         session.PlanModeSourceWeb,
 		})
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
@@ -5676,19 +5685,23 @@ func goalDraftFromWebStartRequest(req *GoalDraftRequest, prompt string) (*sessio
 	return goalDraftFromWebRequest(&draftReq, session.GoalSourceWeb)
 }
 
-func planModeDraftFromWebRequest(req *PlanModeDraftRequest, fallbackObjective string) *session.PlanModeDraft {
+func planModeDraftFromWebRequest(req *PlanModeDraftRequest, fallbackObjective string) (*session.PlanModeDraft, error) {
 	if req == nil || !req.Enabled {
-		return nil
+		return nil, nil
 	}
 	objective := strings.TrimSpace(req.Objective)
 	if objective == "" {
 		objective = strings.TrimSpace(fallbackObjective)
 	}
-	return &session.PlanModeDraft{
+	draft := &session.PlanModeDraft{
 		Enabled:   true,
 		Objective: objective,
 		Source:    session.PlanModeSourceWeb,
 	}
+	if _, err := session.NewPlanModeFromDraft("session_web_planmode_draft", *draft, ""); err != nil {
+		return nil, err
+	}
+	return draft, nil
 }
 
 func goalStoreStatus(err error) int {

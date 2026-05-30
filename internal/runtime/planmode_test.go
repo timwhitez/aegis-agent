@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,6 +44,50 @@ func TestProviderToolsExposePlanModeToolsOnlyWhilePending(t *testing.T) {
 		if hasProviderTool(planTools, name) {
 			t.Fatalf("did not expect %s in Plan Mode tools: %#v", name, planTools)
 		}
+	}
+}
+
+func TestContinuePlanModeRejectsInvalidDraftBeforeClaim(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         cfg.DefaultProvider,
+		Model:            cfg.Providers[cfg.DefaultProvider].Model,
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	initialState := session.State{Status: session.StatusAwaitingInput, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, initialState); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	draft := session.PlanModeDraft{
+		Enabled:   true,
+		Objective: strings.Repeat("x", session.MaxPlanModeObjectiveChars+1),
+		Source:    session.PlanModeSourceCLI,
+	}
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: sessionID,
+		PlanMode:  &draft,
+		Source:    session.PlanModeSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "plan mode objective exceeds") {
+		t.Fatalf("expected invalid plan mode objective error, got result=%#v err=%v", result, err)
+	}
+	state, err := runner.store.LoadState(sessionID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != session.StatusAwaitingInput {
+		t.Fatalf("invalid Plan Mode draft should not claim the session, got state %#v", state)
+	}
+	if _, err := runner.store.LoadPlanMode(sessionID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("invalid Plan Mode draft should not create planmode.json, err=%v", err)
 	}
 }
 

@@ -772,7 +772,15 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		meta.Model = modelOverride
 	}
 	req.PlanInputRequestID = strings.TrimSpace(req.PlanInputRequestID)
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = session.PlanModeSourceCLI
+	}
 	if err := r.preflightPlanModeControl(meta.ID, req); err != nil {
+		return RunResult{}, err
+	}
+	planModeDraft, err := planModeDraftForContinue(meta.ID, req, source)
+	if err != nil {
 		return RunResult{}, err
 	}
 	if !req.CancelPlan {
@@ -790,10 +798,6 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	}
 	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
-	}
-	source := strings.TrimSpace(req.Source)
-	if source == "" {
-		source = session.PlanModeSourceCLI
 	}
 	if len(req.PlanInputAnswers) > 0 {
 		if err := r.appendPlanInputToolResult(meta.ID, req.PlanInputRequestID, source, req.PlanInputAnswers); err != nil {
@@ -837,15 +841,8 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			"plan_version": executing.ApprovedVersion,
 		}
 	}
-	if req.PlanMode != nil && req.PlanMode.Enabled {
-		draft := *req.PlanMode
-		if strings.TrimSpace(draft.Source) == "" {
-			draft.Source = source
-		}
-		if strings.TrimSpace(draft.Objective) == "" {
-			draft.Objective = firstNonEmpty(req.Message, "Plan Mode continuation")
-		}
-		if _, err := r.ensurePlanModeCreatedForContinue(meta.ID, draft); err != nil {
+	if planModeDraft != nil {
+		if _, err := r.ensurePlanModeCreatedForContinue(meta.ID, *planModeDraft); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	} else if !req.ApprovePlan && stringsTrim(req.Message) != "" {
@@ -894,6 +891,23 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func planModeDraftForContinue(sessionID string, req ContinueRequest, source string) (*session.PlanModeDraft, error) {
+	if req.PlanMode == nil || !req.PlanMode.Enabled {
+		return nil, nil
+	}
+	draft := *req.PlanMode
+	if strings.TrimSpace(draft.Source) == "" {
+		draft.Source = source
+	}
+	if strings.TrimSpace(draft.Objective) == "" {
+		draft.Objective = firstNonEmpty(req.Message, "Plan Mode continuation")
+	}
+	if _, err := session.NewPlanModeFromDraft(sessionID, draft, ""); err != nil {
+		return nil, err
+	}
+	return &draft, nil
 }
 
 func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest) error {

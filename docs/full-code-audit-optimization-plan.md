@@ -9450,7 +9450,61 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-554 and the earlier goal rollback slices. The worker slice covered a required scalar field on `POST /api/workers`; the rollback slices covered failed persistence after meaningful patches. The residual gap was that `{}` reached PATCH handlers, advanced `updated_at`, appended history/events, or created an empty mission plan before any semantic field was supplied.
 - Confirmed the minimal fix belongs in the Web handler boundary: reject empty `PATCH /goal`, `PATCH /mission/plan`, and `PATCH /mission/validation` requests before loading or writing durable goal facts, while preserving explicit empty arrays as valid field-clearing requests and preserving explicit non-approval-scoped no-op fields such as `create_tasks_from_plan:false`.
 
+### Review 551
+
+- Confirmed FCA-20260530-556 against `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md`: Web continue can explicitly enable Plan Mode, and runtime continue must preflight Plan Mode facts before claiming a resumable session as running. Invalid Plan Mode draft data must not be accepted as an asynchronous launch that later fails after changing durable state.
+- Confirmed this is distinct from FCA-20260530-555 and FCA-20260530-550. Those slices covered missing semantic fields and optional no-input bodies at Web route boundaries; the residual gap was a present but invalid `plan_mode` draft whose objective exceeded the Plan Mode contract and was only rejected after `ClaimSessionRun`.
+- Confirmed the minimal fix belongs in both the Web adapter and runtime continue boundary: validate Web Plan Mode drafts before adding a Web handle or launching `runner.Continue`, and prepare/validate runtime continue Plan Mode drafts before `ClaimSessionRun`, while preserving valid start/continue Plan Mode creation and the existing retry path for already-created Plan Mode facts.
+
 ## Update Log
+
+### FCA-20260530-556
+
+Slice: `fix(runtime): preflight continue plan drafts`
+
+Finding:
+
+- `spec/17-web-console.md` allows creating or continuing a session with a Plan Mode toggle, but the Plan Mode snapshot still has the durable `objective` contract and max length from `session.PlanModeDraft`.
+- `internal/webconsole/service.go` converted Web `plan_mode` bodies into runtime drafts without validating them before adding an active Web handle and returning HTTP 202 for continue.
+- `internal/runtime/runner.go` only created and validated a continue-time Plan Mode draft after `ClaimSessionRun`.
+- Focused regressions used an objective longer than `session.MaxPlanModeObjectiveChars`. Before the fix, Web continue returned HTTP 202 instead of HTTP 400, and runtime continue moved the session from `awaiting_input` to `failed` with `LastError:"plan mode objective exceeds 4000 characters"`.
+
+Impact:
+
+- A malformed local Web/API Plan Mode continue request could claim a resumable session and turn it into a failed session even though the request was rejectable before execution.
+- The Web response also misled the browser/operator by reporting an accepted launch and briefly creating current-process ownership for a request that never had a valid Plan Mode draft.
+
+Changes:
+
+- Changed Web Plan Mode draft conversion to validate enabled drafts against the session Plan Mode constructor before `handleStartSession` or `handleContinueSession` launches runtime work.
+- Moved runtime continue Plan Mode draft preparation and validation ahead of provider-option merging and `ClaimSessionRun`.
+- Reused the prepared runtime draft for actual Plan Mode creation so preflight and mutation use the same objective/source normalization.
+- Preserved valid Web start Plan Mode behavior, valid Web/runtime continue Plan Mode behavior, and the existing retry path for an already-created Plan Mode whose required created event failed.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestContinueSessionRejectsInvalidPlanModeDraftBeforeClaim -count=1`: failed before the fix because the route returned HTTP 202 for an invalid Plan Mode draft.
+- `go test -timeout 120s ./internal/runtime -run TestContinuePlanModeRejectsInvalidDraftBeforeClaim -count=1`: failed before the fix because runtime claimed the session and wrote `state.status=failed`.
+- `go test -timeout 120s ./internal/webconsole -run TestContinueSessionRejectsInvalidPlanModeDraftBeforeClaim -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run TestContinuePlanModeRejectsInvalidDraftBeforeClaim -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestContinue(SessionRejectsInvalidPlanModeDraftBeforeClaim|SessionRejectsUnknownField|NonResumableSessionReturnsStructuredError)|TestContinueREST(CarriesRuntimeFields|ModelDefaultUsesProviderDefault|BackfillsMissingProviderOptions)|TestService(StartSessionWithPlanModePersistsPlanAndDetail|PlanModeContinueIsTrackedByLaunchWaitGroup)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestContinuePlanMode(RejectsInvalidDraftBeforeClaim|RetryAfterCreatedEventFailureDoesNotReplacePlanMode)|TestApprovePlanMode' -count=1`: passed.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go internal/runtime/runner.go internal/runtime/planmode_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-555
 

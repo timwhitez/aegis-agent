@@ -4630,6 +4630,46 @@ func TestContinueSessionRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestContinueSessionRejectsInvalidPlanModeDraftBeforeClaim(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_continue_invalid_planmode_draft")
+	if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	tooLongObjective := strings.Repeat("x", session.MaxPlanModeObjectiveChars+1)
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/continue", map[string]any{
+		"plan_mode": map[string]any{
+			"enabled":   true,
+			"objective": tooLongObjective,
+		},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "plan mode objective exceeds") {
+		t.Fatalf("expected plan mode objective validation error, got %#v", errResp)
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != session.StatusAwaitingInput {
+		t.Fatalf("invalid Plan Mode draft should not claim the session, got state %#v", state)
+	}
+	if _, err := svc.store.LoadPlanMode(meta.ID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("invalid Plan Mode draft should not create planmode.json, err=%v", err)
+	}
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatal("invalid Plan Mode draft should not create an active web handle")
+	}
+}
+
 func TestContinueNonResumableSessionReturnsStructuredError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
