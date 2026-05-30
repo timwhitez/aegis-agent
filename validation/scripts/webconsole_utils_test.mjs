@@ -3465,6 +3465,60 @@ test('running-session steer completion does not mark a newly selected session as
   });
 });
 
+test('running-session steer completion ignores refreshed same-session state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+
+  const send = vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_steer_same_a';
+    state.sessionBacked = true;
+    setGeneratingViewState(true);
+    setNextSendInterruptArmed(true);
+    setLiveActivity({ title: 'Running old state', copy: '', tone: 'live' });
+    state.sessionDetail = {
+      metadata: { id: 'session_steer_same_a', updated_at: '2026-05-30T06:00:00Z' },
+      state: { status: 'running', updated_at: '2026-05-30T06:00:00Z' },
+      messages: []
+    };
+    nodes.chatInput.value = 'adjust the running task';
+    sendMessage();
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_steer_same_a\/steer/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setNextSendInterruptArmed(true);
+    setLiveActivity({ title: 'Loaded completed session', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_steer_same_a', updated_at: '2026-05-30T06:01:00Z' },
+      state: { status: 'completed', updated_at: '2026-05-30T06:01:00Z' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ status: 'queued' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: isGenerating(),
+    interruptArmed: isNextSendInterruptArmed(),
+    activityTitle: currentLiveActivity().title
+  })`, appContext)), {
+    selected: 'session_steer_same_a',
+    generating: false,
+    interruptArmed: true,
+    activityTitle: 'Loaded completed session'
+  });
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('continue completion does not mark a newly selected session as generating', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);

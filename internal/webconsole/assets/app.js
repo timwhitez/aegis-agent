@@ -1315,12 +1315,13 @@ async function sendMessage() {
   if (isGenerating() && hasDurableSession()) {
     const sessionID = state.sessionId;
     const requestedInterrupt = isNextSendInterruptArmed();
+    const actionSteerIdentity = currentSteerActionIdentity();
     try {
       await steerSession(sessionID, {
         message: text,
         interrupt: requestedInterrupt
       });
-      if (state.sessionId !== sessionID) {
+      if (state.sessionId !== sessionID || !isCurrentSteerActionIdentity(actionSteerIdentity)) {
         return;
       }
       setNextSendInterruptArmed(false);
@@ -1335,12 +1336,12 @@ async function sendMessage() {
       queueSessionRefresh(120);
       queueOverviewRefresh(220);
     } catch (err) {
-      if (state.sessionId === sessionID) {
+      if (state.sessionId === sessionID && isCurrentSteerActionIdentity(actionSteerIdentity)) {
         removeOptimisticMessage(optimisticID);
         showToast(err.message || 'Failed to queue steer input.', 'error');
       }
     }
-    if (state.sessionId === sessionID) {
+    if (state.sessionId === sessionID && isCurrentSteerActionIdentity(actionSteerIdentity)) {
       updateUI();
       renderCurrentSession();
     }
@@ -2074,6 +2075,14 @@ function currentContinueActionIdentity() {
 
 function isCurrentContinueActionIdentity(identity) {
   return currentContinueActionIdentity() === identity;
+}
+
+function currentSteerActionIdentity() {
+  return currentContinueActionIdentity();
+}
+
+function isCurrentSteerActionIdentity(identity) {
+  return currentSteerActionIdentity() === identity;
 }
 
 async function handlePlanModeAction(button) {

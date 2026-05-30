@@ -9078,7 +9078,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-492 and the older cross-session continue guard. FCA-492 covered Plan Mode revision identity, and the existing `continue completion does not mark a newly selected session as generating` regression covered selected-session changes; this residual issue kept using only `state.sessionId` after `continueSession(...)`, so a same-session refresh from paused to completed could still be overwritten by the old completion.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture a compact continue action identity from the selected session id, session metadata update time, state status/update time, and current Plan Mode identity, then abandon stale success/error/render continuations when that projection changes while `/continue` is in flight.
 
+### Review 489
+
+- Confirmed FCA-20260530-494 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: running-session steer is a control action over the current durable running session projection, so a stale `/steer` response must not overwrite a same-session refresh that already shows a newer state or a newer composer interrupt intent.
+- Confirmed this is distinct from FCA-20260530-493 and the older cross-session steer guard. FCA-493 covered ordinary continue, and the existing `running-session steer completion does not mark a newly selected session as queued` regression covered selected-session changes; this residual issue kept using only `state.sessionId` after `steerSession(...)`, so a same-session refresh from running to completed could still clear the current interrupt intent and replace the current activity card with the old steer completion.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: reuse the compact session-state action identity for running steer, then abandon stale same-session success/error/render continuations when the session state projection changes while `/steer` is in flight.
+
 ## Update Log
+
+### FCA-20260530-494
+
+Slice: `fix(webconsole): ignore stale steer completion`
+
+Finding:
+
+- In `sendMessage()`, the running-session steer branch correctly queued `/steer`, but after `steerSession(...)` settled it rechecked only `state.sessionId`.
+- A focused regression reproduced that if the same session refreshed from running to completed while the old `/steer` request was in flight, the old completion still cleared the current interrupt intent and replaced the current activity with `Interrupt steer requested`.
+
+Impact:
+
+- The WebConsole could show a completed or otherwise refreshed same-session projection as if an older running-session steer had just been queued.
+- This weakened the local Web UI contract that steer UI side effects belong to the durable running state snapshot the operator acted on, not merely to the selected session id.
+
+Changes:
+
+- Added a running steer action identity that reuses the compact session-state identity already used for ordinary continue.
+- The steer branch now suppresses stale same-session success, activity, refresh, error, and render side effects if the session projection changes while `/steer` is in flight.
+- Added a focused frontend regression for stale same-session steer completion.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "running-session steer completion ignores refreshed same-session state"`: failed before the fix because the stale completion changed activity to `Interrupt steer requested` and cleared `interruptArmed`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "running-session steer completion ignores refreshed same-session state"`: passed after the fix, 106 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 106 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-493
 
