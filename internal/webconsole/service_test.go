@@ -5200,7 +5200,7 @@ func TestAPIKeyWritePreflightsEnvTargetBeforeConfigWrite(t *testing.T) {
 		"provider": "custom",
 		"model":    "custom-mutated-model",
 		"api_key":  "sk-should-not-partially-save",
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "env key is required") {
 		t.Fatalf("expected env-key preflight error, got %#v", errResp)
 	}
@@ -5216,12 +5216,8 @@ func TestAPIKeyWritePreflightsEnvTargetBeforeConfigWrite(t *testing.T) {
 		t.Fatalf("failed API key preflight should not mutate process API key, got %q", got)
 	}
 	auditPath := webAuditLogPath(cfg.Session.Dir)
-	if data, err := os.ReadFile(auditPath); err == nil {
-		if strings.Contains(string(data), "web.config") || strings.Contains(string(data), "sk-should-not-partially-save") {
-			t.Fatalf("failed API key preflight should not append audit event or secret, got %q", string(data))
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("read audit log: %v", err)
+	if _, err := os.Stat(auditPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed API key preflight should not create audit log; stat err=%v", err)
 	}
 }
 
@@ -5373,7 +5369,7 @@ func TestAPIKeyWriteRejectsInvalidEnvKeyBeforePersistence(t *testing.T) {
 		"provider": "badkey",
 		"model":    "should-not-persist",
 		"api_key":  "sk-should-not-persist",
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "invalid env key") {
 		t.Fatalf("expected invalid env-key preflight error, got %#v", errResp)
 	}
@@ -5421,7 +5417,7 @@ func TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence(t *testing.T) {
 		"provider": "openai",
 		"model":    "should-not-persist",
 		"api_key":  secret,
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "invalid env value") {
 		t.Fatalf("expected invalid env value preflight error, got %#v", errResp)
 	}
@@ -5463,7 +5459,7 @@ func TestAPIKeyWriteRejectsBlankEnvValueBeforePersistence(t *testing.T) {
 		"provider": "openai",
 		"model":    "should-not-persist",
 		"api_key":  "   \t  ",
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "blank env value") {
 		t.Fatalf("expected blank env value preflight error, got %#v", errResp)
 	}
@@ -5504,7 +5500,7 @@ func TestAPIKeyWriteRejectsConfigPathAsEnvFile(t *testing.T) {
 		"provider": "openai",
 		"model":    "should-not-persist",
 		"api_key":  "sk-should-not-persist",
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "env file must be separate") {
 		t.Fatalf("expected target alias preflight error, got %#v", errResp)
 	}
@@ -5810,7 +5806,7 @@ func TestUpdateConfigRejectsConfigPathAsAuditLog(t *testing.T) {
 	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
 		"provider": "openai",
 		"model":    "should-not-persist",
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "audit log must be separate") {
 		t.Fatalf("expected audit alias preflight error, got %#v", errResp)
 	}
@@ -5844,7 +5840,7 @@ func TestAPIKeyWriteRejectsEnvFileAsAuditLog(t *testing.T) {
 		"provider": "openai",
 		"model":    "should-not-persist",
 		"api_key":  "sk-should-not-persist",
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	if !strings.Contains(errResp.Error, "env file and audit log must be separate") {
 		t.Fatalf("expected env/audit alias preflight error, got %#v", errResp)
 	}

@@ -9486,7 +9486,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-559 and FCA-20260530-560. Those slices hardened `/api/config` save semantics; the residual gap was `/api/config/test` reusing the save DTO and silently accepting save-only fields before running a provider probe.
 - Confirmed the minimal fix belongs in the Web service DTO boundary: give config-test a narrow request struct so existing strict JSON decoding rejects save-only fields before provider probes, while preserving valid provider/profile/base URL/model/API-key/reasoning probe behavior and keeping provider adapters unchanged.
 
+### Review 557
+
+- Confirmed FCA-20260530-562 against `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md`: Settings/API-key writes are local WebConsole mutation boundaries with request validation, durable config/env writes, and audit facts; deterministic Settings target/value preflight failures should be reported as request errors before persistence work, not as internal service failures.
+- Confirmed this is distinct from FCA-20260530-553, FCA-20260530-559, FCA-20260530-560, and FCA-20260530-561. Those slices covered rollback after later persistence failures, invalid guardrails values, empty Settings writes, and config-test DTO narrowing; the residual gap was `handleUpdateConfig` still mapping API-key/env target preflight failures to HTTP 500 and checking audit-log writability before rejecting malformed API-key writes.
+- Confirmed the minimal fix belongs in the Web Settings preflight boundary: classify deterministic env-key/env-value/config-env-audit alias errors as bad requests, keep real filesystem/audit/environment failures as server errors, and run API-key preflight validation before opening the audit log.
+
 ## Update Log
+
+### FCA-20260530-562
+
+Slice: `fix(webconsole): classify settings preflights`
+
+Finding:
+
+- `spec/17-web-console.md` treats Settings provider/model/API-key writes as explicit local WebConsole mutation controls, with config/API-key writes called out as risk-sensitive actions.
+- `internal/webconsole/service.go` `handleUpdateConfig` already rejected JSON shape errors, unknown providers, unsupported guardrails modes, unsupported API-provider profiles, invalid reasoning options, and invalid max-turn values as HTTP 400.
+- The later API-key preflight block still returned HTTP 500 for deterministic request/target validation failures such as a selected provider without `APIKeyEnv`, an invalid env key, a blank or NUL-containing API-key value, or config/env/audit target aliasing.
+- The same path also called `ensureAuditLogWritable()` before API-key preflight validation, so a malformed API-key write could touch the audit-log path before being rejected.
+
+Impact:
+
+- Web/API clients saw fixable Settings input and local target conflicts as internal service failures, weakening the route's existing request-validation contract.
+- Invalid API-key save attempts could perform audit-log setup work before the service had accepted the request as semantically valid.
+
+Changes:
+
+- Added a small typed Settings validation error and status mapper for preflight helpers.
+- Reclassified deterministic API-key/env/config-env-audit preflight failures to HTTP 400 while preserving filesystem, symlink, regular-file, audit-writability, config-write, env-write, process-env, and audit-append failures as HTTP 500.
+- Moved audit-log writability checking after config/env/audit alias checks and API-key preflight validation.
+- Updated existing WebConsole API-key/config target preflight regressions to require bad-request status while preserving their no-config/no-secret/no-audit-event assertions.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWritePreflightsEnvTargetBeforeConfigWrite -count=1`: failed before the fix because the route returned HTTP 500 for `env key is required`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWritePreflightsEnvTargetBeforeConfigWrite|TestAPIKeyWriteRejectsInvalidEnvKeyBeforePersistence|TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence|TestAPIKeyWriteRejectsBlankEnvValueBeforePersistence|TestAPIKeyWriteRejectsConfigPathAsEnvFile|TestUpdateConfigRejectsConfigPathAsAuditLog|TestAPIKeyWriteRejectsEnvFileAsAuditLog' -count=1`: passed after the fix.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: no output.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-561
 

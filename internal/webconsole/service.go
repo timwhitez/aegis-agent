@@ -3477,26 +3477,26 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		configPath = config.PersistPath("", cwd)
 	}
 	if err := preflightWebConfigAuditTarget(configPath, webAuditLogPath(s.store.Root())); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := s.ensureAuditLogWritable(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, webSettingsPreflightStatus(err), err)
 		return
 	}
 	if apiKeyUpdate != nil {
 		if err := preflightWebAPIKeyUpdate(*apiKeyUpdate); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, webSettingsPreflightStatus(err), err)
 			return
 		}
 		if err := preflightWebAPIKeyConfigTarget(configPath, apiKeyUpdate.envFile); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, webSettingsPreflightStatus(err), err)
 			return
 		}
 		if err := preflightWebAPIKeyAuditTarget(apiKeyUpdate.envFile, webAuditLogPath(s.store.Root())); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, webSettingsPreflightStatus(err), err)
 			return
 		}
+	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
 	}
 	configSnapshot, err := snapshotWebConfigFile(configPath)
 	if err != nil {
@@ -3598,6 +3598,30 @@ type webAPIKeyUpdate struct {
 	value   string
 }
 
+type webSettingsValidationError struct {
+	err error
+}
+
+func (e webSettingsValidationError) Error() string {
+	return e.err.Error()
+}
+
+func (e webSettingsValidationError) Unwrap() error {
+	return e.err
+}
+
+func newWebSettingsValidationError(format string, args ...any) error {
+	return webSettingsValidationError{err: fmt.Errorf(format, args...)}
+}
+
+func webSettingsPreflightStatus(err error) int {
+	var validation webSettingsValidationError
+	if errors.As(err, &validation) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
 type webConfigFileSnapshot struct {
 	data   []byte
 	exists bool
@@ -3643,19 +3667,19 @@ func restoreWebSettingsMutation(configPath string, configSnapshot webConfigFileS
 
 func preflightWebAPIKeyUpdate(update webAPIKeyUpdate) error {
 	if strings.TrimSpace(update.envFile) == "" {
-		return fmt.Errorf("env file path is required")
+		return newWebSettingsValidationError("env file path is required")
 	}
 	if strings.TrimSpace(update.envKey) == "" {
-		return fmt.Errorf("env key is required")
+		return newWebSettingsValidationError("env key is required")
 	}
 	if !config.AllowedEnvFileKey(update.envKey) {
-		return fmt.Errorf("invalid env key: %s", update.envKey)
+		return newWebSettingsValidationError("invalid env key: %s", update.envKey)
 	}
 	if strings.TrimSpace(update.value) == "" {
-		return fmt.Errorf("blank env value for %s", update.envKey)
+		return newWebSettingsValidationError("blank env value for %s", update.envKey)
 	}
 	if strings.ContainsRune(update.value, 0) {
-		return fmt.Errorf("invalid env value for %s", update.envKey)
+		return newWebSettingsValidationError("invalid env value for %s", update.envKey)
 	}
 	if info, err := os.Lstat(update.envFile); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -3689,7 +3713,7 @@ func preflightWebConfigAuditTarget(configPath, auditPath string) error {
 		return err
 	}
 	if same {
-		return fmt.Errorf("config file and audit log must be separate: %s", configPath)
+		return newWebSettingsValidationError("config file and audit log must be separate: %s", configPath)
 	}
 	return nil
 }
@@ -3700,7 +3724,7 @@ func preflightWebAPIKeyAuditTarget(envFile, auditPath string) error {
 		return err
 	}
 	if same {
-		return fmt.Errorf("API key env file and audit log must be separate: %s", envFile)
+		return newWebSettingsValidationError("API key env file and audit log must be separate: %s", envFile)
 	}
 	return nil
 }
@@ -3711,7 +3735,7 @@ func preflightWebAPIKeyConfigTarget(configPath, envFile string) error {
 		return err
 	}
 	if same {
-		return fmt.Errorf("API key env file must be separate from config file: %s", envFile)
+		return newWebSettingsValidationError("API key env file must be separate from config file: %s", envFile)
 	}
 	return nil
 }
