@@ -9420,7 +9420,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-539. That slice fixed optional JSON body handling for Plan Mode and mission approve routes; dynamic `/api/skills/{id}/install|uninstall` remained outside `jsonBodyPolicyForRequest`, so the bounded optional decoder was never reached for those skill action routes.
 - Confirmed the minimal fix belongs in the Web service adapter: classify skill install/uninstall as optional JSON-body routes, reuse the existing bounded optional decoder with an empty request shape, and keep empty-body frontend calls, JSON `{}` calls, unsupported install behavior, audit, rollback, and managed-skill path safety unchanged.
 
+### Review 546
+
+- Confirmed FCA-20260530-551 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: no-input WebConsole control mutations still mutate durable session, Goal, or Plan Mode facts, so a non-empty request body must not be silently ignored before the side effect.
+- Confirmed this is distinct from FCA-20260527-230 and FCA-20260530-550. FCA-20260527-230 preserved truly bodyless controls without requiring dummy JSON, and FCA-20260530-550 covered dynamic skill actions; the residual gap was no-input session/goal/plan controls that accepted malformed non-empty bodies while continuing to clear/delete/complete/cancel or enter stop/interrupt ownership handling.
+- Confirmed the minimal fix belongs in the Web service adapter: classify these no-input controls as optional-empty JSON routes, call the existing empty-shape optional decoder before side effects, and preserve empty-body plus JSON `{}` compatibility for frontend and CLI-style local-console callers.
+
 ## Update Log
+
+### FCA-20260530-551
+
+Slice: `fix(webconsole): validate no-input control bodies`
+
+Finding:
+
+- `spec/17-web-console.md` requires unsafe Web API mutations to pass the local-console guard, and optional JSON mutation endpoints may accept a truly empty body only while still requiring JSON Content-Type and a single JSON value for any non-empty body.
+- Several WebConsole control mutations take no semantic request fields but still perform durable side effects: `POST /api/sessions/clear`, `DELETE /api/sessions/{id}`, `DELETE /api/sessions/{id}/goal`, `POST /api/sessions/{id}/goal/complete|pause|resume`, `POST /api/sessions/{id}/planmode/cancel`, `POST /api/sessions/{id}/interrupt`, and `POST /api/sessions/{id}/stop`.
+- `jsonBodyPolicyForRequest` still classified those routes as `webJSONBodyNone`, and their handlers did not inspect the body before entering clear/delete/goal status/Plan Mode cancel/stop/interrupt logic.
+- A focused regression reproduced the gap with `Content-Type: text/plain` and body `not-json`: clear history, delete session, clear goal, complete goal, and cancel Plan Mode all executed their side effects, while interrupt/stop entered handler-level ownership errors instead of rejecting the malformed body first.
+
+Impact:
+
+- Malformed local-console requests could hide frontend/client serialization bugs while still mutating durable session history, `goal.json`, `artifacts/goal-history.jsonl`, `planmode.json`, or control ownership paths.
+- This weakened the Web API mutation contract established for required JSON routes, optional Plan Mode/mission approval bodies, and skill action bodies, while leaving destructive no-input controls less strict than other risky local-console mutations.
+
+Changes:
+
+- Added a focused WebConsole regression covering non-empty non-JSON bodies for no-input session history clear, session delete, goal clear, goal complete, Plan Mode cancel, interrupt, and stop routes.
+- Classified those no-input mutation routes as optional-empty JSON body routes so the shared unsafe guard applies the existing JSON body size cap.
+- Called `decodeOptionalEmptyJSONRequest` at each no-input handler before any side effect or ownership decision.
+- Kept the shared JSON body size cap on real request bodies while preserving direct nil-body and `http.NoBody` test/server requests as genuinely empty bodies.
+- Preserved truly empty-body compatibility for CLI-style/local-console callers and JSON `{}` compatibility for existing frontend helpers such as goal clear and Plan Mode cancel.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceNoInputMutationRoutesRejectNonJSONBodies -count=1`: failed before the fix because no-input routes ignored malformed non-empty bodies and executed side effects or handler-level ownership logic.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceNoInputMutationRoutesRejectNonJSONBodies -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(NoInputMutationRoutesRejectNonJSONBodies|OptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentType|BodylessMutationsDoNotRequireJSONContentType|SkillActionRoutesRejectNonJSONBodies|PlanModeCancelWithoutPlanModeDoesNotFailSession|PlanModeCancelPrunesFailedStaleHandleBeforeRecovery)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(NoInputMutationRoutesRejectNonJSONBodies|DeleteSessionRouteRemovesSessionTreeAndJobs|OptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentType|BodylessMutationsDoNotRequireJSONContentType)' -count=1`: passed.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-550
 

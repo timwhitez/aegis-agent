@@ -353,7 +353,7 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	if isUnsafeMethod(r.Method) && jsonBodyPolicyForRequest(r.Method, r.URL.Path) != webJSONBodyNone {
+	if isUnsafeMethod(r.Method) && jsonBodyPolicyForRequest(r.Method, r.URL.Path) != webJSONBodyNone && r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, maxWebJSONBodyBytes)
 	}
 	switch {
@@ -376,7 +376,7 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/sessions":
 		s.handleListSessions(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/sessions/clear":
-		s.handleClearSessions(w)
+		s.handleClearSessions(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/sessions/start":
 		s.handleStartSession(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/sessions/"):
@@ -632,7 +632,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, resp)
 		case http.MethodDelete:
-			s.handleDeleteSession(w, sessionID)
+			s.handleDeleteSession(w, r, sessionID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		}
@@ -661,7 +661,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 					return
 				}
-				s.handlePlanModeCancel(w, sessionID)
+				s.handlePlanModeCancel(w, r, sessionID)
 			case "input":
 				if r.Method != http.MethodPost {
 					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -680,19 +680,19 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 					return
 				}
-				s.handleGoalStatus(w, sessionID, session.GoalStatusComplete, "goal.completed")
+				s.handleGoalStatus(w, r, sessionID, session.GoalStatusComplete, "goal.completed")
 			case "pause":
 				if r.Method != http.MethodPost {
 					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 					return
 				}
-				s.handleGoalStatus(w, sessionID, session.GoalStatusPaused, "goal.paused")
+				s.handleGoalStatus(w, r, sessionID, session.GoalStatusPaused, "goal.paused")
 			case "resume":
 				if r.Method != http.MethodPost {
 					writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 					return
 				}
-				s.handleGoalStatus(w, sessionID, session.GoalStatusActive, "goal.resumed")
+				s.handleGoalStatus(w, r, sessionID, session.GoalStatusActive, "goal.resumed")
 			default:
 				writeError(w, http.StatusNotFound, errors.New("session route not found"))
 			}
@@ -744,7 +744,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		case http.MethodPatch:
 			s.handleGoalPatch(w, r, sessionID)
 		case http.MethodDelete:
-			s.handleGoalClear(w, sessionID)
+			s.handleGoalClear(w, r, sessionID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		}
@@ -765,13 +765,13 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 			return
 		}
-		s.handleInterruptSession(w, sessionID)
+		s.handleInterruptSession(w, r, sessionID)
 	case "stop":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 			return
 		}
-		s.handleStopSession(w, sessionID)
+		s.handleStopSession(w, r, sessionID)
 	case "children":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -841,7 +841,10 @@ func encodedPathSegmentHasSeparator(segment string) bool {
 	return strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c")
 }
 
-func (s *Service) handleDeleteSession(w http.ResponseWriter, sessionID string) {
+func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	hasActiveHandle, err := s.hasActiveDescendantHandle(sessionID)
 	if err != nil {
 		writeError(w, sessionStoreStatus(err), err)
@@ -899,7 +902,10 @@ func sessionStoreStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-func (s *Service) handleClearSessions(w http.ResponseWriter) {
+func (s *Service) handleClearSessions(w http.ResponseWriter, r *http.Request) {
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	if s.hasAnyActiveHandle() {
 		writeError(w, http.StatusConflict, errors.New("cannot clear history while sessions are active in this web console"))
 		return
@@ -1651,7 +1657,10 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 	writeJSON(w, http.StatusOK, goal)
 }
 
-func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
+func (s *Service) handleGoalClear(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	goal, err := s.store.LoadGoal(sessionID)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1706,7 +1715,10 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, sessionID string) {
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "cleared": cleared})
 }
 
-func (s *Service) handleGoalStatus(w http.ResponseWriter, sessionID, status, eventType string) {
+func (s *Service) handleGoalStatus(w http.ResponseWriter, r *http.Request, sessionID, status, eventType string) {
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	previous, err := s.store.LoadGoal(sessionID)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
@@ -2485,7 +2497,10 @@ func (s *Service) handlePlanModeRevise(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
 }
 
-func (s *Service) handlePlanModeCancel(w http.ResponseWriter, sessionID string) {
+func (s *Service) handlePlanModeCancel(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	if handle, ok := s.handleForSession(sessionID); ok {
 		planMode, err := s.store.LoadPlanMode(sessionID)
 		if err != nil {
@@ -2710,7 +2725,10 @@ func steerActionStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-func (s *Service) handleInterruptSession(w http.ResponseWriter, sessionID string) {
+func (s *Service) handleInterruptSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
 		writeError(w, http.StatusConflict, newWebError(
@@ -2728,7 +2746,10 @@ func (s *Service) handleInterruptSession(w http.ResponseWriter, sessionID string
 	writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "interrupt_requested"})
 }
 
-func (s *Service) handleStopSession(w http.ResponseWriter, sessionID string) {
+func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
 		writeError(w, http.StatusConflict, newWebError(
@@ -6789,6 +6810,8 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 			"/api/queue/jobs",
 			"/api/workers":
 			return webJSONBodyRequired
+		case "/api/sessions/clear":
+			return webJSONBodyOptional
 		}
 	}
 
@@ -6807,7 +6830,13 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 		return webJSONBodyNone
 	}
 	parts := strings.Split(rest, "/")
-	if len(parts) < 2 || strings.TrimSpace(parts[0]) == "" {
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return webJSONBodyNone
+	}
+	if len(parts) == 1 {
+		if method == http.MethodDelete {
+			return webJSONBodyOptional
+		}
 		return webJSONBodyNone
 	}
 
@@ -6816,6 +6845,8 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 		switch method {
 		case http.MethodPost, http.MethodPatch:
 			return webJSONBodyRequired
+		case http.MethodDelete:
+			return webJSONBodyOptional
 		default:
 			return webJSONBodyNone
 		}
@@ -6823,12 +6854,21 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 		return webJSONBodyRequired
 	case len(parts) == 2 && parts[1] == "steer" && method == http.MethodPost:
 		return webJSONBodyRequired
+	case len(parts) == 2 && (parts[1] == "interrupt" || parts[1] == "stop") && method == http.MethodPost:
+		return webJSONBodyOptional
 	case len(parts) == 3 && parts[1] == "planmode" && method == http.MethodPost:
 		switch parts[2] {
-		case "approve":
+		case "approve", "cancel":
 			return webJSONBodyOptional
 		case "revise", "input":
 			return webJSONBodyRequired
+		default:
+			return webJSONBodyNone
+		}
+	case len(parts) == 3 && parts[1] == "goal" && method == http.MethodPost:
+		switch parts[2] {
+		case "complete", "pause", "resume":
+			return webJSONBodyOptional
 		default:
 			return webJSONBodyNone
 		}

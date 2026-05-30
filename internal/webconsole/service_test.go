@@ -6897,6 +6897,193 @@ func TestServiceBodylessMutationsDoNotRequireJSONContentType(t *testing.T) {
 	}
 }
 
+func TestServiceNoInputMutationRoutesRejectNonJSONBodies(t *testing.T) {
+	type routeSetup struct {
+		method string
+		path   string
+		verify func(*testing.T, *Service)
+	}
+	cases := []struct {
+		name  string
+		setup func(*testing.T, *Service) routeSetup
+	}{
+		{
+			name: "clear sessions",
+			setup: func(t *testing.T, svc *Service) routeSetup {
+				meta := testSessionMetadata(t, "session_noinput_clear_sessions")
+				if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				return routeSetup{
+					method: http.MethodPost,
+					path:   "/api/sessions/clear",
+					verify: func(t *testing.T, svc *Service) {
+						if _, err := svc.store.LoadMetadata(meta.ID); err != nil {
+							t.Fatalf("expected malformed clear request to leave session metadata intact: %v", err)
+						}
+					},
+				}
+			},
+		},
+		{
+			name: "delete session",
+			setup: func(t *testing.T, svc *Service) routeSetup {
+				meta := testSessionMetadata(t, "session_noinput_delete_session")
+				if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				return routeSetup{
+					method: http.MethodDelete,
+					path:   "/api/sessions/" + meta.ID,
+					verify: func(t *testing.T, svc *Service) {
+						if _, err := svc.store.LoadMetadata(meta.ID); err != nil {
+							t.Fatalf("expected malformed delete request to leave session metadata intact: %v", err)
+						}
+					},
+				}
+			},
+		},
+		{
+			name: "clear goal",
+			setup: func(t *testing.T, svc *Service) routeSetup {
+				meta := testSessionMetadata(t, "session_noinput_clear_goal")
+				if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+					Enabled:   true,
+					Objective: "Keep goal when malformed body is supplied",
+					Source:    session.GoalSourceWeb,
+				}); err != nil {
+					t.Fatalf("create goal: %v", err)
+				}
+				return routeSetup{
+					method: http.MethodDelete,
+					path:   "/api/sessions/" + meta.ID + "/goal",
+					verify: func(t *testing.T, svc *Service) {
+						if _, err := svc.store.LoadGoal(meta.ID); err != nil {
+							t.Fatalf("expected malformed goal clear request to leave goal intact: %v", err)
+						}
+					},
+				}
+			},
+		},
+		{
+			name: "complete goal",
+			setup: func(t *testing.T, svc *Service) routeSetup {
+				meta := testSessionMetadata(t, "session_noinput_complete_goal")
+				if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				if _, err := svc.store.CreateGoal(meta.ID, session.GoalDraft{
+					Enabled:   true,
+					Objective: "Keep active goal when malformed body is supplied",
+					Source:    session.GoalSourceWeb,
+				}); err != nil {
+					t.Fatalf("create goal: %v", err)
+				}
+				return routeSetup{
+					method: http.MethodPost,
+					path:   "/api/sessions/" + meta.ID + "/goal/complete",
+					verify: func(t *testing.T, svc *Service) {
+						goal, err := svc.store.LoadGoal(meta.ID)
+						if err != nil {
+							t.Fatalf("load goal: %v", err)
+						}
+						if goal.Status == session.GoalStatusComplete {
+							t.Fatalf("expected malformed goal complete request to leave goal status unchanged")
+						}
+					},
+				}
+			},
+		},
+		{
+			name: "cancel plan mode",
+			setup: func(t *testing.T, svc *Service) routeSetup {
+				meta := testSessionMetadata(t, "session_noinput_cancel_planmode")
+				meta.Mode = session.ModeExec
+				meta.CompletionPolicy = session.CompletionPolicyAutonomous
+				if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+					Enabled:   true,
+					Objective: "Keep plan mode when malformed body is supplied",
+					Source:    session.PlanModeSourceWeb,
+				}); err != nil {
+					t.Fatalf("create plan mode: %v", err)
+				}
+				return routeSetup{
+					method: http.MethodPost,
+					path:   "/api/sessions/" + meta.ID + "/planmode/cancel",
+					verify: func(t *testing.T, svc *Service) {
+						planMode, err := svc.store.LoadPlanMode(meta.ID)
+						if err != nil {
+							t.Fatalf("load plan mode: %v", err)
+						}
+						if planMode.Status == session.PlanModeStatusCancelled {
+							t.Fatalf("expected malformed plan mode cancel request to leave plan mode status unchanged")
+						}
+					},
+				}
+			},
+		},
+		{
+			name: "interrupt",
+			setup: func(t *testing.T, svc *Service) routeSetup {
+				meta := testSessionMetadata(t, "session_noinput_interrupt")
+				if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				return routeSetup{
+					method: http.MethodPost,
+					path:   "/api/sessions/" + meta.ID + "/interrupt",
+				}
+			},
+		},
+		{
+			name: "stop",
+			setup: func(t *testing.T, svc *Service) routeSetup {
+				meta := testSessionMetadata(t, "session_noinput_stop")
+				if err := svc.store.Create(meta, testSessionState(session.StatusAwaitingInput)); err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				return routeSetup{
+					method: http.MethodPost,
+					path:   "/api/sessions/" + meta.ID + "/stop",
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "")
+			svc, err := New(cfg, Options{WorkerCount: 0})
+			if err != nil {
+				t.Fatalf("new service: %v", err)
+			}
+			defer svc.Close()
+
+			route := tc.setup(t, svc)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(route.method, route.path, strings.NewReader("not-json"))
+			request.Header.Set(webMutationHeader, "1")
+			request.Header.Set("Content-Type", "text/plain")
+			svc.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("expected forbidden for non-JSON body, got %d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), "Content-Type: application/json") {
+				t.Fatalf("expected JSON Content-Type error, got body=%s", recorder.Body.String())
+			}
+			if route.verify != nil {
+				route.verify(t, svc)
+			}
+		})
+	}
+}
+
 func TestServiceInterruptUsesManualPauseReason(t *testing.T) {
 	server := newSleepToolServer()
 	defer server.Close()
