@@ -9594,7 +9594,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-577. That slice rejected multiple Plan Mode control families in one request; this residual gap allowed a single cancellation control to carry execution inputs that were ignored or saved before returning `plan_cancelled`.
 - Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject `CancelPlan` plus execution inputs before provider metadata can be saved, the session can be claimed, Plan Mode can be cancelled, or replay messages can be appended, while preserving the existing standalone cancellation path.
 
+### Review 575
+
+- Confirmed FCA-20260531-580 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/02-cli-and-config.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Plan Mode approval appends a runtime-generated `meta.source=planmode_approval` user message, while an ordinary message at the approval boundary is a plan revision rather than approval text.
+- Confirmed this is distinct from FCA-20260531-577 and FCA-20260531-579. Those slices rejected multiple Plan Mode controls and cancellation mixed with execution inputs; this residual gap allowed approval plus an ordinary message, and `Runner.Continue` silently replaced that message with the synthetic approval text.
+- Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject `ApprovePlan` plus ordinary message before provider metadata can be saved, the session can be claimed, Plan Mode can enter executing, or replay messages can be appended, while preserving provider/model execution overrides for approval.
+
 ## Update Log
+
+### FCA-20260531-580
+
+Slice: `fix(runtime): reject approval message conflicts`
+
+Finding:
+
+- `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md` require Plan Mode approval to leave a replayable runtime-generated user message with `meta.source=planmode_approval`.
+- `spec/00-product.md` also says an ordinary message while Plan Mode is awaiting approval is a plan revision.
+- `Runner.Continue` accepted `ApprovePlan:true` with a non-empty ordinary `Message`, then replaced that message with `Implement the approved Plan Mode plan version N.` before appending the approval message.
+
+Impact:
+
+- A malformed CLI/API request could silently discard operator text that should have been treated as a plan revision or rejected as ambiguous.
+- If the same request carried provider/model overrides, those metadata changes could be prepared for an approval run even though the ordinary message that motivated the operator request was not preserved in `messages.jsonl`.
+- The recovery trail became ambiguous: `messages.jsonl` showed only approval, while the original request asked for approval plus additional text.
+
+Changes:
+
+- Extended `Runner.preflightPlanModeControl` to reject `ApprovePlan` when it is combined with an ordinary message.
+- Preserved valid standalone Plan Mode approval behavior, including provider/model overrides for the execution run and idempotent executing-state recovery.
+- Added `TestContinuePlanModeRejectsApprovalWithMessageBeforeClaim` to prove the conflicting request fails before claim, leaves provider/model metadata unchanged, leaves Plan Mode awaiting approval, and appends no replay messages.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestContinuePlanModeRejects(ApprovalWithMessage|CancelWithExecutionInputs|ConflictingControls|InvalidDraft)BeforeClaim|TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-579
 

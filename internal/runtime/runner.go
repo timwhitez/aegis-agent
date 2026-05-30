@@ -969,6 +969,9 @@ func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest)
 	if len(controls) > 1 {
 		return fmt.Errorf("conflicting plan mode controls: %s", strings.Join(controls, ", "))
 	}
+	if req.ApprovePlan && stringsTrim(req.Message) != "" {
+		return errors.New("plan mode approval cannot include ordinary message")
+	}
 	if req.CancelPlan {
 		var executionInputs []string
 		if stringsTrim(req.Message) != "" {
