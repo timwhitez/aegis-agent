@@ -28,8 +28,8 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 	attempts, attemptsErr := store.LoadProviderAttempts(sessionID)
 	goal, goalErr := store.LoadGoal(sessionID)
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
-	children, childrenErr := store.ListChildren(sessionID, 100)
-	jobs, jobsErr := store.ListJobsByParent(sessionID, 100)
+	children, childrenErr := store.ListChildren(sessionID, -1)
+	jobs, jobsErr := store.ListJobsByParent(sessionID, -1)
 	notifications, notificationsErr := store.LoadBackgroundNotifications(sessionID)
 	coordination, coordinationErr := store.LoadParentCoordination(sessionID)
 	checkpoint, checkpointErr := store.LoadLongRunCheckpoint(sessionID)
@@ -371,11 +371,11 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("load tasks for long-run checkpoint: %w", err)
 	}
-	children, err := store.ListChildren(sessionID, 100)
+	children, err := store.ListChildren(sessionID, -1)
 	if err != nil {
 		return fmt.Errorf("load child sessions for long-run checkpoint: %w", err)
 	}
-	jobs, err := store.ListJobsByParent(sessionID, 100)
+	jobs, err := store.ListJobsByParent(sessionID, -1)
 	if err != nil {
 		return fmt.Errorf("load queue jobs for long-run checkpoint: %w", err)
 	}

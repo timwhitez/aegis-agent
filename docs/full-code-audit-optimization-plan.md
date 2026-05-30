@@ -9636,7 +9636,62 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-585. That slice fixed pending background notifications already present in the loaded background facts; this residual gap was the linked-work resolution path, where `goal_facts.unresolved_*` trusted the capped `children(sessionID, 50)` response.
 - Confirmed the minimal fix belongs in `Service.goalFacts`: reuse the already-loaded display slice when it contains a linked child/job, but directly load missing linked session/job IDs from the store before classifying them as unresolved.
 
+### Review 582
+
+- Confirmed FCA-20260531-587 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/09-phase-plan.md`, and `spec/18-durable-contract-and-completion.md`: Web-first queue/history controls and long-run checkpoints must derive from complete durable queue/child facts, not from the default recent-list cap.
+- Confirmed this is distinct from FCA-20260531-586. That slice fixed WebConsole Goal facts that consumed a capped child/job display slice; this residual gap was lower in `SessionStore`, where `ListJobsPage` attempted an all-job read through `listJobs(0, "")` but `0` meant "default 100".
+- Confirmed the minimal fix belongs in `SessionStore` plus checkpoint readers: keep `limit == 0` as the existing 100-item default for list APIs, add `limit < 0` as an internal all-items read, use that path for `ListJobsPage`, session summaries, and long-run checkpoint child/job recovery facts.
+
 ## Update Log
+
+### FCA-20260531-587
+
+Slice: `fix(store): page queue jobs beyond default list cap`
+
+Finding:
+
+- `spec/00-product.md` and `spec/09-phase-plan.md` make WebConsole queue observation and safe local controls part of Web-first v1, while `spec/18-durable-contract-and-completion.md` requires long-run checkpoints to record unresolved child and queue state from durable facts.
+- `Store.ListJobsPage` called `listJobs(0, "")` to collect all queue jobs before applying `offset` / `limit`.
+- `listJobs` interpreted `limit <= 0` as the default recent-list cap of 100, so `ListJobsPage` could never report more than 100 jobs.
+- Web history cleanup paths use `ListJobsPage(1000000, 0)` to check for running queue jobs before clearing sessions; a running job outside the first 100 jobs could be missed.
+- `writeSessionSummary` and `writeLongRunCheckpoint` also loaded parent children and queue jobs with a fixed cap of 100, so checkpoint unresolved child/job recovery facts could omit work beyond that cap when no parent-coordination snapshot carried those ids.
+
+Impact:
+
+- WebConsole could allow history clearing while an older running queue job still existed but fell beyond the first 100 queue records.
+- Queue pagination totals could under-report the real queue size and make later queue pages unreachable.
+- Long-run checkpoint resume hints and unresolved child/queue lists could miss child sessions or queue jobs beyond the default relation cap, weakening recovery guidance for large delegated runs.
+
+Changes:
+
+- `Store.ListChildren` and queue `listJobs` now keep `limit == 0` as the existing default 100-item cap and treat `limit < 0` as an internal all-items read.
+- `Store.ListJobsPage` now reads all queue jobs before applying page `offset` and `limit`.
+- `writeSessionSummary` and `writeLongRunCheckpoint` now load all parent child sessions and all parent queue jobs before deriving counts and checkpoint unresolved facts.
+- Added store coverage for more than 100 queue jobs, preserving the default 100-item list while making negative-limit and paged reads complete.
+- Added runtime checkpoint coverage for unresolved queue jobs and child sessions beyond the previous default list cap.
+- Added WebConsole coverage proving history clear still rejects an older running queue job after 100 newer completed jobs.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run TestListJobsPageUsesAllJobsBeyondDefaultListLimit -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run TestLongRunCheckpointIncludesQueueJobsBeyondDefaultListLimit -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run TestServiceClearSessionsRejectsRunningQueueJobsBeyondDefaultListLimit -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestLongRunCheckpointIncludes(QueueJobs|ChildSessions)BeyondDefaultListLimit' -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -run 'TestListJobsPageUsesAllJobsBeyondDefaultListLimit|TestLongRunCheckpointIncludesQueueJobsBeyondDefaultListLimit|TestServiceClearSessionsRejectsRunningQueueJobsBeyondDefaultListLimit|TestServiceClearSessionsRejectsRunningQueueJobs|TestLongRunCheckpointMirrorsParentCoordinationUnresolvedWork|TestLongRunCheckpointKeepsWaitAnyReadyWithRemainingUnresolvedWork' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-586
 

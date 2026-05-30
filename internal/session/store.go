@@ -1479,9 +1479,10 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 }
 
 func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummary, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 100
 	}
+	all := limit < 0
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1542,7 +1543,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		}
 		return result[i].CreatedAt < result[j].CreatedAt
 	})
-	if len(result) > limit {
+	if !all && len(result) > limit {
 		result = result[:limit]
 	}
 	return result, nil
@@ -1850,7 +1851,7 @@ func (s *Store) ListJobs(limit int) ([]QueueJob, error) {
 }
 
 func (s *Store) ListJobsPage(limit, offset int) ([]QueueJob, int, error) {
-	items, err := s.listJobs(0, "")
+	items, err := s.listJobs(-1, "")
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1876,9 +1877,10 @@ func (s *Store) ListJobsByParent(parentSessionID string, limit int) ([]QueueJob,
 }
 
 func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 100
 	}
+	all := limit < 0
 	copies, err := s.listQueueJobCopies()
 	if err != nil {
 		return nil, err
@@ -1914,7 +1916,7 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 		}
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
-	if len(out) > limit {
+	if !all && len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil

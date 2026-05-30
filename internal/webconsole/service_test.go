@@ -8940,6 +8940,49 @@ func TestServiceClearSessionsRejectsRunningQueueJobs(t *testing.T) {
 	}
 }
 
+func TestServiceClearSessionsRejectsRunningQueueJobsBeyondDefaultListLimit(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_running_clear_block_over_limit",
+		Status:        session.QueueStatusRunning,
+		Prompt:        "busy",
+		Mode:          session.ModeExec,
+	}); err != nil {
+		t.Fatalf("save running queue job: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	for i := 0; i < 100; i++ {
+		if err := svc.store.SaveJob(session.QueueJob{
+			SchemaVersion: 1,
+			ID:            fmt.Sprintf("job_completed_clear_%03d", i),
+			Status:        session.QueueStatusCompleted,
+			Prompt:        "done",
+			Mode:          session.ModeExec,
+			FinalText:     "done",
+		}); err != nil {
+			t.Fatalf("save completed queue job %d: %v", i, err)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected conflict while older running queue job exists, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "queue jobs are still running") {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
 func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	cfg := testConfig(t, "")
 	provider := cfg.Providers["openai"]

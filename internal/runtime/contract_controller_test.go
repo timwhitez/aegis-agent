@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -696,6 +697,89 @@ func TestLongRunCheckpointKeepsWaitAnyReadyWithRemainingUnresolvedWork(t *testin
 	}
 	if containsString(checkpoint.ResumeHints, "resolve parent child or queue wait state") {
 		t.Fatalf("ready wait-any checkpoint should not add parent wait hint, got %#v", checkpoint.ResumeHints)
+	}
+}
+
+func TestLongRunCheckpointIncludesQueueJobsBeyondDefaultListLimit(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	base := time.Date(2026, 5, 31, 9, 45, 0, 0, time.UTC)
+	for i := 0; i < 105; i++ {
+		job := session.QueueJob{
+			SchemaVersion:   1,
+			ID:              fmt.Sprintf("job_checkpoint_all_%03d", i),
+			CreatedAt:       base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Status:          session.QueueStatusQueued,
+			ParentSessionID: meta.ID,
+			RootSessionID:   meta.ID,
+			Prompt:          "queued checkpoint work",
+			Mode:            session.ModeExec,
+			Background:      true,
+		}
+		if err := store.SaveJob(job); err != nil {
+			t.Fatalf("save queue job %d: %v", i, err)
+		}
+	}
+
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if len(checkpoint.UnresolvedQueueJobs) != 105 {
+		t.Fatalf("expected all unresolved queue jobs in checkpoint, got %d: %#v", len(checkpoint.UnresolvedQueueJobs), checkpoint.UnresolvedQueueJobs)
+	}
+	if !containsString(checkpoint.UnresolvedQueueJobs, "job_checkpoint_all_104") {
+		t.Fatalf("expected queue job beyond default list limit in checkpoint, got %#v", checkpoint.UnresolvedQueueJobs)
+	}
+	if checkpoint.ParentWaitState != "waiting" {
+		t.Fatalf("expected waiting parent state from unresolved queue jobs, got %#v", checkpoint)
+	}
+}
+
+func TestLongRunCheckpointIncludesChildSessionsBeyondDefaultListLimit(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	base := time.Date(2026, 5, 31, 10, 5, 0, 0, time.UTC)
+	for i := 0; i < 105; i++ {
+		child := session.SessionMetadata{
+			SchemaVersion:    1,
+			ID:               fmt.Sprintf("child_checkpoint_all_%03d", i),
+			CreatedAt:        base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Workdir:          t.TempDir(),
+			RequestedWorkdir: t.TempDir(),
+			Mode:             session.ModeExec,
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			CompletionPolicy: session.CompletionPolicyAutonomous,
+			ParentSessionID:  meta.ID,
+			RootSessionID:    meta.ID,
+			Depth:            1,
+		}
+		if err := store.Create(child, session.State{
+			Status:    session.StatusRunning,
+			Phase:     "turn_decide",
+			UpdatedAt: base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+		}); err != nil {
+			t.Fatalf("create child %d: %v", i, err)
+		}
+	}
+
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if len(checkpoint.UnresolvedChildSessions) != 105 {
+		t.Fatalf("expected all unresolved child sessions in checkpoint, got %d: %#v", len(checkpoint.UnresolvedChildSessions), checkpoint.UnresolvedChildSessions)
+	}
+	if !containsString(checkpoint.UnresolvedChildSessions, "child_checkpoint_all_104") {
+		t.Fatalf("expected child beyond default list limit in checkpoint, got %#v", checkpoint.UnresolvedChildSessions)
+	}
+	if checkpoint.ParentWaitState != "waiting" {
+		t.Fatalf("expected waiting parent state from unresolved children, got %#v", checkpoint)
 	}
 }
 

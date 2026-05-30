@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -5568,6 +5569,47 @@ func TestListChildrenAndParentJobsUseCreationOrder(t *testing.T) {
 	}
 	if len(listedJobs) != 2 || listedJobs[0].ID != "job_first" || listedJobs[1].ID != "job_second" {
 		t.Fatalf("expected job creation order, got %#v", listedJobs)
+	}
+}
+
+func TestListJobsPageUsesAllJobsBeyondDefaultListLimit(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	base := time.Date(2026, 5, 31, 9, 20, 0, 0, time.UTC)
+	for i := 0; i < 105; i++ {
+		job := QueueJob{
+			SchemaVersion: 1,
+			ID:            fmt.Sprintf("job_page_all_%03d", i),
+			CreatedAt:     base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Status:        QueueStatusQueued,
+			Prompt:        "queued work",
+			Mode:          ModeExec,
+			Background:    true,
+		}
+		if err := store.SaveJob(job); err != nil {
+			t.Fatalf("save job %d: %v", i, err)
+		}
+	}
+
+	defaultJobs, err := store.ListJobs(0)
+	if err != nil {
+		t.Fatalf("list default jobs: %v", err)
+	}
+	if len(defaultJobs) != 100 {
+		t.Fatalf("expected default list limit to remain 100, got %d", len(defaultJobs))
+	}
+	allJobs, err := store.ListJobs(-1)
+	if err != nil {
+		t.Fatalf("list all jobs: %v", err)
+	}
+	if len(allJobs) != 105 {
+		t.Fatalf("expected negative limit to return all jobs, got %d", len(allJobs))
+	}
+	page, total, err := store.ListJobsPage(10, 100)
+	if err != nil {
+		t.Fatalf("list jobs page: %v", err)
+	}
+	if total != 105 || len(page) != 5 {
+		t.Fatalf("expected total=105 and final page len=5, got total=%d page=%#v", total, page)
 	}
 }
 
