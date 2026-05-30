@@ -9090,7 +9090,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-494 and existing cross-session interrupt/stop coverage. FCA-494 covered composer steer completion, while the existing `interrupt completion does not update a newly selected session` and `stop completion does not update a newly selected session` regressions covered selected-session changes; this residual issue kept using only `state.sessionId` after `interruptSession(...)` and selected-session stop completion, so a same-session refresh from running to completed could still replace the activity with `Interrupt requested` or `Stopping run`.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: reuse the compact session-state action identity for top-level interrupt and selected-session stop, then abandon stale same-session success/error/render continuations when that projection changes while `/interrupt` or `/stop` is in flight.
 
+### Review 491
+
+- Confirmed FCA-20260530-496 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: inline WebConsole continue is a local control over the current durable paused/awaiting/failed session projection, so stale inline `/continue` responses must not enqueue refreshes or success/error UI for a same-session projection that has already changed.
+- Confirmed this is distinct from FCA-20260530-493 and the older cross-session inline continue guard. FCA-493 covered the composer continue path, while `inline continue action does not refresh a newly selected session after stale completion` covered selected-session changes; this residual issue was the helper path `requestContinueSession(...)`, which still used only `state.sessionId` and could enqueue stale same-session session-detail and overview refreshes after the selected session had refreshed from awaiting input to completed.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture the compact session-state action identity inside `requestContinueSession(...)`, then abandon stale same-session success/error/refresh continuations when that projection changes while `/continue` is in flight.
+
 ## Update Log
+
+### FCA-20260530-496
+
+Slice: `fix(webconsole): ignore stale inline continue completion`
+
+Finding:
+
+- `requestContinueSession(...)` guarded async completions by selected `state.sessionId` only.
+- A focused regression reproduced that if the same session refreshed from `awaiting_input` to `completed` while inline `/continue` was in flight, the stale completion still enqueued session-detail and overview refreshes for the new projection.
+
+Impact:
+
+- The WebConsole could run stale inline continue success/error/refresh side effects against a newer same-session projection.
+- This weakened the local Web UI contract that inline continue actions belong to the durable session state snapshot the operator acted on, not merely to the selected session id.
+
+Changes:
+
+- Reused the compact session-state action identity in `requestContinueSession(...)`.
+- Inline continue now suppresses stale same-session success, error, session refresh, and overview refresh side effects when the session projection changes while `/continue` is in flight.
+- Added a focused frontend regression for stale same-session inline continue completion.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "inline continue action ignores refreshed same-session state"`: failed before the fix because stale completion queued `/api/sessions/<id>?limit=40` and `/api/overview`.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "inline continue action ignores refreshed same-session state"`: passed after the fix, 109 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 109 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed on rerun after one non-reproduced `internal/webconsole` active-handle test failure.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-495
 

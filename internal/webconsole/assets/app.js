@@ -1611,13 +1611,14 @@ async function requestStopViaBestAvailablePath(sessionID) {
 }
 
 async function requestContinueSession(sessionID, message = '', options = {}) {
-  const isStillSelected = () => state.sessionId === sessionID;
+  const actionContinueIdentity = currentContinueActionIdentity();
+  const isStillCurrent = () => state.sessionId === sessionID && isCurrentContinueActionIdentity(actionContinueIdentity);
   try {
     await continueSession(sessionID, {
       message,
       planMode: options.planMode
     });
-    if (!isStillSelected()) {
+    if (!isStillCurrent()) {
       return;
     }
     if (!options.silentToast) {
@@ -1626,7 +1627,7 @@ async function requestContinueSession(sessionID, message = '', options = {}) {
     queueSessionRefresh(120);
     queueOverviewRefresh(180);
   } catch (err) {
-    if (!options.silentToast && isStillSelected()) {
+    if (!options.silentToast && isStillCurrent()) {
       showToast(err.message || 'Failed to continue session.', 'error');
     }
     if (options.silentToast) {

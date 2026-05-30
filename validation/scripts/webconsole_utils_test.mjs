@@ -3883,6 +3883,55 @@ test('inline continue action does not refresh a newly selected session after sta
   ]);
 });
 
+test('inline continue action ignores refreshed same-session state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+  vm.runInContext(`
+    window.setTimeout = function(callback) {
+      callback();
+      return 0;
+    };
+  `, appContext);
+
+  const action = vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_inline_continue_same_a';
+    state.sessionBacked = true;
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded old inline state', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_inline_continue_same_a', updated_at: '2026-05-30T08:00:00Z' },
+      state: { status: 'awaiting_input', updated_at: '2026-05-30T08:00:00Z' },
+      messages: []
+    };
+    requestContinueSession('session_inline_continue_same_a');
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_inline_continue_same_a\/continue/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded completed session', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_inline_continue_same_a', updated_at: '2026-05-30T08:01:00Z' },
+      state: { status: 'completed', updated_at: '2026-05-30T08:01:00Z' },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_inline_continue_same_a', status: 'accepted' });
+  await action;
+
+  assert.deepEqual(sameRealm(appContext.pendingRequests.map((request) => request.url)), [
+    '/api/sessions/session_inline_continue_same_a/continue'
+  ]);
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('fetchHistory queues the latest requested page and ignores stale in-flight history', async () => {
   const appContext = createAppHarnessContext();
 
