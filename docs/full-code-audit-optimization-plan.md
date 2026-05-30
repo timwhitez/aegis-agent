@@ -9336,7 +9336,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-534 and FCA-20260530-535. Those handled explicit failed OpenAI status and explicit Google safety finish; this residual slice covers missing OpenAI `status` and missing Google `finishReason`, which previously still fell through to `tool_use`.
 - Confirmed the minimal fix is adapter-owned stop mapping only. Runtime keeps its generic malformed `tool_use` backstop, while OpenAI/Google adapters stop emitting executable calls when the provider did not prove a successful tool-call boundary.
 
+### Review 532
+
+- Confirmed FCA-20260530-537 against `AGENTS.md`, `spec/01-runtime-architecture.md`, and `spec/03-provider-contracts.md`: Anthropic `tool_use` content blocks and `stop_reason=tool_use` must be mutually consistent before the adapter exposes executable internal tool calls.
+- Confirmed this is distinct from FCA-20260530-532. That slice rejected `stop_reason=tool_use` without any tool block; this residual slice rejects the inverse shape, a tool block under a non-tool stop reason.
+- Confirmed the minimal fix belongs in the Anthropic adapter response-shape validation, not runtime or Web, because the contradiction is provider-native protocol state.
+
 ## Update Log
+
+### FCA-20260530-537
+
+Slice: `fix(provider): reject anthropic mismatched tool-use blocks`
+
+Finding:
+
+- `internal/provider/anthropic.go` parsed `tool_use` content blocks before stop mapping, but only rejected the shape where `stop_reason=tool_use` had no parsed tool calls.
+- If Anthropic returned a `tool_use` content block with `stop_reason:"end_turn"`, the adapter returned the parsed tool call while mapping the stop reason as a normal done candidate.
+- Focused failing evidence showed `TestAnthropicAdapterRejectsToolUseBlockWithoutToolUseStop` received no provider parse error before the fix.
+
+Impact:
+
+- A contradictory Anthropic-compatible response could expose an executable local tool call without the provider declaring a tool-use stop boundary.
+- Runtime tool dispatch keys on parsed tool calls, so the stop reason mismatch could still produce tool side effects and ambiguous replay facts.
+- This does not affect valid Anthropic tool execution because `stop_reason:"tool_use"` with one or more valid `tool_use` blocks still maps to `tool_use`.
+
+Changes:
+
+- Added Anthropic response-shape validation that rejects parsed `tool_use` blocks when `stop_reason` is not `tool_use`.
+- Added a regression test for `stop_reason:"end_turn"` combined with a valid `tool_use` content block.
+- Updated the provider contract to document the two-way consistency requirement between Anthropic tool blocks and stop reason.
+
+Validation:
+
+- `go test ./internal/provider -run TestAnthropicAdapterRejectsToolUseBlockWithoutToolUseStop -count=1`: failed before the fix because no provider parse error was returned; passed after the fix.
+- `go test ./internal/provider -run 'TestAnthropicAdapterSerializesAndParses|TestAnthropicAdapterRejectsToolUseStopWithoutToolUseBlock|TestAnthropicAdapterRejectsToolUseBlockWithoutToolUseStop|TestAnthropicAdapterRejectsNonObjectToolUseInput|TestAnthropicAdapterRejectsMissingToolUseID|TestAnthropicAdapterMapsUnknownStopReasonToErrorStop' -count=1`: passed.
+- `go test ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-536
 

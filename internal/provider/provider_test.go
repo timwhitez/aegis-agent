@@ -575,6 +575,31 @@ func TestAnthropicAdapterRejectsToolUseStopWithoutToolUseBlock(t *testing.T) {
 	assertProviderParseError(t, err, "anthropic", "tool_use stop reason")
 }
 
+func TestAnthropicAdapterRejectsToolUseBlockWithoutToolUseStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_tool_use_with_end_turn",
+			"stop_reason":"end_turn",
+			"content":[
+				{"type":"tool_use","id":"toolu_1","name":"shell","input":{"command":"pwd"}}
+			],
+			"usage":{"input_tokens":8,"output_tokens":4}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	assertProviderParseError(t, err, "anthropic", "tool_use content block")
+}
+
 func TestAnthropicAdapterAppliesPromptCacheMarkersAndTelemetry(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
