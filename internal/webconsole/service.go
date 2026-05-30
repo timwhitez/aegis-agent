@@ -5487,6 +5487,7 @@ func sessionTreeTargetIDs(sessionID string, items []session.SessionSummary) map[
 }
 
 func (s *Service) handleForSession(sessionID string) (*launchHandle, bool) {
+	s.pruneInactiveHandles()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	handle, ok := s.handles[sessionID]

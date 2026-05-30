@@ -24,6 +24,7 @@ import (
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/fileutil"
+	agentruntime "go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
 	skillcatalog "go-cli-agent/internal/skills"
 
@@ -3150,6 +3151,83 @@ func TestServicePlanModeCancelWithoutPlanModeDoesNotFailSession(t *testing.T) {
 	}
 	if svc.hasActiveHandle(meta.ID) {
 		t.Fatalf("missing plan mode cancel should not launch background continue")
+	}
+}
+
+func TestServicePlanModeCancelPrunesFailedStaleHandleBeforeRecovery(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_planmode_cancel_stale_failed_handle")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, session.State{Status: session.StatusFailed, Phase: "plan_input", LastError: "previous input event failed", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Cancel stale failed plan input", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	pendingRequest := session.PlanModeInputRequest{
+		RequestID:  "pmq_stale_cancel",
+		ToolCallID: "call_stale_cancel",
+		Questions: []session.PlanModeInputQuestion{{
+			ID:       "scope_choice",
+			Header:   "Scope",
+			Question: "Which scope?",
+			Options: []session.PlanModeInputOption{
+				{Label: "Narrow", Description: "Keep it focused."},
+				{Label: "Broad", Description: "Include cleanup."},
+			},
+		}},
+		Status:    "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := svc.store.SetPlanModePendingRequest(meta.ID, pendingRequest, session.PlanModeSourceTool); err != nil {
+		t.Fatalf("set pending request: %v", err)
+	}
+	staleRunner := agentruntime.NewRunner(cfg)
+	if err := svc.addHandle(newLaunchHandle(meta.ID, staleRunner, func() {})); err != nil {
+		t.Fatalf("add stale handle: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/cancel", map[string]any{}, http.StatusOK, nil)
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatal("expected failed stale handle to be pruned before recovered cancel")
+	}
+	cancelled, err := svc.store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load cancelled plan mode: %v", err)
+	}
+	if cancelled.Status != session.PlanModeStatusCancelled {
+		t.Fatalf("expected cancelled plan mode, got %#v", cancelled)
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != session.StatusAwaitingInput || state.Phase != "plan_cancelled" {
+		t.Fatalf("expected recovered cancel to leave awaiting plan_cancelled, got %#v", state)
+	}
+	messages, err := svc.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var foundCancelResult bool
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults {
+			if result.ToolCallID == pendingRequest.ToolCallID && result.Name == "request_user_input" && result.IsError {
+				foundCancelResult = true
+			}
+		}
+	}
+	if !foundCancelResult {
+		t.Fatalf("expected recovered cancellation tool result, got %#v", messages)
 	}
 }
 

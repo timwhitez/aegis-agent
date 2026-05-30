@@ -9390,7 +9390,48 @@ Evidence gates:
 - Confirmed this is distinct from earlier Web input/approve preflight and Plan Mode event/history idempotency slices. The remaining gap was the lower-level `Runner.Continue` boundary, plus Web's inactive cancel path, where malformed or missing Plan Mode control facts could still reach the runtime after only a generic resumable-state check.
 - Confirmed the minimal fix belongs at the runtime/session boundary: preflight current Plan Mode state and pending input `request_id` before `ClaimSessionRun`, keep already-answered recovered input retry idempotent, and require exact non-empty request IDs in `Store.AnswerPlanModeInput`.
 
+### Review 541
+
+- Confirmed FCA-20260530-546 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Web Plan Mode input/cancel controls must prune terminal stale current-process handles before deciding whether a request belongs to the live active-runner path or the recovered continue path.
+- Confirmed this is distinct from FCA-20260522-005 and FCA-20260530-545. FCA-20260522-005 kept non-terminal Plan Mode input handles alive during detail polling, and FCA-20260530-545 preflighted recovered Plan Mode controls before runtime claim. The residual gap was a Web-only active-handle lookup that bypassed stale terminal pruning, so a failed session with a pending Plan Mode request could be blocked by an old in-memory handle and never reach the recovered cancel path.
+- Confirmed the minimal fix is to route direct Web handle lookup through the existing `pruneInactiveHandles` terminal-state policy. This keeps live `awaiting_input` handles intact while removing `failed` / `completed` handle leftovers before Plan Mode cancel/input chooses between active delivery and recovery continue.
+
 ## Update Log
+
+### FCA-20260530-546
+
+Slice: `fix(webconsole): prune stale handles before plan controls`
+
+Finding:
+
+- `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md` make Web active handles current-process owner clues, not durable authority, and recovered Plan Mode cancel/input must use `planmode.json` plus the stored pending `tool_call_id` when a live waiter is unavailable.
+- `internal/webconsole/service.go` already pruned stale terminal handles in `hasActiveHandle`, `activeHandleOwner`, `hasAnyActiveHandle`, and descendant checks.
+- `handlePlanModeCancel` and `handlePlanModeInput` used `handleForSession` directly. That helper read `s.handles` without pruning, so a leftover current-process handle for a session whose durable `state.json` was already `failed` could still be treated as active.
+- A focused regression reproduced the failure with `state.status=failed`, a pending Plan Mode input request, and a stale handle with no waiter: `/planmode/cancel` returned `409` with `plan input request is not waiting in this web console` instead of pruning the stale handle and using recovered cancel replay.
+
+Impact:
+
+- A recoverable failed Plan Mode input session could be stuck from the Web UI. The stale in-memory handle blocked live cancel, but also prevented the fallback continue path from appending the required `request_user_input` cancellation tool result and moving Plan Mode to `cancelled`.
+- This weakened the Web-first recovery contract because `state.json` and `planmode.json` showed a resumable failed/pending state, while a stale process-local clue incorrectly overrode the durable facts.
+
+Changes:
+
+- `handleForSession` now calls `pruneInactiveHandles` before reading `s.handles`.
+- The existing pruning policy remains unchanged: only durable `completed` / `failed` session states remove current-process handles. Non-terminal `awaiting_input` Plan Mode waiters are still retained for live input/cancel delivery.
+- Added a WebConsole regression proving a failed stale handle is pruned before recovered Plan Mode cancel, and that the recovered path cancels Plan Mode, returns the session to `awaiting_input` / `plan_cancelled`, and appends the replayable `request_user_input` error tool result.
+- Updated Plan Mode / active handle specs to document that stale terminal Web handles must not block recovered Plan Mode controls.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServicePlanModeCancelPrunesFailedStaleHandleBeforeRecovery -count=1`: failed before the fix with HTTP 409, then passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServicePlanMode(CancelPrunesFailedStaleHandleBeforeRecovery|CancelWithoutPlanModeDoesNotFailSession|ReviseInputAndCancelControls|InputDetailKeepsLiveHandle|ContinueIsTrackedByLaunchWaitGroup)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(PruneInactiveHandlesRecordsReleaseEvent|PruneInactiveHandlesKeepsUnreadableStateHandle|ClearSessionsIgnoresStaleHandles)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-545
 
