@@ -969,6 +969,24 @@ func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest)
 	if len(controls) > 1 {
 		return fmt.Errorf("conflicting plan mode controls: %s", strings.Join(controls, ", "))
 	}
+	if req.CancelPlan {
+		var executionInputs []string
+		if stringsTrim(req.Message) != "" {
+			executionInputs = append(executionInputs, "message")
+		}
+		if normalizeProviderOverride(req.Provider) != "" {
+			executionInputs = append(executionInputs, "provider")
+		}
+		if normalizeModelOverride(req.Model) != "" {
+			executionInputs = append(executionInputs, "model")
+		}
+		if strings.TrimSpace(req.SystemOverride) != "" {
+			executionInputs = append(executionInputs, "system")
+		}
+		if len(executionInputs) > 0 {
+			return fmt.Errorf("plan mode cancel cannot include execution inputs: %s", strings.Join(executionInputs, ", "))
+		}
+	}
 	if req.ApprovePlan {
 		planMode, err := r.store.LoadPlanMode(sessionID)
 		if err != nil {

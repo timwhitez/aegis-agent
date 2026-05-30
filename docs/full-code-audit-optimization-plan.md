@@ -9588,7 +9588,53 @@ Evidence gates:
 - Confirmed this is a residual sibling of FCA-20260531-575 and FCA-20260530-538. Those slices handled OpenAI/Google non-success call parsing and Anthropic `end_turn`/`tool_use` contradictions; this narrower gap was that Anthropic missing-`stop_reason` responses still parsed malformed `tool_use.input` before honoring the missing boundary.
 - Confirmed the minimal fix belongs inside `internal/provider/anthropic.go`: when `stop_reason` is missing, suppress `tool_use` parsing and provider replay blocks before stop mapping, while keeping valid `stop_reason=tool_use` malformed-call validation and `end_turn` plus executable `tool_use` contradiction checks unchanged.
 
+### Review 574
+
+- Confirmed FCA-20260531-579 against `spec/02-cli-and-config.md` and `spec/18-durable-contract-and-completion.md`: `continue --cancel-plan` is a pure Plan Mode cancellation control, while ordinary message, provider, model, and system fields are execution inputs for a resumed provider turn.
+- Confirmed this is distinct from FCA-20260531-577. That slice rejected multiple Plan Mode control families in one request; this residual gap allowed a single cancellation control to carry execution inputs that were ignored or saved before returning `plan_cancelled`.
+- Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject `CancelPlan` plus execution inputs before provider metadata can be saved, the session can be claimed, Plan Mode can be cancelled, or replay messages can be appended, while preserving the existing standalone cancellation path.
+
 ## Update Log
+
+### FCA-20260531-579
+
+Slice: `fix(runtime): reject cancel execution inputs`
+
+Finding:
+
+- `spec/02-cli-and-config.md` defines `continue --cancel-plan` as cancellation of a pending Plan Mode, with optional `request_user_input` cancellation replay, while `--message`, `--provider`, `--model`, and `--system` are continue execution inputs for a provider turn.
+- `Runner.Continue` applied provider/model overrides before Plan Mode cancellation and returned from the cancellation branch before appending any ordinary continuation message or starting a provider turn.
+- A malformed CLI/API request such as `CancelPlan:true` plus message/provider/model/system could therefore either silently drop the message/system override or persist provider/model metadata even though the operation only cancelled Plan Mode and did not execute with those settings.
+
+Impact:
+
+- A single malformed cancellation request could make `session.json` show a provider/model change with no matching provider execution or replay message.
+- Operators could believe a cancellation plus message resumed the session, while the runtime cancelled the plan and discarded the continuation text.
+- The Web-first file-fact boundary was weakened because `state.json`, `planmode.json`, `messages.jsonl`, and `session.json` could reflect different interpretations of one operator request.
+
+Changes:
+
+- Extended `Runner.preflightPlanModeControl` to reject `CancelPlan` when it is combined with ordinary execution inputs: message, provider, model, or system override.
+- Kept `CancelPlan` itself valid and unchanged for the documented Plan Mode cancellation path, including recovered `request_user_input` cancellation replay and `session.awaiting_input` lifecycle event behavior.
+- Added `TestContinuePlanModeRejectsCancelWithExecutionInputsBeforeClaim` to prove the conflicting request fails before claim, leaves provider/model metadata unchanged, leaves Plan Mode unchanged, and appends no replay messages.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestContinuePlanModeRejects(CancelWithExecutionInputs|ConflictingControls|InvalidDraft)BeforeClaim|TestCancelPlanModeRecordsAwaitingInputLifecycleEvent' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-578
 

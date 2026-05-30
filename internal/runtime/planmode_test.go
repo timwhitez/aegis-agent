@@ -155,6 +155,72 @@ func TestContinuePlanModeRejectsConflictingControlsBeforeClaim(t *testing.T) {
 	}
 }
 
+func TestContinuePlanModeRejectsCancelWithExecutionInputsBeforeClaim(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+		ProviderOptions:  providerOptionsFromConfig("openai", cfg.Providers["openai"]),
+	}
+	initialState := session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, initialState); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Cancel only", Source: session.PlanModeSourceCLI}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID:      sessionID,
+		CancelPlan:     true,
+		Message:        "also continue",
+		Provider:       "anthropic",
+		Model:          "claude-custom",
+		SystemOverride: "temporary system override",
+		Source:         session.PlanModeSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "plan mode cancel cannot include execution inputs") {
+		t.Fatalf("expected cancel/execution input conflict, got result=%#v err=%v", result, err)
+	}
+	loadedMeta, err := runner.store.LoadMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if loadedMeta.Provider != meta.Provider || loadedMeta.Model != meta.Model {
+		t.Fatalf("cancel conflict should not mutate provider metadata, got %#v", loadedMeta)
+	}
+	state, err := runner.store.LoadState(sessionID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != initialState.Status || state.Phase != initialState.Phase {
+		t.Fatalf("cancel conflict should not claim the session, got %#v", state)
+	}
+	planMode, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusPlanning {
+		t.Fatalf("cancel conflict should not mutate Plan Mode, got %#v", planMode)
+	}
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("cancel conflict should not append replay messages, got %#v", messages)
+	}
+}
+
 func TestContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
