@@ -117,6 +117,10 @@ type Service struct {
 	// beforeAppendAuditEvent is set only by package tests to force deterministic
 	// audit persistence failures between preflight and append.
 	beforeAppendAuditEvent func(eventType string, data map[string]any) error
+	// setProcessEnv/unsetProcessEnv are set only by package tests to force
+	// deterministic process environment persistence failures.
+	setProcessEnv   func(string, string) error
+	unsetProcessEnv func(string) error
 
 	// beforeAppendGoalMutation is set only by package tests to force deterministic
 	// goal mutation persistence failures after earlier side facts have been recorded.
@@ -304,12 +308,14 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	}
 	store := runtime.NewStoreView(serviceCfg).Store()
 	svc := &Service{
-		cfg:           serviceCfg,
-		configPath:    opts.ConfigPath,
-		store:         store,
-		staticFS:      staticFS,
-		handles:       map[string]*launchHandle{},
-		pendingStarts: map[int]context.CancelFunc{},
+		cfg:             serviceCfg,
+		configPath:      opts.ConfigPath,
+		store:           store,
+		staticFS:        staticFS,
+		handles:         map[string]*launchHandle{},
+		pendingStarts:   map[int]context.CancelFunc{},
+		setProcessEnv:   os.Setenv,
+		unsetProcessEnv: os.Unsetenv,
 	}
 	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount)
 	return svc, nil
@@ -3486,7 +3492,11 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if err := os.Setenv(apiKeyUpdate.envKey, apiKeyUpdate.value); err != nil {
+		if err := s.setProcessEnv(apiKeyUpdate.envKey, apiKeyUpdate.value); err != nil {
+			if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists, s.setProcessEnv, s.unsetProcessEnv); restoreErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("restore settings after process API key env error %v: %w", err, restoreErr))
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -3502,7 +3512,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err := s.appendAuditEvents(auditEvents...); err != nil {
-		if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists); restoreErr != nil {
+		if restoreErr := restoreWebSettingsMutation(configPath, configSnapshot, apiKeyUpdate, envSnapshot, previousEnvValue, previousEnvExists, s.setProcessEnv, s.unsetProcessEnv); restoreErr != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore settings after audit error %v: %w", err, restoreErr))
 			return
 		}
@@ -3567,7 +3577,7 @@ func restoreWebConfigFile(path string, snapshot webConfigFileSnapshot) error {
 	return fileutil.RemoveFileNoSymlink(path)
 }
 
-func restoreWebSettingsMutation(configPath string, configSnapshot webConfigFileSnapshot, apiKeyUpdate *webAPIKeyUpdate, envSnapshot webConfigFileSnapshot, previousEnvValue string, previousEnvExists bool) error {
+func restoreWebSettingsMutation(configPath string, configSnapshot webConfigFileSnapshot, apiKeyUpdate *webAPIKeyUpdate, envSnapshot webConfigFileSnapshot, previousEnvValue string, previousEnvExists bool, setProcessEnv func(string, string) error, unsetProcessEnv func(string) error) error {
 	var errs []error
 	if err := restoreWebConfigFile(configPath, configSnapshot); err != nil {
 		errs = append(errs, fmt.Errorf("restore config file: %w", err))
@@ -3577,10 +3587,10 @@ func restoreWebSettingsMutation(configPath string, configSnapshot webConfigFileS
 			errs = append(errs, fmt.Errorf("restore API key env file: %w", err))
 		}
 		if previousEnvExists {
-			if err := os.Setenv(apiKeyUpdate.envKey, previousEnvValue); err != nil {
+			if err := setProcessEnv(apiKeyUpdate.envKey, previousEnvValue); err != nil {
 				errs = append(errs, fmt.Errorf("restore process API key env: %w", err))
 			}
-		} else if err := os.Unsetenv(apiKeyUpdate.envKey); err != nil {
+		} else if err := unsetProcessEnv(apiKeyUpdate.envKey); err != nil {
 			errs = append(errs, fmt.Errorf("clear process API key env: %w", err))
 		}
 	}

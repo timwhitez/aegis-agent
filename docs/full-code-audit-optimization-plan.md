@@ -9432,7 +9432,48 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-550 and FCA-20260530-551. Those slices covered optional JSON action/control bodies; the residual gap was the multipart upload path wrapping a nil `r.Body` in `http.MaxBytesReader` and then letting `ParseMultipartForm` read it.
 - Confirmed the minimal fix belongs in `handleUploadSkill`: preflight `nil` / `http.NoBody` before the multipart parser, preserving existing multipart size caps, zip entry limits, managed-root safety, audit behavior, and malformed multipart errors.
 
+### Review 548
+
+- Confirmed FCA-20260530-553 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Web Settings writes and API-key writes are local-console guarded mutations and must not leave unaudited partial config or API-key facts when any required persistence step fails.
+- Confirmed this is distinct from FCA-20260526-118, FCA-20260526-119, FCA-20260526-122, FCA-20260526-124, and FCA-20260527-223. Those slices covered env-file write failure, invalid env key/value preflight, blank API keys, and audit append rollback; the residual gap was the later process environment update failing after both `config.yaml` and `.env` had already been written.
+- Confirmed the minimal fix belongs in `handleUpdateConfig`: reuse the existing config/env/process-env snapshot rollback on process API-key env failure before returning the error, while preserving successful API-key writes, audit events, in-memory config updates, and existing audit-failure rollback behavior.
+
 ## Update Log
+
+### FCA-20260530-553
+
+Slice: `fix(webconsole): roll back failed process env key writes`
+
+Finding:
+
+- `spec/17-web-console.md` requires Settings config/API-key writes to be guarded local-console mutations with audit events, and `spec/18-durable-contract-and-completion.md` keeps Web Settings state tied to local file facts rather than a second authority.
+- `internal/webconsole/service.go` `handleUpdateConfig` wrote the new config file, wrote the API key to `.env`, then called `os.Setenv` for the process-local key before appending `web.config.write` and `web.config.api_key_write` audit events.
+- If the process environment update failed after the file writes, the handler returned HTTP 500 immediately without restoring `config.yaml` or `.env` and without appending audit events.
+- A focused regression forced the process env set step to fail after config/env writes. Before the fix, the route returned HTTP 500 but left the persisted provider model changed to `mutated-model` instead of restoring the original config snapshot.
+
+Impact:
+
+- A late process-env persistence failure could leave provider/model settings and an API-key env file updated without a matching in-memory settings update or audit trail.
+- This weakened the rollback guarantees already enforced for config write failure, env-file write failure, invalid API-key inputs, config/env/audit path aliasing, and audit append failure.
+
+Changes:
+
+- Added narrow process environment function hooks to the WebConsole service so tests can deterministically exercise the late process-env failure boundary while production continues to use `os.Setenv` / `os.Unsetenv`.
+- Reused the existing config/env/process-env snapshots when `setProcessEnv` fails, restoring `config.yaml`, `.env`, and the previous process API-key value before returning the original error.
+- Kept audit-failure rollback on the same restore path and preserved successful Settings saves, API-key audit metadata, and in-memory worker config refresh behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRollsBackWhenProcessEnvSetFails -count=1`: failed before the fix because the persisted config still contained `Model:"mutated-model"` after the forced process env failure.
+- `go test -timeout 120s ./internal/webconsole -run TestAPIKeyWriteRollsBackWhenProcessEnvSetFails -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestAPIKeyWrite(RollsBackWhenProcessEnvSetFails|RollsBackWhenAPIKeyAuditAppendFails|RollsBackConfigWhenEnvWriteFails|WaitsForConfigWriteSuccess|PreflightsEnvTargetBeforeConfigWrite)|TestUpdateConfigRollsBackWhenConfigAuditAppendFails|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(APIKeyWrite|UpdateConfig|ServiceConfig)' -count=1`: passed.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-552
 
