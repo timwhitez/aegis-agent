@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/tools"
@@ -193,6 +194,11 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		out.LastError = handoffErr.Error()
 	}
 	if result.SessionID != "" {
+		coordinationSnapshot, snapshotErr := r.store.SnapshotParentCoordination(req.ParentSessionID)
+		if snapshotErr != nil {
+			return out, errors.Join(err, fmt.Errorf("snapshot parent coordination for child session %s: %w", result.SessionID, snapshotErr))
+		}
+		eventsSnapshot, snapshotErr := r.store.LoadEvents(req.ParentSessionID)
 		if eventErr := r.appendEvent(req.ParentSessionID, "session.child.spawned", "delegate", map[string]any{
 			"session_id": result.SessionID,
 			"status":     out.Status,
@@ -200,27 +206,42 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			"agent_role": out.AgentRole,
 			"wait_mode":  waitMode,
 		}); eventErr != nil {
-			if err != nil {
-				return out, err
-			}
-			return out, fmt.Errorf("append session.child.spawned event for child session %s: %w", result.SessionID, eventErr)
+			return out, errors.Join(err, fmt.Errorf("append session.child.spawned event for child session %s: %w", result.SessionID, eventErr))
+		}
+		if snapshotErr != nil {
+			return out, errors.Join(err, fmt.Errorf("snapshot parent events for child session %s: %w", result.SessionID, snapshotErr))
 		}
 		if coordinationErr := addParentChildSession(r.store, req.ParentSessionID, result.SessionID, waitMode); coordinationErr != nil {
-			if err != nil {
-				return out, err
+			if restoreErr := r.restoreDirectChildParentFacts(req.ParentSessionID, coordinationSnapshot, eventsSnapshot); restoreErr != nil {
+				coordinationErr = fmt.Errorf("persist parent coordination for child session %s failed with %v; restore parent child facts: %w", result.SessionID, coordinationErr, restoreErr)
+			} else {
+				coordinationErr = fmt.Errorf("persist parent coordination for child session %s: %w", result.SessionID, coordinationErr)
 			}
-			return out, coordinationErr
+			return out, errors.Join(err, coordinationErr)
 		}
 		if coordinationErr := resolveParentChildSession(r.store, req.ParentSessionID, result.SessionID, coordinationStatus); coordinationErr != nil {
-			if err != nil {
-				return out, err
+			if restoreErr := r.restoreDirectChildParentFacts(req.ParentSessionID, coordinationSnapshot, eventsSnapshot); restoreErr != nil {
+				coordinationErr = fmt.Errorf("resolve parent coordination for child session %s failed with %v; restore parent child facts: %w", result.SessionID, coordinationErr, restoreErr)
+			} else {
+				coordinationErr = fmt.Errorf("resolve parent coordination for child session %s: %w", result.SessionID, coordinationErr)
 			}
-			return out, coordinationErr
+			return out, errors.Join(err, coordinationErr)
 		}
 		_ = writeSessionSummary(r.store, req.ParentSessionID)
 		_ = writeLongRunCheckpoint(r.store, req.ParentSessionID)
 	}
 	return out, err
+}
+
+func (r *Runner) restoreDirectChildParentFacts(parentSessionID string, coordinationSnapshot session.ParentCoordinationSnapshot, eventsSnapshot []events.Event) error {
+	var restoreErrs []error
+	if err := r.store.RestoreParentCoordination(parentSessionID, coordinationSnapshot); err != nil {
+		restoreErrs = append(restoreErrs, fmt.Errorf("restore parent coordination: %w", err))
+	}
+	if err := r.store.RestoreEvents(parentSessionID, eventsSnapshot); err != nil {
+		restoreErrs = append(restoreErrs, fmt.Errorf("restore parent events: %w", err))
+	}
+	return errors.Join(restoreErrs...)
 }
 
 func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (tools.AgentStatusResult, error) {

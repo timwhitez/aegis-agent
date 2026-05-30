@@ -170,6 +170,13 @@ func TestRunnerDelegateReportsParentCoordinationError(t *testing.T) {
 	if !strings.Contains(err.Error(), "parent-coordination.json") {
 		t.Fatalf("expected parent coordination path error, got %v", err)
 	}
+	events, loadErr := runner.store.LoadEvents(parentID)
+	if loadErr != nil {
+		t.Fatalf("load parent events after failed coordination: %v", loadErr)
+	}
+	if count := countRuntimeEventType(events, "session.child.spawned"); count != 0 {
+		t.Fatalf("failed parent coordination should not leave child spawned event, got %d events=%#v", count, events)
+	}
 }
 
 func TestRunnerDelegateReportsChildSpawnedEventAppendError(t *testing.T) {

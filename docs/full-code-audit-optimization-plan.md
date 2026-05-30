@@ -9612,7 +9612,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-576 and the Plan Mode conflict slices FCA-20260531-577 through FCA-20260531-581. Those slices hardened pre-run and Plan Mode control boundaries; this residual gap was a post-acceptance steer boundary where contract refresh could fail after the steer was already provider-visible and marked accepted.
 - Confirmed the minimal fix belongs in `Engine.drainSteer`: snapshot events before acceptance events, and if the post-acceptance contract refresh fails, restore the open steer request, pending count, provider-visible steer message, goal history, and events so the steer remains retryable instead of half-accepted.
 
+### Review 578
+
+- Confirmed FCA-20260531-583 against `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`: parent / child coordination is a durable completion fact, and direct delegation must not leave operator-visible child lifecycle events that imply parent linkage when `parent-coordination.json` failed to update.
+- Confirmed this is distinct from queued child submission rollback and queue lifecycle notification fixes. Queue submission already snapshots and restores parent coordination when `session.child.queued` fails; this residual direct-delegate path wrote `session.child.spawned` before the parent coordination mutation.
+- Confirmed the minimal fix belongs in `Runner.SpawnAgent` for foreground delegation: snapshot parent events and coordination before emitting the child-spawned event, and restore both if add/resolve parent coordination fails after the event is durable.
+
 ## Update Log
+
+### FCA-20260531-583
+
+Slice: `fix(runtime): roll back delegate parent linkage`
+
+Finding:
+
+- `spec/18-durable-contract-and-completion.md` defines `parent-coordination.json` as the fact source for parent sessions waiting on explicit child work.
+- In the foreground `agent_spawn` / delegate path, `Runner.SpawnAgent` appended a parent `session.child.spawned` event before it updated `parent-coordination.json`.
+- If the parent coordination file write failed after the child session completed, the parent timeline showed a spawned child while the parent coordination gate had no linked child to block or resolve.
+
+Impact:
+
+- A parent session could have durable events suggesting child work existed, but no authoritative parent coordination fact for completion gating or recovery.
+- The child session remained inspectable, but the parent could later finish without the unresolved or completed child being represented in `parent-coordination.json`.
+
+Changes:
+
+- Snapshot parent events and parent coordination before writing direct child linkage facts.
+- If adding or resolving parent child coordination fails after `session.child.spawned` is durable, restore both `events.jsonl` and `parent-coordination.json`.
+- Preserve the existing event-append failure behavior: if `session.child.spawned` itself cannot be written, parent coordination is not advanced.
+- Extended `TestRunnerDelegateReportsParentCoordinationError` to assert that failed parent coordination does not leave a `session.child.spawned` event.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerDelegateReportsParentCoordinationError|TestRunnerDelegateReportsChildSpawnedEventAppendError|TestRunnerDelegateCreatesChildSessionWithIsolation|TestAgentStatusRejectsSessionOutsideParent' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-582
 
