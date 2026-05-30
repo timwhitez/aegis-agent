@@ -33,6 +33,13 @@ Git state at audit start:
 - Untracked before this audit: `CLAUDE.md`, `docs/webconsole-frontend-optimization-plan.md`, `workspace/`
 - This plan is a new audit artifact and does not rely on the older untracked frontend-only plan as current truth.
 
+Current closure baseline after continued audit:
+
+- HEAD: `ff03b29 fix(runtime): list all delegated work for agent recovery`
+- Remaining untracked local files intentionally outside this audit: `.claude/`, `CLAUDE.md`, `workspace/`
+- Latest current-state review: `Review 584`
+- Latest fixed issue: `FCA-20260531-588`
+
 Initial validation started:
 
 - `node --check internal/webconsole/assets/*.js`: passed
@@ -9648,7 +9655,51 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-587. That slice fixed store pagination, Web history cleanup, session summaries, and checkpoint readers; this residual gap was in the runtime control-plane facade, where `Runner.AgentList` still explicitly asked the store for only 100 children and 100 jobs.
 - Confirmed the minimal fix belongs in `Runner.AgentList`: use the store's internal all-items relation reads for this recovery tool while keeping user-facing list endpoints, CLI list flags, Web child panels, and TUI snapshots capped for display.
 
+### Review 584
+
+- Re-read the required AGENTS/spec baseline against current HEAD `ff03b29`: `spec/00-product.md`, `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, `spec/09-phase-plan.md`, `spec/11-spec-audit-and-traceability.md`, `spec/12-task-system.md`, `spec/13-live-input-and-steering.md`, plus the directly relevant `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md`.
+- Rechecked remaining capped relation/list usage after FCA-20260531-588. The only production `List(50)` / `ListJobs(50)` hits are in `/api/overview`, whose current frontend use is the recent Session rail and empty-state note; tests explicitly keep the standalone overview page and worker-pool KPI surface removed.
+- Rechecked destructive Web history/cleanup gates. `prepareDeleteSessionTreeTransaction`, `hasActiveDescendantHandle`, `hasRunningSessions`, and `hasRunningQueueJobs` use `ListPage(1000000, 0)` / `ListJobsPage(1000000, 0)`, and current `ListPage` reads all sessions before paging while FCA-20260531-587 made `ListJobsPage` read all jobs before paging.
+- Rechecked frontend optimization drift. There are no current pending-validation or source-code task markers in the audit plans; no production WebConsole frontend asset reintroduced native browser confirmation; and the previously isolated overview/history/skills/workspace/settings/message/generating display state did not move back onto the durable `state` object.
+- No new validated finding was confirmed in this pass. The non-blocking frontend optimization backlog still records possible future browser smoke, render-scale, CSS split, and optional module graph work, but those are explicitly outside current Web-first v1 correctness and runtime fact-source completion.
+
 ## Update Log
+
+### Completion Audit 20260531
+
+Current requirement mapping:
+
+- Frontend and backend code reviewed: covered by repeated current-state passes over the 109 tracked runtime, CLI, provider, session, WebConsole, frontend asset, package facade, and validation command files under `cmd/`, `internal/`, `pkg/`, and `validation/cmd/`, with WebConsole frontend assets called out separately in `docs/webconsole-frontend-optimization-plan.md`.
+- All validated issues fixed: latest fixed issue is FCA-20260531-588, and Review 584 found no additional validated issue in the remaining capped-list, Web overview, destructive cleanup, and frontend optimization-drift checks.
+- Detailed optimization plan produced: this document remains the authoritative audit/optimization plan and update log; `docs/webconsole-frontend-optimization-plan.md` records the frontend-specific optimization backlog and completed frontend slices.
+- Multiple document reviews performed: Review 1 through Review 584 record repeated spec/document/code alignment passes, with recent reviews 580 through 584 focused on final WebConsole Goal facts, store pagination, recovery tooling, and closure drift.
+- Minimal code updates: recent slices changed only the owner modules needed for each finding, for example FCA-20260531-588 changed only `Runner.AgentList`, its regression test, and this audit document.
+- Multiple independent validations: recent slices ran focused package regressions, package groups, full `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`, WebConsole JavaScript syntax checks, `validation/scripts/webconsole_utils_test.mjs`, `gofmt -l`, `git diff --check`, and `go vet`.
+
+Closure evidence from this pass:
+
+- `git status --short`: only `.claude/`, `CLAUDE.md`, and `workspace/` are untracked local files.
+- Pending-validation and source-code task-marker scan over the audit plans: no matches.
+- Native browser-confirmation scan over production WebConsole frontend assets: no matches.
+- Previously isolated frontend view-state field scan over production WebConsole frontend assets: no matches.
+- Remaining production capped-list scan: only `/api/overview` recent-list reads remain.
+
+Validation:
+
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-588
 
